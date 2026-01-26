@@ -50,3 +50,13 @@ Thumbs.db
 /responses/
 /tmp/
 copy_history.log
+
+surveys/
+excel/
+survey_js/
+contents/
+logs/
+export/
+responses/
+tmp/
+/.qsync

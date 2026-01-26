@@ -862,8 +862,8 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         _check_html_hazards,
         _check_placeholders,
         _check_value_length_limit,
-        normalize_translation_map,
     )
+    from .translation_export import build_translation_map_from_cache
 
     # Parse arguments
     source_id = args.source_survey_id
@@ -871,14 +871,6 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     target_api_key = args.target_api_key
     target_base_url = args.target_base_url
     copy_translations = not bool(getattr(args, "no_translations", False))
-
-    def _coerce_result_payload(payload: dict) -> dict:
-        result = payload.get("result")
-        if isinstance(result, dict):
-            return result
-        if isinstance(payload, dict):
-            return payload
-        return {}
 
     def _normalize_language_list(raw: list[str] | None) -> list[str]:
         cleaned: list[str] = []
@@ -949,33 +941,69 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         )
         return desired
 
-    def _pull_translation_map(
-        base_url: str, headers: dict, survey_id: str, language: str
+    def _fetch_survey_definition(
+        base_url: str, headers: dict, survey_id: str
     ) -> dict:
         resp = send_api_request(
-            action="qsync.translations.pull",
+            action="qsync.survey.definition.fetch",
             method="GET",
             base_url=base_url,
             headers=headers,
-            path=f"surveys/{survey_id}/translations/{language}",
+            path=f"survey-definitions/{survey_id}",
             survey_id=survey_id,
             log_event=False,
             timeout=60,
         )
-        return _coerce_result_payload(resp.json())
+        payload = resp.json()
+        if isinstance(payload, dict) and "result" in payload:
+            return payload
+        return {"result": payload}
 
-    def _push_translation_map(
-        base_url: str, headers: dict, survey_id: str, language: str, payload: dict
+    def _sanitize_metadata_translations(meta: dict) -> dict[str, Any]:
+        cleaned: dict[str, Any] = {}
+        for lang, entry in meta.items():
+            if not isinstance(entry, dict):
+                continue
+            updated = dict(entry)
+            if "SurveyDescription" in updated:
+                if "SurveyMetaDescription" not in updated:
+                    updated["SurveyMetaDescription"] = updated["SurveyDescription"]
+                updated.pop("SurveyDescription", None)
+            cleaned[lang] = updated
+        return cleaned
+
+    def _push_metadata_translations(
+        base_url: str, headers: dict, survey_id: str, source_payload: dict
     ) -> None:
+        source_options = (source_payload.get("result") or {}).get("SurveyOptions") or {}
+        if not isinstance(source_options, dict):
+            return
+        meta = source_options.get("MetaDataTranslations") or {}
+        if not isinstance(meta, dict) or not meta:
+            return
+        meta = _sanitize_metadata_translations(meta)
+        resp = send_api_request(
+            action="qsync.translations.push.options",
+            method="GET",
+            base_url=base_url,
+            headers=headers,
+            path=f"survey-definitions/{survey_id}/options",
+            survey_id=survey_id,
+            log_event=False,
+            timeout=30,
+        )
+        current = resp.json().get("result") or {}
+        merged = dict(current)
+        merged["MetaDataTranslations"] = meta
         send_api_request(
-            action="qsync.translations.push",
+            action="qsync.translations.push.options",
             method="PUT",
             base_url=base_url,
             headers=headers,
-            path=f"surveys/{survey_id}/translations/{language}",
+            path=f"survey-definitions/{survey_id}/options",
             survey_id=survey_id,
-            json=payload,
-            timeout=60,
+            json=merged,
+            timeout=30,
         )
 
     def _copy_translations(source_survey_id: str, target_survey_id: str) -> None:
@@ -1001,6 +1029,13 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
                 f"({source_base_lang} vs {target_base_lang}); aborting translation copy."
             )
 
+        source_payload = _fetch_survey_definition(
+            source_base, source_headers, source_survey_id
+        )
+        target_payload = _fetch_survey_definition(
+            target_base, target_headers, target_survey_id
+        )
+
         info(
             "[copy-cross-account]",
             f"Enabling languages in target: {', '.join(source_langs)}",
@@ -1009,8 +1044,10 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
             target_base, target_headers, target_survey_id, source_langs
         )
 
-        base_map = _pull_translation_map(
-            source_base, source_headers, source_survey_id, source_base_lang
+        base_map = build_translation_map_from_cache(
+            source_payload,
+            language=source_base_lang,
+            base_language=source_base_lang,
         )
         allowed_empty_keys = {
             str(k)
@@ -1032,10 +1069,11 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
                 continue
 
             info("[copy-cross-account]", f"Processing language: {lang}")
-            raw_map = _pull_translation_map(
-                source_base, source_headers, source_survey_id, lang
+            normalized = build_translation_map_from_cache(
+                source_payload,
+                language=lang,
+                base_language=source_base_lang,
             )
-            normalized = normalize_translation_map(raw_map, coerce_nulls=True)
 
             # Calculate statistics
             total_keys = len(normalized)
@@ -1111,11 +1149,56 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
                     f"Translation validation failed for {lang}; aborting copy."
                 )
 
-            _push_translation_map(
-                target_base, target_headers, target_survey_id, lang, normalized
-            )
             completed_languages.append(lang)
-            success("[copy-cross-account]", f"  [{lang}] ✓ Copied successfully")
+            success("[copy-cross-account]", f"  [{lang}] ✓ Validated")
+
+        source_questions = (source_payload.get("result") or {}).get("Questions") or {}
+        target_questions = (target_payload.get("result") or {}).get("Questions") or {}
+        updated_qids: list[str] = []
+        for qid, target_question in target_questions.items():
+            source_question = source_questions.get(qid) if isinstance(source_questions, dict) else None
+            if not isinstance(source_question, dict) or not isinstance(
+                target_question, dict
+            ):
+                continue
+            source_lang_block = source_question.get("Language") or {}
+            if not isinstance(source_lang_block, dict):
+                continue
+            filtered: dict[str, Any] = {}
+            for lang in source_langs:
+                if lang == source_base_lang:
+                    continue
+                if lang in source_lang_block:
+                    filtered[lang] = source_lang_block.get(lang)
+            if not filtered:
+                continue
+            updated_question = dict(target_question)
+            existing_lang_block = updated_question.get("Language")
+            if not isinstance(existing_lang_block, dict):
+                existing_lang_block = {}
+            merged_lang_block = dict(existing_lang_block)
+            merged_lang_block.update(filtered)
+            updated_question["Language"] = merged_lang_block
+            send_api_request(
+                action="qsync.survey.copy-cross-account.translations.question",
+                method="PUT",
+                base_url=target_base,
+                headers=target_headers,
+                path=f"survey-definitions/{target_survey_id}/questions/{qid}",
+                survey_id=target_survey_id,
+                json=updated_question,
+                timeout=60,
+            )
+            updated_qids.append(str(qid))
+
+        _push_metadata_translations(
+            target_base, target_headers, target_survey_id, source_payload
+        )
+        if updated_qids:
+            info(
+                "[copy-cross-account]",
+                f"Updated {len(updated_qids)} question(s) with Language blocks.",
+            )
 
         # Final summary
         if completed_languages or skipped_base:
@@ -1196,7 +1279,7 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         "    ✓", "Copy survey definition (all questions, flow, logic, embedded data)"
     )
     if copy_translations:
-        success("    ✓", "Copy translations (enabled languages + maps)")
+        success("    ✓", "Copy translations (Language blocks + metadata)")
     else:
         dim("    ✗", "Copy translations (use default; disable via --no-translations)")
 

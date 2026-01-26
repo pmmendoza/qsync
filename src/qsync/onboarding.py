@@ -325,16 +325,19 @@ def _run_inventory(root: Path, *, dry_run: bool) -> bool:
     info("[qsync:onboard]", "Fetching survey inventory...")
 
     class _Args:
-        command = "survey"
-        survey_command = "inventory"
-        root = root
-        env_path = None
-        dry_run = dry_run
-        survey_ids = None
-        counts_scope = None
+        pass
+
+    args = _Args()
+    args.command = "survey"
+    args.survey_command = "inventory"
+    args.root = root
+    args.env_path = None
+    args.dry_run = dry_run
+    args.survey_ids = None
+    args.counts_scope = None
 
     try:
-        handle_inventory(_Args())
+        handle_inventory(args)
         count = _inventory_count(root)
         if count is not None:
             print(f"Inventory rows: {count}")
@@ -525,7 +528,24 @@ def run_onboard(args) -> None:
                 "Finish",
                 "Exit",
             ]
-            choice = select_from_list("Onboarding steps", choices)
+            default_choice = None
+            for label, done in [
+                ("Workspace root", state["root"] is not None),
+                ("Create folders", state["folders"]),
+                ("Credentials + .env", state["env"]),
+                ("Gitignore", state["gitignore"]),
+                ("Inventory (optional)", state["inventory"]),
+                ("Focal surveys (optional)", state["focal"]),
+                ("Translations + fasttext (optional)", state["fasttext"]),
+            ]:
+                if not done:
+                    default_choice = _menu_choice_text(label, done)
+                    break
+            choice = select_from_list(
+                "Onboarding steps",
+                choices,
+                default=default_choice,
+            )
             if choice is None or choice == "Exit":
                 print("Setup incomplete. You can re-run `qsync onboard` anytime.")
                 return

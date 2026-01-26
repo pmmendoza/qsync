@@ -9,7 +9,7 @@ This package originated in an internal monorepo; this repository’s goal is to 
 Create and activate a virtualenv, then install from GitHub:
 
 ```bash
-python3.11 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 
 pip install "qsync @ git+https://github.com/pmmendoza/qsync.git"
@@ -21,7 +21,6 @@ Optional extras:
 pip install "qsync[pdf] @ git+https://github.com/pmmendoza/qsync.git"
 pip install "qsync[completion] @ git+https://github.com/pmmendoza/qsync.git"
 pip install "qsync[langcheck] @ git+https://github.com/pmmendoza/qsync.git"
-pip install "qsync[pdf,completion,langcheck] @ git+https://github.com/pmmendoza/qsync.git"
 ```
 
 What these extras do:

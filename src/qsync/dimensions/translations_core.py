@@ -74,6 +74,8 @@ __all__ = [
     "ensure_languages",
     "set_languages",
     "fetch_base_language",
+    "load_pending_languages",
+    "resolve_languages_for_cli",
     "pull_translation_map",
     "pull_translations",
     "preview_translations",

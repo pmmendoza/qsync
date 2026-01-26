@@ -93,6 +93,7 @@ def select_from_list(
     message: str,
     choices: List[str],
     instruction: Optional[str] = None,
+    default: Optional[str] = None,
 ) -> Optional[str]:
     """Display arrow-key navigable selection menu.
 
@@ -105,10 +106,10 @@ def select_from_list(
         Selected choice string, or None if cancelled
     """
     if not should_use_questionary():
-        return _fallback_select(message, choices)
+        return _fallback_select(message, choices, default=default)
 
     if not is_interactive():
-        return _fallback_select(message, choices)
+        return _fallback_select(message, choices, default=default)
 
     try:
         # Save terminal state before questionary
@@ -136,6 +137,7 @@ def select_from_list(
                 use_arrow_keys=True,
                 use_jk_keys=False,
                 style=CUSTOM_STYLE,
+                default=default,
             ).ask()
             return result
         finally:
@@ -148,7 +150,7 @@ def select_from_list(
         # Fall back to simple selection if questionary fails
         print(f"\n(Arrow key menu failed: {e})")
         print("(Falling back to numbered selection)")
-        return _fallback_select(message, choices)
+        return _fallback_select(message, choices, default=default)
 
 
 def confirm(
@@ -413,7 +415,9 @@ def _fallback_autocomplete(
     return _fallback_select(f"{message} (matches)", matches)
 
 
-def _fallback_select(message: str, choices: List[str]) -> Optional[str]:
+def _fallback_select(
+    message: str, choices: List[str], default: Optional[str] = None
+) -> Optional[str]:
     """Fallback selection using simple input."""
     print(f"\n{message}")
 
@@ -428,7 +432,7 @@ def _fallback_select(message: str, choices: List[str]) -> Optional[str]:
     try:
         response = input("\nEnter number (or 'q' to cancel): ").strip().lower()
         if not response or response == "q":
-            return None
+            return default
 
         display_idx = int(response) - 1
         if 0 <= display_idx < len(displayable_choices):
