@@ -184,10 +184,10 @@ def walk_flow(
     edf_overrides: dict[str, str] | None = None,
     asked_qids: set[str] | None = None,
     depth: int = 0,
-    eval_branch: Callable[[object, dict[str, str] | None], bool | None]
-    | None = None,
-    eval_branch_with_asked: Callable[[object, dict[str, str], set[str]], bool | None]
-    | None = None,
+    eval_branch: Callable[[object, dict[str, str] | None], bool | None] | None = None,
+    eval_branch_with_asked: (
+        Callable[[object, dict[str, str], set[str]], bool | None] | None
+    ) = None,
 ) -> None:
     """Traverse SurveyFlow with optional EDF pruning and handler callbacks."""
 

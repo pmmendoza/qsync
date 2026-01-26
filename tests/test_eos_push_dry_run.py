@@ -4,7 +4,11 @@ import unittest
 class TestEosPushDryRun(unittest.TestCase):
     def test_push_eos_messages_dry_run_does_not_require_yes(self):
         from qsync.dimensions.eos_core import push_eos_messages
-        from qsync.pending_stage import PendingStagedChanges, EosOperation, EosPendingPayload
+        from qsync.pending_stage import (
+            PendingStagedChanges,
+            EosOperation,
+            EosPendingPayload,
+        )
 
         record = PendingStagedChanges(
             survey_id="SV_TEST",
@@ -34,4 +38,3 @@ class TestEosPushDryRun(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

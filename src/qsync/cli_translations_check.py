@@ -102,10 +102,10 @@ _NEUTRAL_BRANDS = {
 _FASTTEXT_MODEL = None
 _FASTTEXT_MODEL_PATH: Path | None = None
 _FASTTEXT_MODEL_ERROR: str | None = None
-_FASTTEXT_MODEL_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz"
+_FASTTEXT_MODEL_URL = (
+    "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz"
+)
 _FASTTEXT_PROMPT_FILENAME = ".fasttext_setup.json"
-
-
 
 
 @dataclass
@@ -148,7 +148,9 @@ def _is_numeric_only(text: str) -> bool:
     if not any(ch.isdigit() for ch in stripped):
         return False
     clean = re.sub(r"[€$£¥%]", "", stripped)
-    clean = re.sub(r"\b(?:kč|czk|usd|eur|gbp|sek|nok|dkk)\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(
+        r"\b(?:kč|czk|usd|eur|gbp|sek|nok|dkk)\b", "", clean, flags=re.IGNORECASE
+    )
     clean = re.sub(r"\b(?:min|max|total)\b", "", clean, flags=re.IGNORECASE)
     if not _LETTER_WORD_RE.search(clean):
         return True
@@ -397,10 +399,34 @@ def _load_fasttext_model():
         return None
 
 
+def _fasttext_predict_safe(model, text: str, *, k: int = 5):
+    def _check(entry: str) -> str:
+        if "\n" in entry:
+            raise ValueError("predict processes one line at a time (remove '\\n')")
+        return entry + "\n"
+
+    try:
+        import numpy as np
+    except Exception as exc:
+        raise RuntimeError(f"numpy is required for fasttext predictions: {exc}") from exc
+
+    text = _check(text)
+    try:
+        predictions = model.f.predict(text, k, 0.0, "strict")
+    except TypeError:
+        predictions = model.f.predict(text, k)
+
+    if predictions:
+        probs, labels = zip(*predictions)
+    else:
+        probs, labels = ([], ())
+    return labels, np.asarray(probs)
+
+
 def _detect_language_probs(text: str) -> list[tuple[str, float]]:
     model = _load_fasttext_model()
     if model is not None:
-        labels, probs = model.predict(text, k=5)
+        labels, probs = _fasttext_predict_safe(model, text, k=5)
         results: list[tuple[str, float]] = []
         for label, prob in zip(labels, probs):
             lang = str(label).replace("__label__", "").strip().lower()
@@ -684,7 +710,9 @@ def _extract_strings_from_language_block(
             if description:
                 base_text = None
                 if base_lang and not is_base:
-                    base_group = (question.get("ChoiceGroups") or {}).get(group_id) or {}
+                    base_group = (question.get("ChoiceGroups") or {}).get(
+                        group_id
+                    ) or {}
                     if isinstance(base_group, dict):
                         base_text = base_group.get("Description") or ""
                 results.append(

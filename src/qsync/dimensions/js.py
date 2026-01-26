@@ -241,9 +241,7 @@ def push(
         pending_entries = [
             entry
             for entry in pending.payload.entries
-            if isinstance(entry, dict)
-            and entry.get("qid")
-            and entry.get("js_file")
+            if isinstance(entry, dict) and entry.get("qid") and entry.get("js_file")
         ]
         qids_override = [
             entry.get("qid")

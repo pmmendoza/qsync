@@ -534,7 +534,9 @@ def clone_shared_eos_messages(
         include_backups=include_backups_scan,
     )
     if not shared:
-        return CloneSharedEosResult(replacements={}, updated_flow_ids=[], pulled_paths=[])
+        return CloneSharedEosResult(
+            replacements={}, updated_flow_ids=[], pulled_paths=[]
+        )
 
     if not yes:
         raise RuntimeError("Refusing to clone without --yes (non-interactive safety).")

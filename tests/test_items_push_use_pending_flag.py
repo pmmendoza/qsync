@@ -11,8 +11,13 @@ class TestItemsPushUsePendingFlag(unittest.TestCase):
         def _fake_push_items_pending_record(**kwargs):
             captured.update(kwargs)
 
-        with patch.object(cli, "_push_items_pending_record", side_effect=_fake_push_items_pending_record), patch.object(
-            cli.os, "chdir", lambda *_args, **_kwargs: None
+        with (
+            patch.object(
+                cli,
+                "_push_items_pending_record",
+                side_effect=_fake_push_items_pending_record,
+            ),
+            patch.object(cli.os, "chdir", lambda *_args, **_kwargs: None),
         ):
             cli._main_impl(
                 [
@@ -35,8 +40,13 @@ class TestItemsPushUsePendingFlag(unittest.TestCase):
         def _fake_push_items_pending_record(**kwargs):
             captured.update(kwargs)
 
-        with patch.object(cli, "_push_items_pending_record", side_effect=_fake_push_items_pending_record), patch.object(
-            cli.os, "chdir", lambda *_args, **_kwargs: None
+        with (
+            patch.object(
+                cli,
+                "_push_items_pending_record",
+                side_effect=_fake_push_items_pending_record,
+            ),
+            patch.object(cli.os, "chdir", lambda *_args, **_kwargs: None),
         ):
             cli._main_impl(
                 [
@@ -53,4 +63,3 @@ class TestItemsPushUsePendingFlag(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
