@@ -1,0 +1,144 @@
+"""
+Centralized workbook path resolution for qsync operations.
+
+Provides consistent logic for deriving default Excel workbook paths based
+on survey metadata (inventory CSV, cached survey, or survey ID fallback).
+"""
+
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+from typing import Optional
+
+from qsync.config import resolve_root
+
+
+def _slugify(value: str) -> str:
+    """Make a filesystem-safe slug from a human-readable value."""
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(value))
+
+
+class WorkbookResolver:
+    """Resolve workbook paths for surveys with consistent slug derivation."""
+
+    def __init__(self, root: Optional[Path] = None):
+        """
+        Initialize workbook resolver.
+
+        Args:
+            root: Workspace root directory. If None, resolves from config.
+        """
+        self.root = root or resolve_root(required=False) or Path.cwd()
+
+    def resolve(
+        self,
+        survey_id: str,
+        explicit_path: Optional[Path] = None,
+    ) -> Path:
+        """
+        Resolve workbook path for a survey.
+
+        Args:
+            survey_id: Survey ID
+            explicit_path: User-provided path override
+
+        Returns:
+            Absolute path to workbook
+        """
+        if explicit_path:
+            # If explicit path is relative, make it absolute relative to workspace root
+            if explicit_path.is_absolute():
+                return explicit_path
+            return (self.root / explicit_path).resolve()
+
+        return self.default_path(survey_id)
+
+    def default_path(self, survey_id: str) -> Path:
+        """
+        Get default workbook path using slug derivation precedence.
+
+        Slug derivation order:
+        1. 'name' column from surveys/inventory.csv (legacy: surveys/qualtrics_surveys.csv)
+        2. SurveyTitle from cached survey definition
+        3. Survey ID as fallback
+
+        Args:
+            survey_id: Survey ID
+
+        Returns:
+            Path in format: excel/{slug}-{survey-id}.xlsx
+
+        Note:
+            For backward compatibility, checks if an old-format file
+            (excel/{survey-id}-{slug}.xlsx) exists and returns that path
+            if found. New files are created with the new format.
+        """
+        slug = self._derive_slug(survey_id)
+
+        # New format (preferred)
+        new_format_path = self.root / "excel" / f"{slug}-{survey_id}.xlsx"
+
+        # Old format (for backward compatibility)
+        old_format_path = self.root / "excel" / f"{survey_id}-{slug}.xlsx"
+
+        # If old format exists, use it for backward compatibility
+        if old_format_path.exists():
+            return old_format_path
+
+        # Otherwise use new format (for new files)
+        return new_format_path
+
+    def _derive_slug(self, survey_id: str) -> str:
+        """
+        Derive filesystem-safe slug for survey.
+
+        Tries in order:
+        1. 'name' from surveys/inventory.csv (legacy: surveys/qualtrics_surveys.csv)
+        2. SurveyTitle from cached survey payload
+        3. Survey ID fallback
+
+        Args:
+            survey_id: Survey ID
+
+        Returns:
+            Slugified string for use in filename
+        """
+        # 1) Try inventory CSV 'name' column
+        csv_path = self.root / "surveys" / "inventory.csv"
+        if not csv_path.exists():
+            csv_path = self.root / "surveys" / "qualtrics_surveys.csv"
+        if csv_path.exists():
+            try:
+                with csv_path.open(newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if row.get("id") == survey_id:
+                            name = (row.get("name") or "").strip()
+                            if name:
+                                return _slugify(name)
+                            break
+            except Exception:
+                pass
+
+        # 2) Try SurveyTitle from cached survey
+        try:
+            from qsync.qualtrics_client import load_cached_survey
+
+            survey = load_cached_survey(survey_id)
+            title = (
+                survey.payload.get("result", {})
+                .get("SurveyOptions", {})
+                .get("SurveyTitle")
+            )
+            if title:
+                return _slugify(title)
+        except Exception:
+            pass
+
+        # 3) Fallback to survey ID
+        return _slugify(survey_id)
+
+    def __repr__(self) -> str:
+        """String representation."""
+        return f"WorkbookResolver(root={self.root!r})"

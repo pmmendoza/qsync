@@ -1,0 +1,52 @@
+# --- Dev ------------------------------------------------------------------
+dev/
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# --- Virtual environments -------------------------------------------------
+.venv/
+venv/
+ENV/
+
+# --- Test / type / lint caches -------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Tooling --------------------------------------------------------------
+.tox/
+.nox/
+
+# --- IDEs / OS ------------------------------------------------------------
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- Secrets --------------------------------------------------------------
+.env
+.env.*
+.envrc
+!.env.example
+!.env.template
+
+# --- qsync workspace artifacts (when you run qsync in this repo) ----------
+/surveys/
+/excel/
+/survey_js/
+/contents/
+/logs/
+/export/
+/responses/
+/tmp/
+copy_history.log

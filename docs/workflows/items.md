@@ -1,0 +1,134 @@
+# Items workflow (Excel wording)
+
+_Migrated from `appendices/qsync_workflow.md` (monorepo) so the standalone `qsync` repo can be self-contained._
+
+This document explains how to edit Qualtrics wording via Excel. It assumes you run commands from your workspace root with a virtualenv activated.
+## 0. File locations reference
+
+The table below shows the file locations for each qsync dimension:
+
+| Dimension | Editing Surface | Staged Files | Cache Files |
+|-----------|----------------|--------------|-------------|
+| **Items** | `excel/<slug>-<SurveyID>.xlsx` | `surveys/pending/items/<SurveyID>.json` | `surveys/<label>__SV_<ID>.json` |
+| **JS** | `survey_js/core/*.js` | `surveys/pending/js/<SurveyID>.json` | `surveys/<label>__SV_<ID>.json` |
+| **Translations** | `excel/<slug>-<SurveyID>.xlsx` (language columns) | `surveys/pending/translations/<SurveyID>.json` | `surveys/<label>__SV_<ID>.json` |
+| **EOS** | `contents/qualtrics_library_messages/<LibraryID>/<MessageID>` | `surveys/pending/eos/<SurveyID>.json` | `surveys/<label>__SV_<ID>.json` (SurveyFlow refs) |
+
+- **Editing Surface**: Where you make changes locally
+- **Staged Files**: Where pending changes are recorded after `qsync <dimension> stage`
+- **Cache Files**: Read-only local copies of Qualtrics survey definitions, refreshed by `qsync <dimension> pull`
+
+**Important**: `qsync init` regenerates Excel files from cached survey JSON but does **not** modify staged files or cache files. It preserves existing Excel content where questions/options still exist in the survey.
+## 1. Key files & concepts
+
+- **Inventory (`surveys/inventory.csv`)** – built via `qsync survey inventory`. Each row stores `id`, `name`, `focal`, `locked`, `preview_count`, `response_count`, etc. (Legacy filename: `surveys/qualtrics_surveys.csv`.)
+- **Cached survey JSON (`surveys/<label>__SV_… .json`)** – refreshed whenever you run `qsync items pull`. This is the single source of truth for previews/pushes.
+- **Per-survey workbook (`excel/<slug>-<SurveyID>.xlsx`)** – generated/updated by `qsync items pull`. Filenames follow `<slug>-<SurveyID>.xlsx` where slug is derived from: (1) 'name' column in inventory CSV, (2) SurveyTitle from cached survey, or (3) Survey ID as fallback. **Note:** Old-format files (`<SurveyID>-<slug>.xlsx`) are automatically detected and used for backward compatibility. New files are created with the new format. You can override with `--xlsx` explicitly.
+- **Externally managed items** – questions/options owned by scripts (recognition, salience, cued recall). They stay read-only in Excel and are tagged through `MetaComment` + `DataExportTag` (see `EXTERNALLY_MANAGED_TAGS` in `src/qsync/excel_io.py`).
+
+## 2. Quick runbook (standalone)
+
+| Step | Command | What it does |
+| --- | --- | --- |
+| Inventory | `qsync survey inventory` | Refreshes `surveys/inventory.csv` (locks + response counts). |
+| Pull | `qsync items pull --survey-id SV_xxx` | Refreshes cached JSON and writes/updates the workbook. |
+| Preview | `qsync items preview --survey-id SV_xxx` | Shows diffs between workbook and cache. |
+| Stage | `qsync items stage --survey-id SV_xxx --yes` | Writes pending changes under `surveys/pending/` (no cache mutation). |
+| Push | `qsync items push --survey-id SV_xxx --force-live --yes` | Pushes staged changes to Qualtrics and refreshes cache after push. |
+
+Notes:
+- `qsync items push` enforces overwrite safeguards based on `surveys/inventory.csv` (see `../reference/push-safeguards.md`).
+- Use `--force-preview` (items) when only preview/test responses exist; use `--force-live` when finished responses exist.
+- `locked=TRUE` in the inventory blocks all pushes; clear it (with justification) before rerunning.
+- `--yes` skips interactive confirmations.
+
+## 3. Direct qsync commands
+
+You can run the CLI directly (or `python -m qsync.cli …`) when you need finer control:
+
+```bash
+qsync items pull --survey-id SV_5AsKyAO5QqswBcq
+qsync items preview --survey-id SV_5AsKyAO5QqswBcq --filter-column InPre --filter-value TRUE
+qsync items stage --survey-id SV_5AsKyAO5QqswBcq --yes
+qsync items push --survey-id SV_5AsKyAO5QqswBcq --force-live --yes
+```
+
+- `items pull` downloads the Qualtrics definition, writes/updates the Excel workbook, and keeps the cached JSON in sync.
+- `items preview` compares Excel vs cached JSON. Non-HTML cells are compared via Markdown; HTML-only cells compare normalized HTML directly.
+- `items stage` writes pending change records (no Qualtrics API calls; no cache mutation) and records the staged QIDs.
+- `items push` reads staged QIDs from disk, enforces safeguards, uploads the questions via the Qualtrics API, and refreshes the cache after push.
+- Use `--filter-column/--filter-value` when you only want to preview/apply/push a subset of the workbook (e.g. `InPre == TRUE`).
+- **Legacy commands:** `qsync init`, `qsync preview`, `qsync apply`, `qsync push` still work as aliases but are deprecated.
+
+### Translation validation export (Word) (optional)
+
+When you want a translator/reviewer-friendly document that mirrors SurveyFlow order (including conditional logic), export a `.docx`:
+
+```bash
+# Default output goes to export/<SurveyName>__<SurveyID>__<BASE>.docx (+ Mermaid artifacts)
+qsync survey export-translation --survey-id SV_xxx
+
+# Render using cached translations (participant view)
+qsync survey export-translation --survey-id SV_xxx --language FR
+
+# Batch export multiple languages (one .docx per language)
+qsync survey export-translation --survey-id SV_xxx --languages FR,NL,CS
+
+# Bilingual review mode (EN + target rendered together)
+qsync survey export-translation --survey-id SV_xxx --language FR --compare-to-base
+
+# Enable layout heuristics (reviewer-friendly transforms; default is UI-faithful)
+qsync survey export-translation --survey-id SV_xxx --language FR --compare-to-base --layout-heuristics
+
+# Scenario export: prune provably-irrelevant branches using explicit EDF values
+qsync survey export-translation --survey-id SV_xxx --edf S_VERSION=PROLIFIC --edf DEBUG=F
+
+# Disable Mermaid rendering (keeps .mmd, skips rendering/embed)
+QSYNC_MERMAID_RENDER=0 qsync survey export-translation --survey-id SV_xxx
+
+# Refresh cached survey definition from Qualtrics before exporting (network)
+qsync survey export-translation --survey-id SV_xxx --language FR --refresh
+```
+
+Artifacts are written under `export/` by default:
+- `.docx` translation export
+- `.flow.mmd` Mermaid source
+- `.flow.png` rendered Mermaid image (when enabled)
+
+For a detailed “how to read” guide (question metadata format, logic highlighting, scenario semantics, WebService/EOS rendering, and limitations), see `../features/translation-export.md`.
+
+## 4. Excel schema refresher
+
+Each workbook ships with an `Instructions` sheet regenerated at every `qsync items pull` (or legacy `qsync init`). Highlights:
+
+- **Questions sheet** – 1 row per question; edit `Text_en_MD` or toggle `Text_en_IsHTML`. Use flag columns like `InPre`, `InPost`, `InFollowUp` for custom filtering.
+- **Options sheet** – 1 row per choice/scale point; edit `Label_en_MD` (Markdown) or mark `Label_en_IsHTML`. `MetaComment` conveys ownership (e.g. “Externally managed by recognition script”).
+- **Subitems sheet** – 1 row per matrix row/sub-statement; same Markdown/HTML toggles as Options.
+- **Embedded_Data sheet** – 1 row per embedded field; edit `Value` for defaults. Fields without defaults show `---` and require `qsync apply --allow-dangerous` to stage. `WrittenByQIDs` lists JS writers (map via `survey_js/survey_qid_js_map.csv`).
+- **System sheet** – read-only (timing, display logic metadata). Provided for context.
+
+`qsync preview` only reports differences when Markdown (for non-HTML cells) or normalized HTML actually changes, so formatting tweaks that don’t alter rendered output remain silent.
+
+## 5. Push safeguards (summary)
+
+Before applying/pushing, `qsync` loads the target row from `surveys/inventory.csv` and enforces:
+
+1. **Lock check** – if `locked == TRUE`, abort immediately.
+2. **Live responses** – if `response_count > 0`, require `--force-live`. A warning summarises live/preview counts and prompts for confirmation (unless `--yes`).
+3. **Preview-only responses** – if `response_count == 0` but `preview_count > 0`, wording pushes require `--force-preview` (or `--force-live`). JS pushes merely warn but still ask for confirmation unless `--yes`.
+4. **Stale inventory** – if `generated_at` is older than ~30 min or counts are missing, `qsync` performs a lightweight live check via `GET /surveys/{id}` before trusting zeros.
+
+See `../reference/push-safeguards.md` for the full decision matrix and CLI flags.
+
+## 6. Survey management pointers
+
+- **Survey Master (bulk metadata/options/status edits):** See `survey-master.md` and `../reference/survey-master-fields.md`.
+- **Publish/version/rollback:** See `../reference/cli.md` for the full `qsync survey ...` command surface.
+
+## 7. Tips & troubleshooting
+
+- Always run `qsync survey inventory` (and `qsync items pull`) before editing. This avoids working on stale caches and ensures push safeguards see fresh counts.
+- Use `qsync sync --survey-id SV_xxx` to get a holistic view across items/JS/translations/EOS in one go.
+- If Qualtrics introduces a new QID (e.g. question created in the UI), re-run `qsync items pull` so the workbook includes the new row before editing.
+- When collaborating, commit both the Excel workbook and the corresponding pending/cached artifacts. Reviewers can re-run `qsync items preview` (and/or `qsync sync`) to validate there are no hidden diffs before approving.
+- If `qsync preview` reports duplicate placeholder embedded fields (e.g. “Create New Field or Choose From Dropdown...”), run `qsync survey cleanup-embedded-data --survey-id SV_xxx --apply --publish` to remove the duplicates from SurveyFlow.
