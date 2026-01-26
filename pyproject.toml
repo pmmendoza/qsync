@@ -11,7 +11,6 @@ dependencies = [
   "questionary>=2.0.0",
   "python-docx>=1.2.0",
   "langdetect>=1.0.9",
-  "fasttext-wheel>=0.9.2",
   "rich>=13.0.0",
 ]
 
@@ -21,6 +20,9 @@ completion = [
 ]
 pdf = [
   "weasyprint>=62.0",
+]
+langcheck = [
+  "fasttext-wheel>=0.9.2",
 ]
 
 [project.scripts]

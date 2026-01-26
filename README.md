@@ -4,14 +4,23 @@
 
 This package originated in an internal monorepo; this repository’s goal is to make it work out-of-the-box for a standalone workspace.
 
-## Installation
+## Installation (GitHub for now)
+
+Create and activate a virtualenv, then install from GitHub:
 
 ```bash
-pip install qsync
+python -m venv .venv
+source .venv/bin/activate
 
-# Optional extras
-pip install "qsync[pdf]"          # PDF export support (WeasyPrint)
-pip install "qsync[completion]"   # Shell completion support
+pip install "git+https://github.com/pmmendoza/qsync.git"
+```
+
+Optional extras:
+
+```bash
+pip install "git+https://github.com/pmmendoza/qsync.git#egg=qsync[pdf]"
+pip install "git+https://github.com/pmmendoza/qsync.git#egg=qsync[completion]"
+pip install "git+https://github.com/pmmendoza/qsync.git#egg=qsync[langcheck]"
 ```
 
 ## Quick Start
@@ -67,6 +76,9 @@ qsync items stage --survey-id SV_xxx --yes
 # 4) Push staged changes to Qualtrics (refreshes cache after push)
 qsync items push --survey-id SV_xxx --force-live
 ```
+
+Notes:
+- If a staged items push detects Excel changes, it will prompt to restage; use `--use-pending` to push the staged set as-is.
 
 Typical "js" (Question JavaScript) workflow:
 
@@ -167,6 +179,8 @@ qsync sync --survey-id SV_xxx --yes --pending-action push --force-live
 ```
 
 **Migration note (2026-01-26):** `qsync sync --yes` defaults to `--pending-action abort` when pending exists; use `--pending-action push` (or `discard`) for automation.
+
+**Migration note (2026-01-26):** `qsync sync` skips publishing when all selected dimensions are no-ops (“no changes”), and the push report distinguishes “No changes” from “Successfully pushed”.
 
 Translations + Excel workbook integration:
 

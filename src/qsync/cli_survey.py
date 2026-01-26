@@ -2774,7 +2774,7 @@ def handle_export_responses(args: argparse.Namespace) -> None:
 def handle_export_translation(args: argparse.Namespace) -> None:
     """Export a translation-review document for a survey (DOCX or PDF)."""
 
-    from .terminal_output import error, success
+    from .terminal_output import error, info, success
     from .translation_export import export_survey_to_pdf, export_survey_to_word
     from .interactive_menu import is_interactive
     from .cli import _prompt_for_survey_id_if_needed
@@ -2814,6 +2814,13 @@ def handle_export_translation(args: argparse.Namespace) -> None:
     refresh = bool(getattr(args, "refresh", False))
     layout_heuristics = bool(getattr(args, "layout_heuristics", False))
     format = getattr(args, "format", "docx")
+    flow_trace = bool(getattr(args, "flow_trace", False))
+    flow_trace_cb = None
+    if flow_trace:
+        info("[qsync:export-translation]", "Flow trace enabled (--flow-trace).")
+
+        def flow_trace_cb(message: str) -> None:
+            info("[qsync:export-translation]", f"[trace] {message}")
 
     # Optional rendering language(s)
     render_langs: list[str | None] = []
@@ -2889,6 +2896,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                         refresh=refresh,
                         include_js_strings=not args.skip_js_strings,
                         interactive=interactive,
+                        flow_trace=flow_trace_cb,
                     )
                     paths.append(path)
                 elif fmt == "pdf":
@@ -2904,6 +2912,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                         refresh=refresh,
                         include_js_strings=not args.skip_js_strings,
                         interactive=interactive,
+                        flow_trace=flow_trace_cb,
                     )
                     paths.append(path)
 
@@ -2925,6 +2934,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 refresh=False,
                                 include_js_strings=not args.skip_js_strings,
                                 interactive=interactive,
+                                flow_trace=flow_trace_cb,
                             )
                         )
                     elif fmt == "pdf":
@@ -2941,6 +2951,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 refresh=False,
                                 include_js_strings=not args.skip_js_strings,
                                 interactive=interactive,
+                                flow_trace=flow_trace_cb,
                             )
                         )
     except Exception as e:
@@ -3038,6 +3049,12 @@ def _add_export_translation_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         dest="skip_js_strings",
         help="Skip extracting and displaying user-visible strings from QuestionJS code",
+    )
+    parser.add_argument(
+        "--flow-trace",
+        action="store_true",
+        dest="flow_trace",
+        help="Print flow traversal trace entries (what was dropped and why)",
     )
 
 

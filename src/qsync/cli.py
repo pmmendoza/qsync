@@ -287,6 +287,7 @@ def _push_items_pending_record(
     allow_delete: bool,
     scope_expr: str | None,
     allow_drift: bool,
+    prefer_pending: bool | None,
     workbook_tip: bool,
 ) -> None:
     from .terminal_output import info, warn
@@ -333,6 +334,101 @@ def _push_items_pending_record(
             )
             info(prefix, f"Structural QIDs: {', '.join(structural_qids)}")
         return
+
+    if prefer_pending is True and structural_ops:
+        warn(
+            prefix,
+            "⚠️  Staged structural ops detected; ignoring `--use-pending` and re-staging from Excel.",
+        )
+        prefer_pending = False
+
+    if qids or embedded_fields:
+        from .workbook_resolver import WorkbookResolver
+        from .dimensions.items_core import preview_changes
+
+        resolver = WorkbookResolver()
+        xlsx_path = (
+            Path(record.payload.workbook)
+            if record.payload.workbook
+            else resolver.resolve(survey_id)
+        )
+        workbook_diffs = []
+        if xlsx_path.exists():
+            try:
+                workbook_diffs = preview_changes(
+                    survey_id,
+                    xlsx_path,
+                    scope_expr=scope_expr,
+                    check_drift=False,
+                    annotate_dirty=False,
+                    self_heal_system_columns=False,
+                )
+            except Exception:
+                workbook_diffs = []
+
+        if workbook_diffs:
+            import sys
+
+            decision = prefer_pending
+            if decision is None:
+                if not bool(yes) and sys.stdin.isatty():
+                    print(
+                        f"{prefix} Excel differs from cache and staged changes exist."
+                    )
+                    print("  [1] Use staged changes (ignore Excel)")
+                    print("  [2] Restage from Excel (overwrite pending)")
+                    print("  [3] Abort")
+                    choice = input("Select 1/2/3 [2]: ").strip().lower()
+                    if choice in {"1", "p", "pending"}:
+                        decision = True
+                    elif choice in {"3", "a", "abort"}:
+                        decision = None
+                    else:
+                        decision = False
+                else:
+                    decision = False
+
+            if decision is True:
+                info(prefix, "Using staged changes and ignoring workbook differences.")
+            elif decision is None:
+                info(prefix, "Aborted.")
+                return
+            else:
+                from .dimensions.items import _build_pending_payload_from_workbook
+
+                info(
+                    prefix,
+                    "Excel differs from cache, re-staging from current Excel (overriding stale staging)...",
+                )
+
+                include_qids = (
+                    set(record.payload.qids or [])
+                    if not record.payload.filter_column
+                    and not record.payload.filter_value
+                    and record.payload.qids
+                    else None
+                )
+                rebuilt = _build_pending_payload_from_workbook(
+                    survey_id,
+                    xlsx_path,
+                    scope_expr=scope_expr,
+                    filter_column=getattr(record.payload, "filter_column", None),
+                    filter_value=getattr(record.payload, "filter_value", None),
+                    include_qids=include_qids,
+                    ignore_embedded=not bool(record.payload.embedded_fields),
+                    allow_drift=bool(allow_drift),
+                    interactive=not bool(yes),
+                    existing=record.payload,
+                )
+                if not rebuilt:
+                    warn(prefix, "No stageable changes after staging; clearing.")
+                    clear_pending(survey_id, "items")
+                    return
+                record.payload = rebuilt
+                record.schema_version = 2
+                save_pending(record)
+                qids = list(rebuilt.qids or [])
+                embedded_fields = list(rebuilt.embedded_fields or [])
 
     if structural_ops:
         from .dimensions.items_structural import push_structural_ops
@@ -1012,6 +1108,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--allow-drift",
         action="store_true",
         help="Proceed even if cached survey differs from the live API",
+    )
+    p_items_push.add_argument(
+        "--use-pending",
+        action="store_true",
+        default=None,
+        help="If staged changes exist and Excel differs, push staged changes instead of re-staging from Excel",
     )
 
     # sync command (orchestrator)
@@ -1818,6 +1920,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_trans_check_lang.add_argument(
         "--languages",
         help="Comma-separated language codes to check (e.g., FR,NL,CS).",
+    )
+    p_trans_check_lang.add_argument(
+        "--edf",
+        action="append",
+        dest="edf",
+        help="Scenario filter embedded data (repeatable): KEY=VALUE; restricts checks to reachable flow paths",
     )
     p_trans_check_lang.add_argument(
         "--min-confidence",
@@ -3274,6 +3382,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         allow_delete=bool(getattr(args, "allow_delete", False)),
                         scope_expr=None,
                         allow_drift=False,
+                        prefer_pending=None,
                         workbook_tip=True,
                     )
             return
@@ -3294,6 +3403,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 allow_delete=bool(getattr(args, "allow_delete", False)),
                 scope_expr=getattr(args, "scope", None),
                 allow_drift=bool(getattr(args, "allow_drift", False)),
+                prefer_pending=getattr(args, "use_pending", None),
                 workbook_tip=False,
             )
             return

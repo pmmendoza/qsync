@@ -152,6 +152,7 @@ class DimensionSyncResult:
 
     dimension: str
     success: bool
+    applied_changes: bool = False
     error_message: Optional[str] = None
 
 
@@ -663,11 +664,11 @@ def display_sync_summary_table(summaries: List[SurveySyncSummary]):
         def get_status(dim: str) -> str:
             if dim in summary.dimension_results:
                 result = summary.dimension_results[dim]
-                return (
-                    f"{Colors.GREEN}✓ pushed{Colors.RESET}"
-                    if result.success
-                    else f"{Colors.RED}✗ failed{Colors.RESET}"
-                )
+                if not result.success:
+                    return f"{Colors.RED}✗ failed{Colors.RESET}"
+                if result.applied_changes:
+                    return f"{Colors.GREEN}✓ pushed{Colors.RESET}"
+                return f"{Colors.GREEN}✓ no changes{Colors.RESET}"
             return f"{Colors.DIM}─{Colors.RESET}"
 
         items_status = get_status("items")
@@ -687,7 +688,7 @@ def display_sync_summary_table(summaries: List[SurveySyncSummary]):
         )
 
     print(
-        f"\n{Colors.DIM}Legend: {Colors.GREEN}✓ pushed{Colors.RESET} = synced successfully, {Colors.RED}✗ failed{Colors.RESET} = error, {Colors.DIM}─{Colors.RESET} = skipped{Colors.RESET}"
+        f"\n{Colors.DIM}Legend: {Colors.GREEN}✓ pushed{Colors.RESET} = updated, {Colors.GREEN}✓ no changes{Colors.RESET} = no-op, {Colors.RED}✗ failed{Colors.RESET} = error, {Colors.DIM}─{Colors.RESET} = skipped{Colors.RESET}"
     )
 
 
@@ -1129,7 +1130,7 @@ def sync_dimension(
     skip_publish: bool,
     scope: Optional[ScopeFilter] = None,
     prefer_pending: bool | None = None,
-) -> bool:
+) -> DimensionSyncResult:
     """Sync a single dimension for a survey (push staged changes).
 
     Args:
@@ -1142,7 +1143,7 @@ def sync_dimension(
         scope: Optional scope filter
 
     Returns:
-        True if sync succeeded, False otherwise
+        DimensionSyncResult with success + whether any changes were applied
     """
     from .survey_ref import format_survey_ref
 
@@ -1152,10 +1153,72 @@ def sync_dimension(
     )
     print(f"\n[sync:{dimension}] Pushing {survey_ref}...")
 
+    def _pending_has_changes() -> bool:
+        from .pending_stage import (
+            ItemsPendingPayload,
+            JsPendingPayload,
+            TranslationsPendingPayload,
+            EosPendingPayload,
+            load_pending,
+        )
+
+        pending = load_pending(survey_id, dimension)
+        if pending is None:
+            return False
+
+        payload = getattr(pending, "payload", None)
+        if dimension == "items" and isinstance(payload, ItemsPendingPayload):
+            return bool(
+                list(payload.qids or [])
+                or list(payload.embedded_fields or [])
+                or list(getattr(payload, "structural_ops", None) or [])
+            )
+        if dimension == "js" and isinstance(payload, JsPendingPayload):
+            return bool(list(payload.entries or []))
+        if dimension == "translations" and isinstance(payload, TranslationsPendingPayload):
+            return bool(list(payload.qids or []) or list(payload.metadata_keys or []))
+        if dimension == "eos" and isinstance(payload, EosPendingPayload):
+            return bool(list(payload.operations or []))
+
+        return True
+
+    has_changes_to_apply = _pending_has_changes()
+    if not has_changes_to_apply and dimension == "items":
+        from .workbook_resolver import WorkbookResolver
+        from .dimensions.items_core import preview_changes
+
+        resolver = WorkbookResolver()
+        xlsx_path = resolver.resolve(survey_id)
+        if xlsx_path.exists():
+            scope_expr = scope.expression if scope and scope.expression else None
+            try:
+                has_changes_to_apply = bool(
+                    preview_changes(
+                        survey_id,
+                        xlsx_path,
+                        scope_expr=scope_expr,
+                        check_drift=False,
+                        annotate_dirty=False,
+                        self_heal_system_columns=False,
+                    )
+                )
+            except Exception:
+                has_changes_to_apply = False
+    if not has_changes_to_apply and dimension == "translations":
+        try:
+            has_changes_to_apply = bool(
+                translations_dimension.detect_unstaged_changes(
+                    survey_id,
+                    scope=scope,
+                ).has_changes
+            )
+        except Exception:
+            has_changes_to_apply = False
+
     try:
         # Push staged changes
         if dimension == "items":
-            items_dimension.push(
+            ok = items_dimension.push(
                 survey_id,
                 scope=scope,
                 interactive=interactive,
@@ -1168,7 +1231,7 @@ def sync_dimension(
             )
 
         elif dimension == "js":
-            js_dimension.push(
+            ok = js_dimension.push(
                 survey_id,
                 interactive=interactive,
                 force_live=force_live,
@@ -1179,7 +1242,7 @@ def sync_dimension(
             )
 
         elif dimension == "translations":
-            translations_dimension.push(
+            ok = translations_dimension.push(
                 survey_id,
                 scope=scope,
                 interactive=interactive,
@@ -1192,7 +1255,7 @@ def sync_dimension(
             )
 
         elif dimension == "eos":
-            eos_dimension.push(
+            ok = eos_dimension.push(
                 survey_id,
                 interactive=interactive,
                 force_live=force_live,
@@ -1203,10 +1266,29 @@ def sync_dimension(
             )
         else:
             logger.warning(f"[sync] Unknown dimension: {dimension}")
-            return False
+            return DimensionSyncResult(
+                dimension=dimension,
+                success=False,
+                applied_changes=False,
+                error_message="Unknown dimension",
+            )
+
+        if not ok:
+            print(f"[sync:{dimension}] {Colors.RED}✗{Colors.RESET} Failed")
+            return DimensionSyncResult(
+                dimension=dimension,
+                success=False,
+                applied_changes=False,
+                error_message="Push failed",
+            )
 
         print(f"[sync:{dimension}] {Colors.GREEN}✓{Colors.RESET} Complete")
-        return True
+        return DimensionSyncResult(
+            dimension=dimension,
+            success=True,
+            applied_changes=bool(has_changes_to_apply),
+            error_message=None,
+        )
 
     except SystemExit as e:
         # push_safeguards and other CLI-style helpers may raise SystemExit;
@@ -1214,11 +1296,21 @@ def sync_dimension(
         msg = str(e).strip() or "SystemExit"
         logger.error(f"[sync:{dimension}] SystemExit: {msg}")
         print(f"[sync:{dimension}] {Colors.RED}✗{Colors.RESET} Failed: {msg}")
-        return False
+        return DimensionSyncResult(
+            dimension=dimension,
+            success=False,
+            applied_changes=False,
+            error_message=msg,
+        )
     except Exception as e:
         logger.error(f"[sync:{dimension}] Error syncing dimension: {e}", exc_info=True)
         print(f"[sync:{dimension}] {Colors.RED}✗{Colors.RESET} Failed: {e}")
-        return False
+        return DimensionSyncResult(
+            dimension=dimension,
+            success=False,
+            applied_changes=False,
+            error_message=str(e),
+        )
 
 
 def _summarize_pending_record(dimension: str, pending) -> str:
@@ -1698,7 +1790,7 @@ def _resolve_staged_changes_interactive(
             for dim in safe_order:
                 if dim not in pending:
                     continue
-                ok = sync_dimension(
+                dimension_results[dim] = sync_dimension(
                     survey_id,
                     dim,
                     interactive=True,
@@ -1707,11 +1799,6 @@ def _resolve_staged_changes_interactive(
                     auto_yes=auto_yes,
                     allow_drift=allow_drift,
                     skip_publish=True,  # Suppress per-dimension publish
-                )
-                dimension_results[dim] = DimensionSyncResult(
-                    dimension=dim,
-                    success=ok,
-                    error_message=None if ok else "Push failed",
                 )
 
             # Display push report
@@ -1747,11 +1834,13 @@ def _generate_composite_publish_description(
     from .qualtrics_client import SURVEY_VERSION_DESCRIPTION_MAX_CHARS
 
     successful_dims = [
-        dim for dim, result in dimension_results.items() if result.success
+        dim
+        for dim, result in dimension_results.items()
+        if result.success and result.applied_changes
     ]
 
     if not successful_dims:
-        return "qsync sync (no successful pushes)"
+        return "qsync sync (no changes)"
 
     # Build description parts
     parts = []
@@ -1808,7 +1897,16 @@ def _display_push_report(
         dimension_results: Results from each dimension push
     """
 
-    successful = [dim for dim, res in dimension_results.items() if res.success]
+    pushed = [
+        dim
+        for dim, res in dimension_results.items()
+        if res.success and res.applied_changes
+    ]
+    no_changes = [
+        dim
+        for dim, res in dimension_results.items()
+        if res.success and not res.applied_changes
+    ]
     failed = [
         (dim, res.error_message)
         for dim, res in dimension_results.items()
@@ -1819,9 +1917,16 @@ def _display_push_report(
     print(f"{Colors.DIM}Survey:{Colors.RESET} {survey_ref}")
     print()
 
-    if successful:
+    if pushed:
         print(f"{Colors.GREEN}✓ Successfully pushed:{Colors.RESET}")
-        for dim in successful:
+        for dim in pushed:
+            print(f"  • {dim}")
+
+    if no_changes:
+        if pushed:
+            print()
+        print(f"{Colors.GREEN}✓ No changes:{Colors.RESET}")
+        for dim in no_changes:
             print(f"  • {dim}")
 
     if failed:
@@ -1867,6 +1972,10 @@ def _orchestrated_publish(
     all_succeeded = all(res.success for res in dimension_results.values())
     if not all_succeeded:
         warn("[sync:publish]", "Publishing skipped due to dimension push failures")
+        return None
+
+    if not any(res.applied_changes for res in dimension_results.values()):
+        info("[sync:publish]", "Publishing skipped (no changes were pushed)")
         return None
 
     # Generate composite description
@@ -2190,7 +2299,7 @@ def _sync_dimensions_once(
         )
 
         try:
-            ok = sync_dimension(
+            dimension_results[dimension] = sync_dimension(
                 survey_id,
                 dimension,
                 interactive=interactive,
@@ -2201,11 +2310,6 @@ def _sync_dimensions_once(
                 skip_publish=True,  # Suppress per-dimension publish for orchestrated flow
                 scope=scope,
                 prefer_pending=prefer_pending,
-            )
-            dimension_results[dimension] = DimensionSyncResult(
-                dimension=dimension,
-                success=ok,
-                error_message=None if ok else "Push failed",
             )
         except Exception as e:
             dimension_results[dimension] = DimensionSyncResult(

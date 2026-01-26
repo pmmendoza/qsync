@@ -12,10 +12,16 @@ from urllib.parse import urlencode
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Tuple
 
 from .config import get_client_config, resolve_root
 from .excel_io import EMBEDDED_EMPTY_VALUE, build_embedded_data_rows
+from .flow_traversal import (
+    FlowTraversalHandlers,
+    eval_boolean_expression as _eval_boolean_expression,
+    eval_boolean_expression_with_unasked_selected_false as _eval_boolean_expression_with_unasked_selected_false,
+    walk_flow,
+)
 from .markdown_codec import is_markdown_safe_html, should_treat_as_html
 from .qualtrics_client import (
     load_cached_survey,
@@ -395,6 +401,7 @@ class ExportContent:
     base_language: str
     output_path: Path
     include_js_strings: bool
+    flow_trace: Callable[[str], None] | None
 
 
 def _sanitize_filename(value: str) -> str:
@@ -514,6 +521,7 @@ def _prepare_export_content(
     render_language: str | None = None,
     compare_to_base: bool = False,
     include_js_strings: bool = True,
+    flow_trace: Callable[[str], None] | None = None,
 ) -> ExportContent:
     """Prepare format-agnostic export content from survey payload.
 
@@ -658,6 +666,7 @@ def _prepare_export_content(
         base_language=base_language,
         output_path=output_path,
         include_js_strings=include_js_strings,
+        flow_trace=flow_trace,
     )
 
 
@@ -675,6 +684,7 @@ def export_survey_to_word(
     include_js_strings: bool = True,
     interactive: bool = True,
     skip_preflight: bool = False,
+    flow_trace: Callable[[str], None] | None = None,
 ) -> Path:
     """Export a survey to a Word document for translation validation."""
     if refresh:
@@ -728,6 +738,7 @@ def export_survey_to_word(
         render_language=render_language,
         compare_to_base=compare_to_base,
         include_js_strings=include_js_strings,
+        flow_trace=flow_trace,
     )
 
 
@@ -745,6 +756,7 @@ def export_survey_to_pdf(
     include_js_strings: bool = True,
     interactive: bool = True,
     skip_preflight: bool = False,
+    flow_trace: Callable[[str], None] | None = None,
 ) -> Path:
     """Export a survey to a PDF document for translation validation.
 
@@ -815,6 +827,7 @@ def export_survey_to_pdf(
         render_language=render_language,
         compare_to_base=compare_to_base,
         include_js_strings=include_js_strings,
+        flow_trace=flow_trace,
     )
 
 
@@ -832,6 +845,7 @@ def export_survey_payload_to_pdf(
     render_language: str | None = None,
     compare_to_base: bool = False,
     include_js_strings: bool = True,
+    flow_trace: Callable[[str], None] | None = None,
 ) -> Path:
     """Export a survey payload (already loaded) to PDF.
 
@@ -874,6 +888,7 @@ def export_survey_payload_to_pdf(
         render_language=render_language,
         compare_to_base=compare_to_base,
         include_js_strings=include_js_strings,
+        flow_trace=flow_trace,
     )
 
     # Render to PDF
@@ -957,6 +972,7 @@ def _render_to_docx(content: ExportContent, *, render_mermaid: bool = False) -> 
         compare_to_base=content.compare_to_base,
         translation_ctx=content.translation_ctx,
         include_js_strings=content.include_js_strings,
+        flow_trace=content.flow_trace,
     )
     _add_external_translation_surfaces_section(
         doc,
@@ -985,6 +1001,7 @@ def export_survey_payload_to_word(
     render_language: str | None = None,
     compare_to_base: bool = False,
     include_js_strings: bool = True,
+    flow_trace: Callable[[str], None] | None = None,
 ) -> Path:
     """Export a survey payload (already loaded) to Word.
 
@@ -1006,6 +1023,7 @@ def export_survey_payload_to_word(
         render_language=render_language,
         compare_to_base=compare_to_base,
         include_js_strings=include_js_strings,
+        flow_trace=flow_trace,
     )
 
     # Render to DOCX
@@ -1385,6 +1403,7 @@ def _add_survey_content_section(
     compare_to_base: bool,
     translation_ctx: TranslationRenderContext | None,
     include_js_strings: bool,
+    flow_trace: Callable[[str], None] | None,
 ) -> None:
     doc.add_heading("SURVEY CONTENT (Flow Order)", level=1)
     flow = result.get("SurveyFlow") or {}
@@ -1415,6 +1434,7 @@ def _add_survey_content_section(
         compare_to_base=compare_to_base,
         translation_ctx=translation_ctx,
         include_js_strings=include_js_strings,
+        flow_trace=flow_trace,
         depth=0,
     )
 
@@ -1507,313 +1527,136 @@ def _traverse_flow(
     compare_to_base: bool,
     translation_ctx: TranslationRenderContext | None,
     include_js_strings: bool,
+    flow_trace: Callable[[str], None] | None,
     depth: int,
 ) -> None:
-    for node in flow_list:
-        if not isinstance(node, dict):
-            continue
-        node_type = str(node.get("Type") or "").strip()
+    def on_block(node: dict, depth_level: int) -> None:
+        _add_block(
+            doc,
+            block_id=str(node["ID"]),
+            blocks=blocks,
+            questions=questions,
+            qid_to_js=qid_to_js,
+            active_qids=active_qids,
+            include_html_source=include_html_source,
+            edf_overrides=edf_overrides,
+            asked_qids=asked_qids,
+            layout_heuristics=layout_heuristics,
+            render_language=render_language,
+            compare_to_base=compare_to_base,
+            translation_ctx=translation_ctx,
+            include_js_strings=include_js_strings,
+            depth=depth_level,
+            flow_trace=flow_trace,
+        )
 
-        if node_type in {"Block", "Standard"} and node.get("ID"):
-            _add_block(
+    def on_group(node: dict, depth_level: int) -> None:
+        _add_system_note(
+            doc, f"GROUP: {node.get('Description') or ''}".strip(), depth=depth_level
+        )
+
+    def on_embedded_data(node: dict, depth_level: int) -> None:
+        _render_embedded_data_node(
+            doc, node=node, depth=depth_level, edf_overrides=edf_overrides
+        )
+
+    def on_web_service(node: dict, depth_level: int) -> None:
+        _render_web_service_node(doc, node=node, depth=depth_level)
+
+    def on_randomizer(node: dict, depth_level: int) -> None:
+        _add_system_note(doc, _format_randomizer(node), depth=depth_level)
+
+    def on_branch_open(node: dict, depth_level: int) -> None:
+        cond = _format_logic_blob(
+            node.get("BranchLogic"),
+            questions=questions,
+            translation_ctx=translation_ctx,
+        )
+        _add_logic_line(doc, f"BRANCH: IF {cond}".strip(), depth=depth_level)
+
+    def on_branch_decision(node: dict, decision: bool, reason: str, depth_level: int) -> None:
+        if not flow_trace:
+            return
+        flow_id = str(node.get("FlowID") or "").strip()
+        cond = _format_logic_blob(
+            node.get("BranchLogic"),
+            questions=questions,
+            translation_ctx=translation_ctx,
+        )
+        taken = "THEN" if decision else "ELSE"
+        label = f"FlowID={flow_id}" if flow_id else "FlowID=?"
+        flow_trace(f"[branch:{reason}] {label} -> {taken} | {cond}")
+
+    def on_branch_then(_node: dict, depth_level: int) -> None:
+        _add_logic_line(doc, "THEN:", depth=depth_level)
+
+    def on_branch_else(_node: dict, depth_level: int) -> None:
+        _add_logic_line(doc, "ELSE:", depth=depth_level)
+
+    def on_branch_end(_node: dict, depth_level: int) -> None:
+        _add_logic_line(doc, "END BRANCH", depth=depth_level)
+
+    def on_end_survey(node: dict, depth_level: int) -> None:
+        opts = node.get("Options") or {}
+        term = str(opts.get("SurveyTermination") or "").strip()
+        flow_id = str(node.get("FlowID") or "").strip()
+        lib_id = str(opts.get("EOSMessageLibrary") or "").strip()
+        msg_id = str(opts.get("EOSMessage") or "").strip()
+
+        label = f"END SURVEY: {term}" if term else "END SURVEY"
+        details: list[str] = []
+        if flow_id:
+            details.append(f"FlowID={flow_id}")
+        if lib_id:
+            details.append(f"EOSMessageLibrary={lib_id}")
+        if msg_id:
+            details.append(f"EOSMessage={msg_id}")
+        if details:
+            label = f"{label} ({', '.join(details)})"
+
+        _add_system_note(doc, label, depth=depth_level)
+        if term == "DisplayMessage" and lib_id and msg_id:
+            _render_eos_message_content(
                 doc,
-                block_id=str(node["ID"]),
-                blocks=blocks,
-                questions=questions,
-                qid_to_js=qid_to_js,
-                active_qids=active_qids,
+                library_id=lib_id,
+                message_id=msg_id,
+                flow_id=flow_id,
+                depth=depth_level + 1,
                 include_html_source=include_html_source,
-                edf_overrides=edf_overrides,
-                asked_qids=asked_qids,
                 layout_heuristics=layout_heuristics,
                 render_language=render_language,
                 compare_to_base=compare_to_base,
-                translation_ctx=translation_ctx,
-                include_js_strings=include_js_strings,
-                depth=depth,
-            )
-            continue
-
-        if node_type == "Group":
-            _add_system_note(
-                doc, f"GROUP: {node.get('Description') or ''}".strip(), depth=depth
-            )
-            sub = node.get("Flow")
-            if isinstance(sub, list):
-                _traverse_flow(
-                    doc,
-                    flow_list=sub,
-                    blocks=blocks,
-                    questions=questions,
-                    qid_to_js=qid_to_js,
-                    active_qids=active_qids,
-                    edf_overrides=edf_overrides,
-                    include_html_source=include_html_source,
-                    layout_heuristics=layout_heuristics,
-                    asked_qids=asked_qids,
-                    render_language=render_language,
-                    compare_to_base=compare_to_base,
-                    translation_ctx=translation_ctx,
-                    include_js_strings=include_js_strings,
-                    depth=depth + 1,
-                )
-            continue
-
-        if node_type == "EmbeddedData":
-            _render_embedded_data_node(
-                doc, node=node, depth=depth, edf_overrides=edf_overrides
-            )
-            continue
-
-        if node_type == "WebService":
-            _render_web_service_node(doc, node=node, depth=depth)
-            continue
-
-        if node_type == "BlockRandomizer":
-            _add_system_note(doc, _format_randomizer(node), depth=depth)
-            sub = node.get("Flow")
-            if isinstance(sub, list):
-                _traverse_flow(
-                    doc,
-                    flow_list=sub,
-                    blocks=blocks,
-                    questions=questions,
-                    qid_to_js=qid_to_js,
-                    active_qids=active_qids,
-                    edf_overrides=edf_overrides,
-                    include_html_source=include_html_source,
-                    layout_heuristics=layout_heuristics,
-                    asked_qids=asked_qids,
-                    render_language=render_language,
-                    compare_to_base=compare_to_base,
-                    translation_ctx=translation_ctx,
-                    include_js_strings=include_js_strings,
-                    depth=depth + 1,
-                )
-            continue
-
-        if node_type == "Branch":
-            cond = _format_logic_blob(
-                node.get("BranchLogic"),
-                questions=questions,
-                translation_ctx=translation_ctx,
-            )
-            then_flow = node.get("Flow")
-            else_flow = node.get("ElseFlow")
-            if isinstance(node.get("Then"), list):
-                then_flow = node.get("Then")
-            if isinstance(node.get("Else"), list):
-                else_flow = node.get("Else")
-
-            branch_eval = (
-                _eval_boolean_expression(node.get("BranchLogic"), edf_overrides)
-                if edf_overrides
-                else None
             )
 
-            # When exporting with explicit EDF overrides, a decidable BranchLogic is
-            # effectively "resolved". In that scenario-specific export, hide the
-            # branch annotations and only render the taken path.
-            if edf_overrides and branch_eval is not None:
-                chosen = then_flow if branch_eval is True else else_flow
-                if isinstance(chosen, list) and chosen:
-                    _traverse_flow(
-                        doc,
-                        flow_list=chosen,
-                        blocks=blocks,
-                        questions=questions,
-                        qid_to_js=qid_to_js,
-                        active_qids=active_qids,
-                        edf_overrides=edf_overrides,
-                        include_html_source=include_html_source,
-                        layout_heuristics=layout_heuristics,
-                        asked_qids=asked_qids,
-                        render_language=render_language,
-                        compare_to_base=compare_to_base,
-                        translation_ctx=translation_ctx,
-                        include_js_strings=include_js_strings,
-                        depth=depth,
-                    )
-                continue
-
-            # Scenario pruning improvement: treat "QID is selected" as impossible when
-            # the referenced question hasn't been asked yet in the flow order. This
-            # often occurs in OR conditions like:
-            #   (EDF:S_VERSION does not contain "PROLIFIC") OR (QID56 choice is selected)
-            # When QID56 is not asked under the provided EDF overrides, the OR can
-            # become decidable.
-            if edf_overrides and branch_eval is None and asked_qids is not None:
-                branch_eval2 = _eval_boolean_expression_with_unasked_selected_false(
-                    node.get("BranchLogic"), edf_overrides, asked_qids
-                )
-                if branch_eval2 is not None:
-                    chosen = then_flow if branch_eval2 is True else else_flow
-                    if isinstance(chosen, list) and chosen:
-                        _traverse_flow(
-                            doc,
-                            flow_list=chosen,
-                            blocks=blocks,
-                            questions=questions,
-                            qid_to_js=qid_to_js,
-                            active_qids=active_qids,
-                            edf_overrides=edf_overrides,
-                            include_html_source=include_html_source,
-                            layout_heuristics=layout_heuristics,
-                            asked_qids=asked_qids,
-                            render_language=render_language,
-                            compare_to_base=compare_to_base,
-                            translation_ctx=translation_ctx,
-                            include_js_strings=include_js_strings,
-                            depth=depth,
-                        )
-                    continue
-
-            _add_logic_line(doc, f"BRANCH: IF {cond}".strip(), depth=depth)
-            if branch_eval is True:
-                if isinstance(then_flow, list) and then_flow:
-                    _add_logic_line(doc, "THEN:", depth=depth)
-                    _traverse_flow(
-                        doc,
-                        flow_list=then_flow,
-                        blocks=blocks,
-                        questions=questions,
-                        qid_to_js=qid_to_js,
-                        active_qids=active_qids,
-                        edf_overrides=edf_overrides,
-                        include_html_source=include_html_source,
-                        layout_heuristics=layout_heuristics,
-                        asked_qids=set(asked_qids) if asked_qids is not None else None,
-                        render_language=render_language,
-                        compare_to_base=compare_to_base,
-                        translation_ctx=translation_ctx,
-                        include_js_strings=include_js_strings,
-                        depth=depth + 1,
-                    )
-            elif branch_eval is False:
-                if isinstance(else_flow, list) and else_flow:
-                    _add_logic_line(doc, "ELSE:", depth=depth)
-                    _traverse_flow(
-                        doc,
-                        flow_list=else_flow,
-                        blocks=blocks,
-                        questions=questions,
-                        qid_to_js=qid_to_js,
-                        active_qids=active_qids,
-                        edf_overrides=edf_overrides,
-                        include_html_source=include_html_source,
-                        layout_heuristics=layout_heuristics,
-                        asked_qids=set(asked_qids) if asked_qids is not None else None,
-                        render_language=render_language,
-                        compare_to_base=compare_to_base,
-                        translation_ctx=translation_ctx,
-                        include_js_strings=include_js_strings,
-                        depth=depth + 1,
-                    )
-            else:
-                if isinstance(then_flow, list) and then_flow:
-                    _add_logic_line(doc, "THEN:", depth=depth)
-                    asked_then = set(asked_qids) if asked_qids is not None else None
-                    _traverse_flow(
-                        doc,
-                        flow_list=then_flow,
-                        blocks=blocks,
-                        questions=questions,
-                        qid_to_js=qid_to_js,
-                        active_qids=active_qids,
-                        edf_overrides=edf_overrides,
-                        include_html_source=include_html_source,
-                        layout_heuristics=layout_heuristics,
-                        asked_qids=asked_then,
-                        render_language=render_language,
-                        compare_to_base=compare_to_base,
-                        translation_ctx=translation_ctx,
-                        include_js_strings=include_js_strings,
-                        depth=depth + 1,
-                    )
-                if isinstance(else_flow, list) and else_flow:
-                    _add_logic_line(doc, "ELSE:", depth=depth)
-                    asked_else = set(asked_qids) if asked_qids is not None else None
-                    _traverse_flow(
-                        doc,
-                        flow_list=else_flow,
-                        blocks=blocks,
-                        questions=questions,
-                        qid_to_js=qid_to_js,
-                        active_qids=active_qids,
-                        edf_overrides=edf_overrides,
-                        include_html_source=include_html_source,
-                        layout_heuristics=layout_heuristics,
-                        asked_qids=asked_else,
-                        render_language=render_language,
-                        compare_to_base=compare_to_base,
-                        translation_ctx=translation_ctx,
-                        include_js_strings=include_js_strings,
-                        depth=depth + 1,
-                    )
-                # Over-approximate asked QIDs after an undecidable branch.
-                if asked_qids is not None:
-                    if "asked_then" in locals() and asked_then is not None:
-                        asked_qids.update(asked_then)
-                    if "asked_else" in locals() and asked_else is not None:
-                        asked_qids.update(asked_else)
-            _add_logic_line(doc, "END BRANCH", depth=depth)
-            continue
-
-        if node_type == "EndSurvey":
-            opts = node.get("Options") or {}
-            term = str(opts.get("SurveyTermination") or "").strip()
-            flow_id = str(node.get("FlowID") or "").strip()
-            lib_id = str(opts.get("EOSMessageLibrary") or "").strip()
-            msg_id = str(opts.get("EOSMessage") or "").strip()
-
-            label = f"END SURVEY: {term}" if term else "END SURVEY"
-            details: list[str] = []
-            if flow_id:
-                details.append(f"FlowID={flow_id}")
-            if lib_id:
-                details.append(f"EOSMessageLibrary={lib_id}")
-            if msg_id:
-                details.append(f"EOSMessage={msg_id}")
-            if details:
-                label = f"{label} ({', '.join(details)})"
-
-            _add_system_note(doc, label, depth=depth)
-            if term == "DisplayMessage" and lib_id and msg_id:
-                _render_eos_message_content(
-                    doc,
-                    library_id=lib_id,
-                    message_id=msg_id,
-                    flow_id=flow_id,
-                    depth=depth + 1,
-                    include_html_source=include_html_source,
-                    layout_heuristics=layout_heuristics,
-                    render_language=render_language,
-                    compare_to_base=compare_to_base,
-                )
-            continue
-
-        # Unknown node type: annotate and continue.
+    def on_unknown(node: dict, depth_level: int) -> None:
+        node_type = str(node.get("Type") or "").strip()
         if node_type:
-            _add_system_note(doc, f"FLOW NODE: {node_type}", depth=depth)
-            sub = node.get("Flow")
-            if isinstance(sub, list):
-                _traverse_flow(
-                    doc,
-                    flow_list=sub,
-                    blocks=blocks,
-                    questions=questions,
-                    qid_to_js=qid_to_js,
-                    active_qids=active_qids,
-                    edf_overrides=edf_overrides,
-                    include_html_source=include_html_source,
-                    layout_heuristics=layout_heuristics,
-                    asked_qids=asked_qids,
-                    render_language=render_language,
-                    compare_to_base=compare_to_base,
-                    translation_ctx=translation_ctx,
-                    include_js_strings=include_js_strings,
-                    depth=depth + 1,
-                )
+            _add_system_note(doc, f"FLOW NODE: {node_type}", depth=depth_level)
+
+    handlers = FlowTraversalHandlers(
+        on_block=on_block,
+        on_group=on_group,
+        on_embedded_data=on_embedded_data,
+        on_web_service=on_web_service,
+        on_randomizer=on_randomizer,
+        on_branch_decision=on_branch_decision,
+        on_branch_open=on_branch_open,
+        on_branch_then=on_branch_then,
+        on_branch_else=on_branch_else,
+        on_branch_end=on_branch_end,
+        on_end_survey=on_end_survey,
+        on_unknown=on_unknown,
+    )
+
+    walk_flow(
+        flow_list=flow_list,
+        handlers=handlers,
+        edf_overrides=edf_overrides,
+        asked_qids=asked_qids,
+        depth=depth,
+        eval_branch=_eval_boolean_expression,
+        eval_branch_with_asked=_eval_boolean_expression_with_unasked_selected_false,
+    )
 
 
 def _add_block(
@@ -1832,6 +1675,7 @@ def _add_block(
     compare_to_base: bool,
     translation_ctx: TranslationRenderContext | None,
     include_js_strings: bool,
+    flow_trace: Callable[[str], None] | None,
     depth: int,
 ) -> None:
     block = blocks.get(block_id) or {}
@@ -1868,10 +1712,18 @@ def _add_block(
                 asked_qids=asked_sim,
             )
             if visible is False:
+                if flow_trace:
+                    flow_trace(
+                        f"[display_logic] Block {block_id} hides QID {qid} (display logic false)"
+                    )
                 continue
             render_qids.append(qid)
             asked_sim.add(qid)
         if not render_qids:
+            if flow_trace:
+                flow_trace(
+                    f"[block_drop] Block {block_id} dropped (all questions hidden by display logic)"
+                )
             return
 
     # Block headers should have separation before and after (even without page breaks).
@@ -5263,112 +5115,103 @@ def _traverse_flow_html(
     content: ExportContent,
     asked_qids: set[str] | None,
     depth: int,
+    flow_trace: Callable[[str], None] | None,
 ) -> str:
-    """Traverse SurveyFlow and render to HTML (mirrors DOCX _traverse_flow).
+    """Traverse SurveyFlow and render to HTML (centralized flow helper)."""
+    html_parts: list[str] = []
 
-    This function implements the same flow traversal logic as the DOCX export,
-    rendering blocks, questions, branches, and flow nodes in flow order.
-    """
-    html_parts = []
+    def on_block(node: dict, depth_level: int) -> None:
+        block_html = _render_block_html(
+            block_id=str(node["ID"]),
+            blocks=blocks,
+            questions=questions,
+            content=content,
+            asked_qids=asked_qids,
+            depth=depth_level,
+            flow_trace=flow_trace,
+        )
+        if block_html:
+            html_parts.append(block_html)
 
-    for node in flow_list:
-        if not isinstance(node, dict):
-            continue
+    def on_group(node: dict, depth_level: int) -> None:
+        desc = (node.get("Description") or "").strip()
+        html_parts.append(_render_system_note_html(f"GROUP: {desc}", depth_level))
+
+    def on_embedded_data(node: dict, depth_level: int) -> None:
+        html_parts.append(
+            _render_embedded_data_html(node, content.edf_overrides, depth_level)
+        )
+
+    def on_web_service(node: dict, depth_level: int) -> None:
+        html_parts.append(_render_web_service_html(node, depth_level))
+
+    def on_randomizer(node: dict, depth_level: int) -> None:
+        html_parts.append(_render_randomizer_html(node, depth_level))
+
+    def on_branch_open(node: dict, depth_level: int) -> None:
+        cond = _format_logic_blob(
+            node.get("BranchLogic"),
+            questions=questions,
+            translation_ctx=content.translation_ctx,
+        )
+        html_parts.append(_render_logic_line_html(f"BRANCH: IF {cond}", depth_level))
+
+    def on_branch_decision(node: dict, decision: bool, reason: str, depth_level: int) -> None:
+        if not flow_trace:
+            return
+        flow_id = str(node.get("FlowID") or "").strip()
+        cond = _format_logic_blob(
+            node.get("BranchLogic"),
+            questions=questions,
+            translation_ctx=content.translation_ctx,
+        )
+        taken = "THEN" if decision else "ELSE"
+        label = f"FlowID={flow_id}" if flow_id else "FlowID=?"
+        flow_trace(f"[branch:{reason}] {label} -> {taken} | {cond}")
+
+    def on_branch_then(_node: dict, depth_level: int) -> None:
+        html_parts.append(_render_logic_line_html("THEN:", depth_level))
+
+    def on_branch_else(_node: dict, depth_level: int) -> None:
+        html_parts.append(_render_logic_line_html("ELSE:", depth_level))
+
+    def on_branch_end(_node: dict, depth_level: int) -> None:
+        html_parts.append(_render_logic_line_html("END BRANCH", depth_level))
+
+    def on_end_survey(node: dict, depth_level: int) -> None:
+        html_parts.append(_render_end_survey_html(node, content, depth_level))
+
+    def on_unknown(node: dict, depth_level: int) -> None:
         node_type = str(node.get("Type") or "").strip()
-
-        # Block or Standard node - render the block
-        if node_type in {"Block", "Standard"} and node.get("ID"):
-            block_html = _render_block_html(
-                block_id=str(node["ID"]),
-                blocks=blocks,
-                questions=questions,
-                content=content,
-                asked_qids=asked_qids,
-                depth=depth,
-            )
-            if block_html:
-                html_parts.append(block_html)
-            continue
-
-        # Group node
-        if node_type == "Group":
-            desc = (node.get("Description") or "").strip()
-            html_parts.append(_render_system_note_html(f"GROUP: {desc}", depth))
-            sub = node.get("Flow")
-            if isinstance(sub, list):
-                sub_html = _traverse_flow_html(
-                    flow_list=sub,
-                    blocks=blocks,
-                    questions=questions,
-                    content=content,
-                    asked_qids=asked_qids,
-                    depth=depth + 1,
-                )
-                html_parts.append(sub_html)
-            continue
-
-        # EmbeddedData node
-        if node_type == "EmbeddedData":
-            html_parts.append(
-                _render_embedded_data_html(node, content.edf_overrides, depth)
-            )
-            continue
-
-        # WebService node
-        if node_type == "WebService":
-            html_parts.append(_render_web_service_html(node, depth))
-            continue
-
-        # BlockRandomizer node
-        if node_type == "BlockRandomizer":
-            html_parts.append(_render_randomizer_html(node, depth))
-            sub = node.get("Flow")
-            if isinstance(sub, list):
-                sub_html = _traverse_flow_html(
-                    flow_list=sub,
-                    blocks=blocks,
-                    questions=questions,
-                    content=content,
-                    asked_qids=asked_qids,
-                    depth=depth + 1,
-                )
-                html_parts.append(sub_html)
-            continue
-
-        # Branch node - the most complex
-        if node_type == "Branch":
-            branch_html = _render_branch_html(
-                node=node,
-                blocks=blocks,
-                questions=questions,
-                content=content,
-                asked_qids=asked_qids,
-                depth=depth,
-            )
-            html_parts.append(branch_html)
-            continue
-
-        # EndSurvey node
-        if node_type == "EndSurvey":
-            html_parts.append(_render_end_survey_html(node, content, depth))
-            continue
-
-        # Unknown node type
         if node_type:
             html_parts.append(
-                _render_system_note_html(f"FLOW NODE: {node_type}", depth)
+                _render_system_note_html(f"FLOW NODE: {node_type}", depth_level)
             )
-            sub = node.get("Flow")
-            if isinstance(sub, list):
-                sub_html = _traverse_flow_html(
-                    flow_list=sub,
-                    blocks=blocks,
-                    questions=questions,
-                    content=content,
-                    asked_qids=asked_qids,
-                    depth=depth + 1,
-                )
-                html_parts.append(sub_html)
+
+    handlers = FlowTraversalHandlers(
+        on_block=on_block,
+        on_group=on_group,
+        on_embedded_data=on_embedded_data,
+        on_web_service=on_web_service,
+        on_randomizer=on_randomizer,
+        on_branch_decision=on_branch_decision,
+        on_branch_open=on_branch_open,
+        on_branch_then=on_branch_then,
+        on_branch_else=on_branch_else,
+        on_branch_end=on_branch_end,
+        on_end_survey=on_end_survey,
+        on_unknown=on_unknown,
+    )
+
+    walk_flow(
+        flow_list=flow_list,
+        handlers=handlers,
+        edf_overrides=content.edf_overrides,
+        asked_qids=asked_qids,
+        depth=depth,
+        eval_branch=_eval_boolean_expression,
+        eval_branch_with_asked=_eval_boolean_expression_with_unasked_selected_false,
+    )
 
     return "".join(html_parts)
 
@@ -5381,6 +5224,7 @@ def _render_block_html(
     content: ExportContent,
     asked_qids: set[str] | None,
     depth: int,
+    flow_trace: Callable[[str], None] | None,
 ) -> str:
     """Render a single block with its questions in HTML."""
     block = blocks.get(block_id)
@@ -5417,12 +5261,20 @@ def _render_block_html(
                 asked_qids=asked_sim,
             )
             if visible is False:
+                if flow_trace:
+                    flow_trace(
+                        f"[display_logic] Block {block_id} hides QID {qid} (display logic false)"
+                    )
                 continue
             render_qids.append(qid)
             asked_sim.add(qid)
 
     # If no questions to render after filtering, skip the block
     if not render_qids:
+        if flow_trace and content.edf_overrides:
+            flow_trace(
+                f"[block_drop] Block {block_id} dropped (all questions hidden by display logic)"
+            )
         return ""
 
     # Block header
@@ -5807,103 +5659,6 @@ def _render_randomizer_html(node: dict, depth: int) -> str:
     return _render_system_note_html(text, depth)
 
 
-def _render_branch_html(
-    *,
-    node: dict,
-    blocks: dict,
-    questions: dict,
-    content: ExportContent,
-    asked_qids: set[str] | None,
-    depth: int,
-) -> str:
-    """Render a Branch flow node with IF/THEN/ELSE logic."""
-    cond = _format_logic_blob(
-        node.get("BranchLogic"),
-        questions=questions,
-        translation_ctx=content.translation_ctx,
-    )
-
-    then_flow = node.get("Flow")
-    else_flow = node.get("ElseFlow")
-    if isinstance(node.get("Then"), list):
-        then_flow = node.get("Then")
-    if isinstance(node.get("Else"), list):
-        else_flow = node.get("Else")
-
-    # Evaluate branch if EDF overrides provided
-    branch_eval = None
-    if content.edf_overrides:
-        branch_eval = _eval_boolean_expression(
-            node.get("BranchLogic"), content.edf_overrides
-        )
-
-    # Scenario pruning: render only taken path if decidable
-    if content.edf_overrides and branch_eval is not None:
-        chosen = then_flow if branch_eval is True else else_flow
-        if isinstance(chosen, list) and chosen:
-            return _traverse_flow_html(
-                flow_list=chosen,
-                blocks=blocks,
-                questions=questions,
-                content=content,
-                asked_qids=asked_qids,
-                depth=depth,
-            )
-        return ""
-
-    # Advanced pruning: treat unasked question selections as false
-    if content.edf_overrides and branch_eval is None and asked_qids is not None:
-        branch_eval2 = _eval_boolean_expression_with_unasked_selected_false(
-            node.get("BranchLogic"), content.edf_overrides, asked_qids
-        )
-        if branch_eval2 is not None:
-            chosen = then_flow if branch_eval2 is True else else_flow
-            if isinstance(chosen, list) and chosen:
-                return _traverse_flow_html(
-                    flow_list=chosen,
-                    blocks=blocks,
-                    questions=questions,
-                    content=content,
-                    asked_qids=asked_qids,
-                    depth=depth,
-                )
-            return ""
-
-    # Undecidable branch: show both paths
-    html = _render_logic_line_html(f"BRANCH: IF {cond}", depth)
-
-    if isinstance(then_flow, list) and then_flow:
-        html += _render_logic_line_html("THEN:", depth)
-        asked_then = set(asked_qids) if asked_qids is not None else None
-        html += _traverse_flow_html(
-            flow_list=then_flow,
-            blocks=blocks,
-            questions=questions,
-            content=content,
-            asked_qids=asked_then,
-            depth=depth + 1,
-        )
-        if asked_qids is not None and asked_then is not None:
-            asked_qids.update(asked_then)
-
-    if isinstance(else_flow, list) and else_flow:
-        html += _render_logic_line_html("ELSE:", depth)
-        asked_else = set(asked_qids) if asked_qids is not None else None
-        html += _traverse_flow_html(
-            flow_list=else_flow,
-            blocks=blocks,
-            questions=questions,
-            content=content,
-            asked_qids=asked_else,
-            depth=depth + 1,
-        )
-        if asked_qids is not None and asked_else is not None:
-            asked_qids.update(asked_else)
-
-    html += _render_logic_line_html("END BRANCH", depth)
-    return html
-
-
 def _render_end_survey_html(node: dict, content: ExportContent, depth: int) -> str:
     """Render an EndSurvey flow node with message embedding."""
     opts = node.get("Options") or {}
@@ -6074,6 +5829,7 @@ def _render_survey_content_html(content: ExportContent) -> str:
         content=content,
         asked_qids=asked_qids,
         depth=0,
+        flow_trace=content.flow_trace,
     )
 
     return f"""
@@ -7064,165 +6820,6 @@ def _shrink_table_font(table, *, size_pt: int) -> None:
                     run.font.size = Pt(size_pt)
 
 
-def _eval_boolean_expression(
-    logic: object, edf_overrides: dict[str, str] | None
-) -> bool | None:
-    """Best-effort evaluator for Qualtrics BranchLogic on EmbeddedField expressions.
-
-    Conservative: returns None when unsure; may return True/False when provably decidable.
-    """
-
-    if not edf_overrides:
-        return None
-    if not isinstance(logic, dict):
-        return None
-    if (logic.get("Type") or "") != "BooleanExpression":
-        return None
-    if_block = logic.get("0")
-    if not isinstance(if_block, dict):
-        return None
-    if (if_block.get("Type") or "") != "If":
-        return None
-
-    exprs: list[dict] = []
-    for k, v in if_block.items():
-        if (
-            str(k).isdigit()
-            and isinstance(v, dict)
-            and (v.get("Type") or "") == "Expression"
-        ):
-            exprs.append(v)
-    if not exprs:
-        return None
-
-    results: list[bool | None] = []
-    conj: str | None = None
-    for e in exprs:
-        conj = conj or (e.get("Conjuction") or e.get("Conjunction") or None)
-        results.append(_eval_expression(e, edf_overrides))
-
-    conj_norm = (str(conj or "And")).strip().lower()
-    is_and = conj_norm != "or"
-
-    # If any term is decisively false under AND => whole is false.
-    if is_and and any(r is False for r in results):
-        return False
-    # If any term is decisively true under OR => whole is true.
-    if (not is_and) and any(r is True for r in results):
-        return True
-
-    # If all known and no unknowns, we can decide.
-    if all(r is not None for r in results):
-        if is_and:
-            return all(bool(r) for r in results)
-        return any(bool(r) for r in results)
-
-    # Otherwise conservative.
-    return None
-
-
-def _eval_expression(expr: dict, edf_overrides: dict[str, str]) -> bool | None:
-    if (expr.get("LogicType") or "") != "EmbeddedField":
-        return None
-    left = (expr.get("LeftOperand") or "").strip()
-    op = (expr.get("Operator") or "").strip()
-    right = expr.get("RightOperand") or ""
-    right_s = str(right).strip()
-    if not left or not op:
-        return None
-
-    val = _lookup_edf_value(edf_overrides, left)
-    if val is None:
-        return None
-
-    op_l = op.lower()
-    if op_l == "equalto":
-        return val == right_s
-    if op_l == "notequalto":
-        return val != right_s
-    if op_l == "contains":
-        return right_s in val
-    if op_l == "doesnotcontain":
-        return right_s not in val
-    return None
-
-
-def _eval_boolean_expression_with_unasked_selected_false(
-    logic: object, edf_overrides: dict[str, str], asked_qids: set[str]
-) -> bool | None:
-    """Evaluate a BooleanExpression like `_eval_boolean_expression`, but additionally
-    treats `Operator=Selected` on a question that has not been asked yet as False.
-
-    This is a scenario-export heuristic that uses flow order (asked_qids), and is
-    intentionally conservative: expressions we can't confidently evaluate return None.
-    """
-
-    if not edf_overrides:
-        return None
-    if not isinstance(logic, dict):
-        return None
-    if (logic.get("Type") or "") != "BooleanExpression":
-        return None
-    if_block = logic.get("0")
-    if not isinstance(if_block, dict):
-        return None
-    if (if_block.get("Type") or "") != "If":
-        return None
-
-    exprs: list[dict] = []
-    conj: str | None = None
-    for k, v in if_block.items():
-        if not (str(k).isdigit() and isinstance(v, dict)):
-            continue
-        if (v.get("Type") or "") != "Expression":
-            continue
-        exprs.append(v)
-        conj = conj or (v.get("Conjuction") or v.get("Conjunction") or None)
-    if not exprs:
-        return None
-
-    results: list[bool | None] = []
-    for e in exprs:
-        results.append(
-            _eval_expression_with_unasked_selected_false(e, edf_overrides, asked_qids)
-        )
-
-    conj_norm = (str(conj or "And")).strip().lower()
-    is_and = conj_norm != "or"
-
-    if is_and and any(r is False for r in results):
-        return False
-    if (not is_and) and any(r is True for r in results):
-        return True
-
-    if all(r is not None for r in results):
-        if is_and:
-            return all(bool(r) for r in results)
-        return any(bool(r) for r in results)
-    return None
-
-
-def _eval_expression_with_unasked_selected_false(
-    expr: dict, edf_overrides: dict[str, str], asked_qids: set[str]
-) -> bool | None:
-    logic_type = (expr.get("LogicType") or "").strip()
-    op = (expr.get("Operator") or "").strip()
-
-    if logic_type == "EmbeddedField":
-        return _eval_expression(expr, edf_overrides)
-
-    if logic_type == "Question" and op == "Selected":
-        qid = (
-            expr.get("QuestionID") or expr.get("QuestionIDFromLocator") or ""
-        ).strip()
-        if qid and qid not in asked_qids:
-            # A question not yet asked cannot have a selected choice at this point.
-            return False
-        return None
-
-    return None
-
-
 def _eval_question_display_logic_visibility(
     question: dict,
     *,
@@ -7240,14 +6837,6 @@ def _eval_question_display_logic_visibility(
     return _eval_boolean_expression_with_unasked_selected_false(
         display_logic, edf_overrides, asked_qids
     )
-
-
-def _lookup_edf_value(edf_overrides: dict[str, str], key: str) -> str | None:
-    # Strict matching: do not normalize keys. If survey uses inconsistent EDF keys
-    # (e.g., SVERSION vs S_VERSION), this should be fixed in the survey itself.
-    if key in edf_overrides:
-        return str(edf_overrides[key])
-    return None
 
 
 def _collect_branchlogic_embedded_field_keys(flow_obj: dict) -> set[str]:

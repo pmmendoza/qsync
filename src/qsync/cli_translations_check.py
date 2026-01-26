@@ -35,6 +35,12 @@ from qsync.dimensions.translations_language_blocks import (
     get_base_language,
     list_enabled_languages,
 )
+from qsync.flow_traversal import (
+    FlowTraversalHandlers,
+    eval_boolean_expression_with_unasked_selected_false,
+    flow_order_map,
+    walk_flow,
+)
 from qsync.markdown_codec import html_to_md, normalize_text
 from qsync.qualtrics_client import load_cached_survey
 from qsync.translation_export import _find_copy_object, _parse_js_object_blocks
@@ -97,6 +103,103 @@ _NEUTRAL_BRANDS = {
 _FASTTEXT_MODEL = None
 _FASTTEXT_MODEL_PATH: Path | None = None
 _FASTTEXT_MODEL_ERROR: str | None = None
+
+
+def _eval_question_display_logic_visibility(
+    question: dict,
+    *,
+    questions: dict,
+    edf_overrides: dict[str, str],
+    asked_qids: set[str],
+) -> bool | None:
+    """Return True/False when we can decide if the question is visible, else None."""
+
+    display_logic = question.get("DisplayLogic")
+    if not display_logic:
+        return True
+    if not isinstance(display_logic, dict):
+        return None
+    return eval_boolean_expression_with_unasked_selected_false(
+        display_logic, edf_overrides, asked_qids
+    )
+
+
+def _scenario_qid_order(
+    payload: dict, edf_overrides: dict[str, str] | None
+) -> list[str]:
+    result = payload.get("result", {}) or {}
+    questions = result.get("Questions", {}) or {}
+    blocks = result.get("Blocks", {}) or {}
+    flow = result.get("SurveyFlow", {}) or {}
+    flow_list = flow.get("Flow") or []
+
+    if not isinstance(flow_list, list):
+        return list(flow_order_map(payload).keys())
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    asked_qids: set[str] | None = set() if edf_overrides else None
+
+    def add_qid(qid: str) -> None:
+        if qid in seen:
+            return
+        seen.add(qid)
+        ordered.append(qid)
+
+    def on_block(node: dict, _depth: int) -> None:
+        block_id = str(node.get("ID") or "").strip()
+        if not block_id:
+            return
+        block = blocks.get(block_id) or {}
+        if (block.get("Type") or "").strip() == "Trash":
+            return
+        elements = block.get("BlockElements", []) or []
+        if not isinstance(elements, list):
+            return
+
+        if asked_qids is None:
+            for elem in elements:
+                if not isinstance(elem, dict):
+                    continue
+                if (elem.get("Type") or "") != "Question":
+                    continue
+                qid = elem.get("QuestionID")
+                if qid and qid in questions:
+                    add_qid(str(qid))
+            return
+
+        asked_sim = set(asked_qids)
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            if (elem.get("Type") or "") != "Question":
+                continue
+            qid = elem.get("QuestionID")
+            if not qid or qid not in questions:
+                continue
+            visible = _eval_question_display_logic_visibility(
+                questions.get(qid) or {},
+                questions=questions,
+                edf_overrides=edf_overrides or {},
+                asked_qids=asked_sim,
+            )
+            if visible is False:
+                continue
+            add_qid(str(qid))
+            asked_sim.add(str(qid))
+        asked_qids.update(asked_sim)
+
+    handlers = FlowTraversalHandlers(on_block=on_block)
+    walk_flow(
+        flow_list=flow_list,
+        handlers=handlers,
+        edf_overrides=edf_overrides,
+        asked_qids=asked_qids,
+    )
+
+    if not ordered:
+        return list(flow_order_map(payload).keys())
+    return ordered
 
 
 @dataclass
@@ -307,55 +410,6 @@ def _detector_label() -> str:
     if _FASTTEXT_MODEL_ERROR:
         return f"langdetect ({_FASTTEXT_MODEL_ERROR})"
     return "langdetect"
-
-
-def _flow_order_map(payload: dict) -> dict[str, int]:
-    result = payload.get("result", {})
-    questions = result.get("Questions", {}) or {}
-    blocks = result.get("Blocks", {}) or {}
-    flow = result.get("SurveyFlow", {})
-
-    ordered_block_ids: list[str] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            if node.get("Type") in {"Standard", "Block"} and "ID" in node:
-                bid = str(node["ID"])
-                if bid not in ordered_block_ids:
-                    ordered_block_ids.append(bid)
-            for value in node.values():
-                if isinstance(value, (dict, list)):
-                    walk(value)
-        elif isinstance(node, list):
-            for value in node:
-                if isinstance(value, (dict, list)):
-                    walk(value)
-
-    walk(flow.get("Flow", []))
-
-    ordered_qids: list[str] = []
-    seen = set()
-    for block_id in ordered_block_ids:
-        block = blocks.get(block_id) or {}
-        for elem in block.get("BlockElements", []) or []:
-            if (elem.get("Type") or "") != "Question":
-                continue
-            qid = elem.get("QuestionID")
-            if not qid or qid not in questions:
-                continue
-            if qid in seen:
-                continue
-            seen.add(qid)
-            ordered_qids.append(str(qid))
-
-    for qid in questions.keys():
-        qid_str = str(qid)
-        if qid_str in seen:
-            continue
-        seen.add(qid_str)
-        ordered_qids.append(qid_str)
-
-    return {qid: idx for idx, qid in enumerate(ordered_qids)}
 
 
 def _is_placeholder_text(text: str) -> bool:
@@ -591,6 +645,7 @@ def check_survey_item_translations(
     min_confidence: float,
     min_margin: float,
     skip_meta: bool,
+    allowed_qids: set[str] | None = None,
 ) -> tuple[dict[str, dict[str, list[tuple[str, str, float | None, str]]]], CheckStats]:
     """Check all item translations from survey definition."""
     questions = payload.get("result", {}).get("Questions", {})
@@ -601,6 +656,8 @@ def check_survey_item_translations(
 
     for qid, question in questions.items():
         if not isinstance(question, dict):
+            continue
+        if allowed_qids is not None and qid not in allowed_qids:
             continue
 
         if skip_meta and _is_meta_question(question):
@@ -648,6 +705,7 @@ def check_js_copy_translations(
     allow_single_words: bool,
     min_confidence: float,
     min_margin: float,
+    allowed_qids: set[str] | None = None,
 ) -> tuple[dict[str, dict[str, list[tuple[str, str, float | None, str]]]], CheckStats]:
     """Check JavaScript COPY objects for correct language."""
     questions = payload.get("result", {}).get("Questions", {})
@@ -659,6 +717,8 @@ def check_js_copy_translations(
 
     for qid, question in questions.items():
         if not isinstance(question, dict):
+            continue
+        if allowed_qids is not None and qid not in allowed_qids:
             continue
 
         js_code = question.get("QuestionJS") or question.get("QuestionJSContent")
@@ -810,6 +870,8 @@ def format_check_results(
     dedupe: bool,
     survey_name: str,
     survey_id: str,
+    edf_overrides: dict[str, str] | None = None,
+    allowed_qids: set[str] | None = None,
 ) -> None:
     """Format and print results with color, tables, and grouping.
 
@@ -881,6 +943,14 @@ def format_check_results(
         f"skip_eos={'yes' if skip_eos else 'no'}"
     )
     console.print(f"• Detector: {detector_label}")
+    if edf_overrides:
+        edf_list = ", ".join(
+            [f"{k}={v}" for k, v in sorted(edf_overrides.items())]
+        )
+        scope_count = len(allowed_qids) if allowed_qids is not None else 0
+        console.print(
+            f"• EDF filter: [cyan]{edf_list}[/cyan] (QIDs in scope: {scope_count})"
+        )
     console.print()
 
     # If no issues, we're done
@@ -1056,13 +1126,44 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
                         languages.append(item)
             return languages or None
 
+        def _parse_edf_args(raw: argparse.Namespace) -> dict[str, str] | None:
+            edf_args = getattr(raw, "edf", None) or []
+            if not edf_args:
+                return None
+            parsed: dict[str, str] = {}
+            for raw_item in edf_args:
+                s = str(raw_item or "").strip()
+                if not s:
+                    continue
+                if "=" not in s:
+                    raise ValueError(f"Invalid --edf value (expected KEY=VALUE): {s}")
+                k, v = s.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if not k:
+                    raise ValueError(f"Invalid --edf value (empty key): {s}")
+                parsed[k] = v
+            return parsed or None
+
         cache = load_cached_survey(survey_id)
         payload = cache.payload
         survey_name = payload.get("result", {}).get("SurveyName", survey_id)
 
         explicit_languages = _collect_languages_from_args(args)
         base_language = get_base_language(payload) or "EN"
-        qid_order = _flow_order_map(payload)
+        try:
+            edf_overrides = _parse_edf_args(args)
+        except ValueError as exc:
+            error("[qsync:translations]", str(exc))
+            raise SystemExit(1)
+        scenario_qids = (
+            _scenario_qid_order(payload, edf_overrides) if edf_overrides else None
+        )
+        allowed_qids = set(scenario_qids) if scenario_qids else None
+        if scenario_qids:
+            qid_order = {qid: idx for idx, qid in enumerate(scenario_qids)}
+        else:
+            qid_order = flow_order_map(payload)
         if explicit_languages:
             languages = normalize_language_list(explicit_languages)
         else:
@@ -1090,6 +1191,7 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
             min_confidence=min_confidence,
             min_margin=min_margin,
             skip_meta=skip_meta,
+            allowed_qids=allowed_qids,
         )
 
         if skip_js:
@@ -1104,6 +1206,7 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
                 allow_single_words=allow_single_words,
                 min_confidence=min_confidence,
                 min_margin=min_margin,
+                allowed_qids=allowed_qids,
             )
 
         if skip_eos:
@@ -1142,6 +1245,8 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
             dedupe=dedupe,
             survey_name=survey_name,
             survey_id=survey_id,
+            edf_overrides=edf_overrides,
+            allowed_qids=allowed_qids,
         )
 
     except Exception as e:
