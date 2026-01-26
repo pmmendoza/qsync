@@ -2774,7 +2774,7 @@ def handle_export_responses(args: argparse.Namespace) -> None:
 def handle_export_translation(args: argparse.Namespace) -> None:
     """Export a translation-review document for a survey (DOCX or PDF)."""
 
-    from .terminal_output import error, info, success
+    from .terminal_output import error, info, success, warn
     from .translation_export import export_survey_to_pdf, export_survey_to_word
     from .interactive_menu import is_interactive
     from .cli import _prompt_for_survey_id_if_needed
@@ -2787,6 +2787,8 @@ def handle_export_translation(args: argparse.Namespace) -> None:
     output = getattr(args, "output", None)
     no_html = bool(getattr(args, "no_html", False))
     edf_args = getattr(args, "edf", None) or []
+    edf_preset_names = getattr(args, "edf_preset", None) or []
+    list_edf_presets = bool(getattr(args, "list_edf_presets", False))
     edf_overrides = {}
     for raw in edf_args:
         s = str(raw or "").strip()
@@ -2808,6 +2810,82 @@ def handle_export_translation(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         edf_overrides[k] = v
+
+    def _load_edf_presets_for_survey(
+        survey_id: str,
+    ) -> dict[str, dict[str, str]]:
+        root = resolve_root(required=False) or Path.cwd()
+        preset_path = root / "surveys" / "edf_presets.json"
+        if not preset_path.exists():
+            return {}
+        try:
+            data = json.loads(preset_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            warn(
+                "[qsync:export-translation]",
+                f"Could not read EDF presets ({preset_path}): {exc}",
+            )
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        presets: dict[str, dict[str, str]] = {}
+        for scope_key in ("default", survey_id):
+            bucket = data.get(scope_key)
+            if not isinstance(bucket, dict):
+                continue
+            for name, mapping in bucket.items():
+                if not isinstance(mapping, dict):
+                    continue
+                cleaned = {
+                    str(k): str(v)
+                    for k, v in mapping.items()
+                    if k is not None and v is not None
+                }
+                if cleaned:
+                    presets[str(name)] = cleaned
+        return presets
+
+    if list_edf_presets:
+        presets = _load_edf_presets_for_survey(str(survey_id))
+        if not presets:
+            info(
+                "[qsync:export-translation]",
+                "No EDF presets found. Add surveys/edf_presets.json to define them.",
+            )
+            return
+        info("[qsync:export-translation]", "Available EDF presets:")
+        for name in sorted(presets.keys()):
+            preset_vals = ", ".join(
+                f"{k}={v}" for k, v in sorted(presets[name].items())
+            )
+            info(None, f"  - {name}: {preset_vals}")
+        return
+
+    if edf_preset_names:
+        presets = _load_edf_presets_for_survey(str(survey_id))
+        if not presets:
+            error(
+                "[qsync:export-translation]",
+                "No EDF presets found. Add surveys/edf_presets.json to define them.",
+            )
+            sys.exit(1)
+        for name in edf_preset_names:
+            preset = presets.get(str(name))
+            if not preset:
+                available = ", ".join(sorted(presets.keys()))
+                error(
+                    "[qsync:export-translation]",
+                    f"Unknown --edf-preset {name}. Available: {available}",
+                )
+                sys.exit(1)
+            for key, value in preset.items():
+                if key in edf_overrides:
+                    warn(
+                        "[qsync:export-translation]",
+                        f"EDF preset {name} set {key}={value}, but overridden by --edf {key}={edf_overrides[key]}",
+                    )
+                else:
+                    edf_overrides[key] = value
     smart_name = bool(getattr(args, "smart_name", False))
     do_open = bool(getattr(args, "open", False))
     compare_to_base = bool(getattr(args, "compare_to_base", False))
@@ -3001,6 +3079,18 @@ def _add_export_translation_args(parser: argparse.ArgumentParser) -> None:
         action="append",
         dest="edf",
         help="Scenario filter embedded data (repeatable): KEY=VALUE; drops provably-irrelevant branch paths",
+    )
+    parser.add_argument(
+        "--edf-preset",
+        action="append",
+        dest="edf_preset",
+        help="Named EDF preset from surveys/edf_presets.json (repeatable).",
+    )
+    parser.add_argument(
+        "--list-edf-presets",
+        action="store_true",
+        dest="list_edf_presets",
+        help="List available EDF presets for this survey and exit.",
     )
     parser.add_argument(
         "--language",
@@ -3297,6 +3387,10 @@ def handle_translations_apply(args: argparse.Namespace) -> None:
         "[qsync:translations]",
         f"Pending translations staged for {record.survey_id}: "
         f"{len(staged_qids)} QID(s), {', '.join(staged_langs)}",
+    )
+    info(
+        "[qsync:translations]",
+        f"Pending: surveys/pending/translations/{record.survey_id}.json (schema v{getattr(record, 'schema_version', 1)})",
     )
     success("[qsync:translations]", "Run `qsync translations push` to publish.")
 
@@ -3662,6 +3756,7 @@ def handle_translations_workbook_apply(args: argparse.Namespace) -> None:
 def handle_translations_push(args: argparse.Namespace) -> None:
     from .errors import QsyncValidationError
     from .terminal_output import info, success, warn
+    from .pending_stage import TranslationsPendingPayload, load_pending
     from .translations import (
         preview_translations,
         push_translations,
@@ -3694,6 +3789,13 @@ def handle_translations_push(args: argparse.Namespace) -> None:
     if dry_run:
         success("[qsync:translations]", "Validation complete (no API writes).")
         return
+
+    pending = load_pending(survey_id, "translations")
+    if pending and isinstance(pending.payload, TranslationsPendingPayload):
+        info(
+            "[qsync:translations]",
+            f"Pending: surveys/pending/translations/{survey_id}.json (schema v{getattr(pending, 'schema_version', 1)})",
+        )
 
     if not args.yes:
         lang_label = ", ".join(languages) if languages else "auto"

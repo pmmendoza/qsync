@@ -1799,6 +1799,7 @@ def _resolve_staged_changes_interactive(
                     auto_yes=auto_yes,
                     allow_drift=allow_drift,
                     skip_publish=True,  # Suppress per-dimension publish
+                    prefer_pending=True,
                 )
 
             # Display push report

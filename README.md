@@ -9,23 +9,48 @@ This package originated in an internal monorepo; this repository’s goal is to 
 Create and activate a virtualenv, then install from GitHub:
 
 ```bash
-python -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 
-pip install "git+https://github.com/pmmendoza/qsync.git"
+pip install "qsync @ git+https://github.com/pmmendoza/qsync.git"
 ```
 
 Optional extras:
 
 ```bash
-pip install "git+https://github.com/pmmendoza/qsync.git#egg=qsync[pdf]"
-pip install "git+https://github.com/pmmendoza/qsync.git#egg=qsync[completion]"
-pip install "git+https://github.com/pmmendoza/qsync.git#egg=qsync[langcheck]"
+pip install "qsync[pdf] @ git+https://github.com/pmmendoza/qsync.git"
+pip install "qsync[completion] @ git+https://github.com/pmmendoza/qsync.git"
+pip install "qsync[langcheck] @ git+https://github.com/pmmendoza/qsync.git"
+pip install "qsync[pdf,completion,langcheck] @ git+https://github.com/pmmendoza/qsync.git"
 ```
+
+What these extras do:
+
+- `qsync[completion]` installs `argcomplete` so shell tab‑completion can work.
+  - One-time setup (bash/zsh):
+    ```bash
+    activate-global-python-argcomplete --user
+    ```
+- `qsync[langcheck]` installs the optional `fasttext` detector used by:
+  - `qsync translations check-language`
+  - You must also provide the fastText model file (`lid.176.ftz`), either by:
+    - placing it at `<workspace>/models/lid.176.ftz`, or
+    - setting `QSYNC_FASTTEXT_MODEL=/path/to/lid.176.ftz`
+  - If `fasttext` or the model is missing, qsync falls back to `langdetect`.
+  - When you run `qsync translations check-language` interactively, qsync will prompt
+    to install fasttext and download the model if they’re missing.
+  - For `fasttext-wheel`, Python 3.11/3.12 is recommended; newer Python versions
+    may fail to build native dependencies on macOS without Xcode CLT.
 
 ## Quick Start
 
-Before doing anything else, validate your workspace + credentials:
+First, create the workspace structure and `.env`:
+
+```bash
+qsync onboard
+```
+
+Then validate your workspace + credentials:
 
 ```bash
 qsync doctor

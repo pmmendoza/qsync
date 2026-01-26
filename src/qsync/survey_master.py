@@ -59,13 +59,12 @@ def _load_mapping_csv_text() -> tuple[str, str]:
     """Return (csv_text, source_label) for the survey master mapping."""
 
     mapping_path = _mapping_csv_path()
-    if mapping_path.exists():
-        return mapping_path.read_text(encoding="utf-8"), str(mapping_path)
-
-    if os.environ.get("QSYNC_MAPPING_CSV"):
+    if os.environ.get("QSYNC_MAPPING_CSV") and not mapping_path.exists():
         raise FileNotFoundError(
             f"Mapping CSV not found: {mapping_path} (from QSYNC_MAPPING_CSV)"
         )
+    if mapping_path.exists():
+        return mapping_path.read_text(encoding="utf-8"), str(mapping_path)
 
     packaged = resources.files("qsync").joinpath(
         "resources/qualtrics_api_key_mapping.csv"
@@ -129,6 +128,9 @@ def _derive_endpoint(field_info: Dict[str, str]) -> str:
 def _compute_schema_version() -> str:
     """Compute schema version hash from mapping CSV."""
     try:
+        mapping_path = _mapping_csv_path()
+        if not mapping_path.exists() and not os.environ.get("QSYNC_MAPPING_CSV"):
+            return "unknown"
         csv_text, _source = _load_mapping_csv_text()
         csv_hash = hashlib.md5(csv_text.encode("utf-8")).hexdigest()[:8]
     except Exception:

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 _ERROR_DOCS_URL_CANDIDATES = (
-    "docs/troubleshooting.md",
+    "appendices/logging_guide.md#troubleshooting",
     "packages/qsync/docs/troubleshooting.md",
 )
 
@@ -40,8 +40,12 @@ def get_docs_url(*_args: Any, **_kwargs: Any) -> str:
         return override
 
     for candidate in _ERROR_DOCS_URL_CANDIDATES:
+        if "#" in candidate:
+            path = candidate.split("#", 1)[0]
+        else:
+            path = candidate
         try:
-            if Path(candidate).exists():
+            if Path(path).exists():
                 return candidate
         except Exception:
             continue

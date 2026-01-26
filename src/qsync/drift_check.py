@@ -482,6 +482,13 @@ def enforce_no_drift(
     report = check_drift(survey_id, dimension, interactive=interactive, context=context)
 
     if not report.has_drift:
+        from .terminal_output import info, warn
+
+        prefix = f"[qsync:{dimension}]"
+        if report.summary.startswith("Unable to check drift:"):
+            warn(prefix, report.summary)
+        else:
+            info(prefix, f"Drift: none ({report.summary})")
         return report
 
     # Drift detected
@@ -680,11 +687,11 @@ def _check_translations_drift(
 
 
 def _check_eos_drift(survey_id: str, *, context: dict | None = None) -> DriftReport:
-    from .eos_messages import (
+    from .dimensions.eos_core import (
         _coerce_result_payload,
         extract_eos_message_refs,
+        _latest_backup_result,
         message_dir,
-        read_library_message_from_disk,
     )
     from .api_push import send_api_request
     from .config import get_client_config
@@ -721,10 +728,12 @@ def _check_eos_drift(survey_id: str, *, context: dict | None = None) -> DriftRep
     drifted = 0
 
     for ref in refs:
-        disk = read_library_message_from_disk(ref.library_id, ref.message_id)
-        if disk is None:
+        baseline = _latest_backup_result(ref.library_id, ref.message_id)
+        if baseline is None:
             diff_lines.append(f"=== eos:{ref.library_id}/{ref.message_id} ===")
-            diff_lines.append("local message missing on disk")
+            diff_lines.append(
+                "no baseline snapshot found on disk (missing backups/*.json); run `qsync eos pull` first"
+            )
             total_changed += 1
             drifted += 1
             continue
@@ -739,21 +748,21 @@ def _check_eos_drift(survey_id: str, *, context: dict | None = None) -> DriftRep
             timeout=60,
         )
         live = _coerce_result_payload(live_resp.json())
-        disk_json = json.dumps(disk, indent=2, sort_keys=True)
+        baseline_json = json.dumps(baseline, indent=2, sort_keys=True)
         live_json = json.dumps(live, indent=2, sort_keys=True)
-        if disk_json == live_json:
+        if baseline_json == live_json:
             continue
         drifted += 1
         diff_lines.append(f"=== eos:{ref.library_id}/{ref.message_id} ===")
         local_dir = message_dir(ref.library_id, ref.message_id)
         diff_lines.append(
-            f"context: local={local_dir}/messages/*.html, remote=Qualtrics live message"
+            f"context: baseline={local_dir}/backups/*.json, remote=Qualtrics live message"
         )
         msg_diff = list(
             difflib.unified_diff(
-                disk_json.splitlines(keepends=False),
+                baseline_json.splitlines(keepends=False),
                 live_json.splitlines(keepends=False),
-                fromfile="local [disk]",
+                fromfile="baseline [backup]",
                 tofile="remote [Qualtrics]",
                 lineterm="",
             )

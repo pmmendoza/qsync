@@ -209,6 +209,9 @@ def colorize_unified_diff_lines(lines: Iterable[str]) -> list[str]:
     For consecutive -/+ pairs (modified lines), highlights the specific
     characters that changed with bold text.
     """
+    if not colors_enabled():
+        return list(lines)
+
     lines_list = list(lines)
     out: list[str] = []
     i = 0

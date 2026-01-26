@@ -1530,6 +1530,7 @@ def _traverse_flow(
     flow_trace: Callable[[str], None] | None,
     depth: int,
 ) -> None:
+    """Render SurveyFlow using the shared flow_traversal helper."""
     def on_block(node: dict, depth_level: int) -> None:
         _add_block(
             doc,

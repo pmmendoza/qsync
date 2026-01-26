@@ -121,21 +121,32 @@ qsync translations check-language --survey-id SV_xxx --languages FR,NL,CS
 
 Defaults and behavior:
 - Uses the cached survey definition (no API writes).
+- Prompts for survey selection if `--survey-id` is omitted (interactive).
 - Strips HTML tags and unescapes `\uXXXX`/JS escapes before detection and display.
 - Treats detection as a binary hypothesis test ("is this in the target language?"), with
   configurable confidence and margin thresholds.
 - Skips empty strings, placeholders, and (optionally) meta/system items.
+- Flags strings identical to base language as **Untranslated** (excluding numeric/low-signal strings).
 
 Useful flags:
 
 ```
 qsync translations check-language --survey-id SV_xxx --languages FR,NL \
   --min-confidence 0.85 --min-margin 0.15 --skip-meta --skip-js
+
+# EDF-scoped checks: only questions reachable under the scenario
+qsync translations check-language --survey-id SV_xxx --edf DEBUG=F
 ```
 
 Notes:
 - Short strings are hard to detect reliably; use `--disallow-single-word` only when needed.
 - The output includes an "uncertain" count for close calls (not shown in the issues table).
+- Results are grouped and ordered by SurveyFlow.
+
+Troubleshooting:
+- If short Likert/choice labels show up frequently, lower `--min-confidence` or allow single words.
+- For EDF-scoped runs, make sure the EDF keys match SurveyFlow BranchLogic spelling exactly.
+- If a string is legitimate English across languages (e.g., brand names), consider adding it to the neutral brand list.
 
 ## Smoke-testing guidance
 

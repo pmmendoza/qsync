@@ -422,3 +422,89 @@ def flow_order_map(payload: dict) -> dict[str, int]:
         ordered_qids.append(qid_str)
 
     return {qid: idx for idx, qid in enumerate(ordered_qids)}
+
+
+def scenario_qid_order(payload: dict, edf_overrides: dict[str, str]) -> list[str]:
+    """Return QIDs reachable under EDF pruning, in flow order.
+
+    Uses flow traversal + DisplayLogic visibility with the same unasked-selected
+    heuristic as export traversal.
+    """
+    result = payload.get("result", {}) or {}
+    questions = result.get("Questions", {}) or {}
+    blocks = result.get("Blocks", {}) or {}
+    flow = result.get("SurveyFlow", {}) or {}
+    flow_list = flow.get("Flow") or []
+
+    if not isinstance(flow_list, list):
+        return list(flow_order_map(payload).keys())
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    asked_qids: set[str] | None = set() if edf_overrides else None
+
+    def add_qid(qid: str) -> None:
+        if qid in seen:
+            return
+        seen.add(qid)
+        ordered.append(qid)
+
+    def _question_visible(question: dict, asked: set[str]) -> bool | None:
+        display_logic = question.get("DisplayLogic")
+        if not display_logic:
+            return True
+        if not isinstance(display_logic, dict):
+            return None
+        return eval_boolean_expression_with_unasked_selected_false(
+            display_logic, edf_overrides, asked
+        )
+
+    def on_block(node: dict, _depth: int) -> None:
+        block_id = str(node.get("ID") or "").strip()
+        if not block_id:
+            return
+        block = blocks.get(block_id) or {}
+        if (block.get("Type") or "").strip() == "Trash":
+            return
+        elements = block.get("BlockElements", []) or []
+        if not isinstance(elements, list):
+            return
+
+        if asked_qids is None:
+            for elem in elements:
+                if not isinstance(elem, dict):
+                    continue
+                if (elem.get("Type") or "") != "Question":
+                    continue
+                qid = elem.get("QuestionID")
+                if qid and qid in questions:
+                    add_qid(str(qid))
+            return
+
+        asked_sim = set(asked_qids)
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            if (elem.get("Type") or "") != "Question":
+                continue
+            qid = elem.get("QuestionID")
+            if not qid or qid not in questions:
+                continue
+            visible = _question_visible(questions.get(qid) or {}, asked_sim)
+            if visible is False:
+                continue
+            add_qid(str(qid))
+            asked_sim.add(str(qid))
+        asked_qids.update(asked_sim)
+
+    handlers = FlowTraversalHandlers(on_block=on_block)
+    walk_flow(
+        flow_list=flow_list,
+        handlers=handlers,
+        edf_overrides=edf_overrides,
+        asked_qids=asked_qids,
+    )
+
+    if not ordered:
+        return list(flow_order_map(payload).keys())
+    return ordered

@@ -18,6 +18,10 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+import importlib
+import json
+import subprocess
+import sys
 from typing import Any
 
 try:
@@ -35,12 +39,7 @@ from qsync.dimensions.translations_language_blocks import (
     get_base_language,
     list_enabled_languages,
 )
-from qsync.flow_traversal import (
-    FlowTraversalHandlers,
-    eval_boolean_expression_with_unasked_selected_false,
-    flow_order_map,
-    walk_flow,
-)
+from qsync.flow_traversal import flow_order_map, scenario_qid_order
 from qsync.markdown_codec import html_to_md, normalize_text
 from qsync.qualtrics_client import load_cached_survey
 from qsync.translation_export import _find_copy_object, _parse_js_object_blocks
@@ -103,103 +102,10 @@ _NEUTRAL_BRANDS = {
 _FASTTEXT_MODEL = None
 _FASTTEXT_MODEL_PATH: Path | None = None
 _FASTTEXT_MODEL_ERROR: str | None = None
+_FASTTEXT_MODEL_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz"
+_FASTTEXT_PROMPT_FILENAME = ".fasttext_setup.json"
 
 
-def _eval_question_display_logic_visibility(
-    question: dict,
-    *,
-    questions: dict,
-    edf_overrides: dict[str, str],
-    asked_qids: set[str],
-) -> bool | None:
-    """Return True/False when we can decide if the question is visible, else None."""
-
-    display_logic = question.get("DisplayLogic")
-    if not display_logic:
-        return True
-    if not isinstance(display_logic, dict):
-        return None
-    return eval_boolean_expression_with_unasked_selected_false(
-        display_logic, edf_overrides, asked_qids
-    )
-
-
-def _scenario_qid_order(
-    payload: dict, edf_overrides: dict[str, str] | None
-) -> list[str]:
-    result = payload.get("result", {}) or {}
-    questions = result.get("Questions", {}) or {}
-    blocks = result.get("Blocks", {}) or {}
-    flow = result.get("SurveyFlow", {}) or {}
-    flow_list = flow.get("Flow") or []
-
-    if not isinstance(flow_list, list):
-        return list(flow_order_map(payload).keys())
-
-    ordered: list[str] = []
-    seen: set[str] = set()
-    asked_qids: set[str] | None = set() if edf_overrides else None
-
-    def add_qid(qid: str) -> None:
-        if qid in seen:
-            return
-        seen.add(qid)
-        ordered.append(qid)
-
-    def on_block(node: dict, _depth: int) -> None:
-        block_id = str(node.get("ID") or "").strip()
-        if not block_id:
-            return
-        block = blocks.get(block_id) or {}
-        if (block.get("Type") or "").strip() == "Trash":
-            return
-        elements = block.get("BlockElements", []) or []
-        if not isinstance(elements, list):
-            return
-
-        if asked_qids is None:
-            for elem in elements:
-                if not isinstance(elem, dict):
-                    continue
-                if (elem.get("Type") or "") != "Question":
-                    continue
-                qid = elem.get("QuestionID")
-                if qid and qid in questions:
-                    add_qid(str(qid))
-            return
-
-        asked_sim = set(asked_qids)
-        for elem in elements:
-            if not isinstance(elem, dict):
-                continue
-            if (elem.get("Type") or "") != "Question":
-                continue
-            qid = elem.get("QuestionID")
-            if not qid or qid not in questions:
-                continue
-            visible = _eval_question_display_logic_visibility(
-                questions.get(qid) or {},
-                questions=questions,
-                edf_overrides=edf_overrides or {},
-                asked_qids=asked_sim,
-            )
-            if visible is False:
-                continue
-            add_qid(str(qid))
-            asked_sim.add(str(qid))
-        asked_qids.update(asked_sim)
-
-    handlers = FlowTraversalHandlers(on_block=on_block)
-    walk_flow(
-        flow_list=flow_list,
-        handlers=handlers,
-        edf_overrides=edf_overrides,
-        asked_qids=asked_qids,
-    )
-
-    if not ordered:
-        return list(flow_order_map(payload).keys())
-    return ordered
 
 
 @dataclass
@@ -208,6 +114,7 @@ class CheckStats:
     skipped: int = 0
     uncertain: int = 0
     issues: int = 0
+    untranslated: int = 0
 
 
 @dataclass
@@ -366,6 +273,110 @@ def _resolve_fasttext_model_path() -> Path | None:
     return None
 
 
+def _fasttext_prompt_state_path(root: Path) -> Path:
+    return root / "surveys" / _FASTTEXT_PROMPT_FILENAME
+
+
+def _load_fasttext_prompt_state(root: Path) -> dict[str, Any]:
+    path = _fasttext_prompt_state_path(root)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_fasttext_prompt_state(root: Path, state: dict[str, Any]) -> None:
+    path = _fasttext_prompt_state_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _install_fasttext_module() -> tuple[bool, str | None]:
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "fasttext-wheel>=0.9.2"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return True, None
+    except subprocess.CalledProcessError as exc:
+        err = exc.stderr.strip() if exc.stderr else str(exc)
+        return False, err
+
+
+def _download_fasttext_model(dest_path: Path) -> tuple[bool, str | None]:
+    try:
+        import requests
+    except Exception as exc:
+        return False, f"requests import failed: {exc}"
+    try:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = dest_path.with_suffix(".tmp")
+        with requests.get(_FASTTEXT_MODEL_URL, stream=True, timeout=60) as resp:
+            resp.raise_for_status()
+            with open(tmp_path, "wb") as handle:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        handle.write(chunk)
+        tmp_path.replace(dest_path)
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _ensure_fasttext_setup(interactive: bool, root: Path, console: Console) -> None:
+    global fasttext
+    if fasttext is not None and _resolve_fasttext_model_path():
+        return
+
+    state = _load_fasttext_prompt_state(root)
+    if state.get("prompted") and state.get("declined"):
+        return
+
+    if not interactive:
+        return
+
+    try:
+        import questionary
+    except Exception:
+        return
+
+    prompt = (
+        "FastText is optional but improves language checks. Install fasttext "
+        + "and download the model now?"
+    )
+    wants_setup = questionary.confirm(prompt, default=False).ask()
+    _write_fasttext_prompt_state(root, {"prompted": True, "declined": not wants_setup})
+    if not wants_setup:
+        return
+
+    console.print("[dim]Installing fasttext-wheel...[/dim]")
+    ok, err = _install_fasttext_module()
+    if not ok:
+        console.print(f"[red]fasttext install failed:[/red] {err}")
+        return
+
+    try:
+        fasttext = importlib.import_module("fasttext")
+    except Exception as exc:
+        console.print(f"[red]fasttext import failed:[/red] {exc}")
+        return
+
+    model_path = root / "models" / "lid.176.ftz"
+    if not model_path.exists():
+        console.print("[dim]Downloading FastText model (lid.176.ftz)...[/dim]")
+        ok, err = _download_fasttext_model(model_path)
+        if not ok:
+            console.print(f"[red]model download failed:[/red] {err}")
+            return
+
+    _load_fasttext_model()
+
+
 def _load_fasttext_model():
     global _FASTTEXT_MODEL, _FASTTEXT_MODEL_PATH, _FASTTEXT_MODEL_ERROR
     if _FASTTEXT_MODEL is not None:
@@ -423,6 +434,33 @@ def _is_placeholder_text(text: str) -> bool:
     if lowered.startswith("click to write the question text"):
         return True
     return False
+
+
+def _is_untranslated(
+    text: str,
+    base_text: str | None,
+    *,
+    allow_single_words: bool,
+) -> bool:
+    if base_text is None:
+        return False
+    normalized = _strip_formatting_to_plain_text(text or "").strip()
+    base_normalized = _strip_formatting_to_plain_text(base_text or "").strip()
+    if not normalized or not base_normalized:
+        return False
+    if _is_placeholder_text(normalized):
+        return False
+    alpha_count, _total_chars, _ratio = _signal_stats(normalized)
+    if alpha_count < 4:
+        return False
+    if _is_numeric_only(normalized):
+        return False
+    if _is_neutral_brand_list(normalized):
+        return False
+    words = _LETTER_WORD_RE.findall(normalized)
+    if allow_single_words and len(words) == 1:
+        return False
+    return normalized.casefold() == base_normalized.casefold()
 
 
 def _is_meta_question(question: dict[str, Any]) -> bool:
@@ -577,7 +615,8 @@ def _extract_strings_from_language_block(
     question: dict[str, Any],
     qid: str,
     lang_code: str,
-) -> list[tuple[str, str, str]]:
+    base_language: str | None,
+) -> list[tuple[str, str, str, str]]:
     """Extract all translated strings from a question's language block.
 
     Args:
@@ -586,9 +625,11 @@ def _extract_strings_from_language_block(
         lang_code: Language code (FR, NL, CS)
 
     Returns:
-        List of (key, text, qid) tuples
+        List of (key, text, base_text, qid) tuples
     """
     results = []
+    base_lang = normalize_language_code(base_language or "")
+    is_base = normalize_language_code(lang_code) == base_lang
     language = question.get("Language", {})
     if not isinstance(language, dict):
         return results
@@ -600,7 +641,10 @@ def _extract_strings_from_language_block(
     # Extract QuestionText
     question_text = lang_block.get("QuestionText")
     if question_text:
-        results.append((f"{qid}_QuestionText", question_text, qid))
+        base_text = None
+        if base_lang and not is_base:
+            base_text = question.get("QuestionText") or ""
+        results.append((f"{qid}_QuestionText", question_text, base_text or "", qid))
 
     # Extract Choices
     choices = lang_block.get("Choices", {})
@@ -608,7 +652,14 @@ def _extract_strings_from_language_block(
         if isinstance(choice_data, dict):
             display = choice_data.get("Display")
             if display:
-                results.append((f"{qid}_Choice_{choice_id}", display, qid))
+                base_text = None
+                if base_lang and not is_base:
+                    base_choice = (question.get("Choices") or {}).get(choice_id) or {}
+                    if isinstance(base_choice, dict):
+                        base_text = base_choice.get("Display") or ""
+                results.append(
+                    (f"{qid}_Choice_{choice_id}", display, base_text or "", qid)
+                )
 
     # Extract Answers (for matrix questions)
     answers = lang_block.get("Answers", {})
@@ -616,7 +667,14 @@ def _extract_strings_from_language_block(
         if isinstance(answer_data, dict):
             display = answer_data.get("Display")
             if display:
-                results.append((f"{qid}_Answer_{answer_id}", display, qid))
+                base_text = None
+                if base_lang and not is_base:
+                    base_answer = (question.get("Answers") or {}).get(answer_id) or {}
+                    if isinstance(base_answer, dict):
+                        base_text = base_answer.get("Display") or ""
+                results.append(
+                    (f"{qid}_Answer_{answer_id}", display, base_text or "", qid)
+                )
 
     # Extract ChoiceGroups
     choice_groups = lang_block.get("ChoiceGroups", {})
@@ -624,7 +682,14 @@ def _extract_strings_from_language_block(
         if isinstance(group_data, dict):
             description = group_data.get("Description")
             if description:
-                results.append((f"{qid}_ChoiceGroup_{group_id}", description, qid))
+                base_text = None
+                if base_lang and not is_base:
+                    base_group = (question.get("ChoiceGroups") or {}).get(group_id) or {}
+                    if isinstance(base_group, dict):
+                        base_text = base_group.get("Description") or ""
+                results.append(
+                    (f"{qid}_ChoiceGroup_{group_id}", description, base_text or "", qid)
+                )
 
     # Extract SubQuestions
     sub_questions = lang_block.get("SubQuestions", {})
@@ -632,7 +697,19 @@ def _extract_strings_from_language_block(
         if isinstance(sub_data, dict):
             description = sub_data.get("Description")
             if description:
-                results.append((f"{qid}_SubQuestion_{sub_id}", description, qid))
+                base_text = None
+                if base_lang and not is_base:
+                    base_sub = (question.get("SubQuestions") or {}).get(sub_id) or {}
+                    if isinstance(base_sub, dict):
+                        base_text = base_sub.get("Description") or ""
+                results.append(
+                    (
+                        f"{qid}_SubQuestion_{sub_id}",
+                        description,
+                        base_text or "",
+                        qid,
+                    )
+                )
 
     return results
 
@@ -646,6 +723,7 @@ def check_survey_item_translations(
     min_margin: float,
     skip_meta: bool,
     allowed_qids: set[str] | None = None,
+    base_language: str | None = None,
 ) -> tuple[dict[str, dict[str, list[tuple[str, str, float | None, str]]]], CheckStats]:
     """Check all item translations from survey definition."""
     questions = payload.get("result", {}).get("Questions", {})
@@ -662,14 +740,18 @@ def check_survey_item_translations(
 
         if skip_meta and _is_meta_question(question):
             for lang in languages:
-                strings = _extract_strings_from_language_block(question, qid, lang)
+                strings = _extract_strings_from_language_block(
+                    question, qid, lang, base_language
+                )
                 stats.skipped += len(strings)
             continue
 
         for lang in languages:
-            strings = _extract_strings_from_language_block(question, qid, lang)
+            strings = _extract_strings_from_language_block(
+                question, qid, lang, base_language
+            )
 
-            for key, text, _ in strings:
+            for key, text, base_text, _ in strings:
                 decision = check_translation_language(
                     text,
                     lang,
@@ -681,6 +763,22 @@ def check_survey_item_translations(
                     stats.skipped += 1
                     continue
                 stats.checked += 1
+                if _is_untranslated(
+                    text,
+                    base_text,
+                    allow_single_words=allow_single_words,
+                ):
+                    stats.untranslated += 1
+                    stats.issues += 1
+                    results[lang][qid].append(
+                        (
+                            key,
+                            decision.normalized,
+                            decision.expected_prob,
+                            "Untranslated",
+                        )
+                    )
+                    continue
                 if decision.status == "uncertain":
                     stats.uncertain += 1
                     continue
@@ -706,6 +804,7 @@ def check_js_copy_translations(
     min_confidence: float,
     min_margin: float,
     allowed_qids: set[str] | None = None,
+    base_language: str | None = None,
 ) -> tuple[dict[str, dict[str, list[tuple[str, str, float | None, str]]]], CheckStats]:
     """Check JavaScript COPY objects for correct language."""
     questions = payload.get("result", {}).get("Questions", {})
@@ -731,6 +830,27 @@ def check_js_copy_translations(
 
         lang_blocks = _parse_js_object_blocks(copy_obj)
 
+        base_lang = normalize_language_code(base_language or "")
+        base_strings: list[str] | None = None
+        if base_lang:
+            base_block = lang_blocks.get(base_lang)
+            if base_block:
+                base_strings = []
+                string_pattern = re.compile(
+                    r'''(?:['"`])([^'"`\\]*(?:\\.[^'"`\\]*)*)(?:['"`])'''
+                )
+                for match in string_pattern.finditer(base_block):
+                    base_text = match.group(1)
+                    base_text = base_text.replace("\\n", "\n")
+                    base_text = base_text.replace("\\t", "\t")
+                    base_text = base_text.replace("\\'", "'")
+                    base_text = base_text.replace('\\"', '"')
+                    base_text = base_text.replace("\\\\", "\\")
+                    base_text = base_text.strip()
+                    if len(base_text) < 3:
+                        continue
+                    base_strings.append(base_text)
+
         for lang in languages:
             block = lang_blocks.get(lang)
             if not block:
@@ -740,6 +860,7 @@ def check_js_copy_translations(
                 r'''(?:['"`])([^'"`\\]*(?:\\.[^'"`\\]*)*)(?:['"`])'''
             )
 
+            strings: list[str] = []
             for match in string_pattern.finditer(block):
                 text = match.group(1)
                 text = text.replace("\\n", "\n")
@@ -748,9 +869,11 @@ def check_js_copy_translations(
                 text = text.replace('\\"', '"')
                 text = text.replace("\\\\", "\\")
                 text = text.strip()
-
                 if len(text) < 3:
                     continue
+                strings.append(text)
+
+            for idx, text in enumerate(strings):
 
                 decision = check_translation_language(
                     text,
@@ -763,6 +886,28 @@ def check_js_copy_translations(
                     stats.skipped += 1
                     continue
                 stats.checked += 1
+                base_text = None
+                if base_lang and normalize_language_code(lang) == base_lang:
+                    base_text = None
+                elif base_strings and idx < len(base_strings):
+                    base_text = base_strings[idx]
+                if _is_untranslated(
+                    text,
+                    base_text,
+                    allow_single_words=allow_single_words,
+                ):
+                    stats.untranslated += 1
+                    stats.issues += 1
+                    key = f"JS:{decision.normalized[:20]}"
+                    results[lang][qid].append(
+                        (
+                            key,
+                            decision.normalized,
+                            decision.expected_prob,
+                            "Untranslated",
+                        )
+                    )
+                    continue
                 if decision.status == "uncertain":
                     stats.uncertain += 1
                     continue
@@ -799,6 +944,7 @@ def check_eos_message_translations(
     allow_single_words: bool,
     min_confidence: float,
     min_margin: float,
+    base_language: str | None = None,
 ) -> tuple[dict[str, list[tuple[str, str, float | None, str]]], CheckStats]:
     """Check EOS (End of Survey) message translations."""
     results: dict[str, list[tuple[str, str, str]]] = {lang: [] for lang in languages}
@@ -807,6 +953,9 @@ def check_eos_message_translations(
     eos = payload.get("result", {}).get("SurveyOptions", {}).get("EndOfSurvey", {})
     if not eos:
         return results, stats
+
+    base_lang = normalize_language_code(base_language or "")
+    base_block = eos.get(base_lang, {}) if base_lang else {}
 
     for lang in languages:
         lang_block = eos.get(lang, {})
@@ -820,6 +969,9 @@ def check_eos_message_translations(
             if field_name == "MessageLibrary" and _looks_like_library_id(message):
                 stats.skipped += 1
                 continue
+            base_message = None
+            if base_lang and normalize_language_code(lang) != base_lang:
+                base_message = (base_block or {}).get(field_name)
 
             decision = check_translation_language(
                 message,
@@ -832,6 +984,23 @@ def check_eos_message_translations(
                 stats.skipped += 1
                 continue
             stats.checked += 1
+            if _is_untranslated(
+                message,
+                base_message,
+                allow_single_words=allow_single_words,
+            ):
+                stats.untranslated += 1
+                stats.issues += 1
+                key = f"EOS_{field_name}"
+                results[lang].append(
+                    (
+                        key,
+                        decision.normalized,
+                        decision.expected_prob,
+                        "Untranslated",
+                    )
+                )
+                continue
             if decision.status == "uncertain":
                 stats.uncertain += 1
                 continue
@@ -904,6 +1073,9 @@ def format_check_results(
     total_checked = items_stats.checked + js_stats.checked + eos_stats.checked
     total_skipped = items_stats.skipped + js_stats.skipped + eos_stats.skipped
     total_uncertain = items_stats.uncertain + js_stats.uncertain + eos_stats.uncertain
+    total_untranslated = (
+        items_stats.untranslated + js_stats.untranslated + eos_stats.untranslated
+    )
     confident_checked = max(total_checked - total_uncertain, 0)
 
     # Header
@@ -929,6 +1101,10 @@ def format_check_results(
         console.print(f"✗ Issues found: [red bold]{total_issues}[/red bold]")
     else:
         console.print(f"✓ Issues found: [green]{total_issues}[/green]")
+    if total_untranslated:
+        console.print(
+            f"• Untranslated (same as base): [yellow]{total_untranslated}[/yellow]"
+        )
     console.print(f"📊 Pass rate (confident): [cyan]{pass_rate:.1f}%[/cyan]")
     console.print(
         f"• Languages: [cyan]{', '.join(languages)}[/cyan] (base={base_language})"
@@ -1048,6 +1224,8 @@ def format_check_results(
                 status = entry["status"]
                 if status == "High Risk":
                     status_cell = Text(status, style="bold red")
+                elif status == "Untranslated":
+                    status_cell = Text(status, style="bold magenta")
                 elif status == "Ambiguous":
                     status_cell = Text(status, style="dim")
                 else:
@@ -1063,6 +1241,8 @@ def format_check_results(
             for _, qid, key, preview, expected, prob_display, status in rows:
                 if status == "High Risk":
                     status_cell = Text(status, style="bold red")
+                elif status == "Untranslated":
+                    status_cell = Text(status, style="bold magenta")
                 elif status == "Ambiguous":
                     status_cell = Text(status, style="dim")
                 else:
@@ -1104,8 +1284,14 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
         args: Command-line arguments with survey_id attribute
     """
     from .terminal_output import error, info
+    from .cli import _prompt_for_survey_id_if_needed
 
-    survey_id = args.survey_id
+    survey_id = _prompt_for_survey_id_if_needed(
+        getattr(args, "survey_id", None),
+        allow_all_surveys=False,
+    )
+    root = resolve_root(required=False) or Path.cwd()
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
 
     info("[qsync:translations]", f"Checking translation languages for survey: {survey_id}")
 
@@ -1145,6 +1331,7 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
                 parsed[k] = v
             return parsed or None
 
+        _ensure_fasttext_setup(interactive=interactive, root=root, console=Console())
         cache = load_cached_survey(survey_id)
         payload = cache.payload
         survey_name = payload.get("result", {}).get("SurveyName", survey_id)
@@ -1157,7 +1344,7 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
             error("[qsync:translations]", str(exc))
             raise SystemExit(1)
         scenario_qids = (
-            _scenario_qid_order(payload, edf_overrides) if edf_overrides else None
+            scenario_qid_order(payload, edf_overrides) if edf_overrides else None
         )
         allowed_qids = set(scenario_qids) if scenario_qids else None
         if scenario_qids:
@@ -1192,6 +1379,7 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
             min_margin=min_margin,
             skip_meta=skip_meta,
             allowed_qids=allowed_qids,
+            base_language=base_language,
         )
 
         if skip_js:
@@ -1207,6 +1395,7 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
                 min_confidence=min_confidence,
                 min_margin=min_margin,
                 allowed_qids=allowed_qids,
+                base_language=base_language,
             )
 
         if skip_eos:
@@ -1221,6 +1410,7 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
                 allow_single_words=allow_single_words,
                 min_confidence=min_confidence,
                 min_margin=min_margin,
+                base_language=base_language,
             )
 
         detector_label = _detector_label()

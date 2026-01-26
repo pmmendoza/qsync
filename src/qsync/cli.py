@@ -306,6 +306,10 @@ def _push_items_pending_record(
             f"No staged changes found for {survey_id}. Run `qsync items stage` first.",
         )
         return
+    info(
+        prefix,
+        f"Using pending schema v{getattr(record, 'schema_version', 1)} from surveys/pending/items/{survey_id}.json",
+    )
 
     qids = list(record.payload.qids or [])
     embedded_fields = list(record.payload.embedded_fields or [])
@@ -760,7 +764,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
     parser = argparse.ArgumentParser(
         prog="qsync",
-        description="Qualtrics sync and survey management for NEWSFLOWS surveys",
+        description=(
+            "Qualtrics sync and survey management for NEWSFLOWS surveys.\n\n"
+            "First-time setup: run `qsync onboard` to create folders and .env."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
         "--root",
@@ -803,6 +811,60 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--check-api",
         action="store_true",
         help="Call GET /whoami to validate credentials and detect datacenter mismatch (requires network).",
+    )
+
+    # onboard
+    p_onboard = subparsers.add_parser(
+        "onboard",
+        help="Interactive workspace setup (folders, .env, gitignore)",
+    )
+    p_onboard.add_argument(
+        "--datacenter",
+        help="Qualtrics datacenter host (e.g., iad1.qualtrics.com)",
+    )
+    p_onboard.add_argument(
+        "--root",
+        type=Path,
+        help="Workspace root directory (overrides current directory).",
+    )
+    p_onboard.add_argument(
+        "--token",
+        help="Qualtrics API token (X-API-TOKEN)",
+    )
+    p_onboard.add_argument(
+        "--skip-gitignore",
+        action="store_true",
+        help="Skip updating .gitignore",
+    )
+    p_onboard.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Run without prompts (uses provided flags and defaults)",
+    )
+    p_onboard.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume onboarding from .qsync/onboard-state.json",
+    )
+    p_onboard.add_argument(
+        "--with-inventory",
+        action="store_true",
+        help="Fetch survey inventory during onboarding",
+    )
+    p_onboard.add_argument(
+        "--with-focal",
+        action="store_true",
+        help="Select focal surveys during onboarding (requires inventory)",
+    )
+    p_onboard.add_argument(
+        "--with-fasttext",
+        action="store_true",
+        help="Install fasttext + download model during onboarding",
+    )
+    p_onboard.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview onboarding actions without writing files",
     )
 
     # compare
@@ -2006,6 +2068,46 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     else:
         set_color_mode(getattr(args, "color", None) or "auto")
 
+    if args.command == "onboard":
+        from .onboarding import run_onboard
+
+        run_onboard(args)
+        return
+
+    # First-run hint: suggest onboarding if .env missing or folders absent (non-onboard).
+    try:
+        root_hint = resolve_root(required=False) or Path.cwd()
+        env_path_hint = resolve_env_path(root=root_hint) or (root_hint / ".env")
+        surveys_hint = root_hint / "surveys"
+        excel_hint = root_hint / "excel"
+        js_hint = root_hint / "survey_js"
+        missing_workspace = not surveys_hint.exists() or not excel_hint.exists() or not js_hint.exists()
+        if args.command not in {"doctor"} and (not Path(env_path_hint).exists() or missing_workspace):
+            from .interactive_menu import confirm, is_interactive
+
+            if is_interactive():
+                wants_onboard = confirm(
+                    "No workspace found. Run `qsync onboard` now?",
+                    default=True,
+                )
+                if wants_onboard:
+                    from .onboarding import run_onboard
+
+                    run_onboard(
+                        argparse.Namespace(
+                            root=getattr(args, "root", None),
+                            datacenter=None,
+                            token=None,
+                            skip_gitignore=False,
+                            non_interactive=False,
+                        )
+                    )
+                    print("✅ Onboarding complete. Re-run your command.")
+                    return
+            print("ℹ️  No workspace found. Run `qsync onboard` to set up this workspace.")
+    except Exception:
+        pass
+
     if args.command == "doctor":
         from .config import ENV_PATH, ROOT, resolve_env_path, resolve_root, load_env
         from .api_push import send_api_request
@@ -2438,7 +2540,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 return
             success(
                 "[qsync:eos]",
-                f"Staged {len(record.payload.operations)} message(s) under surveys/pending/eos/{survey_id}.json",
+                f"Staged {len(record.payload.operations)} message(s) (pending schema v{getattr(record, 'schema_version', 1)})",
+            )
+            info(
+                "[qsync:eos]",
+                f"Pending: surveys/pending/eos/{survey_id}.json (schema v{getattr(record, 'schema_version', 1)})",
             )
             return
 
@@ -2451,6 +2557,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     "No pending EOS record found. Run 'qsync eos stage' first.",
                 )
                 raise SystemExit(2)
+            info(
+                "[qsync:eos]",
+                f"Using pending schema v{getattr(record, 'schema_version', 1)} from surveys/pending/eos/{survey_id}.json",
+            )
             dry_run = bool(getattr(args, "dry_run", False))
             try:
                 pushed = push_eos_messages(
@@ -2703,12 +2813,17 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     survey_id=args.survey_id,
                     dimension="js",
                     payload=JsPendingPayload(entries=entries),
+                    schema_version=2,
                 )
                 save_pending(record)
                 info(
                     "[qsync:js]",
                     f"Staged {len(entries)} QuestionJS block(s): "
                     + ", ".join(entry["qid"] for entry in entries),
+                )
+                info(
+                    "[qsync:js]",
+                    f"Pending: surveys/pending/js/{args.survey_id}.json (schema v{record.schema_version})",
                 )
             else:
                 clear_pending(args.survey_id, "js")
@@ -2823,6 +2938,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     "No staged JS changes found. Run 'qsync js stage' first.",
                 )
                 return
+            info(
+                "[qsync:js]",
+                f"Using pending schema v{getattr(record, 'schema_version', 1)} from surveys/pending/js/{args.survey_id}.json",
+            )
             entries = _filter_entries(record.payload.entries)
             if not entries:
                 info("[qsync:js]", "No staged JS entries match the requested filters.")
@@ -3182,7 +3301,14 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 schema_version=2,
             )
             save_pending(record)
-            info("[qsync:items]", f"Staged {len(payload.qids)} question(s)")
+            info(
+                "[qsync:items]",
+                f"Staged {len(payload.qids)} question(s) (pending schema v{record.schema_version})",
+            )
+            info(
+                "[qsync:items]",
+                f"Pending: surveys/pending/items/{args.survey_id}.json (schema v{record.schema_version})",
+            )
             return
 
         if args.items_command == "inspect":

@@ -307,6 +307,7 @@ def apply_eos_messages(
             survey_id=survey_id,
             dimension="eos",
             payload=payload,
+            schema_version=2,
         )
         save_pending(record)
         return record
