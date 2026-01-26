@@ -124,9 +124,7 @@ def pull_eos_messages(
 
     # Check for drift before pulling
     if check_drift:
-        drift_report = run_drift_check(
-            survey_id, dimension="eos", interactive=True
-        )
+        drift_report = run_drift_check(survey_id, dimension="eos", interactive=True)
         if drift_report.has_drift:
             drift_report.display(interactive=False)
 
@@ -180,9 +178,7 @@ def preview_eos_messages(
 
     # Check for drift before preview
     if check_drift:
-        drift_report = run_drift_check(
-            survey_id, dimension="eos", interactive=True
-        )
+        drift_report = run_drift_check(survey_id, dimension="eos", interactive=True)
         if drift_report.has_drift:
             drift_report.display(interactive=False)
 
@@ -339,7 +335,9 @@ def push_eos_messages(
             raise RuntimeError(
                 f"Expected EOS payload, got {type(record.payload).__name__}"
             )
-        return [(op.library_id, op.message_id) for op in (record.payload.operations or [])]
+        return [
+            (op.library_id, op.message_id) for op in (record.payload.operations or [])
+        ]
 
     enforce_no_drift(
         survey_id=survey_id,

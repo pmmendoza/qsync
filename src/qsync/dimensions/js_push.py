@@ -20,10 +20,7 @@ import csv
 from pathlib import Path
 from typing import Dict, Iterable, List, Set
 
-from ..qualtrics_client import (
-    load_cached_survey,
-    push_questions,
-)
+from ..qualtrics_client import SurveyCache, load_cached_survey, push_questions
 from ..drift_check import enforce_no_drift
 from ..config import resolve_root
 from ..push_safeguards import enforce_push_safeguards, SafeguardConfig
@@ -118,7 +115,7 @@ def _resolve_js_field(question: dict) -> str:
 
 
 def _apply_local_js_entries(
-    survey: "SurveyCache",
+    survey: SurveyCache,
     entries: Iterable[dict[str, str]],
 ) -> set[str]:
     from ..terminal_output import warn

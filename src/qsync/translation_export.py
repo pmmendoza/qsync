@@ -1531,6 +1531,7 @@ def _traverse_flow(
     depth: int,
 ) -> None:
     """Render SurveyFlow using the shared flow_traversal helper."""
+
     def on_block(node: dict, depth_level: int) -> None:
         _add_block(
             doc,
@@ -1575,7 +1576,9 @@ def _traverse_flow(
         )
         _add_logic_line(doc, f"BRANCH: IF {cond}".strip(), depth=depth_level)
 
-    def on_branch_decision(node: dict, decision: bool, reason: str, depth_level: int) -> None:
+    def on_branch_decision(
+        node: dict, decision: bool, reason: str, depth_level: int
+    ) -> None:
         if not flow_trace:
             return
         flow_id = str(node.get("FlowID") or "").strip()
@@ -5157,7 +5160,9 @@ def _traverse_flow_html(
         )
         html_parts.append(_render_logic_line_html(f"BRANCH: IF {cond}", depth_level))
 
-    def on_branch_decision(node: dict, decision: bool, reason: str, depth_level: int) -> None:
+    def on_branch_decision(
+        node: dict, decision: bool, reason: str, depth_level: int
+    ) -> None:
         if not flow_trace:
             return
         flow_id = str(node.get("FlowID") or "").strip()

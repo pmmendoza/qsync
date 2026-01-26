@@ -18,12 +18,18 @@ class TestSyncPendingAction(unittest.TestCase):
             captured["prefer_pending"] = kwargs.get("prefer_pending")
             return None
 
-        with patch.object(
-            orchestrator, "detect_survey_changes", return_value=DummyChanges()
-        ), patch.object(
-            orchestrator, "list_pending", return_value={"items": object()}
-        ), patch.object(
-            orchestrator, "_sync_dimensions_once", side_effect=_fake_sync_dimensions_once
+        with (
+            patch.object(
+                orchestrator, "detect_survey_changes", return_value=DummyChanges()
+            ),
+            patch.object(
+                orchestrator, "list_pending", return_value={"items": object()}
+            ),
+            patch.object(
+                orchestrator,
+                "_sync_dimensions_once",
+                side_effect=_fake_sync_dimensions_once,
+            ),
         ):
             orchestrator.sync_survey(
                 survey_id="SV_TEST",
@@ -43,10 +49,13 @@ class TestSyncPendingAction(unittest.TestCase):
             survey_name = None
             dimensions = {}
 
-        with patch.object(
-            orchestrator, "detect_survey_changes", return_value=DummyChanges()
-        ), patch.object(
-            orchestrator, "list_pending", return_value={"items": object()}
+        with (
+            patch.object(
+                orchestrator, "detect_survey_changes", return_value=DummyChanges()
+            ),
+            patch.object(
+                orchestrator, "list_pending", return_value={"items": object()}
+            ),
         ):
             with self.assertRaises(SystemExit):
                 orchestrator.sync_survey(
@@ -59,4 +68,3 @@ class TestSyncPendingAction(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

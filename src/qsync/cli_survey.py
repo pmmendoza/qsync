@@ -941,9 +941,7 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         )
         return desired
 
-    def _fetch_survey_definition(
-        base_url: str, headers: dict, survey_id: str
-    ) -> dict:
+    def _fetch_survey_definition(base_url: str, headers: dict, survey_id: str) -> dict:
         resp = send_api_request(
             action="qsync.survey.definition.fetch",
             method="GET",
@@ -1156,7 +1154,11 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         target_questions = (target_payload.get("result") or {}).get("Questions") or {}
         updated_qids: list[str] = []
         for qid, target_question in target_questions.items():
-            source_question = source_questions.get(qid) if isinstance(source_questions, dict) else None
+            source_question = (
+                source_questions.get(qid)
+                if isinstance(source_questions, dict)
+                else None
+            )
             if not isinstance(source_question, dict) or not isinstance(
                 target_question, dict
             ):
@@ -1513,7 +1515,9 @@ def handle_inventory(args: argparse.Namespace) -> None:
     """Refresh the Qualtrics survey inventory cache."""
     base, headers = get_client_config()
     quiet = bool(getattr(args, "quiet", False))
-    progress = bool(getattr(args, "progress", False) or getattr(args, "progress_only", False))
+    progress = bool(
+        getattr(args, "progress", False) or getattr(args, "progress_only", False)
+    )
     progress_only = bool(getattr(args, "progress_only", False))
 
     # Parse --survey-id arguments (supports repeated and comma-separated)

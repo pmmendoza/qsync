@@ -1871,7 +1871,9 @@ def push_translations(
                     interactive=interactive,
                 )
                 if not staged:
-                    print("[sync:translations] No stageable changes after staging; skipping.")
+                    print(
+                        "[sync:translations] No stageable changes after staging; skipping."
+                    )
                     return []
                 pending = load_pending(survey_id, "translations")
             else:
@@ -1889,7 +1891,9 @@ def push_translations(
                 interactive=interactive,
             )
             if not staged:
-                print("[sync:translations] No stageable changes after staging; skipping.")
+                print(
+                    "[sync:translations] No stageable changes after staging; skipping."
+                )
                 return []
             pending = load_pending(survey_id, "translations")
     elif not pending:

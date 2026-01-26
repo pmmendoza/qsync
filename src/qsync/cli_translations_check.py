@@ -408,7 +408,9 @@ def _fasttext_predict_safe(model, text: str, *, k: int = 5):
     try:
         import numpy as np
     except Exception as exc:
-        raise RuntimeError(f"numpy is required for fasttext predictions: {exc}") from exc
+        raise RuntimeError(
+            f"numpy is required for fasttext predictions: {exc}"
+        ) from exc
 
     text = _check(text)
     try:
@@ -865,7 +867,7 @@ def check_js_copy_translations(
             if base_block:
                 base_strings = []
                 string_pattern = re.compile(
-                    r'''(?:['"`])([^'"`\\]*(?:\\.[^'"`\\]*)*)(?:['"`])'''
+                    r"""(?:['"`])([^'"`\\]*(?:\\.[^'"`\\]*)*)(?:['"`])"""
                 )
                 for match in string_pattern.finditer(base_block):
                     base_text = match.group(1)
@@ -885,7 +887,7 @@ def check_js_copy_translations(
                 continue
 
             string_pattern = re.compile(
-                r'''(?:['"`])([^'"`\\]*(?:\\.[^'"`\\]*)*)(?:['"`])'''
+                r"""(?:['"`])([^'"`\\]*(?:\\.[^'"`\\]*)*)(?:['"`])"""
             )
 
             strings: list[str] = []
@@ -1120,7 +1122,9 @@ def format_check_results(
     console.print("[bold]Summary:[/bold]")
     console.print(f"✓ Total strings checked: [cyan]{total_checked}[/cyan]")
     if total_skipped:
-        console.print(f"• Skipped (empty/placeholder/meta/single-word): [cyan]{total_skipped}[/cyan]")
+        console.print(
+            f"• Skipped (empty/placeholder/meta/single-word): [cyan]{total_skipped}[/cyan]"
+        )
     if total_uncertain:
         console.print(
             f"• Uncertain (close calls, not shown): [yellow]{total_uncertain}[/yellow]"
@@ -1148,9 +1152,7 @@ def format_check_results(
     )
     console.print(f"• Detector: {detector_label}")
     if edf_overrides:
-        edf_list = ", ".join(
-            [f"{k}={v}" for k, v in sorted(edf_overrides.items())]
-        )
+        edf_list = ", ".join([f"{k}={v}" for k, v in sorted(edf_overrides.items())])
         scope_count = len(allowed_qids) if allowed_qids is not None else 0
         console.print(
             f"• EDF filter: [cyan]{edf_list}[/cyan] (QIDs in scope: {scope_count})"
@@ -1159,7 +1161,9 @@ def format_check_results(
 
     # If no issues, we're done
     if total_issues == 0:
-        console.print("[bold green]✓ All translations are in the correct language![/bold green]")
+        console.print(
+            "[bold green]✓ All translations are in the correct language![/bold green]"
+        )
         console.print()
         console.print(
             "[dim]Note: Single-word strings can be skipped when allowed.[/dim]"
@@ -1280,7 +1284,9 @@ def format_check_results(
         console.print()
 
     # Category breakdown
-    breakdown_table = Table(title="Breakdown by Category", show_header=True, header_style="bold")
+    breakdown_table = Table(
+        title="Breakdown by Category", show_header=True, header_style="bold"
+    )
     breakdown_table.add_column("Category", style="cyan", width=20)
     breakdown_table.add_column("Issues", style="red", width=15)
 
@@ -1321,9 +1327,13 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
     root = resolve_root(required=False) or Path.cwd()
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
 
-    info("[qsync:translations]", f"Checking translation languages for survey: {survey_id}")
+    info(
+        "[qsync:translations]",
+        f"Checking translation languages for survey: {survey_id}",
+    )
 
     try:
+
         def _collect_languages_from_args(raw: argparse.Namespace) -> list[str] | None:
             languages: list[str] = []
             raw_list = getattr(raw, "language", None)
@@ -1411,7 +1421,9 @@ def handle_translations_check_language(args: argparse.Namespace) -> None:
         )
 
         if skip_js:
-            info("[qsync:translations]", "Skipping JavaScript translations (--skip-js).")
+            info(
+                "[qsync:translations]", "Skipping JavaScript translations (--skip-js)."
+            )
             js_results = {lang: defaultdict(list) for lang in languages}
             js_stats = CheckStats()
         else:

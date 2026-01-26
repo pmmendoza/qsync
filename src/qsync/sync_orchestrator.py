@@ -1175,7 +1175,9 @@ def sync_dimension(
             )
         if dimension == "js" and isinstance(payload, JsPendingPayload):
             return bool(list(payload.entries or []))
-        if dimension == "translations" and isinstance(payload, TranslationsPendingPayload):
+        if dimension == "translations" and isinstance(
+            payload, TranslationsPendingPayload
+        ):
             return bool(list(payload.qids or []) or list(payload.metadata_keys or []))
         if dimension == "eos" and isinstance(payload, EosPendingPayload):
             return bool(list(payload.operations or []))

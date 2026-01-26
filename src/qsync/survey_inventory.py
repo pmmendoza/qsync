@@ -534,7 +534,9 @@ def save_focal_snapshot(snapshot: Dict[str, bool]) -> None:
     FOCAL_SNAPSHOT.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
 
 
-def archive_survey_assets(survey_id: str, *, timestamp: str, quiet: bool = False) -> None:
+def archive_survey_assets(
+    survey_id: str, *, timestamp: str, quiet: bool = False
+) -> None:
     """Archive Excel and survey JSON files for a survey losing focal status."""
     files_moved = 0
     if EXCEL_DIR.exists():
@@ -592,7 +594,9 @@ def refresh_inventory(
             from rich.progress import track
 
             console = Console()
-            return track(iterable, description=description, console=console, transient=True)
+            return track(
+                iterable, description=description, console=console, transient=True
+            )
         except Exception:
             return iterable
 
@@ -608,7 +612,9 @@ def refresh_inventory(
     if survey_filter:
         # Targeted refresh: start from existing records, update only specified surveys
         inventory_map = {sid: dict(record) for sid, record in previous_records.items()}
-        for survey_id in _track(survey_filter, description="Refreshing targeted surveys"):
+        for survey_id in _track(
+            survey_filter, description="Refreshing targeted surveys"
+        ):
             try:
                 payload = fetch_survey_payload(base_url, headers, survey_id)
             except requests.HTTPError as exc:
@@ -741,7 +747,9 @@ def refresh_inventory(
         save_focal_snapshot(snapshot_payload)
 
     if warnings and quiet:
-        print(f"[inventory] Completed with {len(warnings)} warning(s). Re-run `qsync survey inventory` for details.")
+        print(
+            f"[inventory] Completed with {len(warnings)} warning(s). Re-run `qsync survey inventory` for details."
+        )
 
     return inventory, changed_records
 

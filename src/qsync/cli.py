@@ -2097,13 +2097,19 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
     # First-run hint: suggest onboarding if .env missing or folders absent (non-onboard).
     try:
+        from .config import resolve_env_path, resolve_root
+
         root_hint = resolve_root(required=False) or Path.cwd()
         env_path_hint = resolve_env_path(root=root_hint) or (root_hint / ".env")
         surveys_hint = root_hint / "surveys"
         excel_hint = root_hint / "excel"
         js_hint = root_hint / "survey_js"
-        missing_workspace = not surveys_hint.exists() or not excel_hint.exists() or not js_hint.exists()
-        if args.command not in {"doctor"} and (not Path(env_path_hint).exists() or missing_workspace):
+        missing_workspace = (
+            not surveys_hint.exists() or not excel_hint.exists() or not js_hint.exists()
+        )
+        if args.command not in {"doctor"} and (
+            not Path(env_path_hint).exists() or missing_workspace
+        ):
             from .interactive_menu import confirm, is_interactive
 
             if is_interactive():
@@ -2125,7 +2131,9 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     )
                     print("✅ Onboarding complete. Re-run your command.")
                     return
-            print("ℹ️  No workspace found. Run `qsync onboard` to set up this workspace.")
+            print(
+                "ℹ️  No workspace found. Run `qsync onboard` to set up this workspace."
+            )
     except Exception:
         pass
 
@@ -2418,7 +2426,9 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         if args.eos_command == "clone-shared":
             header("[qsync:eos]", "Cloning shared EOS messages (rewire SurveyFlow)...")
             if not shared:
-                info("[qsync:eos]", "No shared EOS messages detected; nothing to clone.")
+                info(
+                    "[qsync:eos]", "No shared EOS messages detected; nothing to clone."
+                )
                 return
             if bool(getattr(args, "dry_run", False)):
                 print("[qsync:eos] Shared message(s) that would be cloned:")
@@ -2608,6 +2618,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     return
 
                 from .qualtrics_client import refresh_survey_cache
+
                 try:
                     refresh_survey_cache(survey_id)
                     clear_pending(survey_id, "eos")

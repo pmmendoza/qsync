@@ -112,7 +112,9 @@ def _unique_destination(base: Path) -> Path:
 
 def _archive_workspace_artifacts(root: Path, existing: Dict[str, bool]) -> Path | None:
     artifact_paths = _workspace_artifact_paths(root)
-    to_move = [(label, artifact_paths[label]) for label, present in existing.items() if present]
+    to_move = [
+        (label, artifact_paths[label]) for label, present in existing.items() if present
+    ]
     if not to_move:
         return None
 
@@ -130,7 +132,9 @@ def _archive_workspace_artifacts(root: Path, existing: Dict[str, bool]) -> Path 
 
 def _delete_workspace_artifacts(root: Path, existing: Dict[str, bool]) -> None:
     artifact_paths = _workspace_artifact_paths(root)
-    to_delete = [(label, artifact_paths[label]) for label, present in existing.items() if present]
+    to_delete = [
+        (label, artifact_paths[label]) for label, present in existing.items() if present
+    ]
     for label, path in to_delete:
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
@@ -163,9 +167,7 @@ def _pick_root(default_root: Path) -> Path:
 def _collect_credentials() -> Tuple[str | None, str | None]:
     if not (should_use_questionary() and is_interactive()):
         print(f"Docs: {QUALTRICS_DOC_DATACENTER_ID}")
-        datacenter = input(
-            "Qualtrics datacenter subdomain (example: iad1): "
-        ).strip()
+        datacenter = input("Qualtrics datacenter subdomain (example: iad1): ").strip()
         print(f"Docs: {QUALTRICS_DOC_API_TOKEN}")
         token = input("API token (X-API-TOKEN): ").strip()
         return _normalize_datacenter(datacenter), (token or None)
@@ -185,9 +187,7 @@ def _collect_credentials() -> Tuple[str | None, str | None]:
         return _normalize_datacenter(datacenter), (token or None)
     except Exception:
         print(f"Docs: {QUALTRICS_DOC_DATACENTER_ID}")
-        datacenter = input(
-            "Qualtrics datacenter subdomain (example: iad1): "
-        ).strip()
+        datacenter = input("Qualtrics datacenter subdomain (example: iad1): ").strip()
         print(f"Docs: {QUALTRICS_DOC_API_TOKEN}")
         token = input("API token (X-API-TOKEN): ").strip()
         return _normalize_datacenter(datacenter), (token or None)
@@ -294,9 +294,7 @@ def _read_env(path: Path) -> Dict[str, str]:
     return data
 
 
-def _write_env(
-    path: Path, new_values: Dict[str, str], *, allow_overwrite: bool
-) -> str:
+def _write_env(path: Path, new_values: Dict[str, str], *, allow_overwrite: bool) -> str:
     if not path.exists():
         lines = [f"{k}={v}" for k, v in new_values.items()]
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -443,7 +441,9 @@ def _run_inventory(root: Path, *, dry_run: bool) -> bool:
         return False
 
 
-def _select_focal_surveys(root: Path, *, dry_run: bool, interactive: bool = True) -> bool:
+def _select_focal_surveys(
+    root: Path, *, dry_run: bool, interactive: bool = True
+) -> bool:
     if not interactive:
         print("[qsync] Skipping focal selection in non-interactive mode.")
         return False
@@ -476,7 +476,9 @@ def _select_focal_surveys(root: Path, *, dry_run: bool, interactive: bool = True
         return text in {"1", "true", "t", "yes", "y"}
 
     if not (should_use_questionary() and is_interactive()):
-        raw = input("Enter focal survey IDs (comma-separated), or blank to skip: ").strip()
+        raw = input(
+            "Enter focal survey IDs (comma-separated), or blank to skip: "
+        ).strip()
         if not raw:
             return False
         chosen_ids = {token.strip() for token in raw.split(",") if token.strip()}
@@ -515,7 +517,7 @@ def _select_focal_surveys(root: Path, *, dry_run: bool, interactive: bool = True
         elif "search" in menu.lower():
             query = questionary.text(
                 "Search by name or ID:",
-                instruction="Example: SV_123 or \"customer\"",
+                instruction='Example: SV_123 or "customer"',
                 style=CUSTOM_STYLE,
             ).ask()
             if query:
@@ -623,7 +625,9 @@ def run_onboard(args) -> None:
                         print(f"Archive created: {archive_dir}")
                     existing = _detect_existing_workspace(default_root)
                 elif "delete" in choice.lower():
-                    print("This will permanently delete the workspace artifacts listed above.")
+                    print(
+                        "This will permanently delete the workspace artifacts listed above."
+                    )
                     if not confirm("Proceed with delete?", default=False):
                         print("Setup cancelled.")
                         return
@@ -664,8 +668,12 @@ def run_onboard(args) -> None:
                 ("Focal surveys (optional)", state["focal"]),
                 ("Translations + fasttext (optional)", state["fasttext"]),
             ]
-            unfinished = [_menu_choice_text(label, done) for label, done in task_items if not done]
-            finished = [_menu_choice_text(label, done) for label, done in task_items if done]
+            unfinished = [
+                _menu_choice_text(label, done) for label, done in task_items if not done
+            ]
+            finished = [
+                _menu_choice_text(label, done) for label, done in task_items if done
+            ]
             choices = []
             if unfinished:
                 choices.extend(unfinished)
@@ -753,7 +761,11 @@ def run_onboard(args) -> None:
                 if datacenter and token:
                     env_path = root / ".env"
                     allow_overwrite = False
-                    if env_path.exists() and should_use_questionary() and is_interactive():
+                    if (
+                        env_path.exists()
+                        and should_use_questionary()
+                        and is_interactive()
+                    ):
                         allow_overwrite = confirm(
                             f"{env_path} exists. Overwrite? (No = merge)",
                             default=False,
@@ -764,7 +776,9 @@ def run_onboard(args) -> None:
                             {"QUALTRICS_BASE_URL": datacenter, "X-API-TOKEN": token}
                         )
                     )
-                    print("Security note: .env contains secrets. Ensure it is gitignored.")
+                    print(
+                        "Security note: .env contains secrets. Ensure it is gitignored."
+                    )
                     if should_use_questionary() and is_interactive():
                         if not confirm("Proceed with writing .env?", default=True):
                             print("Skipped .env write.")
@@ -779,7 +793,9 @@ def run_onboard(args) -> None:
                     state["env"] = True
                     print(f".env {result}.")
                     if should_use_questionary() and is_interactive():
-                        if confirm("Validate credentials now? (network)", default=False):
+                        if confirm(
+                            "Validate credentials now? (network)", default=False
+                        ):
                             state["validated"] = _validate_credentials(env_path)
                 else:
                     print("Skipped credentials (missing input).")
@@ -815,7 +831,14 @@ def run_onboard(args) -> None:
 
                         tracked = (
                             subprocess.run(
-                                ["git", "-C", str(root), "ls-files", "--error-unmatch", ".env"],
+                                [
+                                    "git",
+                                    "-C",
+                                    str(root),
+                                    "ls-files",
+                                    "--error-unmatch",
+                                    ".env",
+                                ],
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
                                 check=False,
