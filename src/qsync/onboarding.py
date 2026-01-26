@@ -517,19 +517,7 @@ def run_onboard(args) -> None:
         total_steps = 8
 
         while True:
-            choices = [
-                _menu_choice_text("Workspace root", state["root"] is not None),
-                _menu_choice_text("Create folders", state["folders"]),
-                _menu_choice_text("Credentials + .env", state["env"]),
-                _menu_choice_text("Gitignore", state["gitignore"]),
-                _menu_choice_text("Inventory (optional)", state["inventory"]),
-                _menu_choice_text("Focal surveys (optional)", state["focal"]),
-                _menu_choice_text("Translations + fasttext (optional)", state["fasttext"]),
-                "Finish",
-                "Exit",
-            ]
-            default_choice = None
-            for label, done in [
+            task_items = [
                 ("Workspace root", state["root"] is not None),
                 ("Create folders", state["folders"]),
                 ("Credentials + .env", state["env"]),
@@ -537,10 +525,19 @@ def run_onboard(args) -> None:
                 ("Inventory (optional)", state["inventory"]),
                 ("Focal surveys (optional)", state["focal"]),
                 ("Translations + fasttext (optional)", state["fasttext"]),
-            ]:
-                if not done:
-                    default_choice = _menu_choice_text(label, done)
-                    break
+            ]
+            unfinished = [_menu_choice_text(label, done) for label, done in task_items if not done]
+            finished = [_menu_choice_text(label, done) for label, done in task_items if done]
+            choices = []
+            if unfinished:
+                choices.extend(unfinished)
+            if finished:
+                choices.append("─" * 40)
+                choices.extend(finished)
+            choices.append("─" * 40)
+            choices.append("Finish")
+            choices.append("Exit")
+            default_choice = unfinished[0] if unfinished else None
             choice = select_from_list(
                 "Onboarding steps",
                 choices,
