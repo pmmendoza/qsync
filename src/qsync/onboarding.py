@@ -4,16 +4,38 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 from .interactive_menu import (
+    CUSTOM_STYLE,
     confirm,
     is_interactive,
     select_from_list,
     should_use_questionary,
 )
+
+QUALTRICS_DOC_DATACENTER_ID = "https://www.qualtrics.com/support/integrations/api-integration/finding-qualtrics-ids/#LocatingtheDatacenterID"
+QUALTRICS_DOC_API_TOKEN = "https://www.qualtrics.com/support/integrations/api-integration/overview/#GeneratingAnAPIToken"
+
+
+def _normalize_datacenter(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    text = text.replace("https://", "").replace("http://", "")
+    text = text.split("/", 1)[0].strip()
+    if not text:
+        return None
+    if text.endswith("qualtrics.com"):
+        return text
+    if "." in text:
+        return text
+    return f"{text}.qualtrics.com"
 
 
 def _print_header(title: str) -> None:
@@ -25,8 +47,10 @@ def _print_header(title: str) -> None:
 def _preflight_checklist() -> bool:
     _print_header("qsync onboarding")
     print("You'll need:")
-    print("- Qualtrics datacenter host (e.g., iad1.qualtrics.com)")
+    print("- Qualtrics datacenter subdomain (e.g., iad1)")
+    print(f"  Docs: {QUALTRICS_DOC_DATACENTER_ID}")
     print("- Qualtrics API token (X-API-TOKEN)")
+    print(f"  Docs: {QUALTRICS_DOC_API_TOKEN}")
     print("Estimated time: ~2–3 minutes")
     print()
     if should_use_questionary() and is_interactive():
@@ -48,11 +72,74 @@ def _step_banner(step: int, total: int, title: str) -> None:
 
 def _detect_existing_workspace(root: Path) -> Dict[str, bool]:
     return {
-        "env": (root / ".env").exists(),
+        "env (.env)": (root / ".env").exists(),
+        "state (.qsync)": (root / ".qsync").exists(),
         "surveys": (root / "surveys").exists(),
         "excel": (root / "excel").exists(),
         "survey_js": (root / "survey_js").exists(),
+        "contents": (root / "contents").exists(),
+        "logs": (root / "logs").exists(),
+        "export": (root / "export").exists(),
+        "responses": (root / "responses").exists(),
+        "tmp": (root / "tmp").exists(),
     }
+
+
+def _workspace_artifact_paths(root: Path) -> Dict[str, Path]:
+    return {
+        "env (.env)": root / ".env",
+        "state (.qsync)": root / ".qsync",
+        "surveys": root / "surveys",
+        "excel": root / "excel",
+        "survey_js": root / "survey_js",
+        "contents": root / "contents",
+        "logs": root / "logs",
+        "export": root / "export",
+        "responses": root / "responses",
+        "tmp": root / "tmp",
+    }
+
+
+def _unique_destination(base: Path) -> Path:
+    if not base.exists():
+        return base
+    for i in range(1, 1000):
+        candidate = base.with_name(f"{base.name}.{i}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Unable to choose a unique path under: {base.parent}")
+
+
+def _archive_workspace_artifacts(root: Path, existing: Dict[str, bool]) -> Path | None:
+    artifact_paths = _workspace_artifact_paths(root)
+    to_move = [(label, artifact_paths[label]) for label, present in existing.items() if present]
+    if not to_move:
+        return None
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+    archive_dir = root / ".qsync_archives" / stamp
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    for label, path in to_move:
+        dest = _unique_destination(archive_dir / path.name)
+        shutil.move(str(path), str(dest))
+        print(f"- archived {label}: {path} -> {dest}")
+
+    return archive_dir
+
+
+def _delete_workspace_artifacts(root: Path, existing: Dict[str, bool]) -> None:
+    artifact_paths = _workspace_artifact_paths(root)
+    to_delete = [(label, artifact_paths[label]) for label, present in existing.items() if present]
+    for label, path in to_delete:
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        print(f"- deleted {label}: {path}")
 
 
 def _pick_root(default_root: Path) -> Path:
@@ -75,25 +162,35 @@ def _pick_root(default_root: Path) -> Path:
 
 def _collect_credentials() -> Tuple[str | None, str | None]:
     if not (should_use_questionary() and is_interactive()):
-        datacenter = input("Qualtrics datacenter (host only): ").strip()
+        print(f"Docs: {QUALTRICS_DOC_DATACENTER_ID}")
+        datacenter = input(
+            "Qualtrics datacenter subdomain (example: iad1): "
+        ).strip()
+        print(f"Docs: {QUALTRICS_DOC_API_TOKEN}")
         token = input("API token (X-API-TOKEN): ").strip()
-        return datacenter or None, token or None
+        return _normalize_datacenter(datacenter), (token or None)
     try:
         import questionary
 
+        print(f"Docs: {QUALTRICS_DOC_DATACENTER_ID}")
         datacenter = questionary.text(
-            "Qualtrics datacenter (host only, e.g. iad1.qualtrics.com):",
-            instruction="Host only, no https:// prefix",
+            "Qualtrics datacenter subdomain (example: iad1):",
+            instruction="We will save https://<subdomain>.qualtrics.com",
         ).ask()
+        print(f"Docs: {QUALTRICS_DOC_API_TOKEN}")
         token = questionary.password(
             "API token (X-API-TOKEN):",
             instruction="Paste the token from Qualtrics (hidden input)",
         ).ask()
-        return (datacenter or None), (token or None)
+        return _normalize_datacenter(datacenter), (token or None)
     except Exception:
-        datacenter = input("Qualtrics datacenter (host only): ").strip()
+        print(f"Docs: {QUALTRICS_DOC_DATACENTER_ID}")
+        datacenter = input(
+            "Qualtrics datacenter subdomain (example: iad1): "
+        ).strip()
+        print(f"Docs: {QUALTRICS_DOC_API_TOKEN}")
         token = input("API token (X-API-TOKEN): ").strip()
-        return datacenter or None, token or None
+        return _normalize_datacenter(datacenter), (token or None)
 
 
 def _ensure_dirs(root: Path) -> List[Path]:
@@ -319,10 +416,7 @@ def _inventory_count(root: Path) -> int | None:
 
 
 def _run_inventory(root: Path, *, dry_run: bool) -> bool:
-    from .terminal_output import info
     from .cli_survey import handle_inventory
-
-    info("[qsync:onboard]", "Fetching survey inventory...")
 
     class _Args:
         pass
@@ -335,6 +429,8 @@ def _run_inventory(root: Path, *, dry_run: bool) -> bool:
     args.dry_run = dry_run
     args.survey_ids = None
     args.counts_scope = None
+    args.progress_only = True
+    args.quiet = True
 
     try:
         handle_inventory(args)
@@ -368,6 +464,17 @@ def _select_focal_surveys(root: Path, *, dry_run: bool, interactive: bool = True
     records = list(records_map.values())
     records.sort(key=lambda r: (r.get("lastModified") or ""), reverse=True)
 
+    def _is_focal(record: dict) -> bool:
+        raw = record.get("focal")
+        if isinstance(raw, bool):
+            return raw
+        if raw is None:
+            return False
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        text = str(raw).strip().lower()
+        return text in {"1", "true", "t", "yes", "y"}
+
     if not (should_use_questionary() and is_interactive()):
         raw = input("Enter focal survey IDs (comma-separated), or blank to skip: ").strip()
         if not raw:
@@ -385,19 +492,21 @@ def _select_focal_surveys(root: Path, *, dry_run: bool, interactive: bool = True
                 "✓ Search/filter",
                 "✗ Skip",
             ],
+            style=CUSTOM_STYLE,
         ).ask()
         if not menu or "Skip" in menu:
             return False
 
-        def _choices_from(items: list[dict]) -> list[str]:
-            choices: list[str] = []
+        def _choices_from(items: list[dict]) -> list[questionary.Choice]:
+            choices: list[questionary.Choice] = []
             for record in items:
-                name = record.get("name") or "Untitled"
                 sid = record.get("id")
                 if not sid:
                     continue
-                focal_tag = " (focal)" if record.get("focal") else ""
-                choices.append(f"{sid} - {name}{focal_tag}")
+                name = record.get("name") or "Untitled"
+                focal_tag = " (focal)" if _is_focal(record) else ""
+                title = f"{sid} - {name}{focal_tag}"
+                choices.append(questionary.Choice(title=title, value=sid))
             return choices
 
         target_records = records
@@ -407,6 +516,7 @@ def _select_focal_surveys(root: Path, *, dry_run: bool, interactive: bool = True
             query = questionary.text(
                 "Search by name or ID:",
                 instruction="Example: SV_123 or \"customer\"",
+                style=CUSTOM_STYLE,
             ).ask()
             if query:
                 q = query.strip().lower()
@@ -419,21 +529,35 @@ def _select_focal_surveys(root: Path, *, dry_run: bool, interactive: bool = True
             else:
                 target_records = records
 
-        preselect = [
-            f"{r.get('id')} - {r.get('name') or 'Untitled'} (focal)"
-            if r.get("focal")
-            else f"{r.get('id')} - {r.get('name') or 'Untitled'}"
-            for r in target_records
-            if r.get("id")
+        if not target_records:
+            print("[qsync] No surveys matched your filter.")
+            return False
+
+        default_ids = [
+            r.get("id") for r in target_records if r.get("id") and _is_focal(r)
         ]
-        chosen = questionary.checkbox(
-            "Mark focal surveys (space to toggle):",
-            choices=_choices_from(target_records),
-            default=preselect,
-        ).ask()
+        choice_items = _choices_from(target_records)
+        available_defaults = set()
+        for choice in choice_items:
+            value = getattr(choice, "value", choice)
+            available_defaults.add(value)
+        default_ids = [d for d in default_ids if d in available_defaults]
+        try:
+            chosen = questionary.checkbox(
+                "Mark focal surveys (space to toggle):",
+                choices=choice_items,
+                default=default_ids,
+                style=CUSTOM_STYLE,
+            ).ask()
+        except ValueError:
+            chosen = questionary.checkbox(
+                "Mark focal surveys (space to toggle):",
+                choices=choice_items,
+                style=CUSTOM_STYLE,
+            ).ask()
         if not chosen:
             return False
-        chosen_ids = {choice.split(" - ", 1)[0].strip() for choice in chosen}
+        chosen_ids = set(chosen)
 
     if dry_run:
         print(f"[DRY RUN] Would mark {len(chosen_ids)} surveys as focal.")
@@ -477,20 +601,34 @@ def run_onboard(args) -> None:
             for key, present in existing.items():
                 status = "found" if present else "missing"
                 print(f"- {key}: {status}")
-            if should_use_questionary() and is_interactive():
-                from questionary import select
-
-                choice = select(
+            if is_interactive():
+                mode_choices = [
+                    "Repair/merge existing workspace (recommended)",
+                    "Fresh start (archive existing artifacts)",
+                    "Fresh start (delete existing artifacts)",
+                    "Exit",
+                ]
+                choice = select_from_list(
                     "How would you like to proceed?",
-                    choices=[
-                        "Repair/merge existing workspace (recommended)",
-                        "Fresh start (keep existing files)",
-                        "Exit",
-                    ],
-                ).ask()
-                if choice == "Exit":
+                    mode_choices,
+                    default=mode_choices[0],
+                )
+                if choice is None or choice == "Exit":
                     print("Setup cancelled.")
                     return
+                if "archive" in choice.lower():
+                    print("Archiving existing workspace artifacts...")
+                    archive_dir = _archive_workspace_artifacts(default_root, existing)
+                    if archive_dir:
+                        print(f"Archive created: {archive_dir}")
+                    existing = _detect_existing_workspace(default_root)
+                elif "delete" in choice.lower():
+                    print("This will permanently delete the workspace artifacts listed above.")
+                    if not confirm("Proceed with delete?", default=False):
+                        print("Setup cancelled.")
+                        return
+                    _delete_workspace_artifacts(default_root, existing)
+                    existing = _detect_existing_workspace(default_root)
             else:
                 print("Proceeding with repair/merge mode (default).")
 
@@ -506,14 +644,14 @@ def run_onboard(args) -> None:
             "fasttext": False,
             "validated": False,
         }
-        if getattr(args, "resume", False):
-            loaded = _load_state(default_root)
-            if loaded:
-                for key in state.keys():
-                    if key in loaded:
-                        state[key] = loaded[key]
-                if loaded.get("root"):
-                    state["root"] = loaded["root"]
+        # Always attempt to load existing state if present
+        loaded = _load_state(default_root)
+        if loaded:
+            for key in state.keys():
+                if key in loaded:
+                    state[key] = loaded[key]
+            if loaded.get("root"):
+                state["root"] = loaded["root"]
         total_steps = 8
 
         while True:

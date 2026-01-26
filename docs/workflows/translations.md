@@ -16,6 +16,8 @@ This document describes the canonical workflow for Qualtrics survey translations
   `qsync survey translations ...` entry point. Use `qsync translations ...` and the workbook-based flow.
 - **2026-01-26:** `qsync translations stage` writes pending changes only (no cache mutation) and
   `qsync translations push` can keep staged changes when Excel differs (use `--use-pending`).
+- **2026-01-26:** Translation map files and related CLI surfaces were removed; see
+  `docs/translation_legacy_maps.md` for historical details.
 
 ## Key constraints (tenant-verified)
 
@@ -35,8 +37,8 @@ This document describes the canonical workflow for Qualtrics survey translations
   `surveys/*__<SurveyID>.json`
 - Pending translations (staged list):  
   `surveys/pending/translations/<SurveyID>.json`
-- Legacy (deprecated, no longer used):  
-  `contents/qualtrics_survey_translations/<SurveyID>/*.json`
+- Legacy (archived reference):  
+  See `docs/translation_legacy_maps.md` (translation map files removed from workflow).
 
 ## Core commands
 
@@ -50,6 +52,12 @@ Create/update workbook translation columns:
 
 ```
 qsync items pull --survey-id SV_xxx --languages FR,NL
+```
+
+Refresh cached survey definition (alias for `qsync survey pull`):
+
+```
+qsync translations pull --survey-id SV_xxx
 ```
 
 Preview diffs:

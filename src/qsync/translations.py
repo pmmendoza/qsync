@@ -7,12 +7,10 @@ from .config import resolve_root  # noqa: F401
 from .dimensions import translations_core as _translations_core
 from .dimensions.translations_core import (  # noqa: F401
     QUALTRICS_TRANSLATION_VALUE_MAX_CHARS,
-    _merge_remote_local,
 )
 from .dimensions.translations_core import *  # noqa: F401,F403
 
 __all__ = list(getattr(_translations_core, "__all__", [])) + [
-    "_merge_remote_local",
     "QUALTRICS_TRANSLATION_VALUE_MAX_CHARS",
     "resolve_root",
 ]

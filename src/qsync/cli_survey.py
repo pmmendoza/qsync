@@ -1512,6 +1512,9 @@ def handle_delete(args: argparse.Namespace) -> None:
 def handle_inventory(args: argparse.Namespace) -> None:
     """Refresh the Qualtrics survey inventory cache."""
     base, headers = get_client_config()
+    quiet = bool(getattr(args, "quiet", False))
+    progress = bool(getattr(args, "progress", False) or getattr(args, "progress_only", False))
+    progress_only = bool(getattr(args, "progress_only", False))
 
     # Parse --survey-id arguments (supports repeated and comma-separated)
     survey_filter: List[str] = []
@@ -1536,10 +1539,11 @@ def handle_inventory(args: argparse.Namespace) -> None:
         )
         counts_scope = None
 
-    if survey_filter:
-        print(f"[inventory] Refreshing {len(survey_filter)} targeted survey(s)...")
-    else:
-        print("[inventory] Fetching full survey inventory from Qualtrics...")
+    if not quiet:
+        if survey_filter:
+            print(f"[inventory] Refreshing {len(survey_filter)} targeted survey(s)...")
+        else:
+            print("[inventory] Fetching full survey inventory from Qualtrics...")
 
     inventory, changed_records = refresh_inventory(
         base,
@@ -1547,28 +1551,34 @@ def handle_inventory(args: argparse.Namespace) -> None:
         survey_filter=survey_filter,
         dry_run=dry_run,
         counts_scope=counts_scope,
+        progress=progress,
+        quiet=quiet,
     )
 
     editable = sum(1 for record in inventory if record.get("editableViaApi"))
     non_editable = len(inventory) - editable
 
-    if dry_run:
-        print(
-            f"[DRY RUN] Would save {len(inventory)} surveys (editable={editable}, non-editable={non_editable})"
-        )
-    else:
-        print(
-            f"Saved {len(inventory)} surveys to {SURVEY_CACHE} (editable={editable}, non-editable={non_editable})"
-        )
+    if not progress_only:
+        if dry_run:
+            if not quiet:
+                print(
+                    f"[DRY RUN] Would save {len(inventory)} surveys (editable={editable}, non-editable={non_editable})"
+                )
+        else:
+            if not quiet:
+                print(
+                    f"Saved {len(inventory)} surveys to {SURVEY_CACHE} (editable={editable}, non-editable={non_editable})"
+                )
 
-    if changed_records:
-        for survey in changed_records:
-            label = "editable" if survey.get("editableViaApi") else "read-only"
-            print(
-                f"  - {survey.get('name', '(unnamed)')} | ID={survey.get('id')} | {label}"
-            )
-    else:
-        print("  - No inventory rows changed (ignoring generated_at).")
+    if not quiet and not progress_only:
+        if changed_records:
+            for survey in changed_records:
+                label = "editable" if survey.get("editableViaApi") else "read-only"
+                print(
+                    f"  - {survey.get('name', '(unnamed)')} | ID={survey.get('id')} | {label}"
+                )
+        else:
+            print("  - No inventory rows changed (ignoring generated_at).")
 
 
 def _merge_embedded_pending(survey_id: str, additions: list[dict[str, str]]) -> None:

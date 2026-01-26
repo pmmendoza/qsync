@@ -1721,6 +1721,27 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Scope filter expression (e.g., qid:QID1)",
     )
 
+    # translations pull (cache refresh alias)
+    p_trans_pull = translations_subparsers.add_parser(
+        "pull",
+        help="Refresh cached survey definition (translations live in the survey definition)",
+    )
+    p_trans_pull.add_argument(
+        "--survey-id",
+        dest="survey_id",
+        help="Target survey ID (omit to select interactively)",
+    )
+    p_trans_pull.add_argument(
+        "--language",
+        action="append",
+        dest="language",
+        help="(ignored) Kept for compatibility with legacy translation map pulls",
+    )
+    p_trans_pull.add_argument(
+        "--languages",
+        help="(ignored) Comma-separated language codes (legacy compatibility)",
+    )
+
     # translations apply (legacy alias for stage)
     p_trans_apply = translations_subparsers.add_parser(
         "apply",
@@ -2612,6 +2633,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             handle_translations_languages_list,
             handle_translations_languages_ensure,
             handle_translations_languages_set,
+            handle_translations_pull,
             handle_translations_preview,
             handle_translations_apply,
             handle_translations_doctor,
@@ -2642,6 +2664,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
         if args.translations_command == "preview":
             handle_translations_preview(args)
+            return
+
+        if args.translations_command == "pull":
+            handle_translations_pull(args)
             return
 
         if args.translations_command == "apply":

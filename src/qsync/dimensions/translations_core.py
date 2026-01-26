@@ -37,11 +37,7 @@ from ..scope_filter import ScopeFilter
 from ..workbook_resolver import WorkbookResolver
 from openpyxl import load_workbook
 from ..survey_inventory import load_inventory_record
-from ..translations_paths import (
-    translation_dir,
-    translation_map_path,
-    translation_key_snapshot_path,
-)
+from ..translation_snapshots import translation_key_snapshot_path
 from ..translations_utils import normalize_language_code, normalize_language_list
 from .translations_language_blocks import (
     get_base_language as get_base_language_from_options,
@@ -66,18 +62,13 @@ import requests
 __all__ = [
     "TranslationDiff",
     "TranslationDoctorReport",
-    "translation_dir",
-    "translation_map_path",
-    "load_local_map",
-    "normalize_translation_map",
     "list_enabled_languages",
     "ensure_languages",
     "set_languages",
     "fetch_base_language",
     "load_pending_languages",
     "resolve_languages_for_cli",
-    "pull_translation_map",
-    "pull_translations",
+    "translation_key_snapshot_path",
     "preview_translations",
     "apply_translations",
     "push_translations",
@@ -101,7 +92,7 @@ _HTML_HAZARD_RE = re.compile(
     r"(<\s*script|<\s*form|\bon[a-z0-9_-]+\s*=)", re.IGNORECASE
 )
 
-# Qualtrics v3 translations endpoint rejects individual values above this length.
+# Qualtrics API rejects individual translation values above this length.
 # Observed error: QVAL_3 "Parameter <key> exceeds maximum length of 10000."
 QUALTRICS_TRANSLATION_VALUE_MAX_CHARS = 10_000
 
@@ -361,23 +352,6 @@ def _write_json(path: Path, payload: Mapping[str, Any], *, backup: bool) -> None
     path.write_text(serialized, encoding="utf-8")
 
 
-def _write_baseline_snapshot(path: Path, payload: Mapping[str, Any]) -> None:
-    """Write or update the baseline snapshot (.json.bak) for a translation map."""
-    baseline_path = path.with_suffix(path.suffix + ".bak")
-    serialized = json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True) + "\n"
-    baseline_path.parent.mkdir(parents=True, exist_ok=True)
-    baseline_path.write_text(serialized, encoding="utf-8")
-
-
-def _coerce_result_payload(payload: dict) -> dict[str, Any]:
-    result = payload.get("result")
-    if isinstance(result, dict):
-        return result
-    if isinstance(payload, dict):
-        return payload
-    return {}
-
-
 def list_enabled_languages(survey_id: str) -> list[str]:
     base_url, headers = get_client_config()
     resp = send_api_request(
@@ -417,7 +391,20 @@ def set_languages(
 
 def snapshot_translation_keys(survey_id: str, language: str, *, label: str) -> Path:
     lang = normalize_language_code(language)
-    payload = pull_translation_map(survey_id, lang)
+    from ..qualtrics_client import refresh_survey_cache
+    from ..translation_export import build_translation_map_from_cache
+
+    survey, _ = refresh_survey_cache(survey_id)
+    base_lang = normalize_language_code(
+        get_base_language_from_options(survey.payload) or ""
+    )
+    if not base_lang:
+        base_lang = lang or "EN"
+    payload = build_translation_map_from_cache(
+        survey.payload,
+        language=lang,
+        base_language=base_lang,
+    )
     snapshot = {
         "survey_id": survey_id,
         "language": lang,
@@ -524,55 +511,91 @@ def run_publish_requirement_check(
         raise QsyncValidationError(
             error_id="QSYNC-TRANSLATIONS-PUBLISH-001",
             problem=f"Publish check requested for base language {lang}.",
-            why="Base language is not writable via the translations endpoint.",
+            why="Base language edits are handled via the items workflow.",
             impact="Publish check cannot proceed.",
             action="Use a non-base language (e.g., FR/NL/CS).",
         )
+    from ..qualtrics_client import refresh_survey_cache
+    from ..translation_export import build_translation_map_from_cache
 
-    original_map = normalize_translation_map(
-        pull_translation_map(survey_id, lang), coerce_nulls=True
+    survey, _ = refresh_survey_cache(survey_id)
+    base_lang = normalize_language_code(
+        get_base_language_from_options(survey.payload) or base_lang
+    )
+    original_map = build_translation_map_from_cache(
+        survey.payload,
+        language=lang,
+        base_language=base_lang,
     )
     if not original_map:
         raise QsyncValidationError(
             error_id="QSYNC-TRANSLATIONS-PUBLISH-002",
             problem=f"No translation keys found for {survey_id}/{lang}.",
-            why="Translations endpoint returned an empty map.",
+            why="Cached survey definition returned an empty translation map.",
             impact="Publish check cannot proceed.",
-            action="Enable the language and retry.",
+            action="Enable the language in Qualtrics and refresh the cache.",
         )
 
-    if not key:
+    selected_key = key
+    if not selected_key:
         for candidate, value in original_map.items():
-            if value.strip():
-                key = candidate
+            if str(value or "").strip():
+                selected_key = candidate
                 break
-    if not key:
-        key = next(iter(original_map.keys()))
+    if not selected_key:
+        selected_key = next(iter(original_map.keys()))
 
     marker = (
         marker
         or f"[qsync-publish-check-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}]"
     )
-    updated_map = dict(original_map)
-    original_value = updated_map.get(key, "")
+    original_value = str(original_map.get(selected_key, "") or "")
     new_value = (
         f"{original_value} {marker}".strip()
         if marker not in original_value
         else original_value
     )
-    updated_map[key] = new_value
 
-    base_url, headers = get_client_config()
-    send_api_request(
-        action="qsync.translations.publish_check.update",
-        method="PUT",
-        base_url=base_url,
-        headers=headers,
-        path=f"surveys/{survey_id}/translations/{lang}",
-        survey_id=survey_id,
-        json=updated_map,
-        timeout=60,
+    change = _change_for_translation_key(
+        selected_key,
+        lang,
+        old_value=original_value,
+        new_value=new_value,
     )
+    if not change:
+        raise QsyncValidationError(
+            error_id="QSYNC-TRANSLATIONS-PUBLISH-003",
+            problem=f"Unsupported translation key '{selected_key}'.",
+            why="Publish check requires a QuestionText/Choice/Answer/Label or metadata key.",
+            impact="Publish check cannot proceed.",
+            action="Use a translation key like QID10_QuestionText or SurveyTitle.",
+            context={"survey_id": survey_id, "language": lang, "key": selected_key},
+        )
+
+    ensure_backup(survey_id)
+    qids, _, metadata_keys = _apply_translation_changes_to_payload(
+        survey.payload, [change]
+    )
+    if qids:
+        push_questions(
+            survey,
+            sorted(qids),
+            context={
+                "origin": "qsync.translations.publish_check",
+                "language": lang,
+                "key": selected_key,
+            },
+        )
+    if metadata_keys:
+        _push_survey_options_for_metadata(
+            survey,
+            sorted(metadata_keys),
+            context={
+                "origin": "qsync.translations.publish_check",
+                "language": lang,
+                "key": selected_key,
+            },
+        )
 
     pre_publish_visible = _runtime_contains_marker(survey_id, lang, marker)
     post_publish_visible = None
@@ -586,16 +609,29 @@ def run_publish_requirement_check(
         post_publish_visible = _runtime_contains_marker(survey_id, lang, marker)
 
     if restore:
-        send_api_request(
-            action="qsync.translations.publish_check.restore",
-            method="PUT",
-            base_url=base_url,
-            headers=headers,
-            path=f"surveys/{survey_id}/translations/{lang}",
-            survey_id=survey_id,
-            json=original_map,
-            timeout=60,
-        )
+        restore_change = dict(change)
+        restore_change["new_value"] = original_value
+        _apply_translation_changes_to_payload(survey.payload, [restore_change])
+        if qids:
+            push_questions(
+                survey,
+                sorted(qids),
+                context={
+                    "origin": "qsync.translations.publish_check.restore",
+                    "language": lang,
+                    "key": selected_key,
+                },
+            )
+        if metadata_keys:
+            _push_survey_options_for_metadata(
+                survey,
+                sorted(metadata_keys),
+                context={
+                    "origin": "qsync.translations.publish_check.restore",
+                    "language": lang,
+                    "key": selected_key,
+                },
+            )
         if publish and publish_restore:
             desc = publish_description or f"qsync publish check restore ({lang})"
             publish_survey_definition(
@@ -610,7 +646,7 @@ def run_publish_requirement_check(
     return {
         "survey_id": survey_id,
         "language": lang,
-        "key": key,
+        "key": selected_key,
         "marker": marker,
         "pre_publish_visible": pre_publish_visible,
         "post_publish_visible": post_publish_visible,
@@ -914,294 +950,6 @@ def fetch_base_language(survey_id: str) -> str:
             context={"survey_id": survey_id},
         )
     return normalize_language_code(language)
-
-
-def pull_translation_map(survey_id: str, language: str) -> dict[str, Any]:
-    base_url, headers = get_client_config()
-    lang = normalize_language_code(language)
-    resp = send_api_request(
-        action="qsync.translations.pull",
-        method="GET",
-        base_url=base_url,
-        headers=headers,
-        path=f"surveys/{survey_id}/translations/{lang}",
-        survey_id=survey_id,
-        log_event=False,
-        timeout=60,
-    )
-    payload = resp.json()
-    return _coerce_result_payload(payload)
-
-
-def pull_translations(
-    survey_id: str,
-    languages: Sequence[str] | None = None,
-    *,
-    interactive: bool = True,
-    allow_drift: bool = False,
-) -> list[Path]:
-    """
-    Pull translation maps from Qualtrics with drift detection.
-
-    Two-phase drift check:
-    1. Check translation map drift (local JSON vs API)
-    2. Check workbook drift (unpushed items/EDFs in Excel)
-
-    If drift detected + interactive: prompt user for overwrite confirmation
-    If drift detected + non-interactive: hard fail with error
-
-    Args:
-        survey_id: Survey ID
-        languages: Languages to pull (if None, uses resolution logic)
-        interactive: If True, prompt for drift resolution; if False, fail on drift
-
-    Returns:
-        List of written translation map paths
-
-    Raises:
-        QsyncValidationError: If drift detected in non-interactive mode
-    """
-    # Phase 1: Check translation map drift (local JSON vs API)
-    trans_dir = translation_dir(survey_id)
-
-    # If no local translation files exist, skip drift check - nothing to overwrite
-    has_local_files = trans_dir.exists() and any(trans_dir.glob("*.json"))
-
-    if has_local_files:
-        drift_report = check_drift(
-            survey_id, dimension="translations", interactive=interactive
-        )
-        if drift_report.has_drift:
-            drift_report.display(interactive=False)
-
-            if allow_drift:
-                warn(
-                    "[qsync:translations]", "Proceeding despite drift (--allow-drift)."
-                )
-            elif interactive:
-                # Show interactive menu with options
-                from ..interactive_menu import select_from_list
-
-                choices = [
-                    "Overwrite local changes with API",
-                    "View full diff",
-                    "Abort - keep local changes",
-                ]
-
-                while True:
-                    selection = select_from_list(
-                        message="Local translation changes detected. What do you want to do?",
-                        choices=choices,
-                    )
-
-                    if selection is None or "Abort" in selection:
-                        info(
-                            "[qsync:translations]",
-                            "Pull aborted. Local changes preserved.",
-                        )
-                        info(
-                            "[qsync:translations]",
-                            "Review changes with: qsync translations preview --survey-id "
-                            + survey_id,
-                        )
-                        raise QsyncValidationError(
-                            error_id="QSYNC-TRANSLATIONS-DRIFT-001",
-                            problem="Pull aborted by user.",
-                            why="Local translation changes would be overwritten.",
-                            impact="Translation maps not updated.",
-                            action="Review and push local changes first, or use --force to override.",
-                            context={"survey_id": survey_id},
-                        )
-                    elif "View full diff" in selection:
-                        # Display full diff and loop back to menu
-                        print("\n" + "=" * 80)
-                        print("FULL DIFF: Local vs API")
-                        print("=" * 80)
-                        for line in drift_report.diff_lines:
-                            if line.startswith("+") and not line.startswith("+++"):
-                                print(f"\033[32m{line}\033[0m")  # Green for additions
-                            elif line.startswith("-") and not line.startswith("---"):
-                                print(f"\033[31m{line}\033[0m")  # Red for deletions
-                            else:
-                                print(line)
-                        print("=" * 80 + "\n")
-                        # Continue loop to show menu again
-                    elif "Overwrite" in selection:
-                        # User confirmed overwrite, break loop and continue
-                        break
-            else:
-                # Non-interactive: fail on drift
-                raise QsyncValidationError(
-                    error_id="QSYNC-TRANSLATIONS-DRIFT-002",
-                    problem="Local translation changes detected.",
-                    why="Pull would overwrite unpushed local edits.",
-                    impact="Operation aborted to prevent data loss.",
-                    action="Run in interactive mode to review, or push changes first.",
-                    context={"survey_id": survey_id},
-                )
-
-    # Phase 2: Check workbook drift (unpushed items/EDFs in Excel)
-    try:
-        workbook_drift = check_drift(survey_id, dimension="items", interactive=False)
-        if workbook_drift.has_drift:
-            warn("[qsync:translations]", "Workbook has unpushed items/EDF changes.")
-            warn(
-                "[qsync:translations]",
-                "Translation keys may be stale. Push items first if needed.",
-            )
-    except Exception as exc:
-        warn("[qsync:translations]", f"Could not check workbook drift: {exc}")
-
-    # Resolve languages using 5-tier precedence
-    resolved_languages = _resolve_translation_languages(
-        survey_id,
-        explicit_languages=languages,
-        interactive=interactive,
-    )
-
-    # Pull translation maps
-    written: list[Path] = []
-    for lang in resolved_languages:
-        payload = pull_translation_map(survey_id, lang)
-        path = translation_map_path(survey_id, lang)
-        _write_json(path, payload, backup=False)
-        _write_baseline_snapshot(path, payload)
-        written.append(path)
-        info("[qsync:translations]", f"Pulled {lang}: {len(payload)} keys")
-
-    return written
-
-
-def load_local_map(survey_id: str, language: str) -> dict[str, Any] | None:
-    path = translation_map_path(survey_id, language)
-    if not path.exists():
-        return None
-    payload = _load_json(path)
-    return _resolve_local_file_includes(payload, survey_id=survey_id, language=language)
-
-
-def _resolve_local_file_includes(
-    payload: Mapping[str, Any],
-    *,
-    survey_id: str,
-    language: str,
-) -> dict[str, Any]:
-    """
-    Allow translation map values to reference external files.
-
-    This is primarily a convenience for large HTML blocks that are easier to maintain
-    in dedicated files (e.g. `survey_html/...`) while still pushing the resolved
-    strings to the Qualtrics translations endpoint.
-
-    Supported form (per key):
-      {"__file__": "<path>"}  -> value becomes the file contents
-    """
-    from ..errors import QsyncValidationError
-
-    try:
-        from ..config import resolve_root
-    except Exception:
-        resolve_root = None
-
-    root = resolve_root(required=False) if resolve_root is not None else None
-    base_dir = root or Path.cwd()
-
-    resolved: dict[str, Any] = {}
-    for key, value in payload.items():
-        if (
-            isinstance(value, dict)
-            and set(value.keys()) == {"__file__"}
-            and isinstance(value.get("__file__"), str)
-        ):
-            file_path = Path(value["__file__"])
-            if not file_path.is_absolute():
-                file_path = base_dir / file_path
-            try:
-                resolved[str(key)] = file_path.read_text(encoding="utf-8")
-            except FileNotFoundError as exc:
-                raise QsyncValidationError(
-                    error_id="QSYNC-TRANSLATIONS-INCLUDE-001",
-                    problem=f"Missing translation include file for '{key}'.",
-                    why=str(exc),
-                    impact="Translations cannot be loaded.",
-                    action="Fix the __file__ path or restore the referenced file.",
-                    context={
-                        "survey_id": survey_id,
-                        "language": language,
-                        "key": str(key),
-                        "file": str(file_path),
-                    },
-                ) from exc
-            except OSError as exc:
-                raise QsyncValidationError(
-                    error_id="QSYNC-TRANSLATIONS-INCLUDE-002",
-                    problem=f"Failed reading translation include file for '{key}'.",
-                    why=str(exc),
-                    impact="Translations cannot be loaded.",
-                    action="Check file permissions/encoding and retry.",
-                    context={
-                        "survey_id": survey_id,
-                        "language": language,
-                        "key": str(key),
-                        "file": str(file_path),
-                    },
-                ) from exc
-            continue
-        resolved[str(key)] = value
-    return resolved
-
-
-def normalize_translation_map(
-    payload: Mapping[str, Any],
-    *,
-    coerce_nulls: bool = True,
-    error_id: str = "QSYNC-TRANSLATIONS-TYPE-001",
-) -> dict[str, str]:
-    normalized: dict[str, str] = {}
-    for key, value in payload.items():
-        if value is None:
-            if coerce_nulls:
-                normalized[str(key)] = ""
-                continue
-            raise QsyncValidationError(
-                error_id=error_id,
-                problem=f"Translation value for '{key}' is null.",
-                why="Qualtrics translation PUT rejects non-string values.",
-                impact="Push would fail with QVAL_4.",
-                action="Set missing values to empty strings or remove them.",
-            )
-        if not isinstance(value, str):
-            raise QsyncValidationError(
-                error_id=error_id,
-                problem=f"Translation value for '{key}' is not a string.",
-                why=f"Found {type(value).__name__}.",
-                impact="Push would fail with QVAL_4.",
-                action="Ensure all translation values are strings.",
-            )
-        normalized[str(key)] = value
-    return normalized
-
-
-def diff_translation_maps(
-    local_map: Mapping[str, Any], remote_map: Mapping[str, Any]
-) -> TranslationDiff:
-    local_keys = set(local_map.keys())
-    remote_keys = set(remote_map.keys())
-    missing = remote_keys - local_keys
-    extra = local_keys - remote_keys
-    changed: set[str] = set()
-    for key in local_keys.intersection(remote_keys):
-        if local_map.get(key) != remote_map.get(key):
-            changed.add(key)
-    return TranslationDiff(missing_keys=missing, extra_keys=extra, changed_keys=changed)
-
-
-def _merge_remote_local(
-    remote_map: Mapping[str, Any], local_map: Mapping[str, Any]
-) -> dict[str, Any]:
-    merged = dict(remote_map)
-    merged.update(local_map)
-    return merged
 
 
 def _coverage_stats(payload: Mapping[str, Any]) -> dict[str, int]:
@@ -1564,78 +1312,21 @@ def run_translation_doctor(
     base_language: str | None = None,
     workbook_path: Path | None = None,
 ) -> TranslationDoctorReport:
-    if workbook_path is not None:
-        return _run_translation_doctor_from_workbook(
-            survey_id,
-            languages,
-            base_language=base_language,
-            workbook_path=workbook_path,
+    if workbook_path is None:
+        raise QsyncValidationError(
+            error_id="QSYNC-TRANSLATIONS-DOCTOR-003",
+            problem="Workbook path is required for translation doctor.",
+            why="Translation maps are no longer supported.",
+            impact="Cannot validate translations.",
+            action="Run `qsync items pull --survey-id ...` to create the workbook.",
+            context={"survey_id": survey_id},
         )
-    errors: list[str] = []
-    warnings: list[str] = []
-    coverage: dict[str, dict[str, int]] = {}
-
-    base_lang = normalize_language_code(base_language or "")
-    base_map = None
-    allowed_empty_keys: set[str] = set()
-    if base_lang:
-        base_map = load_local_map(survey_id, base_lang)
-        if base_map is None:
-            warnings.append(
-                f"[{base_lang}] Base language file missing; placeholder checks skipped."
-            )
-        else:
-            allowed_empty_keys = {
-                str(k)
-                for k, v in base_map.items()
-                if not isinstance(v, str) or not v.strip()
-            }
-
-    for lang in _normalize_language_list(languages):
-        local_map = load_local_map(survey_id, lang)
-        if local_map is None:
-            errors.append(f"[{lang}] Missing translation file on disk.")
-            continue
-        # Type safety checks (no coercion here; enforce strictness).
-        try:
-            normalize_translation_map(local_map, coerce_nulls=False)
-        except QsyncValidationError as exc:
-            errors.append(f"[{lang}] {exc.problem}")
-
-        # Allow empty values for keys that are intentionally empty in the base language.
-        # This prevents noisy warnings for keys that are unused / blank by design.
-        allowed = allowed_empty_keys if (base_map and lang != base_lang) else None
-        coverage[lang] = _coverage_stats_with_allowed_empties(
-            local_map,
-            allowed_empty_keys=allowed,
-        )
-        if base_lang and lang == base_lang:
-            # Base language is not pushed via translations endpoint; keep doctor noise low.
-            pass
-        elif coverage[lang]["empty"] > 0:
-            warnings.append(
-                f"[{lang}] Coverage incomplete: {coverage[lang]['filled']}/{coverage[lang]['total']} filled."
-            )
-            empties = [
-                k
-                for k, v in local_map.items()
-                if not str(v or "").strip() and (not allowed or str(k) not in allowed)
-            ]
-            if empties:
-                sample = ", ".join(str(k) for k in empties[:12])
-                suffix = f" … (+{len(empties) - 12} more)" if len(empties) > 12 else ""
-                warnings.append(f"[{lang}] Empty keys (sample): {sample}{suffix}")
-
-        errors.extend(_check_html_hazards(local_map, lang))
-        if lang != base_lang:
-            errors.extend(_check_value_length_limit(local_map, lang))
-        if base_map and lang != base_lang:
-            ph_errors, ph_warnings = _check_placeholders(base_map, local_map, lang)
-            errors.extend(ph_errors)
-            warnings.extend(ph_warnings)
-            warnings.extend(_check_large_deltas(base_map, local_map, lang))
-
-    return TranslationDoctorReport(errors=errors, warnings=warnings, coverage=coverage)
+    return _run_translation_doctor_from_workbook(
+        survey_id,
+        languages,
+        base_language=base_language,
+        workbook_path=workbook_path,
+    )
 
 
 def preview_translations(
@@ -1721,6 +1412,59 @@ def _normalize_metadata_key(key: str) -> str:
     if key == "SurveyDescription":
         return "SurveyMetaDescription"
     return key
+
+
+def _parse_translation_map_key(key: str) -> tuple[str, str, str | None] | None:
+    raw = str(key or "").strip()
+    if not raw:
+        return None
+    if raw in {"SurveyTitle", "SurveyDescription", "SurveyMetaDescription"}:
+        if raw == "SurveyMetaDescription":
+            return (SURVEY_METADATA_QID, "Metadata", "SurveyDescription")
+        return (SURVEY_METADATA_QID, "Metadata", raw)
+    if ":" in raw:
+        parts = [part.strip() for part in raw.split(":") if part.strip()]
+        if len(parts) >= 2:
+            qid = parts[0]
+            field = parts[1]
+            item_id = parts[2] if len(parts) >= 3 else None
+            return (qid, field, item_id)
+    match = re.match(
+        r"^(QID[^_]+)_(QuestionText|Choice\d+|Answer\d+|Label\d+)$",
+        raw,
+    )
+    if not match:
+        return None
+    qid = match.group(1)
+    suffix = match.group(2)
+    if suffix == "QuestionText":
+        return (qid, "QuestionText", None)
+    for prefix in ("Choice", "Answer", "Label"):
+        if suffix.startswith(prefix):
+            item_id = suffix[len(prefix) :]
+            return (qid, prefix, item_id or None)
+    return None
+
+
+def _change_for_translation_key(
+    key: str,
+    language: str,
+    *,
+    old_value: str,
+    new_value: str,
+) -> dict[str, object] | None:
+    parsed = _parse_translation_map_key(key)
+    if not parsed:
+        return None
+    qid, field, item_id = parsed
+    return {
+        "qid": qid,
+        "language": language,
+        "field": field,
+        "item_id": item_id,
+        "old_value": old_value,
+        "new_value": new_value,
+    }
 
 
 def _apply_translation_changes_to_payload(

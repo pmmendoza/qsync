@@ -9,7 +9,7 @@ This package originated in an internal monorepo; this repository’s goal is to 
 Create and activate a virtualenv, then install from GitHub:
 
 ```bash
-python -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 
 pip install "qsync @ git+https://github.com/pmmendoza/qsync.git"
@@ -21,6 +21,7 @@ Optional extras:
 pip install "qsync[pdf] @ git+https://github.com/pmmendoza/qsync.git"
 pip install "qsync[completion] @ git+https://github.com/pmmendoza/qsync.git"
 pip install "qsync[langcheck] @ git+https://github.com/pmmendoza/qsync.git"
+pip install "qsync[pdf,completion,langcheck] @ git+https://github.com/pmmendoza/qsync.git"
 ```
 
 What these extras do:
@@ -69,6 +70,11 @@ At minimum:
 
 - `QUALTRICS_BASE_URL`: host only (example: `iad1.qualtrics.com`, not `https://...`)
 - `X-API-TOKEN` (preferred) or `QUALTRICS_API_KEY` (fallback)
+
+Official Qualtrics docs:
+
+- Datacenter ID / host: https://www.qualtrics.com/support/integrations/api-integration/finding-qualtrics-ids/#LocatingtheDatacenterID
+- API token: https://www.qualtrics.com/support/integrations/api-integration/overview/#GeneratingAnAPIToken
 
 ### Workspace folders (MVP expectations)
 

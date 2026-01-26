@@ -534,7 +534,7 @@ def save_focal_snapshot(snapshot: Dict[str, bool]) -> None:
     FOCAL_SNAPSHOT.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
 
 
-def archive_survey_assets(survey_id: str, *, timestamp: str) -> None:
+def archive_survey_assets(survey_id: str, *, timestamp: str, quiet: bool = False) -> None:
     """Archive Excel and survey JSON files for a survey losing focal status."""
     files_moved = 0
     if EXCEL_DIR.exists():
@@ -553,7 +553,7 @@ def archive_survey_assets(survey_id: str, *, timestamp: str) -> None:
             dest = SURVEY_ARCHIVE_DIR / f"{timestamp}__{path.name}"
             path.rename(dest)
             files_moved += 1
-    if files_moved:
+    if files_moved and not quiet:
         print(
             f"[inventory] Archived {files_moved} file(s) for {survey_id} → archive/{timestamp}__…"
         )
@@ -566,6 +566,8 @@ def refresh_inventory(
     survey_filter: List[str] | None = None,
     dry_run: bool = False,
     counts_scope: str | None = None,
+    progress: bool = False,
+    quiet: bool = False,
 ) -> Tuple[List[dict], List[dict]]:
     """
     Refresh the survey inventory from Qualtrics API.
@@ -580,6 +582,20 @@ def refresh_inventory(
     Returns:
         Tuple of (all inventory records, changed records)
     """
+    warnings: list[str] = []
+
+    def _track(iterable, *, description: str):
+        if not progress:
+            return iterable
+        try:
+            from rich.console import Console
+            from rich.progress import track
+
+            console = Console()
+            return track(iterable, description=description, console=console, transient=True)
+        except Exception:
+            return iterable
+
     current_user = fetch_current_user(base_url, headers)
     current_user_id = current_user.get("userId")
 
@@ -592,28 +608,37 @@ def refresh_inventory(
     if survey_filter:
         # Targeted refresh: start from existing records, update only specified surveys
         inventory_map = {sid: dict(record) for sid, record in previous_records.items()}
-        for survey_id in survey_filter:
+        for survey_id in _track(survey_filter, description="Refreshing targeted surveys"):
             try:
                 payload = fetch_survey_payload(base_url, headers, survey_id)
             except requests.HTTPError as exc:
-                print(
+                msg = (
                     f"[inventory] WARNING: Failed to fetch {survey_id}: {exc}. "
                     "Next: verify QUALTRICS_BASE_URL/token and retry (run `qsync doctor --check-api`)."
                 )
+                warnings.append(msg)
+                if not quiet:
+                    print(msg)
                 continue
             flow_payload = None
             try:
                 flow_payload = fetch_survey_flow_payload(base_url, headers, survey_id)
             except requests.HTTPError as exc:
-                print(
+                msg = (
                     f"[inventory] WARNING: Failed to fetch SurveyFlow for {survey_id}: {exc}. "
                     "Next: verify permissions for the survey and retry."
                 )
+                warnings.append(msg)
+                if not quiet:
+                    print(msg)
             if not payload:
-                print(
+                msg = (
                     f"[inventory] WARNING: Survey {survey_id} not found; skipping targeted refresh. "
                     "Next: verify the survey ID and account permissions."
                 )
+                warnings.append(msg)
+                if not quiet:
+                    print(msg)
                 continue
             summary = build_summary_from_payload(payload, survey_id)
             detail = fetch_survey_detail(base_url, headers, survey_id, payload=payload)
@@ -632,7 +657,7 @@ def refresh_inventory(
         summaries = fetch_surveys(base_url, headers)
         inventory = []
         payload_cache: Dict[str, dict] = {}
-        for summary in summaries:
+        for summary in _track(summaries, description="Refreshing inventory"):
             survey_id = summary.get("id")
             if not survey_id:
                 continue
@@ -641,10 +666,13 @@ def refresh_inventory(
             try:
                 flow_payload = fetch_survey_flow_payload(base_url, headers, survey_id)
             except requests.HTTPError as exc:
-                print(
+                msg = (
                     f"[inventory] WARNING: Failed to fetch SurveyFlow for {survey_id}: {exc}. "
                     "Next: verify permissions for the survey and retry."
                 )
+                warnings.append(msg)
+                if not quiet:
+                    print(msg)
             record = compose_inventory_record(
                 summary,
                 {},
@@ -667,16 +695,19 @@ def refresh_inventory(
                     for record_id, record in inventory_map.items()
                     if record.get("focal")
                 ]
-            for survey_id in target_ids:
+            for survey_id in _track(target_ids, description="Fetching response counts"):
                 payload = payload_cache.get(survey_id)
                 if payload is None:
                     try:
                         payload = fetch_survey_payload(base_url, headers, survey_id)
                     except requests.HTTPError as exc:
-                        print(
+                        msg = (
                             f"[inventory] WARNING: Failed to fetch {survey_id}: {exc}. "
                             "Next: verify QUALTRICS_BASE_URL/token and retry (run `qsync doctor --check-api`)."
                         )
+                        warnings.append(msg)
+                        if not quiet:
+                            print(msg)
                         continue
                     payload_cache[survey_id] = payload
                 counts = payload.get("responseCounts") or {}
@@ -698,7 +729,7 @@ def refresh_inventory(
             prev = previous_focal.get(sid, False)
             now = bool(record.get("focal"))
             if prev and not now:
-                archive_survey_assets(sid, timestamp=timestamp)
+                archive_survey_assets(sid, timestamp=timestamp, quiet=quiet)
 
         # Persist to CSV and update focal snapshot
         persist_surveys(inventory, current_user_id=current_user_id)
@@ -708,6 +739,9 @@ def refresh_inventory(
             if record.get("id")
         }
         save_focal_snapshot(snapshot_payload)
+
+    if warnings and quiet:
+        print(f"[inventory] Completed with {len(warnings)} warning(s). Re-run `qsync survey inventory` for details.")
 
     return inventory, changed_records
 
