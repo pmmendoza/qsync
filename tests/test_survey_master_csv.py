@@ -4,7 +4,7 @@ import csv
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 class SurveyMasterCSVTests(unittest.TestCase):

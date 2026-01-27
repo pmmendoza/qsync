@@ -6,7 +6,12 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from qsync.dimensions.translations_core import preview_translations
-from qsync.excel_io import init_workbook_from_survey, QUESTION_SHEET, OPTIONS_SHEET, SUBITEMS_SHEET
+from qsync.excel_io import (
+    init_workbook_from_survey,
+    QUESTION_SHEET,
+    OPTIONS_SHEET,
+    SUBITEMS_SHEET,
+)
 from qsync.workbook_resolver import WorkbookResolver
 
 
@@ -155,7 +160,9 @@ def test_preview_translations_multiple_sheets(tmp_path: Path, monkeypatch) -> No
     assert any(line.startswith("- QID2:") and "FR=1" in line for line in lines)
 
 
-def test_preview_translations_missing_language_blocks(tmp_path: Path, monkeypatch) -> None:
+def test_preview_translations_missing_language_blocks(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
     payload = _survey_payload()
     _write_inventory(tmp_path)

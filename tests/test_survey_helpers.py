@@ -7,8 +7,7 @@ Tests for:
 - activate_survey()
 """
 
-import json
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -107,9 +106,7 @@ class TestUploadQsfToAccount:
     def test_successful_upload(self, mock_send):
         """Test successful QSF upload."""
         mock_response = Mock()
-        mock_response.json.return_value = {
-            "result": {"id": "SV_new123"}
-        }
+        mock_response.json.return_value = {"result": {"id": "SV_new123"}}
         mock_send.return_value = mock_response
 
         qsf = {"SurveyEntry": {"SurveyName": "Test"}}
@@ -119,7 +116,7 @@ class TestUploadQsfToAccount:
         result = upload_qsf_to_account(qsf, "Test Survey", base_url, headers)
 
         assert result == "SV_new123"
-        
+
         # Verify API call
         mock_send.assert_called_once()
         call_kwargs = mock_send.call_args[1]
@@ -133,9 +130,7 @@ class TestUploadQsfToAccount:
     def test_upload_with_custom_action(self, mock_send):
         """Test upload with custom action identifier."""
         mock_response = Mock()
-        mock_response.json.return_value = {
-            "result": {"id": "SV_new456"}
-        }
+        mock_response.json.return_value = {"result": {"id": "SV_new456"}}
         mock_send.return_value = mock_response
 
         qsf = {"SurveyEntry": {}}
@@ -155,14 +150,12 @@ class TestUploadQsfToAccount:
     def test_upload_with_log_meta(self, mock_send):
         """Test upload includes log metadata."""
         mock_response = Mock()
-        mock_response.json.return_value = {
-            "result": {"id": "SV_new789"}
-        }
+        mock_response.json.return_value = {"result": {"id": "SV_new789"}}
         mock_send.return_value = mock_response
 
         qsf = {"SurveyEntry": {}}
         meta = {"source": "SV_old123", "context": "test"}
-        
+
         upload_qsf_to_account(
             qsf,
             "Test",
@@ -178,14 +171,12 @@ class TestUploadQsfToAccount:
     def test_upload_removes_content_type_header(self, mock_send):
         """Test upload removes Content-Type from headers."""
         mock_response = Mock()
-        mock_response.json.return_value = {
-            "result": {"id": "SV_new999"}
-        }
+        mock_response.json.return_value = {"result": {"id": "SV_new999"}}
         mock_send.return_value = mock_response
 
         qsf = {"SurveyEntry": {}}
         headers = {"X-API-TOKEN": "test", "Content-Type": "application/json"}
-        
+
         upload_qsf_to_account(qsf, "Test", "base.url", headers)
 
         call_kwargs = mock_send.call_args[1]
@@ -274,7 +265,9 @@ class TestActivateSurvey:
         mock_response.reason = "Forbidden"
         mock_send.return_value = mock_response
 
-        with pytest.raises(RuntimeError, match="Failed to activate survey: 403 Forbidden"):
+        with pytest.raises(
+            RuntimeError, match="Failed to activate survey: 403 Forbidden"
+        ):
             activate_survey("SV_123", "base.url", {"key": "val"})
 
     @patch("qsync.cli_survey.send_api_request")
@@ -286,5 +279,7 @@ class TestActivateSurvey:
         mock_response.reason = "Not Found"
         mock_send.return_value = mock_response
 
-        with pytest.raises(RuntimeError, match="Failed to deactivate survey: 404 Not Found"):
+        with pytest.raises(
+            RuntimeError, match="Failed to deactivate survey: 404 Not Found"
+        ):
             activate_survey("SV_123", "base.url", {"key": "val"}, active=False)

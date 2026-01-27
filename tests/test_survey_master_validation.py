@@ -1,9 +1,6 @@
 """Tests for survey master validation and diff computation."""
 
-import csv
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 

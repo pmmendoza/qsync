@@ -95,7 +95,9 @@ class SurveyMasterParsingTests(unittest.TestCase):
             with patch(
                 "qsync.survey_master._mapping_csv_path", return_value=nonexistent_path
             ):
-                with patch.dict("os.environ", {"QSYNC_MAPPING_CSV": str(nonexistent_path)}):
+                with patch.dict(
+                    "os.environ", {"QSYNC_MAPPING_CSV": str(nonexistent_path)}
+                ):
                     with self.assertRaises(FileNotFoundError):
                         _parse_mapping_csv()
 

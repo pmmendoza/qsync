@@ -22,15 +22,11 @@ class DynamicPatternDetectionTests(unittest.TestCase):
         payload = {
             "result": {
                 "SurveyFlow": {"Flow": []},
-                "Questions": {
-                    "QID1": {
-                        "QuestionJS": """
+                "Questions": {"QID1": {"QuestionJS": """
                         for (let i = 0; i < 5; i++) {
                             Qualtrics.SurveyEngine.setEmbeddedData('field_' + i, value);
                         }
-                        """
-                    }
-                },
+                        """}},
                 "Blocks": {},
             }
         }
@@ -46,15 +42,11 @@ class DynamicPatternDetectionTests(unittest.TestCase):
         payload = {
             "result": {
                 "SurveyFlow": {"Flow": []},
-                "Questions": {
-                    "QID2": {
-                        "QuestionJS": """
+                "Questions": {"QID2": {"QuestionJS": """
                         for (let i = 0; i < 5; i++) {
                             Qualtrics.SurveyEngine.setEmbeddedData(`item_${i}_label`, label);
                         }
-                        """
-                    }
-                },
+                        """}},
                 "Blocks": {},
             }
         }
@@ -69,14 +61,10 @@ class DynamicPatternDetectionTests(unittest.TestCase):
         payload = {
             "result": {
                 "SurveyFlow": {"Flow": []},
-                "Questions": {
-                    "QID1": {
-                        "QuestionJS": """
+                "Questions": {"QID1": {"QuestionJS": """
                         setEmbeddedData('alpha_' + x, 1);
                         setEmbeddedData('beta_' + y, 2);
-                        """
-                    }
-                },
+                        """}},
                 "Blocks": {},
             }
         }
@@ -91,14 +79,10 @@ class DynamicPatternDetectionTests(unittest.TestCase):
         payload = {
             "result": {
                 "SurveyFlow": {"Flow": []},
-                "Questions": {
-                    "QID1": {
-                        "QuestionJS": """
+                "Questions": {"QID1": {"QuestionJS": """
                         setEmbeddedData('static_field', 'value');
                         setEmbeddedData('dynamic_' + i, value);
-                        """
-                    }
-                },
+                        """}},
                 "Blocks": {},
             }
         }
@@ -117,14 +101,10 @@ class CommentStrippingTests(unittest.TestCase):
         payload = {
             "result": {
                 "SurveyFlow": {"Flow": []},
-                "Questions": {
-                    "QID1": {
-                        "QuestionJS": """
+                "Questions": {"QID1": {"QuestionJS": """
                         // setEmbeddedData('commented_out', 1);
                         setEmbeddedData('active_field', 2);
-                        """
-                    }
-                },
+                        """}},
                 "Blocks": {},
             }
         }
@@ -139,16 +119,12 @@ class CommentStrippingTests(unittest.TestCase):
         payload = {
             "result": {
                 "SurveyFlow": {"Flow": []},
-                "Questions": {
-                    "QID1": {
-                        "QuestionJS": """
+                "Questions": {"QID1": {"QuestionJS": """
                         /*
                         setEmbeddedData('block_commented', 1);
                         */
                         setEmbeddedData('active_field', 2);
-                        """
-                    }
-                },
+                        """}},
                 "Blocks": {},
             }
         }
@@ -163,14 +139,10 @@ class CommentStrippingTests(unittest.TestCase):
         payload = {
             "result": {
                 "SurveyFlow": {"Flow": []},
-                "Questions": {
-                    "QID1": {
-                        "QuestionJS": """
+                "Questions": {"QID1": {"QuestionJS": """
                         /* inline */ setEmbeddedData('after_comment', 1);
                         setEmbeddedData(/* mid */ 'mid_comment', 2);
-                        """
-                    }
-                },
+                        """}},
                 "Blocks": {},
             }
         }

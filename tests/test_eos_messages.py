@@ -34,7 +34,9 @@ def test_extract_eos_message_refs() -> None:
     ]
 
 
-def test_find_message_contexts_scans_surveys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_find_message_contexts_scans_surveys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from qsync.eos_messages import find_message_contexts
 
     ensure_qsync_workspace(tmp_path)
@@ -74,8 +76,12 @@ def test_find_message_contexts_scans_surveys(tmp_path: Path, monkeypatch: pytest
             }
         }
     }
-    (tmp_path / "surveys" / "A__SV_A.json").write_text(json.dumps(payload_a), encoding="utf-8")
-    (tmp_path / "surveys" / "B__SV_B.json").write_text(json.dumps(payload_b), encoding="utf-8")
+    (tmp_path / "surveys" / "A__SV_A.json").write_text(
+        json.dumps(payload_a), encoding="utf-8"
+    )
+    (tmp_path / "surveys" / "B__SV_B.json").write_text(
+        json.dumps(payload_b), encoding="utf-8"
+    )
 
     ctx = find_message_contexts(refs={("UR_LIB", "MS_MSG")}, include_backups=False)
     assert ("UR_LIB", "MS_MSG") in ctx
@@ -84,7 +90,10 @@ def test_find_message_contexts_scans_surveys(tmp_path: Path, monkeypatch: pytest
 
 
 def test_eos_codec_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from qsync.eos_messages import read_library_message_from_disk, write_library_message_to_disk
+    from qsync.eos_messages import (
+        read_library_message_from_disk,
+        write_library_message_to_disk,
+    )
 
     ensure_qsync_workspace(tmp_path)
     monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
@@ -114,7 +123,9 @@ def test_eos_codec_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert loaded.get("messages", {}).get("fr") == "<p>Bonjour</p>"
 
 
-def test_eos_apply_stages_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_eos_apply_stages_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from qsync.eos_messages import apply_eos_messages, write_library_message_to_disk
     from qsync.pending_stage import load_pending, EosPendingPayload
 
@@ -174,7 +185,9 @@ def test_eos_apply_stages_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         / "messages"
         / first_file
     )
-    msg_path.write_text(msg_path.read_text(encoding="utf-8") + "\n<!-- test -->\n", encoding="utf-8")
+    msg_path.write_text(
+        msg_path.read_text(encoding="utf-8") + "\n<!-- test -->\n", encoding="utf-8"
+    )
 
     record = apply_eos_messages(
         survey_id=survey_id,
@@ -196,7 +209,9 @@ def test_eos_apply_stages_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert op.message_id == "MS_MSG"
 
 
-def test_eos_apply_is_noop_when_no_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_eos_apply_is_noop_when_no_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from qsync.eos_messages import apply_eos_messages, write_library_message_to_disk
     from qsync.pending_stage import load_pending
 
@@ -269,8 +284,12 @@ def test_eos_apply_blocks_shared_message_with_context(
             }
         }
     }
-    (tmp_path / "surveys" / "A__SV_A.json").write_text(json.dumps(payload), encoding="utf-8")
-    (tmp_path / "surveys" / "B__SV_B.json").write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "surveys" / "A__SV_A.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    (tmp_path / "surveys" / "B__SV_B.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
 
     with pytest.raises(RuntimeError) as excinfo:
         apply_eos_messages(

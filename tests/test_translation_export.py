@@ -152,7 +152,12 @@ def test_translation_export_mvp(tmp_path: Path) -> None:
     assert "EOSMessage=MS_MSG" in text
 
     # Question table: at least one cell contains question text.
-    assert any("Hello world" in cell.text for tbl in d.tables for row in tbl.rows for cell in row.cells)
+    assert any(
+        "Hello world" in cell.text
+        for tbl in d.tables
+        for row in tbl.rows
+        for cell in row.cells
+    )
 
     # Rows are vertical: ensure QID1 table has metadata row + text row (no empty logic/statements/options rows).
     q1_tables = [
@@ -426,7 +431,9 @@ def test_translation_export_edf_warns_on_unused_key(tmp_path: Path) -> None:
 
     d = docx.Document(str(out_docx))
     text = _doc_text(d)
-    assert "WARNING: Some --edf keys are not used in any SurveyFlow BranchLogic." in text
+    assert (
+        "WARNING: Some --edf keys are not used in any SurveyFlow BranchLogic." in text
+    )
     assert "Unused: S_VERSION" in text
 
 
@@ -701,9 +708,14 @@ def test_translation_export_logic_uses_language_blocks_when_single_language(
     text = _doc_text(d)
 
     # Branch + DisplayLogic should use the target language for the referenced question and option.
-    assert 'DISPLAY IF: QID50:"Neemt u deel aan dit onderzoek als onderdeel van..."' in text
+    assert (
+        'DISPLAY IF: QID50:"Neemt u deel aan dit onderzoek als onderdeel van..."'
+        in text
+    )
     assert '"interne pilot" is selected' in text
-    assert 'BRANCH: IF QID50:"Neemt u deel aan dit onderzoek als onderdeel van..."' in text
+    assert (
+        'BRANCH: IF QID50:"Neemt u deel aan dit onderzoek als onderdeel van..."' in text
+    )
 
     # English labels should not be used inside the logic lines in single-language export.
     assert 'QID50:"Are you participating in this study as part of..."' not in text
@@ -776,9 +788,15 @@ def test_translation_export_compare_to_base_bilingual_mode(
     assert q_tables
     q_tbl = q_tables[0]
     # Find a row that contains the question text and ensure it is split across columns.
-    assert any("Hello" in row.cells[0].text and "Bonjour" in row.cells[1].text for row in q_tbl.rows)
+    assert any(
+        "Hello" in row.cells[0].text and "Bonjour" in row.cells[1].text
+        for row in q_tbl.rows
+    )
     # Find a row that contains the option and ensure it is split across columns.
-    assert any("Yes" in row.cells[0].text and "Oui" in row.cells[1].text for row in q_tbl.rows)
+    assert any(
+        "Yes" in row.cells[0].text and "Oui" in row.cells[1].text for row in q_tbl.rows
+    )
+
 
 def test_translation_export_no_html_suppresses_html_source(tmp_path: Path) -> None:
     from zipfile import ZipFile
@@ -799,7 +817,7 @@ def test_translation_export_no_html_suppresses_html_source(tmp_path: Path) -> No
                 "QID1": {
                     "QuestionType": "TE",
                     "Selector": "SL",
-                    "QuestionText": "<p>Prompt</p><canvas id=\"c\"></canvas>",
+                    "QuestionText": '<p>Prompt</p><canvas id="c"></canvas>',
                     "DataExportTag": "tag",
                 }
             },
@@ -972,7 +990,9 @@ def test_safe_html_headings_do_not_bleed_bold(tmp_path: Path) -> None:
     }
 
     out_docx = tmp_path / "out.docx"
-    export_survey_payload_to_word("SV_TEST", payload, out_docx, include_html_source=False)
+    export_survey_payload_to_word(
+        "SV_TEST", payload, out_docx, include_html_source=False
+    )
 
     d = docx.Document(str(out_docx))
     cells = [cell for tbl in d.tables for row in tbl.rows for cell in row.cells]
@@ -1018,7 +1038,9 @@ def test_safe_html_nested_list_renders_bullets(tmp_path: Path) -> None:
     }
 
     out_docx = tmp_path / "out.docx"
-    export_survey_payload_to_word("SV_TEST", payload, out_docx, include_html_source=False)
+    export_survey_payload_to_word(
+        "SV_TEST", payload, out_docx, include_html_source=False
+    )
 
     d = docx.Document(str(out_docx))
     # List items are rendered as real Word list paragraphs (so the bullet character

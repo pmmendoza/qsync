@@ -104,6 +104,7 @@ def _survey_payload_with_labels() -> dict:
         }
     }
 
+
 def test_init_workbook_adds_translation_columns(tmp_path: Path) -> None:
     payload = _survey_payload()
     workbook_path = tmp_path / "workbook.xlsx"
@@ -151,7 +152,9 @@ def test_workbook_doctor_flags_placeholder(tmp_path: Path, monkeypatch) -> None:
         "SurveyLanguage": "EN",
         "AvailableLanguages": ["EN", "FR"],
     }
-    payload["result"]["Questions"]["QID1"]["QuestionText"] = "Hello ${e://Field/COUNTRY}"
+    payload["result"]["Questions"]["QID1"][
+        "QuestionText"
+    ] = "Hello ${e://Field/COUNTRY}"
 
     monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
     _write_cached_survey(tmp_path, "SV_TEST", payload)
@@ -181,7 +184,9 @@ def test_workbook_doctor_flags_placeholder(tmp_path: Path, monkeypatch) -> None:
     assert any("missing placeholders" in err for err in report.errors)
 
 
-def test_workbook_doctor_allows_empty_when_base_empty(tmp_path: Path, monkeypatch) -> None:
+def test_workbook_doctor_allows_empty_when_base_empty(
+    tmp_path: Path, monkeypatch
+) -> None:
     payload = _survey_payload()
     payload["result"]["SurveyOptions"] = {
         "SurveyLanguage": "EN",

@@ -1,8 +1,6 @@
 """Tests for survey master drift detection."""
 
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 

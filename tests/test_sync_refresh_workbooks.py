@@ -13,7 +13,6 @@ Validates acceptance criteria from plan_qsync_sync_refresh_workbooks_semantics.m
 from __future__ import annotations
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
 
 
 class TestRefreshWorkbooksFlag:
@@ -21,6 +20,7 @@ class TestRefreshWorkbooksFlag:
 
     def test_flag_handling_logic_no_flags(self):
         """Test AC1: Default behavior (no refresh)."""
+
         # Simulate args with no flags
         class Args:
             refresh_workbooks = False
@@ -43,6 +43,7 @@ class TestRefreshWorkbooksFlag:
 
     def test_flag_handling_logic_refresh_only(self):
         """Test AC2: --refresh-workbooks enables refresh."""
+
         class Args:
             refresh_workbooks = True
             skip_refresh = False
@@ -62,6 +63,7 @@ class TestRefreshWorkbooksFlag:
 
     def test_flag_handling_logic_skip_only(self):
         """Test AC3: --skip-refresh alone warns about deprecation."""
+
         class Args:
             refresh_workbooks = False
             skip_refresh = True
@@ -85,6 +87,7 @@ class TestRefreshWorkbooksFlag:
 
     def test_flag_handling_logic_both_flags(self):
         """Test AC4: --skip-refresh overrides --refresh-workbooks."""
+
         class Args:
             refresh_workbooks = True
             skip_refresh = True
@@ -124,9 +127,12 @@ class TestRefreshWorkbooksFlag:
         assert "--skip-refresh" in help_text, "Should document --skip-refresh"
 
         # Verify help describes semantics clearly
-        assert "Refresh Excel workbooks" in help_text, "Should describe refresh behavior"
-        assert "deprecated" in help_text.lower() or "legacy" in help_text.lower(), \
-            "Should mark --skip-refresh as deprecated/legacy"
+        assert (
+            "Refresh Excel workbooks" in help_text
+        ), "Should describe refresh behavior"
+        assert (
+            "deprecated" in help_text.lower() or "legacy" in help_text.lower()
+        ), "Should mark --skip-refresh as deprecated/legacy"
 
     def test_sync_survey_accepts_refresh_workbooks_flag(self):
         """Test that sync_survey accepts refresh_workbooks parameter without error."""
@@ -135,7 +141,9 @@ class TestRefreshWorkbooksFlag:
 
         # Verify function signature includes refresh_workbooks parameter
         sig = inspect.signature(sync_survey)
-        assert "refresh_workbooks" in sig.parameters, "Should have refresh_workbooks parameter"
+        assert (
+            "refresh_workbooks" in sig.parameters
+        ), "Should have refresh_workbooks parameter"
 
         # Verify default value is False
         param = sig.parameters["refresh_workbooks"]
@@ -148,7 +156,9 @@ class TestRefreshWorkbooksFlag:
 
         # Verify function signature includes refresh_workbooks parameter
         sig = inspect.signature(sync_focal_surveys)
-        assert "refresh_workbooks" in sig.parameters, "Should have refresh_workbooks parameter"
+        assert (
+            "refresh_workbooks" in sig.parameters
+        ), "Should have refresh_workbooks parameter"
 
         # Verify default value is False
         param = sig.parameters["refresh_workbooks"]

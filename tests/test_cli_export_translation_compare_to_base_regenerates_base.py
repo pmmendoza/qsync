@@ -4,7 +4,9 @@ import argparse
 from pathlib import Path
 
 
-def test_export_translation_compare_to_base_also_exports_base(monkeypatch, tmp_path: Path) -> None:
+def test_export_translation_compare_to_base_also_exports_base(
+    monkeypatch, tmp_path: Path
+) -> None:
     from qsync.cli_survey import handle_export_translation
 
     calls: list[dict] = []
@@ -28,7 +30,10 @@ def test_export_translation_compare_to_base_also_exports_base(monkeypatch, tmp_p
         return tmp_path / f"out_{len(calls)}.docx"
 
     monkeypatch.setattr("qsync.translation_export.export_survey_to_word", fake_word)
-    monkeypatch.setattr("qsync.translation_export.export_survey_to_pdf", lambda *a, **k: tmp_path / "out.pdf")
+    monkeypatch.setattr(
+        "qsync.translation_export.export_survey_to_pdf",
+        lambda *a, **k: tmp_path / "out.pdf",
+    )
 
     args = argparse.Namespace(
         survey_id="SV_TEST",
@@ -48,8 +53,18 @@ def test_export_translation_compare_to_base_also_exports_base(monkeypatch, tmp_p
 
     handle_export_translation(args)
 
-    assert {"fmt": "docx", "survey_id": "SV_TEST", "render_language": "FR", "compare_to_base": True} in calls
-    assert {"fmt": "docx", "survey_id": "SV_TEST", "render_language": None, "compare_to_base": False} in calls
+    assert {
+        "fmt": "docx",
+        "survey_id": "SV_TEST",
+        "render_language": "FR",
+        "compare_to_base": True,
+    } in calls
+    assert {
+        "fmt": "docx",
+        "survey_id": "SV_TEST",
+        "render_language": None,
+        "compare_to_base": False,
+    } in calls
 
 
 def test_export_translation_compare_to_base_exports_base_once_for_multiple_languages(
@@ -71,7 +86,10 @@ def test_export_translation_compare_to_base_exports_base_once_for_multiple_langu
         return tmp_path / f"out_{len(calls)}.docx"
 
     monkeypatch.setattr("qsync.translation_export.export_survey_to_word", fake_word)
-    monkeypatch.setattr("qsync.translation_export.export_survey_to_pdf", lambda *a, **k: tmp_path / "out.pdf")
+    monkeypatch.setattr(
+        "qsync.translation_export.export_survey_to_pdf",
+        lambda *a, **k: tmp_path / "out.pdf",
+    )
 
     args = argparse.Namespace(
         survey_id="SV_TEST",
@@ -92,6 +110,5 @@ def test_export_translation_compare_to_base_exports_base_once_for_multiple_langu
     handle_export_translation(args)
 
     assert calls.count((None, False)) == 1
-    assert ( "FR", True) in calls
-    assert ( "NL", True) in calls
-
+    assert ("FR", True) in calls
+    assert ("NL", True) in calls

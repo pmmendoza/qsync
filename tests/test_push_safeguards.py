@@ -172,9 +172,7 @@ class TestPushPolicy(unittest.TestCase):
 
     @patch("qsync.survey_inventory.resolve_inventory_csv_path")
     @patch("qsync.push_policy._fetch_quick_counts")
-    def test_load_push_context_detects_live_responses(
-        self, mock_fetch, mock_resolve
-    ):
+    def test_load_push_context_detects_live_responses(self, mock_fetch, mock_resolve):
         """PushContext should correctly report live response counts."""
         self._write_inventory(
             [

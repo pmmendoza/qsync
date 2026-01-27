@@ -161,7 +161,9 @@ def test_apply_translations_writes_pending_payload(tmp_path: Path, monkeypatch) 
     assert lang_block == {}
 
 
-def test_push_translations_includes_language_blocks(tmp_path: Path, monkeypatch) -> None:
+def test_push_translations_includes_language_blocks(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
     payload = _survey_payload()
     _write_inventory(tmp_path)
@@ -203,7 +205,9 @@ def test_push_translations_includes_language_blocks(tmp_path: Path, monkeypatch)
         "enforce_push_safeguards",
         lambda *args, **kwargs: SimpleNamespace(warnings=[]),
     )
-    monkeypatch.setattr(translations_core, "auto_publish_after_push", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        translations_core, "auto_publish_after_push", lambda *args, **kwargs: None
+    )
 
     pushed = push_translations(
         survey_id="SV_TEST",
@@ -217,7 +221,11 @@ def test_push_translations_includes_language_blocks(tmp_path: Path, monkeypatch)
     assert pushed == ["QID1"]
     assert captured.get("qids") == ["QID1"]
     question = captured.get("question") or {}
-    lang_block = (question.get("Language") or {}).get("FR") if isinstance(question.get("Language"), dict) else {}
+    lang_block = (
+        (question.get("Language") or {}).get("FR")
+        if isinstance(question.get("Language"), dict)
+        else {}
+    )
     assert lang_block.get("QuestionText") == "Bonjour"
 
 

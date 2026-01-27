@@ -15,7 +15,9 @@ def test_pdf_html_end_survey_embeds_eos_message(monkeypatch, tmp_path: Path) -> 
             },
         }
 
-    monkeypatch.setattr("qsync.translation_export._read_eos_message_from_disk", fake_read)
+    monkeypatch.setattr(
+        "qsync.translation_export._read_eos_message_from_disk", fake_read
+    )
 
     content = ExportContent(
         survey_id="SV_TEST",

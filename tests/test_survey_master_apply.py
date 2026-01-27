@@ -1,10 +1,8 @@
 """Tests for survey master apply and write operations."""
 
 import json
-import tempfile
 import unittest
-from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
 from .test_fixtures import SurveyMasterTestBase
 

@@ -74,7 +74,9 @@ def test_dangerous_embedded_default_is_skipped_with_guidance(
     # Ensure logging routes into the temp workspace.
     monkeypatch.setenv("QSYNC_ROOT", str(root))
 
-    result = apply_changes(survey_id, xlsx_path, allow_dangerous=False, embedded_only=True)
+    result = apply_changes(
+        survey_id, xlsx_path, allow_dangerous=False, embedded_only=True
+    )
     assert result.embedded_fields == []
 
     out = capsys.readouterr().out
@@ -90,4 +92,3 @@ def test_dangerous_embedded_default_is_skipped_with_guidance(
     assert log_path.exists()
     last = json.loads(log_path.read_text(encoding="utf-8").strip().splitlines()[-1])
     assert last["error"]["error_id"] == ERROR_ID_EMBEDDED_DANGEROUS_SKIPPED
-
