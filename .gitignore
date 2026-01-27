@@ -1,5 +1,10 @@
 # --- Dev ------------------------------------------------------------------
 dev/
+!dev/
+dev/*
+!dev/scripts/
+dev/scripts/*
+!dev/scripts/test_pipx_install_local.sh
 .archive/
 
 # --- Python ---------------------------------------------------------------

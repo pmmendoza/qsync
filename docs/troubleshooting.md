@@ -15,7 +15,23 @@ Key checks:
 - `QUALTRICS_BASE_URL` is host-only (e.g. `iad1.qualtrics.com`, not `https://...`).
 - API token is present via `X-API-TOKEN` (preferred) or `QUALTRICS_API_KEY`.
 
-## 2) “Arrow keys don’t work” / interactive menus missing
+## 2) pipx installs (CLI)
+
+If you installed `qsync` with pipx:
+
+- Ensure pipx bin is on PATH: run `pipx ensurepath` and restart your shell.
+- Confirm which binary you are running: `which qsync`.
+- List installed apps: `pipx list`.
+- Inspect dependencies: `pipx runpip qsync list`.
+- Do not mix `pip` and `pipx` installs at the same time. Uninstall one.
+- Completion fallback: if `activate-global-python-argcomplete` is missing, run:
+  `pipx inject --include-apps qsync argcomplete`.
+- PDF extra needs system libs (WeasyPrint). Example:
+  - macOS: `brew install cairo pango gdk-pixbuf libffi`
+  - Ubuntu: `sudo apt-get install libcairo2 libpango-1.0-0 libgdk-pixbuf2.0-0 libffi8`
+  - Package names may vary by distro.
+
+## 3) “Arrow keys don’t work” / interactive menus missing
 
 `qsync` uses `questionary` for interactive arrow-key menus. Menus are only available when:
 - `questionary` is installed
@@ -29,7 +45,7 @@ qsync doctor --json
 
 If you’re running inside a non-interactive environment (CI, redirected output), use explicit flags like `--survey-id ...`.
 
-## 3) “Workspace root not found”
+## 4) “Workspace root not found”
 
 If you’re running `qsync` from a directory that is *not* your workspace, pass `--root`:
 
@@ -39,7 +55,7 @@ qsync --root /path/to/workspace doctor
 
 Or set `QSYNC_ROOT` in your environment.
 
-## 4) Color output / diffs look “all gray”
+## 5) Color output / diffs look “all gray”
 
 Color output depends on terminal capabilities and the selected mode.
 
@@ -57,7 +73,7 @@ qsync --color never sync
 
 If your environment sets `NO_COLOR`, `qsync` will default to `--color never`.
 
-## 5) Docs link in error messages is wrong
+## 6) Docs link in error messages is wrong
 
 You can override the docs URL shown in errors via:
 

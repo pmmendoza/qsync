@@ -62,23 +62,73 @@ flowchart LR
 
 Requirements: Python 3.10+ (Python 3.11/3.12 recommended).
 
+### Choose an install method
+
+| You want to... | Recommended method |
+|---|---|
+| Just run `qsync` commands (most users) | **pipx** (recommended) |
+| Import `qsync` as a library in another project | **pip** in that project's venv |
+| Develop/contribute to `qsync` | **pip** in editable mode (`-e .`) |
+| Use in CI/CD or Docker | **pip** (more predictable) |
+
+### Option A: pipx (recommended for CLI usage)
+
+Install pipx (one-time) and ensure it is on PATH:
+
+```bash
+python3 -m pip install --user pipx
+pipx ensurepath
+# Restart your shell after ensurepath so ~/.local/bin is on PATH
+```
+
+Install `qsync` from a GitHub ref (tag, commit SHA, or branch):
+
+```bash
+pipx install "qsync @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
+```
+
+Upgrade or rollback (reinstall with desired ref):
+
+```bash
+pipx install --force "qsync @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
+```
+
+Uninstall:
+
+```bash
+pipx uninstall qsync
+```
+
+### Option B: pip/venv (recommended for dev/library usage)
+
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install "qsync @ git+https://github.com/pmmendoza/qsync.git"
+pip install "qsync @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
 ```
 
-### Optional extras
+### Optional extras (pipx or pip)
 
 | Extra | What it enables | Notes |
 |---|---|---|
-| `pdf` | PDF export for translation documents | Uses WeasyPrint; may require system deps on macOS |
+| `pdf` | PDF export for translation documents | Uses WeasyPrint (cairo/pango); may require system deps on macOS/Linux |
 | `completion` | Shell tab-completion via argcomplete | One-time setup: `activate-global-python-argcomplete --user` |
 | `langcheck` | Faster language detection via fasttext | Needs `lid.176.ftz` model (see `QSYNC_FASTTEXT_MODEL`) |
 
+pipx examples:
+
 ```bash
-# Install all extras
-pip install "qsync[pdf,completion,langcheck] @ git+https://github.com/pmmendoza/qsync.git"
+# completion (preferred one-liner)
+pipx install --include-deps "qsync[completion] @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
+
+# multiple extras
+pipx install "qsync[pdf,langcheck] @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
+```
+
+pip/venv example:
+
+```bash
+pip install "qsync[pdf,completion,langcheck] @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
 ```
 
 ## Configuration
