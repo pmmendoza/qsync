@@ -23,6 +23,7 @@ If you installed `qsync` with pipx:
 - Confirm which binary you are running: `which qsync`.
 - List installed apps: `pipx list`.
 - Inspect dependencies: `pipx runpip qsync list`.
+- `qsync --version` prints install diagnostics (pipx vs venv, paths, git SHA when available).
 - Do not mix `pip` and `pipx` installs at the same time. Uninstall one.
 - Completion fallback: if `activate-global-python-argcomplete` is missing, run:
   `pipx inject --include-apps qsync argcomplete`.
@@ -30,6 +31,7 @@ If you installed `qsync` with pipx:
   - macOS: `brew install cairo pango gdk-pixbuf libffi`
   - Ubuntu: `sudo apt-get install libcairo2 libpango-1.0-0 libgdk-pixbuf2.0-0 libffi8`
   - Package names may vary by distro.
+- Windows: pipx installs are supported for the core CLI; PDF export is not supported on Windows yet.
 
 ## 3) “Arrow keys don’t work” / interactive menus missing
 

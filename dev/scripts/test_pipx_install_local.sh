@@ -3,6 +3,9 @@ set -euo pipefail
 
 # Run from repo root:
 #   ./dev/scripts/test_pipx_install_local.sh
+#
+# Last run (macOS 2026-01-27):
+#   ./dev/scripts/test_pipx_install_local.sh
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)

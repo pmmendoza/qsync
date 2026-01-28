@@ -87,6 +87,9 @@ Install `qsync` from a GitHub ref (tag, commit SHA, or branch):
 pipx install "qsync @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
 ```
 
+Windows note: pipx installs are supported for the core CLI (CI-smoke-tested). Run
+`py -m pipx ensurepath` and restart your shell. PDF export is not supported on Windows yet.
+
 Upgrade or rollback (reinstall with desired ref):
 
 ```bash
@@ -111,7 +114,7 @@ pip install "qsync @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
 
 | Extra | What it enables | Notes |
 |---|---|---|
-| `pdf` | PDF export for translation documents | Uses WeasyPrint (cairo/pango); may require system deps on macOS/Linux |
+| `pdf` | PDF export for translation documents | Uses WeasyPrint (cairo/pango); may require system deps on macOS/Linux (not supported on Windows yet) |
 | `completion` | Shell tab-completion via argcomplete | One-time setup: `activate-global-python-argcomplete --user` |
 | `langcheck` | Faster language detection via fasttext | Needs `lid.176.ftz` model (see `QSYNC_FASTTEXT_MODEL`) |
 

@@ -6,7 +6,9 @@ import argparse
 import csv
 import json
 import os
+import platform
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -85,6 +87,100 @@ def _extract_global_path_flags(
         i += 1
 
     return root, env_path, color, cleaned
+
+
+def _read_git_sha(git_dir: Path) -> str | None:
+    head_path = git_dir / "HEAD"
+    if not head_path.exists():
+        return None
+    head = head_path.read_text().strip()
+    if head.startswith("ref:"):
+        ref = head.split(" ", 1)[1].strip()
+        ref_path = git_dir / ref
+        if ref_path.exists():
+            return ref_path.read_text().strip()
+        packed_refs = git_dir / "packed-refs"
+        if packed_refs.exists():
+            for line in packed_refs.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line.startswith("^"):
+                    continue
+                sha, ref_name = line.split(" ", 1)
+                if ref_name == ref:
+                    return sha
+        return None
+    if len(head) >= 7:
+        return head
+    return None
+
+
+def _find_git_sha(start: Path, max_depth: int = 6) -> str | None:
+    current = start
+    for _ in range(max_depth):
+        git_marker = current / ".git"
+        if git_marker.is_dir():
+            return _read_git_sha(git_marker)
+        if git_marker.is_file():
+            contents = git_marker.read_text().strip()
+            if contents.startswith("gitdir:"):
+                git_dir = contents.split(":", 1)[1].strip()
+                return _read_git_sha((current / git_dir).resolve())
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
+def _infer_pipx_venv(executable: Path) -> Path | None:
+    exe_str = str(executable)
+    match = re.search(r"(?P<root>.*[\\/])pipx[\\/]venvs[\\/](?P<name>[^\\/]+)", exe_str)
+    if not match:
+        return None
+    root = Path(match.group("root"))
+    name = match.group("name")
+    return (root / "pipx" / "venvs" / name).resolve()
+
+
+def _version_diagnostics() -> list[str]:
+    from . import __version__
+
+    python_exe = Path(sys.executable).resolve()
+    package_root = Path(__file__).resolve().parent
+    entrypoint = shutil.which("qsync")
+    entrypoint_path = Path(entrypoint).resolve() if entrypoint else None
+
+    pipx_venv = _infer_pipx_venv(python_exe) or _infer_pipx_venv(Path(sys.prefix))
+    is_venv = bool(os.environ.get("VIRTUAL_ENV")) or sys.prefix != sys.base_prefix
+    if pipx_venv:
+        install_label = f"pipx ({pipx_venv})"
+    elif is_venv:
+        install_label = f"venv ({Path(sys.prefix).resolve()})"
+    else:
+        install_label = "system"
+
+    git_sha = (
+        os.environ.get("QSYNC_GIT_SHA")
+        or os.environ.get("GITHUB_SHA")
+        or _find_git_sha(package_root)
+    )
+    short_sha = git_sha[:10] if git_sha else None
+
+    lines = [
+        f"qsync {__version__}",
+        f"install: {install_label}",
+        f"python: {platform.python_version()} ({python_exe})",
+        f"package: {package_root}",
+    ]
+    if entrypoint_path:
+        lines.append(f"entrypoint: {entrypoint_path}")
+    if short_sha:
+        lines.append(f"git: {short_sha}")
+    return lines
+
+
+def _print_version() -> None:
+    for line in _version_diagnostics():
+        print(line)
 
 
 def _add_common_args(parser: argparse.ArgumentParser, *, include_xlsx: bool) -> None:
@@ -738,6 +834,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         raw_argv
     )
 
+    if "--version" in cleaned_argv or "-V" in cleaned_argv:
+        _print_version()
+        return
+
     # Shell completion calls (argcomplete) should not cause side effects like
     # changing CWD or mutating environment variables.
     is_completion = os.environ.get("_ARGCOMPLETE") is not None
@@ -784,6 +884,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--color",
         choices=["auto", "always", "never"],
         help="Color output: auto (default), always, or never. NO_COLOR forces never.",
+    )
+    parser.add_argument(
+        "--version",
+        "-V",
+        action="store_true",
+        help="Print diagnostic version info and exit.",
     )
     parser.add_argument(
         "--allow-locked",
