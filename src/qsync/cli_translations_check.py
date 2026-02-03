@@ -306,7 +306,16 @@ def _install_fasttext_module() -> tuple[bool, str | None]:
         )
         return True, None
     except subprocess.CalledProcessError as exc:
-        err = exc.stderr.strip() if exc.stderr else str(exc)
+        combined = "\n".join(
+            part for part in [exc.stdout, exc.stderr, str(exc)] if part
+        ).strip()
+        err = combined or str(exc)
+        if "fatal error: 'istream' file not found" in err:
+            err += (
+                "\n\nmacOS toolchain note: this usually means your Xcode Command Line Tools "
+                + "are missing/incomplete. Reinstall them (or use Python 3.11 to avoid a "
+                + "source build of fasttext-wheel)."
+            )
         return False, err
 
 

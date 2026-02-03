@@ -13,7 +13,9 @@ Features:
 Created: 2026-01-22 for QSYNC-HARM-022 (Stage 3: Orchestration)
 """
 
+import json
 import logging
+import shlex
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -1375,6 +1377,103 @@ def _summarize_pending_record(dimension: str, pending) -> str:
     return "staged"
 
 
+def _quote_scope_expr(scope_expr: Optional[str]) -> Optional[str]:
+    if scope_expr is None:
+        return None
+    cleaned = str(scope_expr).strip()
+    if not cleaned:
+        return None
+    return shlex.quote(cleaned)
+
+
+def _build_pending_abort_guidance(
+    *,
+    survey_id: str,
+    pending: Dict[str, object],
+    force_live: bool,
+    force_preview: bool,
+    scope_expr: Optional[str],
+) -> tuple[str, dict[str, object]]:
+    ordered_dims = ["items", "js", "translations", "eos"]
+    pending_summary = {
+        dim: _summarize_pending_record(dim, pending.get(dim)) for dim in ordered_dims
+    }
+    pending_dims = [dim for dim in ordered_dims if pending.get(dim)]
+
+    scope_token = _quote_scope_expr(scope_expr)
+
+    def _append_common_flags(tokens: list[str]) -> None:
+        if force_live:
+            tokens.append("--force-live")
+        if force_preview:
+            tokens.append("--force-preview")
+        if scope_token:
+            tokens.extend(["--scope", scope_token])
+
+    def _build_sync_command(*, yes: bool, pending_action: Optional[str]) -> str:
+        tokens = ["qsync", "sync", "--survey-id", survey_id]
+        if yes:
+            tokens.append("--yes")
+        if pending_action:
+            tokens.extend(["--pending-action", pending_action])
+        _append_common_flags(tokens)
+        return " ".join(tokens)
+
+    def _build_dimension_push_command(dimension: str) -> str:
+        tokens = ["qsync", dimension, "push", "--survey-id", survey_id, "--yes"]
+        _append_common_flags(tokens)
+        return " ".join(tokens)
+
+    next_commands = {
+        "interactive_review": _build_sync_command(yes=False, pending_action=None),
+        "push_all": _build_sync_command(yes=True, pending_action="push"),
+        "discard_all": _build_sync_command(yes=True, pending_action="discard"),
+        "pending_inspect": f"ls surveys/pending/*/{survey_id}.json",
+        "push_by_dimension": {
+            dim: _build_dimension_push_command(dim) for dim in pending_dims
+        },
+    }
+
+    allow_drift_note = "If you hit drift, re-run with --allow-drift."
+
+    payload = {
+        "error": "pending_staged_changes",
+        "survey_id": survey_id,
+        "pending_dims": pending_dims,
+        "pending_summary": pending_summary,
+        "next_commands": next_commands,
+        "notes": {"allow_drift": allow_drift_note},
+    }
+
+    lines = [
+        f"Pending staged changes detected for {survey_id}.",
+        "",
+        "Pending summary:",
+    ]
+    for dim in ordered_dims:
+        lines.append(f"  {dim}: {pending_summary[dim]}")
+    lines.extend(
+        [
+            "",
+            "Next commands:",
+            f"  interactive review: {next_commands['interactive_review']}",
+            f"  push all staged: {next_commands['push_all']}",
+            f"  discard all staged: {next_commands['discard_all']}",
+            f"  inspect pending: {next_commands['pending_inspect']}",
+        ]
+    )
+
+    if pending_dims:
+        lines.append("")
+        lines.append("Per-dimension push:")
+        for dim in pending_dims:
+            lines.append(f"  {dim}: {next_commands['push_by_dimension'][dim]}")
+
+    lines.extend(["", allow_drift_note])
+    message = "\n".join(lines)
+    return message, payload
+
+
 def _detect_unstaged_items(
     survey_id: str,
     *,
@@ -2355,6 +2454,7 @@ def sync_survey(
     skip_publish: bool = False,
     refresh_workbooks: bool = False,
     allow_drift: bool = False,
+    json_output: bool = False,
 ) -> Optional[SurveySyncSummary]:
     """Sync one or more dimensions for a survey.
 
@@ -2371,6 +2471,7 @@ def sync_survey(
         skip_publish: Skip auto-publish step
         refresh_workbooks: Refresh Excel workbooks after successful sync
         allow_drift: Allow drift during sync
+        json_output: Emit machine-readable JSON for blocked runs
 
     Returns:
         SurveySyncSummary with per-dimension results, or None if nothing synced
@@ -2447,9 +2548,17 @@ def sync_survey(
     if auto_yes and pending:
         action = (pending_action or "abort").strip().lower()
         if action == "abort":
-            raise SystemExit(
-                "Pending staged changes detected. Resolve them interactively before using --yes."
+            message, payload = _build_pending_abort_guidance(
+                survey_id=survey_id,
+                pending=pending,
+                force_live=force_live,
+                force_preview=force_preview,
+                scope_expr=scope.expression if scope else None,
             )
+            if json_output:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                raise SystemExit(1)
+            raise SystemExit(message)
         if action == "discard":
             from .pending_stage import clear_pending
             from .qualtrics_client import refresh_survey_cache
@@ -2869,6 +2978,7 @@ def sync_focal_surveys(
     skip_publish: bool = False,
     refresh_workbooks: bool = False,
     allow_drift: bool = False,
+    json_output: bool = False,
 ) -> bool:
     """Sync all focal surveys with detected changes.
 
@@ -2884,6 +2994,7 @@ def sync_focal_surveys(
         skip_publish: Skip auto-publish step
         refresh_workbooks: Refresh Excel workbooks after successful sync
         allow_drift: Allow drift during sync
+        json_output: Emit machine-readable JSON for blocked runs
 
     Returns:
         True if all syncs succeeded, False otherwise
@@ -3200,6 +3311,7 @@ def sync_focal_surveys(
                     skip_publish=skip_publish,
                     refresh_workbooks=refresh_workbooks,
                     allow_drift=allow_drift,
+                    json_output=json_output,
                     process_all=False,  # Always show menu after fix
                 )
     else:
@@ -3230,6 +3342,7 @@ def sync_focal_surveys(
                     skip_publish=skip_publish,
                     refresh_workbooks=refresh_workbooks,
                     allow_drift=allow_drift,
+                    json_output=json_output,
                 )
                 if summary:
                     summaries.append(summary)
@@ -3250,6 +3363,7 @@ def sync_focal_surveys(
                 skip_publish=skip_publish,
                 refresh_workbooks=refresh_workbooks,
                 allow_drift=allow_drift,
+                json_output=json_output,
             )
             if summary:
                 summaries.append(summary)

@@ -1352,6 +1352,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         action="store_true",
         help="Proceed even if cached survey differs from the live API",
     )
+    p_sync.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON when blocked by pending changes",
+    )
 
     # export command group (alias for survey export-translation)
     p_export = subparsers.add_parser(
@@ -3209,6 +3214,8 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
         from .terminal_output import info, error, dim, format_elapsed
 
+        json_output = bool(getattr(args, "json", False))
+
         # Parse scope filter if provided
         scope = None
         if getattr(args, "scope", None):
@@ -3261,9 +3268,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         if getattr(args, "survey_id", None):
             from .survey_ref import format_survey_ref
 
-            info(
-                "[qsync:sync]", f"Syncing survey {format_survey_ref(args.survey_id)}..."
-            )
+            if not json_output:
+                info(
+                    "[qsync:sync]",
+                    f"Syncing survey {format_survey_ref(args.survey_id)}...",
+                )
             start_time = time.perf_counter()
             summary = sync_survey(
                 survey_id=args.survey_id,
@@ -3278,10 +3287,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 skip_publish=bool(getattr(args, "skip_publish", False)),
                 refresh_workbooks=refresh_workbooks,
                 allow_drift=bool(getattr(args, "allow_drift", False)),
+                json_output=json_output,
             )
             elapsed = time.perf_counter() - start_time
             success = summary.success if summary else True
-            if summary and not summary.success:
+            if summary and not summary.success and not json_output:
                 display_recovery_instructions(
                     [summary],
                     force_live=bool(args.force_live),
@@ -3289,9 +3299,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     scope_expr=getattr(args, "scope", None),
                     auto_yes=bool(args.yes),
                 )
-            dim("[qsync:sync]", f"Completed in {format_elapsed(elapsed)}")
+            if not json_output:
+                dim("[qsync:sync]", f"Completed in {format_elapsed(elapsed)}")
         else:
-            info("[qsync:sync]", "Syncing focal surveys...")
+            if not json_output:
+                info("[qsync:sync]", "Syncing focal surveys...")
             success = sync_focal_surveys(
                 interactive=not bool(args.yes),
                 force_live=bool(args.force_live),
@@ -3304,6 +3316,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 skip_publish=bool(getattr(args, "skip_publish", False)),
                 refresh_workbooks=refresh_workbooks,
                 allow_drift=bool(getattr(args, "allow_drift", False)),
+                json_output=json_output,
             )
 
         if not success:
