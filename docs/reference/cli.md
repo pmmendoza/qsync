@@ -367,7 +367,7 @@ usage: qsync sync [-h] [--survey-id SURVEY_ID] [--all]
                   [--dimensions DIMENSIONS] [--scope SCOPE] [--per-dimension]
                   [--yes] [--pending-action {push,discard,abort}] [--force-live]
                   [--force-preview] [--skip-publish] [--refresh-workbooks]
-                  [--skip-refresh] [--allow-drift]
+                  [--skip-refresh] [--allow-drift] [--json]
 
 options:
   -h, --help            show this help message and exit
@@ -394,7 +394,20 @@ options:
                         use --refresh-workbooks to enable
   --allow-drift         Proceed even if cached survey differs from the live
                         API
+  --json                Emit machine-readable JSON when blocked by pending
+                        changes
 ```
+
+### CI Output (JSON)
+
+When running `qsync sync --yes --pending-action abort --json`, blocked runs emit
+JSON to stdout and exit non-zero. The payload includes:
+
+- `error`
+- `survey_id`
+- `pending_dims`
+- `pending_summary`
+- `next_commands` (includes `interactive_review`, `push_all`, `discard_all`, `pending_inspect`, `push_by_dimension`)
 
 ## `qsync survey`
 

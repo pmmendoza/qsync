@@ -31,6 +31,12 @@ If you installed `qsync` with pipx:
   - macOS: `brew install cairo pango gdk-pixbuf libffi`
   - Ubuntu: `sudo apt-get install libcairo2 libpango-1.0-0 libgdk-pixbuf2.0-0 libffi8`
   - Package names may vary by distro.
+- langcheck extra (`fasttext-wheel`) may fall back to a source build on newer Python
+  versions. On Apple Silicon, prefer Python 3.11 for pipx:
+  - `pipx install --python /opt/homebrew/opt/python@3.11/bin/python3.11 --include-deps "qsync[langcheck] @ git+..."`
+  - or `export PIPX_DEFAULT_PYTHON=/opt/homebrew/opt/python@3.11/bin/python3.11`
+- If you see `fatal error: 'istream' file not found` during a build, your Xcode Command
+  Line Tools are broken. Reinstall CLT or restore the libc++ headers (see below).
 - Windows: pipx installs are supported for the core CLI; PDF export is not supported on Windows yet.
 
 ## 3) “Arrow keys don’t work” / interactive menus missing

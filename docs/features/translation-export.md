@@ -17,6 +17,8 @@ The translation export produces a translator/reviewer-friendly `.docx` that mirr
 
 It is intentionally **not** a full Qualtrics runtime simulator; it aims to be readable, consistent, and conservative.
 
+Note: SurveyFlow traversal is centralized in `qsync.flow_traversal` and shared across export formats (DOCX/PDF) and translation checks to keep ordering and pruning consistent.
+
 ## 2) Running the export
 
 ```bash
@@ -40,6 +42,15 @@ qsync survey export-translation --survey-id SV_xxx --language FR --refresh
 
 # Scenario export: prune provably-irrelevant paths based on explicit Embedded Data Field values
 qsync survey export-translation --survey-id SV_xxx --edf S_VERSION=PROLIFIC --edf DEBUG=F
+
+# Scenario export using presets (from surveys/edf_presets.json)
+qsync survey export-translation --survey-id SV_xxx --edf-preset <preset-name>
+
+# List available presets for this survey
+qsync survey export-translation --survey-id SV_xxx --list-edf-presets
+
+# Print flow traversal traces (what was dropped and why)
+qsync survey export-translation --survey-id SV_xxx --edf DEBUG=F --flow-trace
 
 # Disable Mermaid rendering (keeps .flow.mmd, skips .flow.png rendering/embed)
 QSYNC_MERMAID_RENDER=0 qsync survey export-translation --survey-id SV_xxx

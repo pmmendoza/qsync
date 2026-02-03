@@ -87,6 +87,28 @@ Install `qsync` from a GitHub ref (tag, commit SHA, or branch):
 pipx install "qsync @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
 ```
 
+macOS note (langcheck): `qsync[langcheck]` uses `fasttext-wheel` when available. On Apple Silicon,
+the prebuilt wheel is most reliable on Python 3.11; for Python 3.12+ you typically need to install
+`fasttext-wheel` via a source build (C++ compilation). To keep installs reliable, `qsync[langcheck]`
+only pulls in `fasttext-wheel` automatically on Python < 3.12. If you want `langcheck`, prefer
+Python 3.11:
+
+```bash
+pipx install --python /opt/homebrew/opt/python@3.11/bin/python3.11 \
+  --include-deps "qsync[completion,pdf,langcheck] @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
+# or set once:
+# export PIPX_DEFAULT_PYTHON=/opt/homebrew/opt/python@3.11/bin/python3.11
+```
+
+If you do attempt a source build on macOS and see errors like `fatal error: 'istream' file not found`
+or `xcrun: error: invalid active developer path`, your Xcode Command Line Tools install is likely
+broken/incomplete. Reinstall it:
+
+```bash
+sudo rm -rf /Library/Developer/CommandLineTools
+xcode-select --install
+```
+
 Windows note: pipx installs are supported for the core CLI (CI-smoke-tested). Run
 `py -m pipx ensurepath` and restart your shell. PDF export is not supported on Windows yet.
 
@@ -116,7 +138,7 @@ pip install "qsync @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
 |---|---|---|
 | `pdf` | PDF export for translation documents | Uses WeasyPrint (cairo/pango); may require system deps on macOS/Linux (not supported on Windows yet) |
 | `completion` | Shell tab-completion via argcomplete | One-time setup: `activate-global-python-argcomplete --user` |
-| `langcheck` | Faster language detection via fasttext | Needs `lid.176.ftz` model (see `QSYNC_FASTTEXT_MODEL`) |
+| `langcheck` | Faster language detection via fasttext | Needs `lid.176.ftz` model (see `QSYNC_FASTTEXT_MODEL`). Best on Python 3.11; newer versions typically require a source build. |
 
 pipx examples:
 

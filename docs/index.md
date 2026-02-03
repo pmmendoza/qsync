@@ -15,6 +15,7 @@ Most files here were migrated from this monorepo’s `appendices/` directory so 
 - JavaScript (Question JS): `workflows/js.md`
 - Translations (workbook-based): `workflows/translations.md`
 - Survey Master (bulk metadata/options/status): `workflows/survey-master.md`
+- Cross-account copy: `workflows/copy-cross-account.md`
 
 ## Features
 
