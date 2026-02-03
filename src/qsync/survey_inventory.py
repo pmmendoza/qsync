@@ -586,21 +586,20 @@ def refresh_inventory(
     """
     warnings: list[str] = []
 
+    from .rich_support import should_use_rich, track_iterable, rich_status
+
+    use_rich = bool(progress) and should_use_rich()
+
     def _track(iterable, *, description: str):
-        if not progress:
+        if not use_rich:
             return iterable
-        try:
-            from rich.console import Console
-            from rich.progress import track
+        return track_iterable(iterable, description=description)
 
-            console = Console()
-            return track(
-                iterable, description=description, console=console, transient=True
-            )
-        except Exception:
-            return iterable
-
-    current_user = fetch_current_user(base_url, headers)
+    if use_rich:
+        with rich_status("Fetching current user..."):
+            current_user = fetch_current_user(base_url, headers)
+    else:
+        current_user = fetch_current_user(base_url, headers)
     current_user_id = current_user.get("userId")
 
     existing_locks = load_existing_metadata()
@@ -660,7 +659,11 @@ def refresh_inventory(
         inventory = list(inventory_map.values())
     else:
         # Full refresh: fetch all surveys
-        summaries = fetch_surveys(base_url, headers)
+        if use_rich:
+            with rich_status("Fetching survey summaries..."):
+                summaries = fetch_surveys(base_url, headers)
+        else:
+            summaries = fetch_surveys(base_url, headers)
         inventory = []
         payload_cache: Dict[str, dict] = {}
         for summary in _track(summaries, description="Refreshing inventory"):

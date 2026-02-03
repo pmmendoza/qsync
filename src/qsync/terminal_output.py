@@ -140,3 +140,18 @@ def prompt_yes_no(message: str, *, default: bool = True) -> bool:
         return default
 
     return response in {"y", "yes"}
+
+
+def format_elapsed(seconds: float) -> str:
+    """Format elapsed time for user-friendly output."""
+    if seconds < 1:
+        return "< 1s"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes = int(seconds // 60)
+    remaining = int(seconds % 60)
+    if minutes < 60:
+        return f"{minutes}m {remaining:02d}s"
+    hours = minutes // 60
+    minutes = minutes % 60
+    return f"{hours}h {minutes:02d}m"

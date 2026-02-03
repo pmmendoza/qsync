@@ -2381,8 +2381,11 @@ def sync_survey(
     dimension_results: Dict[str, DimensionSyncResult] = {}
     summary_name: Optional[str] = None
 
+    from .rich_support import rich_status
+
     # Detect staged changes
-    changes = detect_survey_changes(survey_id)
+    with rich_status("Detecting staged changes..."):
+        changes = detect_survey_changes(survey_id)
     survey_ref = format_survey_ref(survey_id, getattr(changes, "survey_name", None))
 
     # Check for fixable errors in interactive single-survey mode
@@ -2426,7 +2429,8 @@ def sync_survey(
                         return None
 
                 print("\n[sync] Re-detecting changes after fix...")
-                changes = detect_survey_changes(survey_id)
+                with rich_status("Re-detecting staged changes..."):
+                    changes = detect_survey_changes(survey_id)
                 survey_ref = format_survey_ref(
                     survey_id, getattr(changes, "survey_name", None)
                 )
@@ -2886,7 +2890,10 @@ def sync_focal_surveys(
     """
     import time
 
-    start_time = time.time()
+    from .rich_support import progress_context, should_use_rich, track_iterable
+    from .terminal_output import format_elapsed
+
+    start_time = time.perf_counter()
 
     focal_ids = get_focal_survey_ids()
 
@@ -2896,6 +2903,8 @@ def sync_focal_surveys(
 
     # Performance optimization: Parallel change detection
     print(f"[sync] Scanning {len(focal_ids)} focal surveys for staged changes...")
+    use_rich = should_use_rich()
+    progress_enabled = use_rich and len(focal_ids) > 1
 
     all_changes = []
     if len(focal_ids) > 3:
@@ -2905,16 +2914,40 @@ def sync_focal_surveys(
                 executor.submit(detect_survey_changes, sid): sid for sid in focal_ids
             }
 
-            for future in as_completed(future_to_id):
-                try:
-                    changes = future.result()
-                    all_changes.append(changes)
-                except Exception as e:
-                    survey_id = future_to_id[future]
-                    logger.error(f"[sync] Error detecting changes for {survey_id}: {e}")
+            if progress_enabled:
+                with progress_context(
+                    "Detecting staged changes", total=len(focal_ids)
+                ) as prog:
+                    for future in as_completed(future_to_id):
+                        try:
+                            changes = future.result()
+                            all_changes.append(changes)
+                        except Exception as e:
+                            survey_id = future_to_id[future]
+                            logger.error(
+                                f"[sync] Error detecting changes for {survey_id}: {e}"
+                            )
+                        if prog:
+                            progress, task_id = prog
+                            progress.advance(task_id)
+            else:
+                for future in as_completed(future_to_id):
+                    try:
+                        changes = future.result()
+                        all_changes.append(changes)
+                    except Exception as e:
+                        survey_id = future_to_id[future]
+                        logger.error(
+                            f"[sync] Error detecting changes for {survey_id}: {e}"
+                        )
     else:
         # Serial detection for small numbers
-        for sid in focal_ids:
+        ids_iter = (
+            track_iterable(focal_ids, description="Detecting staged changes")
+            if progress_enabled
+            else focal_ids
+        )
+        for sid in ids_iter:
             try:
                 all_changes.append(detect_survey_changes(sid))
             except Exception as e:
@@ -2970,9 +3003,9 @@ def sync_focal_surveys(
         reverse=True,
     )
 
-    elapsed = time.time() - start_time
+    elapsed = time.perf_counter() - start_time
     print(
-        f"{Colors.DIM}[sync] Change detection complete ({elapsed:.1f}s){Colors.RESET}"
+        f"{Colors.DIM}[sync] Change detection complete ({format_elapsed(elapsed)}){Colors.RESET}"
     )
 
     if not surveys_to_process:
@@ -3175,28 +3208,56 @@ def sync_focal_surveys(
 
     # Sync selected surveys and collect summaries
     summaries = []
-    for changes in selected:
-        summary = sync_survey(
-            changes.survey_id,
-            dimensions=None,  # Auto-detect per survey
-            interactive=interactive,
-            force_live=force_live,
-            force_preview=force_preview,
-            auto_yes=auto_yes,
-            pending_action=pending_action,
-            scope=scope,
-            per_dimension=per_dimension,
-            skip_publish=skip_publish,
-            refresh_workbooks=refresh_workbooks,
-            allow_drift=allow_drift,
-        )
-        if summary:
-            summaries.append(summary)
+    show_sync_progress = use_rich and len(selected) > 1 and not interactive
+    if show_sync_progress:
+        with progress_context("Syncing surveys", total=len(selected)) as prog:
+            for changes in selected:
+                if prog:
+                    progress, task_id = prog
+                    progress.update(
+                        task_id, description=f"Syncing {changes.survey_name}"
+                    )
+                summary = sync_survey(
+                    changes.survey_id,
+                    dimensions=None,  # Auto-detect per survey
+                    interactive=interactive,
+                    force_live=force_live,
+                    force_preview=force_preview,
+                    auto_yes=auto_yes,
+                    pending_action=pending_action,
+                    scope=scope,
+                    per_dimension=per_dimension,
+                    skip_publish=skip_publish,
+                    refresh_workbooks=refresh_workbooks,
+                    allow_drift=allow_drift,
+                )
+                if summary:
+                    summaries.append(summary)
+                if prog:
+                    progress.advance(task_id)
+    else:
+        for changes in selected:
+            summary = sync_survey(
+                changes.survey_id,
+                dimensions=None,  # Auto-detect per survey
+                interactive=interactive,
+                force_live=force_live,
+                force_preview=force_preview,
+                auto_yes=auto_yes,
+                pending_action=pending_action,
+                scope=scope,
+                per_dimension=per_dimension,
+                skip_publish=skip_publish,
+                refresh_workbooks=refresh_workbooks,
+                allow_drift=allow_drift,
+            )
+            if summary:
+                summaries.append(summary)
 
     # Clear cache after batch operation
     _clear_inventory_cache()
 
-    elapsed = time.time() - start_time
+    elapsed = time.perf_counter() - start_time
 
     # Display final summary table
     if summaries:
@@ -3221,7 +3282,7 @@ def sync_focal_surveys(
         else:
             print(f"\n{Colors.YELLOW}⚠{Colors.RESET} Some sync operations failed")
 
-        print(f"{Colors.DIM}Total time: {elapsed:.1f}s{Colors.RESET}")
+        print(f"{Colors.DIM}Total time: {format_elapsed(elapsed)}{Colors.RESET}")
 
         return all_success
 

@@ -1513,6 +1513,10 @@ def handle_delete(args: argparse.Namespace) -> None:
 
 def handle_inventory(args: argparse.Namespace) -> None:
     """Refresh the Qualtrics survey inventory cache."""
+    import time
+
+    from .terminal_output import dim, format_elapsed
+
     base, headers = get_client_config()
     quiet = bool(getattr(args, "quiet", False))
     progress = bool(
@@ -1549,6 +1553,7 @@ def handle_inventory(args: argparse.Namespace) -> None:
         else:
             print("[inventory] Fetching full survey inventory from Qualtrics...")
 
+    start_time = time.perf_counter()
     inventory, changed_records = refresh_inventory(
         base,
         headers,
@@ -1558,6 +1563,7 @@ def handle_inventory(args: argparse.Namespace) -> None:
         progress=progress,
         quiet=quiet,
     )
+    elapsed = time.perf_counter() - start_time
 
     editable = sum(1 for record in inventory if record.get("editableViaApi"))
     non_editable = len(inventory) - editable
@@ -1583,6 +1589,7 @@ def handle_inventory(args: argparse.Namespace) -> None:
                 )
         else:
             print("  - No inventory rows changed (ignoring generated_at).")
+        dim("[inventory]", f"Completed in {format_elapsed(elapsed)}")
 
 
 def _merge_embedded_pending(survey_id: str, additions: list[dict[str, str]]) -> None:

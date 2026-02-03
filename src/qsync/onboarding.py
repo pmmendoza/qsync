@@ -365,6 +365,7 @@ def _validate_credentials(env_path: Path) -> bool:
     try:
         from .config import load_env
         from .api_push import send_api_request
+        from .rich_support import rich_status
 
         env = load_env(env_path)
         base_url = (env.get("QUALTRICS_BASE_URL") or "").strip()
@@ -375,15 +376,16 @@ def _validate_credentials(env_path: Path) -> bool:
             print("Missing QUALTRICS_BASE_URL or API token; skip validation.")
             print("Next: set values in .env or run `qsync onboard` again.")
             return False
-        resp = send_api_request(
-            action="qsync.onboard.whoami",
-            method="GET",
-            base_url=base_url,
-            headers={"Accept": "application/json", "X-API-TOKEN": api_token},
-            path="whoami",
-            log_event=False,
-            timeout=15,
-        )
+        with rich_status("Validating credentials..."):
+            resp = send_api_request(
+                action="qsync.onboard.whoami",
+                method="GET",
+                base_url=base_url,
+                headers={"Accept": "application/json", "X-API-TOKEN": api_token},
+                path="whoami",
+                log_event=False,
+                timeout=15,
+            )
         result = resp.json().get("result", {}) or {}
         datacenter = (result.get("datacenter") or "").strip()
         if datacenter:

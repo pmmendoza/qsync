@@ -3205,7 +3205,9 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             display_recovery_instructions,
         )
         from .scope_filter import ScopeFilter
-        from .terminal_output import info, error
+        import time
+
+        from .terminal_output import info, error, dim, format_elapsed
 
         # Parse scope filter if provided
         scope = None
@@ -3262,6 +3264,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             info(
                 "[qsync:sync]", f"Syncing survey {format_survey_ref(args.survey_id)}..."
             )
+            start_time = time.perf_counter()
             summary = sync_survey(
                 survey_id=args.survey_id,
                 dimensions=dimensions,
@@ -3276,6 +3279,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 refresh_workbooks=refresh_workbooks,
                 allow_drift=bool(getattr(args, "allow_drift", False)),
             )
+            elapsed = time.perf_counter() - start_time
             success = summary.success if summary else True
             if summary and not summary.success:
                 display_recovery_instructions(
@@ -3285,6 +3289,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     scope_expr=getattr(args, "scope", None),
                     auto_yes=bool(args.yes),
                 )
+            dim("[qsync:sync]", f"Completed in {format_elapsed(elapsed)}")
         else:
             info("[qsync:sync]", "Syncing focal surveys...")
             success = sync_focal_surveys(
