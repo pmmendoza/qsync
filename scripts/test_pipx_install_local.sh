@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # Run from repo root:
-#   ./dev/scripts/test_pipx_install_local.sh
+#   ./scripts/test_pipx_install_local.sh
 #
-# Last run (macOS 2026-01-27):
-#   ./dev/scripts/test_pipx_install_local.sh
+# Last run (macOS 2026-01-29):
+#   ./scripts/test_pipx_install_local.sh
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
+REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 
 if ! command -v pipx >/dev/null 2>&1; then
   echo "pipx not found. Install with: python -m pip install pipx" >&2
