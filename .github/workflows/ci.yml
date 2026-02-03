@@ -55,7 +55,7 @@ jobs:
           pipx --version
 
       - name: pipx local install smoke
-        run: ./dev/scripts/test_pipx_install_local.sh
+        run: ./scripts/test_pipx_install_local.sh
 
   pipx-extras:
     runs-on: ubuntu-latest
@@ -87,7 +87,7 @@ jobs:
           fi
 
       - name: pipx extras smoke
-        run: ./dev/scripts/test_pipx_install_local.sh
+        run: ./scripts/test_pipx_install_local.sh
 
   pipx-pdf:
     runs-on: ${{ matrix.os }}
