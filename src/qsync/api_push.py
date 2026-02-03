@@ -13,6 +13,7 @@ from tenacity import Retrying, RetryCallState, stop_after_attempt
 from tenacity import retry_if_exception_type, retry_if_result, wait_exponential
 
 from .config import resolve_root
+from .rich_support import progress_active, rich_status, should_use_rich
 from .push_logger import log_push_event
 from .error_catalog import get_docs_url, get_suggestion, is_recoverable
 from .survey_lock import ensure_unlocked
@@ -223,8 +224,18 @@ def send_api_request(
             **request_kwargs,
         )
 
+    def _format_spinner_label() -> str:
+        trimmed = path
+        if trimmed.startswith("http://") or trimmed.startswith("https://"):
+            trimmed = _normalise_path(trimmed)
+        return f"{method} {trimmed}"
+
     try:
-        response = _retrying()(_do_request)
+        if should_use_rich() and not progress_active():
+            with rich_status(f"{_format_spinner_label()}..."):
+                response = _retrying()(_do_request)
+        else:
+            response = _retrying()(_do_request)
     except Exception as exc:
         if log_event:
             error_context = _error_context_from_exception(

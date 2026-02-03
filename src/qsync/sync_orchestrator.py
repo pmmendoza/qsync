@@ -1298,8 +1298,13 @@ def sync_dimension(
         # push_safeguards and other CLI-style helpers may raise SystemExit;
         # treat it as a failed sync step rather than terminating the orchestrator.
         msg = str(e).strip() or "SystemExit"
-        logger.error(f"[sync:{dimension}] SystemExit: {msg}")
-        print(f"[sync:{dimension}] {Colors.RED}✗{Colors.RESET} Failed: {msg}")
+        if "Aborted by user" in msg:
+            # User chose an explicit abort path; do not treat as an internal error.
+            logger.info(f"[sync:{dimension}] Cancelled: {msg}")
+            print(f"[sync:{dimension}] {Colors.YELLOW}↩{Colors.RESET} Cancelled: {msg}")
+        else:
+            logger.error(f"[sync:{dimension}] SystemExit: {msg}")
+            print(f"[sync:{dimension}] {Colors.RED}✗{Colors.RESET} Failed: {msg}")
         return DimensionSyncResult(
             dimension=dimension,
             success=False,
@@ -1654,7 +1659,7 @@ def _display_survey_overview(
 
     print(f"\n{Colors.BOLD}Next actions:{Colors.RESET}")
     if has_pending:
-        print("  • Preview staged changes (live vs cache)")
+        print("  • Preview drift (live vs cache) / staged (pending vs cache)")
         print("  • Push staged changes now")
         print("  • Discard staged changes (clear pending + refresh cache)")
     if any(info.has_changes for info in unstaged.values()):
@@ -1684,21 +1689,21 @@ def _preview_staged_changes(
         print(f"{Colors.DIM}No staged changes to preview.{Colors.RESET}")
         return
 
-    print(f"\n{Colors.BLUE}═══ Staged Preview (live vs cache) ═══{Colors.RESET}")
+    print(f"\n{Colors.BLUE}═══ Preview: Drift + Staged Changes ═══{Colors.RESET}")
     safe_order = ["items", "js", "translations", "eos"]
     use_context = True
     if interactive:
         scope_choice = select_from_list(
-            message="Preview drift scope:",
+            message="What do you want to preview?",
             choices=[
-                "Full survey (unscoped)",
-                "Staged-only (scoped)",
+                "Drift (live vs cache) — full survey",
+                "Staged changes (pending vs cache) — scoped where possible",
                 "↩ Cancel",
             ],
         )
         if scope_choice is None or "Cancel" in scope_choice:
             return
-        use_context = scope_choice.startswith("Staged")
+        use_context = scope_choice.startswith("Staged changes")
 
     for dim in safe_order:
         record = pending.get(dim)
@@ -1741,7 +1746,7 @@ def _preview_staged_changes(
             report.display(interactive=interactive, show_full=show_full)
             continue
 
-        # Staged-only preview (pending vs cache), with live drift warning
+        # Staged-only preview (pending vs cache), with live drift warning (cache may be stale vs live).
         drift_report = check_drift(survey_id, dim, interactive=False, context=None)
         if drift_report.has_drift:
             print(
@@ -1846,7 +1851,7 @@ def _resolve_staged_changes_interactive(
 
     while True:
         choices = [
-            "👀 Preview staged changes (live vs cache)",
+            "👀 Preview drift (live vs cache) / staged (pending vs cache)",
             "🚀 Push staged changes now",
             "🧹 Discard staged changes (clear pending + refresh cache)",
             "↩ Exit sync",
@@ -2252,6 +2257,12 @@ def _sync_dimensions_once(
                         return None
 
                     print(f"{Colors.GREEN}✓ Staged {dim}{Colors.RESET}")
+
+                # If we just staged in this same session, prefer pushing the staged payload.
+                # This avoids prompting “Excel differs from cache” immediately after staging,
+                # which is expected (Excel != cache is the reason we staged).
+                if prefer_pending is None:
+                    prefer_pending = True
 
     # Push approval menu (unless --yes bypasses all prompts)
     if not auto_yes and interactive:
@@ -3396,7 +3407,10 @@ def sync_focal_surveys(
         else:
             print(f"\n{Colors.YELLOW}⚠{Colors.RESET} Some sync operations failed")
 
+        from .terminal_output import mark_timing_emitted
+
         print(f"{Colors.DIM}Total time: {format_elapsed(elapsed)}{Colors.RESET}")
+        mark_timing_emitted()
 
         return all_success
 

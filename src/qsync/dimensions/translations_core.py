@@ -1835,17 +1835,22 @@ def push_translations(
             decision = prefer_pending
             if decision is None:
                 if interactive and sys.stdin.isatty():
-                    print(
-                        "[sync:translations] Excel differs from cache and staged changes exist."
+                    from ..interactive_menu import select_from_list
+
+                    choices = [
+                        "Use staged changes (ignore Excel)",
+                        "Restage from Excel (overwrite pending)",
+                        "↩ Abort push",
+                    ]
+                    selection = select_from_list(
+                        message="Excel differs from cache and staged changes exist. Which should be pushed?",
+                        choices=choices,
+                        default=choices[1],  # default is “restage” (legacy behavior)
                     )
-                    print("  [1] Use staged changes (ignore Excel)")
-                    print("  [2] Restage from Excel (overwrite pending)")
-                    print("  [3] Abort")
-                    choice = input("Select 1/2/3 [2]: ").strip().lower()
-                    if choice in {"1", "p", "pending"}:
-                        decision = True
-                    elif choice in {"3", "a", "abort"}:
+                    if selection is None or selection.startswith("↩"):
                         decision = None
+                    elif selection.startswith("Use staged"):
+                        decision = True
                     else:
                         decision = False
                 else:
@@ -1877,8 +1882,7 @@ def push_translations(
                     return []
                 pending = load_pending(survey_id, "translations")
             else:
-                print("[sync:translations] Aborted.")
-                return []
+                raise SystemExit("[qsync:translations] Aborted by user.")
         else:
             print(
                 f"[sync:translations] Staging {len(workbook_changes)} change(s) from Excel..."

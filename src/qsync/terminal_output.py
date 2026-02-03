@@ -11,8 +11,12 @@ and print only JSON to stdout.
 
 from __future__ import annotations
 
+import os
 import sys
-from typing import TextIO
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Iterator, TextIO
 
 from .terminal_colors import Colors, colored
 
@@ -155,3 +159,53 @@ def format_elapsed(seconds: float) -> str:
     hours = minutes // 60
     minutes = minutes % 60
     return f"{hours}h {minutes:02d}m"
+
+
+_TIMING_EMITTED: ContextVar[bool] = ContextVar("qsync_timing_emitted", default=False)
+
+
+def mark_timing_emitted() -> None:
+    _TIMING_EMITTED.set(True)
+
+
+def reset_timing_emitted() -> None:
+    _TIMING_EMITTED.set(False)
+
+
+def is_json_mode() -> bool:
+    return (os.environ.get("QSYNC_JSON_MODE") or "").strip().lower() in {
+        "1",
+        "true",
+        "t",
+        "yes",
+        "y",
+        "on",
+    }
+
+
+@contextmanager
+def operation_timer(
+    prefix: str | None,
+    *,
+    enabled: bool | None = None,
+) -> Iterator[None]:
+    """Emit a timing footer after an operation completes."""
+    if enabled is None:
+        # Only emit timing in interactive terminals (avoid polluting machine-readable
+        # output and captured stdout in tests).
+        enabled = not is_json_mode() and sys.stdout.isatty()
+    if not enabled:
+        yield
+        return
+
+    start_time = time.perf_counter()
+    try:
+        yield
+    finally:
+        if sys.exc_info()[0] is not None:
+            return
+        if _TIMING_EMITTED.get():
+            return
+        elapsed = time.perf_counter() - start_time
+        dim(prefix, f"Completed in {format_elapsed(elapsed)}")
+        mark_timing_emitted()

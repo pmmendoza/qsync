@@ -1589,7 +1589,10 @@ def handle_inventory(args: argparse.Namespace) -> None:
                 )
         else:
             print("  - No inventory rows changed (ignoring generated_at).")
+        from .terminal_output import mark_timing_emitted
+
         dim("[inventory]", f"Completed in {format_elapsed(elapsed)}")
+        mark_timing_emitted()
 
 
 def _merge_embedded_pending(survey_id: str, additions: list[dict[str, str]]) -> None:

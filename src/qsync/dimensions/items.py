@@ -347,15 +347,22 @@ def push(
         decision = prefer_pending
         if decision is None:
             if interactive and sys.stdin.isatty():
-                print("[sync:items] Excel differs from cache and staged changes exist.")
-                print("  [1] Use staged changes (ignore Excel)")
-                print("  [2] Restage from Excel (overwrite pending)")
-                print("  [3] Abort")
-                choice = input("Select 1/2/3 [2]: ").strip().lower()
-                if choice in {"1", "p", "pending"}:
-                    decision = True
-                elif choice in {"3", "a", "abort"}:
+                from ..interactive_menu import select_from_list
+
+                choices = [
+                    "Use staged changes (ignore Excel)",
+                    "Restage from Excel (overwrite pending)",
+                    "↩ Abort push",
+                ]
+                selection = select_from_list(
+                    message="Excel differs from cache and staged changes exist. Which should be pushed?",
+                    choices=choices,
+                    default=choices[1],  # default is “restage” (legacy behavior)
+                )
+                if selection is None or selection.startswith("↩"):
                     decision = None
+                elif selection.startswith("Use staged"):
+                    decision = True
                 else:
                     decision = False
             else:
@@ -373,8 +380,7 @@ def push(
             )
             workbook_diffs = []
         elif decision is None:
-            print("[sync:items] Aborted.")
-            return True
+            raise SystemExit("[qsync:items] Aborted by user.")
 
     if workbook_diffs:
         if pending:

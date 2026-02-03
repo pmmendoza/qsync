@@ -12,13 +12,27 @@ from __future__ import annotations
 import os
 import sys
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Iterable, Iterator, Optional, Tuple
 
 from .terminal_colors import colors_enabled
 
+_RICH_PROGRESS_ACTIVE: ContextVar[bool] = ContextVar(
+    "qsync_rich_progress_active", default=False
+)
+
 
 def should_use_rich() -> bool:
     """Return True when Rich output should be used."""
+    if os.environ.get("QSYNC_JSON_MODE", "").strip().lower() in {
+        "1",
+        "true",
+        "t",
+        "yes",
+        "y",
+        "on",
+    }:
+        return False
     if not sys.stdout.isatty():
         return False
     raw = os.environ.get("QSYNC_USE_RICH", "auto").strip().lower()
@@ -36,10 +50,14 @@ def _build_console():
     return Console(no_color=not colors_enabled())
 
 
+def progress_active() -> bool:
+    return bool(_RICH_PROGRESS_ACTIVE.get())
+
+
 @contextmanager
 def rich_status(message: str, *, spinner: str = "dots") -> Iterator[None]:
     """Show a Rich status spinner while running a block."""
-    if not should_use_rich():
+    if not should_use_rich() or progress_active():
         yield
         return
 
@@ -70,19 +88,23 @@ def track_iterable(iterable: Iterable, *, description: str) -> Iterable:
     console = _build_console()
 
     def _generator() -> Iterator:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            console=console,
-            transient=True,
-        ) as progress:
-            task_id = progress.add_task(description, total=total)
-            for item in iterable:
-                yield item
-                progress.advance(task_id)
+        token = _RICH_PROGRESS_ACTIVE.set(True)
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                console=console,
+                transient=True,
+            ) as progress:
+                task_id = progress.add_task(description, total=total)
+                for item in iterable:
+                    yield item
+                    progress.advance(task_id)
+        finally:
+            _RICH_PROGRESS_ACTIVE.reset(token)
 
     return _generator()
 
@@ -106,14 +128,18 @@ def progress_context(
     )
 
     console = _build_console()
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeElapsedColumn(),
-        console=console,
-        transient=True,
-    ) as progress:
-        task_id = progress.add_task(description, total=total)
-        yield (progress, task_id)
+    token = _RICH_PROGRESS_ACTIVE.set(True)
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task_id = progress.add_task(description, total=total)
+            yield (progress, task_id)
+    finally:
+        _RICH_PROGRESS_ACTIVE.reset(token)
