@@ -22,7 +22,10 @@ pdf = [
   "weasyprint>=62.0",
 ]
 langcheck = [
-  "fasttext-wheel>=0.9.2",
+  # fasttext-wheel has reliable prebuilt wheels on macOS for older Python versions
+  # (notably 3.11). Newer Pythons often fall back to source builds requiring a
+  # working C++ toolchain (Xcode Command Line Tools).
+  "fasttext-wheel>=0.9.2; python_version < '3.12'",
 ]
 
 [project.scripts]
