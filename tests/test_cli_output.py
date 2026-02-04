@@ -97,6 +97,33 @@ class QsyncCliOutputTests(unittest.TestCase):
             self.assertEqual(payload["QuestionID"], "QID1")
             self.assertEqual(payload["QuestionText"], "Hello")
 
+    def test_self_update_dry_run_prints_command(self) -> None:
+        from qsync.cli import main
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            main(
+                [
+                    "self-update",
+                    "--dry-run",
+                    "--yes",
+                    "--pip",
+                    "--extras",
+                    "pdf,langcheck",
+                    "--repo",
+                    "https://github.com/pmmendoza/qsync.git",
+                    "--ref",
+                    "main",
+                ]
+            )
+        output = buf.getvalue()
+        self.assertIn("Dry run", output)
+        self.assertIn("pip install --upgrade", output)
+        self.assertIn(
+            "git+https://github.com/pmmendoza/qsync.git@main#egg=qsync[langcheck,pdf]",
+            output,
+        )
+
     @patch("qsync.cli_survey.publish_survey_definition")
     def test_survey_publish_dry_run_skips_api(self, mock_publish) -> None:
         from qsync.cli import main

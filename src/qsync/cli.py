@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -369,6 +370,197 @@ def _prompt_confirmation(message: str) -> bool:
         if not resp:
             return True
         return resp in {"y", "yes"}
+
+
+def _parse_extras_args(raw_extras: list[str] | None) -> list[str]:
+    extras: list[str] = []
+    if not raw_extras:
+        return extras
+    for raw in raw_extras:
+        if not raw:
+            continue
+        for part in str(raw).split(","):
+            part = part.strip()
+            if part:
+                extras.append(part)
+    return extras
+
+
+def _get_available_extras() -> list[str]:
+    try:
+        from importlib.metadata import metadata
+
+        provides = metadata("qsync").get_all("Provides-Extra") or []
+        extras = sorted({str(item).strip() for item in provides if str(item).strip()})
+        if extras:
+            return extras
+    except Exception:
+        pass
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    if not pyproject.exists():
+        return []
+    try:
+        try:
+            import tomllib  # py311+
+        except ImportError:  # pragma: no cover - py310 fallback if tomli is available
+            import tomli as tomllib  # type: ignore
+        data = tomllib.loads(pyproject.read_bytes())
+        extras_map = data.get("project", {}).get("optional-dependencies", {}) or {}
+        return sorted(str(key) for key in extras_map.keys())
+    except Exception:
+        # Minimal fallback: scan section header and parse keys.
+        extras: list[str] = []
+        in_section = False
+        for line in pyproject.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                in_section = stripped == "[project.optional-dependencies]"
+                continue
+            if in_section and stripped and not stripped.startswith("#"):
+                key = stripped.split("=", 1)[0].strip()
+                if key:
+                    extras.append(key)
+        return sorted(set(extras))
+
+
+def _normalize_repo_url(repo: str) -> str:
+    repo = (repo or "").strip()
+    if not repo:
+        return ""
+    if repo.startswith("git+"):
+        return repo
+    if repo.startswith("git@"):
+        return f"git+ssh://{repo}"
+    if repo.startswith(("https://", "ssh://")):
+        return f"git+{repo}"
+    if repo.count("/") == 1:
+        return f"git+https://github.com/{repo}.git"
+    return f"git+{repo}"
+
+
+def _build_self_update_spec(
+    repo: str,
+    ref: str | None,
+    extras: list[str],
+) -> str:
+    base = _normalize_repo_url(repo)
+    if ref:
+        base = f"{base}@{ref}"
+    extras_part = f"[{','.join(extras)}]" if extras else ""
+    return f"{base}#egg=qsync{extras_part}"
+
+
+def _looks_like_pipx_env() -> bool:
+    exe = Path(sys.executable).resolve()
+    parts = {p.lower() for p in exe.parts}
+    return "pipx" in parts and "venvs" in parts
+
+
+def _pipx_has_qsync() -> bool:
+    if not shutil.which("pipx"):
+        return False
+    try:
+        result = subprocess.run(
+            ["pipx", "list", "--json"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False
+        payload = json.loads(result.stdout or "{}")
+        venvs = payload.get("venvs", {}) or {}
+        return "qsync" in venvs
+    except Exception:
+        return False
+
+
+def _resolve_installer(force_pip: bool, force_pipx: bool) -> str:
+    if force_pip and force_pipx:
+        raise SystemExit("Choose only one of --pip or --pipx.")
+    if force_pipx:
+        return "pipx"
+    if force_pip:
+        return "pip"
+    if _looks_like_pipx_env() or _pipx_has_qsync():
+        return "pipx"
+    return "pip"
+
+
+def _handle_self_update(args: argparse.Namespace) -> None:
+    from .terminal_output import info, success, warn
+    from .interactive_menu import (
+        confirm,
+        is_interactive,
+        multi_select_from_list,
+    )
+
+    default_repo = (
+        os.environ.get("QSYNC_UPDATE_REPO") or "https://github.com/pmmendoza/qsync.git"
+    )
+    repo = getattr(args, "repo", None) or default_repo
+    ref = getattr(args, "ref", None) or os.environ.get("QSYNC_UPDATE_REF") or "main"
+
+    available_extras = _get_available_extras()
+    extras = _parse_extras_args(getattr(args, "extras", None))
+
+    if getattr(args, "all_extras", False) and available_extras:
+        extras = list(available_extras)
+
+    if not extras and is_interactive() and not getattr(args, "yes", False):
+        if available_extras:
+            selection = multi_select_from_list(
+                "Select extras to include (optional):",
+                available_extras,
+                instruction="Space to toggle, Enter to confirm",
+            )
+            if selection is None:
+                info("[qsync:self-update]", "Cancelled.")
+                return
+            extras = list(selection)
+
+    extras = sorted({extra for extra in extras if extra})
+    unknown = (
+        [e for e in extras if e not in available_extras] if available_extras else []
+    )
+    if unknown:
+        warn(
+            "[qsync:self-update]",
+            f"Unknown extras requested: {', '.join(unknown)} (continuing anyway).",
+        )
+
+    spec = _build_self_update_spec(repo, ref, extras)
+    installer = _resolve_installer(
+        force_pip=bool(getattr(args, "pip", False)),
+        force_pipx=bool(getattr(args, "pipx", False)),
+    )
+
+    if installer == "pipx":
+        cmd = ["pipx", "reinstall", "--spec", spec, "qsync"]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", spec]
+
+    info("[qsync:self-update]", f"Installer: {installer}")
+    info("[qsync:self-update]", f"Target: {spec}")
+
+    if getattr(args, "dry_run", False):
+        info("[qsync:self-update]", "Dry run; would execute:")
+        print("  " + " ".join(cmd))
+        return
+
+    if not getattr(args, "yes", False) and is_interactive():
+        if not confirm("Proceed with self-update?", default=True):
+            info("[qsync:self-update]", "Cancelled.")
+            return
+
+    result = subprocess.run(cmd, check=False)
+    if result.returncode != 0:
+        raise SystemExit(
+            f"[qsync:self-update] Update failed (exit {result.returncode})."
+        )
+
+    success("[qsync:self-update]", "Update complete.")
 
 
 def _push_items_pending_record(
@@ -975,6 +1167,50 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--dry-run",
         action="store_true",
         help="Preview onboarding actions without writing files",
+    )
+
+    # self-update
+    p_self_update = subparsers.add_parser(
+        "self-update",
+        help="Update qsync from GitHub (supports optional extras)",
+    )
+    p_self_update.add_argument(
+        "--extras",
+        action="append",
+        help="Comma-separated extras to install (e.g., tui,langcheck).",
+    )
+    p_self_update.add_argument(
+        "--all-extras",
+        action="store_true",
+        help="Install all available extras.",
+    )
+    p_self_update.add_argument(
+        "--repo",
+        help="GitHub repo URL or owner/name (default: QSYNC_UPDATE_REPO or upstream).",
+    )
+    p_self_update.add_argument(
+        "--ref",
+        help="Git ref to install (branch, tag, or SHA; default: main).",
+    )
+    p_self_update.add_argument(
+        "--pipx",
+        action="store_true",
+        help="Force pipx reinstall (auto-detected by default).",
+    )
+    p_self_update.add_argument(
+        "--pip",
+        action="store_true",
+        help="Force pip install (auto-detected by default).",
+    )
+    p_self_update.add_argument(
+        "--yes",
+        action="store_true",
+        help="Run without confirmation prompts.",
+    )
+    p_self_update.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the install command without executing it.",
     )
 
     # compare
@@ -2218,6 +2454,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             run_onboard(args)
             return
 
+        if args.command == "self-update":
+            _handle_self_update(args)
+            return
+
         # First-run hint: suggest onboarding if .env missing or folders absent (non-onboard).
         try:
             from .config import resolve_env_path, resolve_root
@@ -2232,7 +2472,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 or not excel_hint.exists()
                 or not js_hint.exists()
             )
-            if args.command not in {"doctor"} and (
+            if args.command not in {"doctor", "self-update"} and (
                 not Path(env_path_hint).exists() or missing_workspace
             ):
                 from .interactive_menu import confirm, is_interactive

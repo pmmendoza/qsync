@@ -317,6 +317,50 @@ def autocomplete_from_list(
         return _fallback_autocomplete(message, choices, instruction=instruction)
 
 
+def multi_select_from_list(
+    message: str,
+    choices: List[str],
+    instruction: Optional[str] = None,
+    default: Optional[List[str]] = None,
+) -> Optional[List[str]]:
+    """Prompt for multiple selections from a list.
+
+    Returns a list of selected choice strings, or None if cancelled.
+    """
+    if not choices:
+        return []
+    if not should_use_questionary():
+        return _fallback_multi_select(message, choices, instruction=instruction)
+    if not is_interactive():
+        return _fallback_multi_select(message, choices, instruction=instruction)
+
+    try:
+        import termios
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        prompt_message = message
+        if instruction:
+            prompt_message = f"{message} ({instruction})"
+        try:
+            result = questionary.checkbox(
+                message=prompt_message,
+                choices=choices,
+                default=default or [],
+                style=CUSTOM_STYLE,
+            ).ask()
+            if result is None:
+                return None
+            return list(result)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    except (KeyboardInterrupt, EOFError):
+        return None
+    except Exception as e:
+        print(f"\n(Multi-select failed: {e})")
+        return _fallback_multi_select(message, choices, instruction=instruction)
+
+
 def edit_text_in_editor(
     message: str,
     *,
@@ -413,6 +457,40 @@ def _fallback_autocomplete(
     if len(matches) == 1:
         return matches[0]
     return _fallback_select(f"{message} (matches)", matches)
+
+
+def _fallback_multi_select(
+    message: str,
+    choices: List[str],
+    instruction: Optional[str] = None,
+) -> Optional[List[str]]:
+    print(f"\n{message}")
+    if instruction:
+        print(f"({instruction})")
+    for idx, choice in enumerate(choices, 1):
+        print(f"  [{idx}] {choice}")
+
+    try:
+        raw = input(
+            "\nEnter numbers (comma-separated, blank for none, 'q' to cancel): "
+        )
+    except (KeyboardInterrupt, EOFError):
+        return None
+    raw = raw.strip().lower()
+    if raw in {"q", "quit", "cancel"}:
+        return None
+    if not raw:
+        return []
+
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    selected: List[str] = []
+    for part in parts:
+        if not part.isdigit():
+            continue
+        idx = int(part)
+        if 1 <= idx <= len(choices):
+            selected.append(choices[idx - 1])
+    return selected
 
 
 def _fallback_select(

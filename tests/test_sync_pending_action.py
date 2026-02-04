@@ -115,9 +115,7 @@ class TestSyncPendingAction(unittest.TestCase):
         self.assertIn(payload["next_commands"]["push_all"], message)
         self.assertIn(payload["next_commands"]["discard_all"], message)
         self.assertIn(payload["next_commands"]["pending_inspect"], message)
-        self.assertIn(
-            payload["next_commands"]["push_by_dimension"]["items"], message
-        )
+        self.assertIn(payload["next_commands"]["push_by_dimension"]["items"], message)
         self.assertNotIn("qsync js push", message)
         self.assertNotIn("qsync translations push", message)
         self.assertNotIn("qsync eos push", message)
@@ -206,9 +204,7 @@ class TestSyncPendingAction(unittest.TestCase):
             patch.object(
                 orchestrator,
                 "list_pending",
-                return_value={
-                    "items": self._record(ItemsPendingPayload(qids=["Q1"]))
-                },
+                return_value={"items": self._record(ItemsPendingPayload(qids=["Q1"]))},
             ),
         ):
             buf = io.StringIO()
