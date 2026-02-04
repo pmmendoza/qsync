@@ -139,6 +139,7 @@ pip install "qsync @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
 | `pdf` | PDF export for translation documents | Uses WeasyPrint (cairo/pango); may require system deps on macOS/Linux (not supported on Windows yet) |
 | `completion` | Shell tab-completion via argcomplete | One-time setup: `activate-global-python-argcomplete --user` |
 | `langcheck` | Faster language detection via fasttext | Needs `lid.176.ftz` model (see `QSYNC_FASTTEXT_MODEL`). Best on Python 3.11; newer versions typically require a source build. |
+| `tui` | **Preview**: Textual-based TUI mode | May be a no-op until the extra is published; safe to include now. |
 
 pipx examples:
 
@@ -155,6 +156,34 @@ pip/venv example:
 ```bash
 pip install "qsync[pdf,completion,langcheck] @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
 ```
+
+## Self-update
+
+`qsync` can update itself from GitHub and optionally select extras.
+
+Interactive:
+
+```bash
+qsync self-update
+```
+
+Non-interactive (extras + pipx):
+
+```bash
+qsync self-update --extras tui,langcheck --pipx --yes
+```
+
+Dry-run (prints the command):
+
+```bash
+qsync self-update --dry-run --extras pdf,langcheck --pip
+```
+
+Notes:
+- By default, `self-update` auto-detects whether you’re using pipx or pip/venv.
+- You can override the repo/ref with environment variables:
+  - `QSYNC_UPDATE_REPO` (e.g., `https://github.com/pmmendoza/qsync.git`)
+  - `QSYNC_UPDATE_REF` (e.g., `main`, `v0.2.3`, or a commit SHA)
 
 ## Configuration
 

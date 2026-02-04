@@ -120,7 +120,7 @@ class QsyncCliOutputTests(unittest.TestCase):
         self.assertIn("Dry run", output)
         self.assertIn("pip install --upgrade", output)
         self.assertIn(
-            "git+https://github.com/pmmendoza/qsync.git@main#egg=qsync[langcheck,pdf]",
+            "qsync[langcheck,pdf] @ git+https://github.com/pmmendoza/qsync.git@main",
             output,
         )
 

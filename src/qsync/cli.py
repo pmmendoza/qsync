@@ -386,6 +386,9 @@ def _parse_extras_args(raw_extras: list[str] | None) -> list[str]:
     return extras
 
 
+_EXTRA_ALLOWLIST = {"tui"}
+
+
 def _get_available_extras() -> list[str]:
     try:
         from importlib.metadata import metadata
@@ -393,7 +396,8 @@ def _get_available_extras() -> list[str]:
         provides = metadata("qsync").get_all("Provides-Extra") or []
         extras = sorted({str(item).strip() for item in provides if str(item).strip()})
         if extras:
-            return extras
+            extras.extend(sorted(_EXTRA_ALLOWLIST - set(extras)))
+            return sorted(set(extras))
     except Exception:
         pass
 
@@ -407,7 +411,9 @@ def _get_available_extras() -> list[str]:
             import tomli as tomllib  # type: ignore
         data = tomllib.loads(pyproject.read_bytes())
         extras_map = data.get("project", {}).get("optional-dependencies", {}) or {}
-        return sorted(str(key) for key in extras_map.keys())
+        extras = sorted(str(key) for key in extras_map.keys())
+        extras.extend(sorted(_EXTRA_ALLOWLIST - set(extras)))
+        return sorted(set(extras))
     except Exception:
         # Minimal fallback: scan section header and parse keys.
         extras: list[str] = []
@@ -421,6 +427,8 @@ def _get_available_extras() -> list[str]:
                 key = stripped.split("=", 1)[0].strip()
                 if key:
                     extras.append(key)
+        extras = sorted(set(extras))
+        extras.extend(sorted(_EXTRA_ALLOWLIST - set(extras)))
         return sorted(set(extras))
 
 
@@ -448,7 +456,7 @@ def _build_self_update_spec(
     if ref:
         base = f"{base}@{ref}"
     extras_part = f"[{','.join(extras)}]" if extras else ""
-    return f"{base}#egg=qsync{extras_part}"
+    return f"qsync{extras_part} @ {base}"
 
 
 def _looks_like_pipx_env() -> bool:
@@ -537,7 +545,8 @@ def _handle_self_update(args: argparse.Namespace) -> None:
     )
 
     if installer == "pipx":
-        cmd = ["pipx", "reinstall", "--spec", spec, "qsync"]
+        # pipx reinstall does not accept --spec; use install --force with VCS spec.
+        cmd = ["pipx", "install", "--force", spec]
     else:
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", spec]
 
