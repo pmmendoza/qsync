@@ -342,11 +342,21 @@ def multi_select_from_list(
         prompt_message = message
         if instruction:
             prompt_message = f"{message} ({instruction})"
+
+        # questionary.checkbox only supports a single `default` value; for multi-select
+        # preselection, we must mark individual choices as checked.
+        processed = []
+        default_set = set(default or [])
+        for choice in choices:
+            if choice in default_set:
+                processed.append(questionary.Choice(choice, checked=True))
+            else:
+                processed.append(choice)
+
         try:
             result = questionary.checkbox(
                 message=prompt_message,
-                choices=choices,
-                default=default or [],
+                choices=processed,
                 style=CUSTOM_STYLE,
             ).ask()
             if result is None:
