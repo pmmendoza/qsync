@@ -138,6 +138,7 @@ pip install "qsync @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
 |---|---|---|
 | `pdf` | PDF export for translation documents | Uses WeasyPrint (cairo/pango); may require system deps on macOS/Linux (not supported on Windows yet) |
 | `completion` | Shell tab-completion via argcomplete | One-time setup: `activate-global-python-argcomplete --user` |
+| `keychain` | Load Qualtrics API token from system keychain | Uses optional `keyring` dependency; still supports `.env` / env vars |
 | `langcheck` | Faster language detection via fasttext | Needs `lid.176.ftz` model (see `QSYNC_FASTTEXT_MODEL`). Best on Python 3.11; newer versions typically require a source build. |
 | `tui` | **Preview**: Textual-based TUI mode | May be a no-op until the extra is published; safe to include now. |
 
@@ -205,6 +206,42 @@ X-API-TOKEN=...
 # Fallback (if needed)
 # QUALTRICS_API_KEY=...
 ```
+
+### Keychain token (optional)
+
+If you prefer not to store `X-API-TOKEN` in `.env`, `qsync` can load it from your
+system keychain using the optional `keyring` dependency.
+
+Install:
+
+```bash
+# pipx (recommended for CLI installs)
+pipx inject qsync keyring
+
+# pip/venv
+pip install keyring
+```
+
+Store the token (default lookup: service `qualtrics-token`, username `token`):
+
+```bash
+python -m keyring set "qualtrics-token" "token"
+```
+
+Then keep your `.env` minimal (base URL only) and run `qsync doctor` to confirm
+`qualtrics_token_source: keyring`.
+
+Notes:
+- If you created the entry in Keychain Access manually, the “Account” is often your macOS username. `qsync`
+  will also try that automatically.
+- Compatibility: `qsync` also checks legacy services like `Qualtrics` and `Qualtrics - token`.
+
+Overrides:
+- `QSYNC_QUALTRICS_KEYRING_SERVICE`
+- `QSYNC_QUALTRICS_KEYRING_USERNAME`
+
+Disable keyring lookups (e.g., CI/headless):
+- `QSYNC_DISABLE_KEYRING=1`
 
 ### Configuration reference
 

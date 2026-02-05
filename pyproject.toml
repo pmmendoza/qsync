@@ -19,6 +19,9 @@ dependencies = [
 completion = [
   "argcomplete>=3.0.0",
 ]
+keychain = [
+  "keyring>=24.0.0",
+]
 pdf = [
   "weasyprint>=62.0",
 ]

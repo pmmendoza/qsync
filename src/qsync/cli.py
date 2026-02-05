@@ -486,6 +486,61 @@ def _parse_extras_args(raw_extras: list[str] | None) -> list[str]:
 _EXTRA_ALLOWLIST = {"tui"}
 
 
+def _extract_extras_from_spec(spec: str) -> list[str]:
+    if not spec:
+        return []
+    try:
+        import re
+
+        match = re.search(r"\bqsync\[(?P<extras>[^\]]+)\]", spec)
+        if not match:
+            return []
+        raw = match.group("extras")
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    except Exception:
+        return []
+
+
+def _get_installed_extras() -> list[str]:
+    extras: set[str] = set()
+
+    # Prefer direct_url metadata when available (captures requested_extras).
+    try:
+        from importlib.metadata import distribution
+
+        dist = distribution("qsync")
+        raw = dist.read_text("direct_url.json")
+        if raw:
+            payload = json.loads(raw)
+            for item in payload.get("requested_extras") or []:
+                item = str(item).strip()
+                if item:
+                    extras.add(item)
+    except Exception:
+        pass
+
+    # Fall back to pipx metadata if present.
+    if shutil.which("pipx"):
+        try:
+            result = subprocess.run(
+                ["pipx", "list", "--json"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                payload = json.loads(result.stdout or "{}")
+                venv = (payload.get("venvs") or {}).get("qsync") or {}
+                main_pkg = (venv.get("metadata") or {}).get("main_package") or {}
+                spec = str(main_pkg.get("package_or_url") or "").strip()
+                for item in _extract_extras_from_spec(spec):
+                    extras.add(item)
+        except Exception:
+            pass
+
+    return sorted(extras)
+
+
 def _get_available_extras() -> list[str]:
     try:
         from importlib.metadata import metadata
@@ -609,21 +664,26 @@ def _handle_self_update(args: argparse.Namespace) -> None:
 
     available_extras = _get_available_extras()
     extras = _parse_extras_args(getattr(args, "extras", None))
+    installed_extras = _get_installed_extras()
 
     if getattr(args, "all_extras", False) and available_extras:
         extras = list(available_extras)
 
-    if not extras and is_interactive() and not getattr(args, "yes", False):
-        if available_extras:
-            selection = multi_select_from_list(
-                "Select extras to include (optional):",
-                available_extras,
-                instruction="Space to toggle, Enter to confirm",
-            )
-            if selection is None:
-                info("[qsync:self-update]", "Cancelled.")
-                return
-            extras = list(selection)
+    if not extras:
+        if is_interactive() and not getattr(args, "yes", False):
+            if available_extras:
+                selection = multi_select_from_list(
+                    "Select extras to include (optional):",
+                    available_extras,
+                    instruction="Space to toggle, Enter to confirm",
+                    default=installed_extras or None,
+                )
+                if selection is None:
+                    info("[qsync:self-update]", "Cancelled.")
+                    return
+                extras = list(selection)
+        elif installed_extras:
+            extras = list(installed_extras)
 
     extras = sorted({extra for extra in extras if extra})
     unknown = (
@@ -2604,7 +2664,14 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             pass
 
         if args.command == "doctor":
-            from .config import ENV_PATH, ROOT, resolve_env_path, resolve_root, load_env
+            from .config import (
+                ENV_PATH,
+                ROOT,
+                load_env,
+                load_env_file,
+                resolve_env_path,
+                resolve_root,
+            )
             from .api_push import send_api_request
             from .interactive_menu import QUESTIONARY_AVAILABLE, should_use_questionary
 
@@ -2673,6 +2740,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 )
 
             # Credentials / config checks (local-only by default).
+            file_env = load_env_file(env_path) if env_path else {}
             env = load_env(env_path)
             base_url = (env.get("QUALTRICS_BASE_URL") or "").strip()
             api_token = (
@@ -2680,6 +2748,17 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             ).strip()
             base_url_ok = bool(base_url)
             token_ok = bool(api_token)
+            token_source = "missing"
+            if (os.environ.get("X-API-TOKEN") or "").strip() or (
+                os.environ.get("QUALTRICS_API_KEY") or ""
+            ).strip():
+                token_source = "env"
+            elif (file_env.get("X-API-TOKEN") or "").strip() or (
+                file_env.get("QUALTRICS_API_KEY") or ""
+            ).strip():
+                token_source = "dotenv"
+            elif token_ok:
+                token_source = "keyring"
 
             if not base_url_ok:
                 ok = False
@@ -2695,7 +2774,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             if not token_ok:
                 ok = False
                 warnings.append(
-                    "Qualtrics API token missing (set X-API-TOKEN or QUALTRICS_API_KEY and re-run `qsync doctor`)"
+                    "Qualtrics API token missing (set X-API-TOKEN or QUALTRICS_API_KEY, or store it in keychain via keyring; then re-run `qsync doctor`)"
                 )
 
             whoami_result: dict | None = None
@@ -2763,6 +2842,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     },
                     "qualtrics_base_url": base_url or None,
                     "qualtrics_token_present": token_ok,
+                    "qualtrics_token_source": token_source,
                     "check_api": bool(getattr(args, "check_api", False)),
                     "whoami": whoami_result,
                     "datacenter": datacenter,
@@ -2801,6 +2881,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 )
                 print(f"  qualtrics_base_url: {base_url if base_url else '(missing)'}")
                 print(f"  qualtrics_token_present: {token_ok}")
+                print(f"  qualtrics_token_source: {token_source}")
                 if getattr(args, "check_api", False):
                     print(
                         f"  whoami_datacenter: {datacenter if datacenter else '(not available)'}"

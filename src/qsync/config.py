@@ -163,6 +163,18 @@ def load_env(path: Path | None = None) -> Dict[str, str]:
     for key in keys:
         if key in os.environ and os.environ[key]:
             merged[key] = os.environ[key].strip()
+
+    # Optional keychain support via `keyring` (only if no token was provided).
+    if not (merged.get("X-API-TOKEN") or merged.get("QUALTRICS_API_KEY")):
+        try:
+            from .secrets import get_qualtrics_api_token_from_keyring
+
+            token = get_qualtrics_api_token_from_keyring(merged)
+            if token:
+                merged["X-API-TOKEN"] = token
+        except Exception:
+            # Best-effort only; treat keyring as an optional enhancement.
+            pass
     return merged
 
 
@@ -172,8 +184,17 @@ def build_headers(env: Dict[str, str]) -> Dict[str, str]:
 
     api_token = env.get("X-API-TOKEN") or env.get("QUALTRICS_API_KEY")
 
+    if not api_token:
+        # Optional keychain support via `keyring`.
+        try:
+            from .secrets import get_qualtrics_api_token_from_keyring
+
+            api_token = get_qualtrics_api_token_from_keyring(env)
+        except Exception:
+            api_token = None
+
     if api_token:
-        headers["X-API-TOKEN"] = api_token
+        headers["X-API-TOKEN"] = str(api_token).strip()
         return headers
 
     raise QsyncConfigError(
@@ -181,7 +202,11 @@ def build_headers(env: Dict[str, str]) -> Dict[str, str]:
         problem="No Qualtrics API token found.",
         why="qsync requires an API token for Qualtrics API calls (OAuth is not supported in this repo configuration).",
         impact="Any command that talks to the Qualtrics API will fail.",
-        action="Set `X-API-TOKEN` (preferred) or `QUALTRICS_API_KEY` in your shell or `.env`, then re-run `qsync doctor`.",
+        action=(
+            "Set `X-API-TOKEN` (preferred) or `QUALTRICS_API_KEY` in your shell or `.env` "
+            "(or store it in your system keychain via the optional `keyring` integration), "
+            "then re-run `qsync doctor`."
+        ),
         docs_url="README.md#workspace-configuration",
     )
 
