@@ -1,7 +1,7 @@
 """Sync orchestrator for multi-dimension coordination.
 
 This module provides the `qsync sync` command that orchestrates changes across
-multiple dimensions (items, js, translations, eos) for one or more surveys.
+multiple dimensions (items, edf, js, translations, eos) for one or more surveys.
 
 Features:
 - Automatic change detection across all dimensions
@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .pending_stage import clear_pending, list_pending, load_pending
+from .dimensions import edf as edf_dimension
 from .dimensions import eos as eos_dimension
 from .dimensions import items as items_dimension
 from .dimensions import js as js_dimension
@@ -38,6 +39,18 @@ logger = logging.getLogger(__name__)
 _inventory_cache: Optional[Dict[str, dict]] = None
 
 _EMBEDDED_FIELD_TOKEN_RE = re.compile(r"\$\{e://Field/([^}]+)\}")
+_ISSUE_KEYS_SEEN: set[str] = set()
+
+
+def _filter_new_issue_lines(issues: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+    fresh: list[tuple[str, str, str]] = []
+    for survey_label, dim, detail in issues:
+        key = f"{survey_label}::{dim}::{detail}"
+        if key in _ISSUE_KEYS_SEEN:
+            continue
+        _ISSUE_KEYS_SEEN.add(key)
+        fresh.append((survey_label, dim, detail))
+    return fresh
 
 
 def _get_inventory_cached(survey_id: str) -> Optional[dict]:
@@ -89,6 +102,8 @@ def _collect_embedded_refs_from_changes(changes: list) -> set[str]:
 def _autofix_command(dimension: str, survey_id: str) -> Optional[str]:
     if dimension == "items":
         return f"qsync items pull --survey-id {survey_id}"
+    if dimension == "edf":
+        return f"qsync items pull --survey-id {survey_id}"
     if dimension == "translations":
         return f"qsync items pull --survey-id {survey_id}"
     if dimension == "eos":
@@ -98,6 +113,14 @@ def _autofix_command(dimension: str, survey_id: str) -> Optional[str]:
 
 def _run_autofix(dimension: str, survey_id: str) -> str:
     if dimension == "items":
+        from .sync_core import init_survey_to_excel
+        from .workbook_resolver import WorkbookResolver
+
+        resolver = WorkbookResolver()
+        xlsx_path = resolver.resolve(survey_id)
+        init_survey_to_excel(survey_id, xlsx_path)
+        return f"Regenerated Excel file at {xlsx_path}"
+    if dimension == "edf":
         from .sync_core import init_survey_to_excel
         from .workbook_resolver import WorkbookResolver
 
@@ -153,6 +176,14 @@ class SurveyChanges:
             name for name, changes in self.dimensions.items() if changes.has_changes
         ]
 
+    @property
+    def has_any_issues(self) -> bool:
+        """Check if any dimension reports warnings/errors."""
+        return any(
+            bool(d.error_detail) or bool(d.warning_detail)
+            for d in self.dimensions.values()
+        )
+
 
 @dataclass
 class Conflict:
@@ -196,6 +227,13 @@ class SurveySyncSummary:
         return [
             name for name, result in self.dimension_results.items() if result.success
         ]
+
+
+def _requires_force_live_retry(result: Optional[DimensionSyncResult]) -> bool:
+    if result is None or result.success:
+        return False
+    msg = (result.error_message or "").lower()
+    return "re-run with --force-live" in msg
 
 
 def _is_dimension_staged(survey_id: str, dimension: str) -> bool:
@@ -265,7 +303,7 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
 
     Args:
         survey_id: Survey ID
-        dimension: Dimension name (items, js, translations, eos)
+        dimension: Dimension name (items, edf, js, translations, eos)
 
     Returns:
         DimensionChanges with detection status and affected QIDs
@@ -273,6 +311,8 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
     try:
         if dimension == "items":
             return items_dimension.detect_changes(survey_id)
+        if dimension == "edf":
+            return edf_dimension.detect_changes(survey_id)
         if dimension == "js":
             return js_dimension.detect_changes(survey_id)
         if dimension == "translations":
@@ -285,6 +325,8 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
             has_changes=False,
             change_summary="No changes",
             affected_qids=set(),
+            status_kind="none",
+            edit_count=0,
         )
 
     except Exception as e:
@@ -330,6 +372,8 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
             affected_qids=set(),
             error_detail=detail.replace("{survey_id}", survey_id),
             safe_to_autofix=safe_to_fix,
+            status_kind="error",
+            edit_count=0,
         )
 
 
@@ -406,7 +450,7 @@ def resolve_conflict_interactive(conflict: Conflict) -> List[str]:
         return []
     elif "Apply all" in selection:
         # Safe merge order: items first, then js, then translations
-        order = ["items", "js", "translations", "eos"]
+        order = ["items", "edf", "js", "translations", "eos"]
         return [d for d in order if d in conflict.dimensions]
     elif "─" in selection:
         return []
@@ -441,7 +485,7 @@ def resolve_conflicts_interactive(conflicts: List[Conflict]) -> Dict[str, List[s
 def resolve_conflicts_auto(conflicts: List[Conflict]) -> Dict[str, List[str]]:
     """Resolve conflicts automatically using safe merge strategy.
 
-    Safe merge order: items → js → translations → eos
+    Safe merge order: items → edf → js → translations → eos
 
     Args:
         conflicts: List of conflicts to resolve
@@ -450,7 +494,7 @@ def resolve_conflicts_auto(conflicts: List[Conflict]) -> Dict[str, List[str]]:
         Dict mapping QID to list of dimensions to apply (in order)
     """
     resolutions = {}
-    order = ["items", "js", "translations", "eos"]
+    order = ["items", "edf", "js", "translations", "eos"]
 
     for conflict in conflicts:
         # Apply all dimensions in safe merge order
@@ -481,6 +525,7 @@ def detect_survey_changes(survey_id: str) -> SurveyChanges:
     # Detect changes in each dimension
     dimensions = {
         "items": detect_dimension_changes(survey_id, "items"),
+        "edf": detect_dimension_changes(survey_id, "edf"),
         "js": detect_dimension_changes(survey_id, "js"),
         "translations": detect_dimension_changes(survey_id, "translations"),
         "eos": detect_dimension_changes(survey_id, "eos"),
@@ -507,6 +552,27 @@ def _pad_to_width(text: str, width: int) -> str:
     return text
 
 
+def render_cell(status: DimensionChanges) -> str:
+    """Pure cell renderer for compact table badges."""
+    if status.error_detail:
+        return "✗ error"
+
+    if status.has_changes:
+        count = int(status.edit_count or 0)
+        if status.status_kind == "staged":
+            base = f"✓ {count}" if count > 0 else "✓ staged"
+        else:
+            base = f"⚡ {count}" if count > 0 else "⚡"
+    elif status.warning_detail:
+        base = "⚠"
+    else:
+        base = "─"
+
+    if status.warning_detail and "⚠" not in base:
+        base = f"{base} ⚠"
+    return base
+
+
 def display_change_detection_table(
     all_changes: List[SurveyChanges], show_all: bool = False
 ):
@@ -530,7 +596,7 @@ def display_change_detection_table(
     # Column widths
     col_survey_id = 22
     col_name = 30
-    col_dim = 18  # Increased from 12 to fit longer messages
+    col_dim = 14
 
     # Header
     header = (
@@ -538,76 +604,38 @@ def display_change_detection_table(
         f"{'Survey ID':<{col_survey_id}} "
         f"{'Name':<{col_name}} "
         f"{'Items':<{col_dim}} "
+        f"{'EDF':<{col_dim}} "
         f"{'JS':<{col_dim}} "
         f"{'Trans':<{col_dim}} "
         f"{'EOS':<{col_dim}}"
         f"{Colors.RESET}"
     )
-    separator = f"{Colors.DIM}{'─' * (col_survey_id + col_name + col_dim * 4 + 4)}{Colors.RESET}"
+    separator = f"{Colors.DIM}{'─' * (col_survey_id + col_name + col_dim * 5 + 5)}{Colors.RESET}"
 
     print(header)
     print(separator)
 
     for changes in display_changes:
         # Get status for each dimension - show actual summary or dash
-        def format_status(dim_changes):
-            if dim_changes.error_detail:
-                return f"{Colors.RED}✗ error{Colors.RESET}"
-            if dim_changes.has_changes:
-                summary = dim_changes.change_summary
-                dim_name = dim_changes.dimension
-                # Truncate if too long (keep room for color codes)
-                max_len = col_dim - 2
-                if len(summary) > max_len:
-                    # Smart truncation - dimension-aware
-                    if ":" in summary:
-                        prefix, rest = summary.split(":", 1)
-                        # Extract numbers if present
-                        import re
-
-                        # For items unstaged: extract QID count, not change count
-                        if dim_name == "items" and "QID(s)" in summary:
-                            # Pattern: "N change(s) in M QID(s)" -> extract M
-                            qid_match = re.search(r"in (\d+) QID", rest)
-                            if qid_match:
-                                summary = f"{prefix}: {qid_match.group(1)} QIDs"
-                            else:
-                                summary = summary[:max_len]
-                        else:
-                            # Default: extract first number
-                            num_match = re.search(r"(\d+)", rest)
-                            if num_match:
-                                # Infer unit from dimension
-                                if dim_name == "items":
-                                    unit = "QIDs"
-                                elif dim_name == "js":
-                                    unit = "files"
-                                elif dim_name == "translations":
-                                    unit = "langs"
-                                elif dim_name == "eos":
-                                    unit = "msgs"
-                                else:
-                                    unit = "items"
-                                summary = f"{prefix}: {num_match.group(1)} {unit}"
-                            else:
-                                summary = summary[:max_len]
-                    else:
-                        summary = summary[:max_len]
-
-                # Color code based on type
-                if summary.startswith("✓"):
-                    return f"{Colors.GREEN}{summary}{Colors.RESET}"
-                elif summary.startswith("⚡"):
-                    return f"{Colors.YELLOW}{summary}{Colors.RESET}"
-                elif "Error" in summary or summary.startswith("✗"):
-                    return f"{Colors.RED}✗ error{Colors.RESET}"
-                else:
-                    return summary
-            if dim_changes.warning_detail:
-                return f"{Colors.YELLOW}⚠ warn{Colors.RESET}"
-            return f"{Colors.DIM}─{Colors.RESET}"
+        def format_status(dim_changes: DimensionChanges) -> str:
+            summary = render_cell(dim_changes)
+            max_len = col_dim - 1
+            if len(summary) > max_len:
+                summary = summary[: max_len - 1] + "…"
+            if summary.startswith("✗"):
+                return f"{Colors.RED}{summary}{Colors.RESET}"
+            if summary.startswith("✓"):
+                return f"{Colors.GREEN}{summary}{Colors.RESET}"
+            if summary.startswith("⚡"):
+                return f"{Colors.YELLOW}{summary}{Colors.RESET}"
+            if summary.startswith("⚠"):
+                return f"{Colors.YELLOW}{summary}{Colors.RESET}"
+            if summary == "─":
+                return f"{Colors.DIM}{summary}{Colors.RESET}"
+            return summary
 
         items_status = format_status(changes.dimensions["items"])
+        edf_status = format_status(changes.dimensions["edf"])
         js_status = format_status(changes.dimensions["js"])
         trans_status = format_status(changes.dimensions["translations"])
         eos_status = format_status(changes.dimensions["eos"])
@@ -630,6 +658,7 @@ def display_change_detection_table(
             f"{_pad_to_width(sid_display, col_survey_id)} "
             f"{_pad_to_width(name, col_name)} "
             f"{_pad_to_width(items_status, col_dim)} "
+            f"{_pad_to_width(edf_status, col_dim)} "
             f"{_pad_to_width(js_status, col_dim)} "
             f"{_pad_to_width(trans_status, col_dim)} "
             f"{_pad_to_width(eos_status, col_dim)}"
@@ -637,16 +666,24 @@ def display_change_detection_table(
         print(row)
 
     # Print error explanations if any
-    errors = []
-    warnings = []
+    errors: list[tuple[str, str, str]] = []
+    warnings: list[tuple[str, str, str]] = []
     for changes in display_changes:
+        from .survey_ref import format_survey_ref
+
+        survey_label = format_survey_ref(changes.survey_id, changes.survey_name)
         for dim_name, dim_changes in changes.dimensions.items():
             if dim_changes.error_detail:
-                errors.append((changes.survey_name, dim_name, dim_changes.error_detail))
+                errors.append((survey_label, dim_name, dim_changes.error_detail))
             if dim_changes.warning_detail:
                 warnings.append(
-                    (changes.survey_name, dim_name, dim_changes.warning_detail)
+                    (survey_label, dim_name, dim_changes.warning_detail)
                 )
+    errors = list(dict.fromkeys(errors))
+    warnings = list(dict.fromkeys(warnings))
+
+    errors = _filter_new_issue_lines(errors)
+    warnings = _filter_new_issue_lines(warnings)
 
     if errors:
         print(f"\n{Colors.YELLOW}⚠️  Errors detected:{Colors.RESET}")
@@ -710,9 +747,9 @@ def display_sync_summary_table(summaries: List[SurveySyncSummary]):
 
     print(f"\n{Colors.BLUE}═══ Sync Results ═══{Colors.RESET}")
     print(
-        f"{Colors.DIM}{'Survey ID':<22} {'Name':<30} {'Items':<12} {'JS':<12} {'Trans':<12} {'EOS':<12}{Colors.RESET}"
+        f"{Colors.DIM}{'Survey ID':<22} {'Name':<30} {'Items':<12} {'EDF':<12} {'JS':<12} {'Trans':<12} {'EOS':<12}{Colors.RESET}"
     )
-    print(f"{Colors.DIM}{'─' * 96}{Colors.RESET}")
+    print(f"{Colors.DIM}{'─' * 112}{Colors.RESET}")
 
     for summary in summaries:
         # Get status for each dimension with colors
@@ -727,6 +764,7 @@ def display_sync_summary_table(summaries: List[SurveySyncSummary]):
             return f"{Colors.DIM}─{Colors.RESET}"
 
         items_status = get_status("items")
+        edf_status = get_status("edf")
         js_status = get_status("js")
         trans_status = get_status("translations")
         eos_status = get_status("eos")
@@ -739,7 +777,7 @@ def display_sync_summary_table(summaries: List[SurveySyncSummary]):
         )
 
         print(
-            f"{summary.survey_id:<22} {name:<30} {items_status:<20} {js_status:<20} {trans_status:<20} {eos_status:<20}"
+            f"{summary.survey_id:<22} {name:<30} {items_status:<16} {edf_status:<16} {js_status:<16} {trans_status:<16} {eos_status:<16}"
         )
 
     print(
@@ -756,23 +794,23 @@ def display_qid_mode_change_table(
     """Display a small change table for QID-mode scoped changes."""
 
     col_scope = 22
-    col_dim = 18
+    col_dim = 14
 
     def _format_status(dim_changes: DimensionChanges) -> str:
-        if dim_changes.error_detail:
-            return f"{Colors.RED}✗ error{Colors.RESET}"
-        if not dim_changes.has_changes:
-            if dim_changes.warning_detail:
-                return f"{Colors.YELLOW}⚠ warn{Colors.RESET}"
-            return f"{Colors.DIM}─{Colors.RESET}"
-        summary = dim_changes.change_summary
-        max_len = col_dim - 2
+        summary = render_cell(dim_changes)
+        max_len = col_dim - 1
         if len(summary) > max_len:
             summary = summary[: max_len - 1] + "…"
+        if summary.startswith("✗"):
+            return f"{Colors.RED}{summary}{Colors.RESET}"
+        if summary.startswith("⚠"):
+            return f"{Colors.YELLOW}{summary}{Colors.RESET}"
         if summary.startswith("⚡"):
             return f"{Colors.YELLOW}{summary}{Colors.RESET}"
         if summary.startswith("✓"):
             return f"{Colors.GREEN}{summary}{Colors.RESET}"
+        if summary == "─":
+            return f"{Colors.DIM}{summary}{Colors.RESET}"
         return summary
 
     print(
@@ -783,11 +821,12 @@ def display_qid_mode_change_table(
         f"{Colors.DIM}"
         f"{'Scope':<{col_scope}} "
         f"{'Items':<{col_dim}} "
+        f"{'EDF':<{col_dim}} "
         f"{'JS':<{col_dim}} "
         f"{'Trans':<{col_dim}}"
         f"{Colors.RESET}"
     )
-    separator = f"{Colors.DIM}{'─' * (col_scope + col_dim * 3 + 3)}{Colors.RESET}"
+    separator = f"{Colors.DIM}{'─' * (col_scope + col_dim * 4 + 4)}{Colors.RESET}"
 
     scope_display = (
         scope_label[: col_scope - 1] + "…"
@@ -797,6 +836,7 @@ def display_qid_mode_change_table(
     row = (
         f"{_pad_to_width(scope_display, col_scope)} "
         f"{_pad_to_width(_format_status(unstaged['items']), col_dim)} "
+        f"{_pad_to_width(_format_status(unstaged['edf']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['js']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['translations']), col_dim)}"
     )
@@ -813,7 +853,6 @@ def _prompt_qid_mode_dimension_selection(
 ) -> List[str]:
     """Prompt for a dimension to sync in QID-mode, using scoped detection."""
     from .interactive_menu import select_from_list
-    import re
 
     dims = ["items", "js", "translations"]
 
@@ -822,10 +861,13 @@ def _prompt_qid_mode_dimension_selection(
             return "✗ error"
         if not dim_changes.has_changes:
             if dim_changes.warning_detail:
-                return "⚠ warn"
+                return "⚠"
             return "none"
-        match = re.search(r"(\d+)", dim_changes.change_summary or "")
-        return f"⚡ {match.group(1)}" if match else "⚡ ?"
+        count = int(dim_changes.edit_count or 0)
+        if count > 0:
+            prefix = "✓" if dim_changes.status_kind == "staged" else "⚡"
+            return f"{prefix} {count}"
+        return render_cell(dim_changes)
 
     changed = [
         d for d in dims if unstaged[d].has_changes and not unstaged[d].error_detail
@@ -1006,13 +1048,19 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
 
     # Show error explanations if any
     errors = []
-    for dim in ["items", "js", "translations", "eos"]:
+    for dim in ["items", "edf", "js", "translations", "eos"]:
         if changes.dimensions[dim].error_detail:
             errors.append((dim, changes.dimensions[dim].error_detail))
 
     if errors:
+        from .survey_ref import format_survey_ref
+
+        survey_label = format_survey_ref(changes.survey_id, changes.survey_name)
+        errors = _filter_new_issue_lines(
+            [(survey_label, dim, detail) for dim, detail in errors]
+        )
         print(f"\n{Colors.YELLOW}⚠️  Errors:{Colors.RESET}")
-        for dimension, detail in errors:
+        for _, dimension, detail in errors:
             # Highlight commands in error messages
             if "Run:" in detail:
                 parts = detail.split("Run:")
@@ -1029,13 +1077,19 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
         print()  # Blank line after errors
 
     warnings = []
-    for dim in ["items", "js", "translations", "eos"]:
+    for dim in ["items", "edf", "js", "translations", "eos"]:
         if changes.dimensions[dim].warning_detail:
             warnings.append((dim, changes.dimensions[dim].warning_detail))
 
     if warnings:
+        from .survey_ref import format_survey_ref
+
+        survey_label = format_survey_ref(changes.survey_id, changes.survey_name)
+        warnings = _filter_new_issue_lines(
+            [(survey_label, dim, detail) for dim, detail in warnings]
+        )
         print(f"\n{Colors.YELLOW}⚠️  Warnings:{Colors.RESET}")
-        for dimension, detail in warnings:
+        for _, dimension, detail in warnings:
             if "Run:" in detail or "Repair:" in detail:
                 parts = (
                     detail.split("Run:")
@@ -1074,7 +1128,7 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
     # Add auto-fix section if there are fixable errors
     fixable_errors = [
         (dim, changes.dimensions[dim])
-        for dim in ["items", "js", "translations", "eos"]
+        for dim in ["items", "edf", "js", "translations", "eos"]
         if changes.dimensions[dim].error_detail
         and changes.dimensions[dim].safe_to_autofix
     ]
@@ -1157,7 +1211,7 @@ def stage_dimension(
 
     Args:
         survey_id: Survey ID
-        dimension: Dimension name (items, js, translations, eos)
+        dimension: Dimension name (items, edf, js, translations, eos)
         scope: Optional scope filter
 
     Returns:
@@ -1168,7 +1222,15 @@ def stage_dimension(
             return items_dimension.stage(
                 survey_id,
                 scope=scope,
-                ignore_embedded=ignore_embedded,
+                ignore_embedded=True if not ignore_embedded else ignore_embedded,
+                allow_drift=allow_drift,
+                interactive=interactive,
+            )
+
+        if dimension == "edf":
+            return edf_dimension.stage(
+                survey_id,
+                scope=scope,
                 allow_drift=allow_drift,
                 interactive=interactive,
             )
@@ -1222,7 +1284,7 @@ def sync_dimension(
 
     Args:
         survey_id: Survey ID
-        dimension: Dimension name (items, js, translations, eos)
+        dimension: Dimension name (items, edf, js, translations, eos)
         interactive: Whether to prompt interactively
         force_live: Force push despite live responses
         force_preview: Suppress preview-only response warnings
@@ -1257,9 +1319,10 @@ def sync_dimension(
         if dimension == "items" and isinstance(payload, ItemsPendingPayload):
             return bool(
                 list(payload.qids or [])
-                or list(payload.embedded_fields or [])
                 or list(getattr(payload, "structural_ops", None) or [])
             )
+        if dimension == "edf" and isinstance(payload, ItemsPendingPayload):
+            return bool(list(payload.embedded_fields or []))
         if dimension == "js" and isinstance(payload, JsPendingPayload):
             return bool(list(payload.entries or []))
         if dimension == "translations" and isinstance(
@@ -1289,11 +1352,18 @@ def sync_dimension(
                         check_drift=False,
                         annotate_dirty=False,
                         self_heal_system_columns=False,
-                        skip_embedded=ignore_embedded,
+                        skip_embedded=True,
                     )
                 )
             except Exception:
                 has_changes_to_apply = False
+    if not has_changes_to_apply and dimension == "edf":
+        try:
+            has_changes_to_apply = bool(
+                edf_dimension.detect_unstaged_changes(survey_id).has_changes
+            )
+        except Exception:
+            has_changes_to_apply = False
     if not has_changes_to_apply and dimension == "translations":
         try:
             has_changes_to_apply = bool(
@@ -1318,7 +1388,20 @@ def sync_dimension(
                 allow_drift=allow_drift,
                 skip_publish=skip_publish,
                 prefer_pending=prefer_pending,
-                ignore_embedded=ignore_embedded,
+                ignore_embedded=True if not ignore_embedded else ignore_embedded,
+            )
+
+        elif dimension == "edf":
+            ok = edf_dimension.push(
+                survey_id,
+                scope=scope,
+                interactive=interactive,
+                force_live=force_live,
+                force_preview=force_preview,
+                auto_yes=auto_yes,
+                allow_drift=allow_drift,
+                skip_publish=skip_publish,
+                prefer_pending=prefer_pending,
             )
 
         elif dimension == "js":
@@ -1452,6 +1535,14 @@ def _summarize_pending_record(dimension: str, pending) -> str:
                 summary_parts.append(f"structural: {len(structural_qids)} QID(s)")
         return f"staged: {', '.join(summary_parts) if summary_parts else 'no changes'}"
 
+    if dimension == "edf":
+        emb_count = (
+            len(payload.embedded_fields)
+            if getattr(payload, "embedded_fields", None)
+            else 0
+        )
+        return f"staged: {emb_count} field(s)"
+
     if dimension == "js":
         count = len(payload.entries) if getattr(payload, "entries", None) else 0
         return f"staged: {count} JS file(s)"
@@ -1486,7 +1577,7 @@ def _build_pending_abort_guidance(
     force_preview: bool,
     scope_expr: Optional[str],
 ) -> tuple[str, dict[str, object]]:
-    ordered_dims = ["items", "js", "translations", "eos"]
+    ordered_dims = ["items", "edf", "js", "translations", "eos"]
     pending_summary = {
         dim: _summarize_pending_record(dim, pending.get(dim)) for dim in ordered_dims
     }
@@ -1512,6 +1603,18 @@ def _build_pending_abort_guidance(
         return " ".join(tokens)
 
     def _build_dimension_push_command(dimension: str) -> str:
+        if dimension == "edf":
+            tokens = [
+                "qsync",
+                "sync",
+                "--survey-id",
+                survey_id,
+                "--dimensions",
+                "edf",
+                "--yes",
+            ]
+            _append_common_flags(tokens)
+            return " ".join(tokens)
         tokens = ["qsync", dimension, "push", "--survey-id", survey_id, "--yes"]
         _append_common_flags(tokens)
         return " ".join(tokens)
@@ -1573,37 +1676,17 @@ def _detect_unstaged_items(
 ) -> DimensionChanges:
     from .sync_core import preview_changes
     from .workbook_resolver import WorkbookResolver
-    from .qualtrics_client import load_cached_survey
-    from .dimensions.items_core import (
-        check_embedded_data_health,
-        format_embedded_data_health_warning,
-    )
 
     resolver = WorkbookResolver()
     xlsx_path = resolver.resolve(survey_id)
     if xlsx_path.exists():
-        warning_detail = None
-        skip_embedded = False
-        try:
-            survey = load_cached_survey(survey_id)
-            health = check_embedded_data_health(
-                survey_id, survey.payload, xlsx_path
-            )
-            if not health.is_valid:
-                skip_embedded = True
-                warning_detail = format_embedded_data_health_warning(
-                    health, survey_id=survey_id
-                )
-        except Exception:
-            pass
-
         scope_expr = scope.expression if scope and scope.expression else None
         changes = preview_changes(
             survey_id,
             xlsx_path,
             scope_expr=scope_expr,
             check_drift=False,
-            skip_embedded=skip_embedded,
+            skip_embedded=True,
         )
         if changes:
             qids = set(c.qid for c in changes if c.qid)
@@ -1612,22 +1695,26 @@ def _detect_unstaged_items(
                 has_changes=True,
                 change_summary=f"⚡ Unstaged: {len(changes)} change(s) in {len(qids)} QID(s)",
                 affected_qids=qids,
-                warning_detail=warning_detail,
-            )
-        if warning_detail:
-            return DimensionChanges(
-                dimension="items",
-                has_changes=False,
-                change_summary="No changes",
-                affected_qids=set(),
-                warning_detail=warning_detail,
+                status_kind="unstaged",
+                edit_count=len(qids),
             )
     return DimensionChanges(
         dimension="items",
         has_changes=False,
         change_summary="No changes",
         affected_qids=set(),
+        status_kind="none",
+        edit_count=0,
     )
+
+
+def _detect_unstaged_edf(
+    survey_id: str,
+    *,
+    scope: Optional[ScopeFilter] = None,
+) -> DimensionChanges:
+    del scope
+    return edf_dimension.detect_unstaged_changes(survey_id)
 
 
 def _detect_unstaged_js(
@@ -1646,6 +1733,8 @@ def _detect_unstaged_js(
             has_changes=False,
             change_summary="No changes",
             affected_qids=set(),
+            status_kind="none",
+            edit_count=0,
         )
 
     scope_expr = scope.expression if scope and scope.expression else None
@@ -1667,6 +1756,8 @@ def _detect_unstaged_js(
                 has_changes=True,
                 change_summary=f"⚡ Unstaged: {len(changes)} JS file(s) changed",
                 affected_qids=qids,
+                status_kind="unstaged",
+                edit_count=len(changes),
             )
     except Exception:
         return DimensionChanges(
@@ -1676,6 +1767,8 @@ def _detect_unstaged_js(
             affected_qids=set(),
             error_detail="JS detection failed.",
             safe_to_autofix=False,
+            status_kind="error",
+            edit_count=0,
         )
 
     return DimensionChanges(
@@ -1683,6 +1776,8 @@ def _detect_unstaged_js(
         has_changes=False,
         change_summary="No changes",
         affected_qids=set(),
+        status_kind="none",
+        edit_count=0,
     )
 
 
@@ -1705,6 +1800,7 @@ def _detect_unstaged_changes(
 ) -> Dict[str, DimensionChanges]:
     return {
         "items": _detect_unstaged_items(survey_id, scope=scope),
+        "edf": _detect_unstaged_edf(survey_id, scope=scope),
         "js": _detect_unstaged_js(survey_id, scope=scope),
         "translations": _detect_unstaged_translations(survey_id, scope=scope),
         "eos": _detect_unstaged_eos(survey_id),
@@ -1721,41 +1817,43 @@ def _display_survey_overview(
 
     print(f"\n{Colors.BLUE}═══ Survey Overview {survey_ref} ═══{Colors.RESET}")
     print(f"{Colors.BOLD}Staged changes:{Colors.RESET}")
-    for dim in ["items", "js", "translations", "eos"]:
+    for dim in ["items", "edf", "js", "translations", "eos"]:
         summary = staged.get(dim, "none")
         print(f"  • {dim}: {summary}")
 
     print(f"\n{Colors.BOLD}Unstaged changes:{Colors.RESET}")
-    col_dim = 18
+    col_dim = 14
 
     def _format_status(dim_changes: DimensionChanges) -> str:
-        if dim_changes.error_detail:
-            return f"{Colors.RED}✗ error{Colors.RESET}"
-        if not dim_changes.has_changes:
-            return f"{Colors.DIM}─{Colors.RESET}"
-        summary = dim_changes.change_summary
-        max_len = col_dim - 2
+        summary = render_cell(dim_changes)
+        max_len = col_dim - 1
         if len(summary) > max_len:
             summary = summary[: max_len - 1] + "…"
+        if summary.startswith("✗"):
+            return f"{Colors.RED}{summary}{Colors.RESET}"
+        if summary.startswith("⚠"):
+            return f"{Colors.YELLOW}{summary}{Colors.RESET}"
         if summary.startswith("✓"):
             return f"{Colors.GREEN}{summary}{Colors.RESET}"
         if summary.startswith("⚡"):
             return f"{Colors.YELLOW}{summary}{Colors.RESET}"
-        if "Error" in summary or summary.startswith("✗"):
-            return f"{Colors.RED}✗ error{Colors.RESET}"
+        if summary == "─":
+            return f"{Colors.DIM}{summary}{Colors.RESET}"
         return summary
 
     header = (
         f"{Colors.DIM}"
         f"{'Items':<{col_dim}} "
+        f"{'EDF':<{col_dim}} "
         f"{'JS':<{col_dim}} "
         f"{'Trans':<{col_dim}} "
         f"{'EOS':<{col_dim}}"
         f"{Colors.RESET}"
     )
-    separator = f"{Colors.DIM}{'─' * (col_dim * 4 + 3)}{Colors.RESET}"
+    separator = f"{Colors.DIM}{'─' * (col_dim * 5 + 4)}{Colors.RESET}"
     row = (
         f"{_pad_to_width(_format_status(unstaged['items']), col_dim)} "
+        f"{_pad_to_width(_format_status(unstaged['edf']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['js']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['translations']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['eos']), col_dim)}"
@@ -1764,21 +1862,23 @@ def _display_survey_overview(
     print(separator)
     print(row)
 
-    errors: list[tuple[str, str]] = []
-    warnings: list[tuple[str, str]] = []
-    for dim in ["items", "js", "translations", "eos"]:
+    errors: list[tuple[str, str, str]] = []
+    warnings: list[tuple[str, str, str]] = []
+    for dim in ["items", "edf", "js", "translations", "eos"]:
         info = unstaged.get(dim)
         if info and info.error_detail:
-            errors.append((dim, info.error_detail))
+            errors.append((survey_ref, dim, info.error_detail))
         if info and info.warning_detail:
-            warnings.append((dim, info.warning_detail))
+            warnings.append((survey_ref, dim, info.warning_detail))
+    errors = _filter_new_issue_lines(errors)
+    warnings = _filter_new_issue_lines(warnings)
     if errors:
         print(f"\n{Colors.YELLOW}⚠️  Errors:{Colors.RESET}")
-        for dim, detail in errors:
+        for _, dim, detail in errors:
             print(f"  {Colors.DIM}•{Colors.RESET} {dim}: {detail}")
     if warnings:
         print(f"\n{Colors.YELLOW}⚠️  Warnings:{Colors.RESET}")
-        for dim, detail in warnings:
+        for _, dim, detail in warnings:
             print(f"  {Colors.DIM}•{Colors.RESET} {dim}: {detail}")
 
     print(f"\n{Colors.BOLD}Next actions:{Colors.RESET}")
@@ -1788,7 +1888,7 @@ def _display_survey_overview(
         print("  • Discard staged changes (clear pending + refresh cache)")
     if any(info.has_changes for info in unstaged.values()):
         print("  • Sync dimensions (preview → stage → push)")
-        print("  • QID-mode (items/js/translations only)")
+        print("  • QID-mode (items/js/translations + global EDF status)")
     if not has_pending and not any(info.has_changes for info in unstaged.values()):
         print("  • No pending or unstaged changes detected")
 
@@ -1818,7 +1918,7 @@ def _preview_staged_changes(
         return
 
     print(f"\n{Colors.BLUE}═══ Preview: Drift + Staged Changes ═══{Colors.RESET}")
-    safe_order = ["items", "js", "translations", "eos"]
+    safe_order = ["items", "edf", "js", "translations", "eos"]
     use_context = True
     shown_no_drift_note = False
     if interactive:
@@ -1868,7 +1968,10 @@ def _preview_staged_changes(
 
         print(f"\n{Colors.BOLD}{dim}{Colors.RESET}:")
         if not use_context:
-            report = check_drift(survey_id, dim, interactive=interactive, context=None)
+            drift_dim = "items" if dim == "edf" else dim
+            report = check_drift(
+                survey_id, drift_dim, interactive=interactive, context=None
+            )
             show_full = False
             if report.has_drift and report.diff_lines and interactive:
                 show_full = confirm("Show full diff?", default=False)
@@ -2058,6 +2161,32 @@ def _preview_staged_changes(
                     print()
             continue
 
+        if dim == "edf" and record:
+            if not isinstance(getattr(record, "payload", None), ItemsPendingPayload):  # type: ignore[name-defined]
+                print(f"{Colors.DIM}No staged EDF changes to preview.{Colors.RESET}")
+                continue
+            embedded = list(getattr(record.payload, "embedded_fields", None) or [])
+            if not embedded:
+                print(f"{Colors.DIM}No staged EDF changes to preview.{Colors.RESET}")
+                continue
+            for change in embedded:
+                field = change.get("field") or ""
+                flow_id = change.get("flow_id") or ""
+                header = f"EMBEDDED field={field}"
+                if flow_id:
+                    header += f", flow_id={flow_id}"
+                print(header)
+                old_display = _display_embedded_value(change.get("old_value"))
+                new_display = _display_embedded_value(change.get("new_value"))
+                diff_lines = _diff_lines(
+                    str(old_display or ""),
+                    str(new_display or ""),
+                    context=f"Field: {field}",
+                )
+                for line in colorize_unified_diff_lines(diff_lines):
+                    print("  " + line)
+            continue
+
         if dim == "items" and record:
             ensured = _ensure_pending_changes(
                 survey_id,
@@ -2149,10 +2278,10 @@ def _resolve_staged_changes_interactive(
     allow_drift: bool,
     skip_publish: bool,
 ) -> bool:
-    from .interactive_menu import select_from_list
+    from .interactive_menu import confirm, select_from_list
     from .qualtrics_client import refresh_survey_cache
 
-    safe_order = ["items", "js", "translations", "eos"]
+    safe_order = ["items", "edf", "js", "translations", "eos"]
 
     while True:
         choices = [
@@ -2213,6 +2342,37 @@ def _resolve_staged_changes_interactive(
                     prefer_pending=True,
                 )
 
+            force_live_retry_dims = [
+                dim
+                for dim in safe_order
+                if dim in pending and _requires_force_live_retry(dimension_results.get(dim))
+            ]
+            if force_live_retry_dims and not force_live:
+                retry_label = ", ".join(force_live_retry_dims)
+                retry_force_live = confirm(
+                    message=(
+                        f"{retry_label} push blocked by live-response safeguards. "
+                        "Retry blocked dimension(s) with --force-live?"
+                    ),
+                    default=False,
+                )
+                if retry_force_live:
+                    for dim in force_live_retry_dims:
+                        print(
+                            f"{Colors.BLUE}[sync:{dim}]{Colors.RESET} Retrying with --force-live..."
+                        )
+                        dimension_results[dim] = sync_dimension(
+                            survey_id,
+                            dim,
+                            interactive=True,
+                            force_live=True,
+                            force_preview=force_preview,
+                            auto_yes=auto_yes,
+                            allow_drift=allow_drift,
+                            skip_publish=True,  # Suppress per-dimension publish
+                            prefer_pending=True,
+                        )
+
             # Display push report
             _display_push_report(survey_ref, dimension_results)
 
@@ -2264,15 +2424,16 @@ def _generate_composite_publish_description(
 
         if dim == "items":
             qid_count = len(pending.payload.qids) if pending.payload.qids else 0
-            emb_count = (
-                len(pending.payload.embedded_fields)
-                if pending.payload.embedded_fields
-                else 0
-            )
             if qid_count:
                 parts.append(f"items:{qid_count}Q")
+        elif dim == "edf":
+            emb_count = (
+                len(pending.payload.embedded_fields)
+                if getattr(pending.payload, "embedded_fields", None)
+                else 0
+            )
             if emb_count:
-                parts.append(f"emb:{emb_count}")
+                parts.append(f"edf:{emb_count}")
         elif dim == "js":
             count = len(pending.payload.entries) if pending.payload.entries else 0
             if count:
@@ -2489,74 +2650,15 @@ def _sync_dimensions_once(
                 resolve_conflicts_auto(relevant_conflicts)
 
             print(
-                "[sync:conflict] Using safe merge order: items → js → translations → eos"
+                "[sync:conflict] Using safe merge order: items → edf → js → translations → eos"
             )
 
     # Sort dimensions in safe merge order
-    safe_order = ["items", "js", "translations", "eos"]
+    safe_order = ["items", "edf", "js", "translations", "eos"]
     dimensions_sorted = [d for d in safe_order if d in dimensions]
 
-    skip_embedded = bool(ignore_embedded)
-    embedded_warning_detail: str | None = None
-
-    if "items" in dimensions_sorted:
-        from .workbook_resolver import WorkbookResolver
-        from .qualtrics_client import load_cached_survey
-        from .dimensions.items_core import (
-            check_embedded_data_health,
-            format_embedded_data_health_warning,
-        )
-
-        resolver = WorkbookResolver()
-        xlsx_path = resolver.resolve(survey_id)
-        if xlsx_path.exists():
-            try:
-                survey = load_cached_survey(survey_id)
-                health = check_embedded_data_health(
-                    survey_id, survey.payload, xlsx_path
-                )
-                if not health.is_valid:
-                    embedded_warning_detail = format_embedded_data_health_warning(
-                        health, survey_id=survey_id
-                    )
-            except Exception:
-                embedded_warning_detail = None
-
-    if embedded_warning_detail:
-        from .terminal_output import warn
-
-        warn("[sync:items]", embedded_warning_detail)
-        warn(
-            "[sync:items]",
-            "Embedded defaults will be skipped if you continue.",
-        )
-
-        if not skip_embedded:
-            if auto_yes or not interactive:
-                if not allow_skip_embedded:
-                    raise SystemExit(
-                        "[sync:items] Embedded_Data is invalid. "
-                        "Run `qsync items pull --survey-id ...` to repair, "
-                        "or re-run with --allow-skip-embedded."
-                    )
-                skip_embedded = True
-            else:
-                from .interactive_menu import confirm
-
-                proceed = confirm(
-                    message="Continue and skip embedded defaults?", default=False
-                )
-                if not proceed:
-                    print(f"{Colors.DIM}Sync cancelled by user.{Colors.RESET}")
-                    return None
-                skip_embedded = True
-
-        if skip_embedded:
-            print(
-                f"{Colors.DIM}Rollback tip: list versions via `qsync survey versions --survey-id {survey_id}` "
-                "and rollback via `qsync survey rollback --survey-id ... --version-id ... --question-id ...`."
-                f"{Colors.RESET}"
-            )
+    # Items is intentionally non-embedded in orchestrated sync (EDF is separate).
+    skip_embedded = True
 
     if skip_embedded and "items" in dimensions_sorted:
         from .sync_core import preview_changes
@@ -2692,20 +2794,20 @@ def _sync_dimensions_once(
             if pending:
                 if dim == "items":
                     qid_count = len(pending.payload.qids) if pending.payload.qids else 0
-                    emb_count = (
-                        len(pending.payload.embedded_fields)
-                        if pending.payload.embedded_fields
-                        else 0
-                    )
                     summary_parts = []
                     if qid_count:
                         summary_parts.append(f"{qid_count} QID(s)")
-                    if emb_count:
-                        summary_parts.append(f"{emb_count} embedded field(s)")
                     summary = (
                         ", ".join(summary_parts) if summary_parts else "no changes"
                     )
                     print(f"  • {Colors.BOLD}{dim}{Colors.RESET}: {summary}")
+                elif dim == "edf":
+                    count = (
+                        len(pending.payload.embedded_fields)
+                        if getattr(pending.payload, "embedded_fields", None)
+                        else 0
+                    )
+                    print(f"  • {Colors.BOLD}{dim}{Colors.RESET}: {count} field(s)")
                 elif dim == "js":
                     count = (
                         len(pending.payload.entries) if pending.payload.entries else 0
@@ -2923,7 +3025,7 @@ def sync_survey(
             for dim, info in fixable_errors:
                 print(f"  • {Colors.BOLD}{dim}{Colors.RESET}: {info.error_detail}")
 
-            ordered = ["items", "translations", "eos", "js"]
+            ordered = ["items", "edf", "translations", "eos", "js"]
             fixable_errors.sort(
                 key=lambda entry: ordered.index(entry[0]) if entry[0] in ordered else 99
             )
@@ -3001,7 +3103,7 @@ def sync_survey(
                 survey_id, getattr(changes, "survey_name", None)
             )
         elif action == "push":
-            safe_order = ["items", "js", "translations", "eos"]
+            safe_order = ["items", "edf", "js", "translations", "eos"]
             pending_dims = [d for d in safe_order if d in pending]
             if dimensions is not None:
                 pending_dims = [d for d in pending_dims if d in set(dimensions)]
@@ -3056,7 +3158,7 @@ def sync_survey(
 
         staged_summary = {
             dim: _summarize_pending_record(dim, pending.get(dim))
-            for dim in ["items", "js", "translations", "eos"]
+            for dim in ["items", "edf", "js", "translations", "eos"]
         }
 
         _display_survey_overview(
@@ -3106,7 +3208,7 @@ def sync_survey(
 
         choices = [
             "✓ Sync dimensions",
-            "🔎 QID-mode (items/js/translations)",
+            "🔎 QID-mode (items/js/translations + EDF status)",
             "↩ Exit sync",
         ]
         selection = select_from_list(
@@ -3243,6 +3345,7 @@ def sync_survey(
                     )
                     scoped_subset = {
                         "items": scoped_unstaged["items"],
+                        "edf": scoped_unstaged["edf"],
                         "js": scoped_unstaged["js"],
                         "translations": scoped_unstaged["translations"],
                     }
@@ -3282,6 +3385,7 @@ def sync_survey(
             scoped_unstaged = _detect_unstaged_changes(survey_id, scope=qid_scope)
             scoped_subset = {
                 "items": scoped_unstaged["items"],
+                "edf": scoped_unstaged["edf"],
                 "js": scoped_unstaged["js"],
                 "translations": scoped_unstaged["translations"],
             }
@@ -3511,6 +3615,7 @@ def sync_focal_surveys(
                             "items": DimensionChanges(
                                 "items", True, "✗ error", set(), error_detail=detail
                             ),
+                            "edf": DimensionChanges("edf", False, "No changes", set()),
                             "js": DimensionChanges("js", False, "No changes", set()),
                             "translations": DimensionChanges(
                                 "translations", False, "No changes", set()
@@ -3532,8 +3637,18 @@ def sync_focal_surveys(
         )
     ]
 
+    surveys_with_issues = [
+        c
+        for c in all_changes
+        if (not c.has_any_changes)
+        and c.has_any_issues
+        and c not in surveys_with_fixable_errors
+    ]
+
     # Combine both lists
-    surveys_to_process = surveys_with_changes + surveys_with_fixable_errors
+    surveys_to_process = (
+        surveys_with_changes + surveys_with_fixable_errors + surveys_with_issues
+    )
 
     # Sort by lastModified (newest first)
     surveys_to_process.sort(
@@ -3566,12 +3681,15 @@ def sync_focal_surveys(
     # Build descriptive message
     change_count = len(surveys_with_changes)
     fixable_count = len(surveys_with_fixable_errors)
+    issues_count = len(surveys_with_issues)
 
     parts = []
     if change_count:
         parts.append(f"{change_count} survey(s) with changes")
     if fixable_count:
         parts.append(f"{fixable_count} survey(s) with fixable issues")
+    if issues_count:
+        parts.append(f"{issues_count} survey(s) with issues")
 
     status_msg = " + ".join(parts) if parts else "No changes"
     print(f"\n{Colors.YELLOW}→{Colors.RESET} {status_msg}")
@@ -3618,6 +3736,26 @@ def sync_focal_surveys(
                 choice = f"fix {changes.survey_name} (⚠ {error_desc})"
                 choices.append(choice)
 
+        surveys_with_issues_only = [
+            c
+            for c in surveys_to_process
+            if (not c.has_any_changes)
+            and c.has_any_issues
+            and not any(
+                d.safe_to_autofix and d.error_detail for d in c.dimensions.values()
+            )
+        ]
+        if surveys_with_issues_only:
+            choices.append("─" * 60)
+            for changes in surveys_with_issues_only:
+                issue_dims = [
+                    dim
+                    for dim, info in changes.dimensions.items()
+                    if info.error_detail or info.warning_detail
+                ]
+                choice = f"issues {changes.survey_name} ({', '.join(issue_dims)})"
+                choices.append(choice)
+
         # Section 3: Special options
         choices.append("─" * 60)
         choices.append("✓ Sync all surveys")
@@ -3643,6 +3781,7 @@ def sync_focal_surveys(
             # Find which survey was selected (handle both sync and fix commands)
             selected = []
             is_fix_operation = False
+            is_issue_operation = False
 
             for changes in surveys_to_process:
                 # Check for sync option
@@ -3670,6 +3809,17 @@ def sync_focal_surveys(
                     if fix_choice == selection:
                         selected = [changes]
                         is_fix_operation = True
+                        break
+                issue_dims = [
+                    dim
+                    for dim, info in changes.dimensions.items()
+                    if info.error_detail or info.warning_detail
+                ]
+                if issue_dims:
+                    issues_choice = f"issues {changes.survey_name} ({', '.join(issue_dims)})"
+                    if issues_choice == selection:
+                        selected = [changes]
+                        is_issue_operation = True
                         break
 
             if not selected:
@@ -3699,7 +3849,7 @@ def sync_focal_surveys(
                 for dim, info in fixable_errors:
                     print(f"  • {Colors.BOLD}{dim}{Colors.RESET}: {info.error_detail}")
 
-                ordered = ["items", "translations", "eos", "js"]
+                ordered = ["items", "edf", "translations", "eos", "js"]
                 fixable_errors.sort(
                     key=lambda entry: (
                         ordered.index(entry[0]) if entry[0] in ordered else 99
@@ -3743,6 +3893,33 @@ def sync_focal_surveys(
                     allow_skip_embedded=allow_skip_embedded,
                     json_output=json_output,
                     process_all=False,  # Always show menu after fix
+                )
+
+            if is_issue_operation:
+                changes = selected[0]
+                print(
+                    f"\n{Colors.YELLOW}⚠ Issues for {changes.survey_name} ({changes.survey_id}){Colors.RESET}"
+                )
+                for dim, info in changes.dimensions.items():
+                    if info.error_detail:
+                        print(f"  • {dim}: {info.error_detail}")
+                    elif info.warning_detail:
+                        print(f"  • {dim}: {info.warning_detail}")
+                print(f"\n{Colors.DIM}Returning to sync menu...{Colors.RESET}\n")
+                return sync_focal_surveys(
+                    interactive=interactive,
+                    force_live=force_live,
+                    force_preview=force_preview,
+                    auto_yes=auto_yes,
+                    pending_action=pending_action,
+                    scope=scope,
+                    per_dimension=per_dimension,
+                    skip_publish=skip_publish,
+                    refresh_workbooks=refresh_workbooks,
+                    allow_drift=allow_drift,
+                    allow_skip_embedded=allow_skip_embedded,
+                    json_output=json_output,
+                    process_all=False,
                 )
     else:
         # Non-interactive or --yes: sync all
@@ -3859,7 +4036,7 @@ def display_dimension_preview(
 
     Args:
         survey_id: Survey ID
-        dimension: Dimension name (items, js, translations, eos)
+        dimension: Dimension name (items, edf, js, translations, eos)
         detailed: Show detailed diffs (default True)
         scope: Optional scope filter for items dimension
 
@@ -3884,10 +4061,6 @@ def display_dimension_preview(
             from .qualtrics_client import load_cached_survey
             from .drift_check import confirm_preview_drift
             from .qualtrics_client import refresh_survey_cache
-            from .dimensions.items_core import (
-                check_embedded_data_health,
-                format_embedded_data_health_warning,
-            )
 
             resolver = WorkbookResolver()
             xlsx_path = resolver.resolve(survey_id)
@@ -3896,25 +4069,6 @@ def display_dimension_preview(
             if not xlsx_path.exists():
                 print(f"{Colors.DIM}No workbook found at {xlsx_path}{Colors.RESET}")
                 return False
-
-            warning_detail = None
-            if not skip_embedded:
-                try:
-                    health = check_embedded_data_health(
-                        survey_id, load_cached_survey(survey_id).payload, xlsx_path
-                    )
-                    if not health.is_valid:
-                        skip_embedded = True
-                        warning_detail = format_embedded_data_health_warning(
-                            health, survey_id=survey_id
-                        )
-                except Exception:
-                    pass
-            if warning_detail:
-                print(f"{Colors.YELLOW}⚠ {warning_detail}{Colors.RESET}")
-                print(
-                    f"{Colors.DIM}Embedded defaults will be skipped for this preview.{Colors.RESET}"
-                )
 
             def _update_cache() -> None:
                 refresh_survey_cache(survey_id)
@@ -3934,7 +4088,7 @@ def display_dimension_preview(
                 xlsx_path,
                 scope_expr=scope_expr,
                 check_drift=False,
-                skip_embedded=skip_embedded,
+                skip_embedded=True,
             )
 
             if not changes:
@@ -3949,11 +4103,7 @@ def display_dimension_preview(
                 print(Colors.DIM + "─" * 80 + Colors.RESET)
 
                 # Header with change type and QID
-                if change.kind == "embedded":
-                    flow = f", flow_id={change.flow_id}" if change.flow_id else ""
-                    header = f"{change.kind.upper()} field={change.field or change.qid}{flow}"
-                else:
-                    header = f"{change.kind.upper()} qid={change.qid}"
+                header = f"{change.kind.upper()} qid={change.qid}"
                 if change.choice_id is not None:
                     header += f", choice_id={change.choice_id}"
                 if change.answer_id is not None:
@@ -3972,6 +4122,77 @@ def display_dimension_preview(
                     new_html = (change.new_html or "").strip()
                     print(f"  {Colors.RED}OLD:{Colors.RESET} {old_html}")
                     print(f"  {Colors.GREEN}NEW:{Colors.RESET} {new_html}")
+
+            return True
+
+        elif dimension == "edf":
+            from .workbook_resolver import WorkbookResolver
+            from .qualtrics_client import load_cached_survey, refresh_survey_cache
+            from .drift_check import confirm_preview_drift
+            from .dimensions.items_core import (
+                _collect_embedded_data_changes,
+                _diff_lines,
+                _display_embedded_value,
+                check_embedded_data_health,
+                format_embedded_data_health_warning,
+            )
+
+            resolver = WorkbookResolver()
+            xlsx_path = resolver.resolve(survey_id)
+            if not xlsx_path.exists():
+                print(f"{Colors.DIM}No workbook found at {xlsx_path}{Colors.RESET}")
+                return False
+
+            cache = load_cached_survey(survey_id)
+            cache_path = cache.path
+
+            def _update_cache() -> None:
+                refresh_survey_cache(survey_id)
+                print("[qsync:edf] Refreshed cached survey definition from API.")
+
+            confirm_preview_drift(
+                survey_id=survey_id,
+                dimension="items",
+                allow_drift=allow_drift,
+                interactive=interactive,
+                update_cache=_update_cache,
+            )
+
+            health = check_embedded_data_health(survey_id, cache.payload, xlsx_path)
+            if not health.is_valid:
+                warning = format_embedded_data_health_warning(health, survey_id=survey_id)
+                print(f"{Colors.YELLOW}⚠ {warning}{Colors.RESET}")
+                return True
+
+            embedded_changes = _collect_embedded_data_changes(
+                survey_id, cache.payload, xlsx_path
+            )
+            if not embedded_changes:
+                print(f"{Colors.DIM}No EDF differences detected.{Colors.RESET}")
+                return True
+
+            print(
+                f"{Colors.DIM}Found {len(embedded_changes)} EDF field change(s){Colors.RESET}\n"
+            )
+            for change in embedded_changes:
+                row = change.get("row")
+                field = getattr(row, "field", "") if row else ""
+                flow_id = getattr(row, "flow_id", "") if row else ""
+                header = f"EMBEDDED field={field}"
+                if flow_id:
+                    header += f", flow_id={flow_id}"
+                print(Colors.DIM + "─" * 80 + Colors.RESET)
+                print(header)
+                old_display = _display_embedded_value(change.get("old_value"))
+                new_display = _display_embedded_value(change.get("new_value"))
+                diff_lines = _diff_lines(
+                    str(old_display or ""),
+                    str(new_display or ""),
+                    context=f"Field: {field}",
+                )
+                print(f"  context: local={xlsx_path}, cache={cache_path}")
+                for line in colorize_unified_diff_lines(diff_lines):
+                    print("  " + line)
 
             return True
 

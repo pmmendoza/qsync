@@ -3,7 +3,7 @@ import json
 import unittest
 from contextlib import redirect_stdout
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from qsync.pending_stage import (
     EosPendingPayload,
@@ -108,6 +108,7 @@ class TestSyncPendingAction(unittest.TestCase):
         )
 
         self.assertIn("items: staged:", message)
+        self.assertIn("edf: none", message)
         self.assertIn("js: none", message)
         self.assertIn("translations: none", message)
         self.assertIn("eos: none", message)
@@ -222,6 +223,83 @@ class TestSyncPendingAction(unittest.TestCase):
         payload = json.loads(buf.getvalue())
         self.assertEqual(payload["pending_dims"], ["items"])
         self.assertIn("next_commands", payload)
+
+    def test_interactive_pending_push_retry_force_live(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        failed = orchestrator.DimensionSyncResult(
+            dimension="eos",
+            success=False,
+            applied_changes=False,
+            error_message=(
+                "[qsync:eos] SV_TEST has 8 finished response(s). "
+                "Re-run with --force-live after double-checking the diffs."
+            ),
+        )
+        succeeded = orchestrator.DimensionSyncResult(
+            dimension="eos",
+            success=True,
+            applied_changes=True,
+            error_message=None,
+        )
+
+        with (
+            patch(
+                "qsync.interactive_menu.select_from_list",
+                return_value="🚀 Push staged changes now",
+            ),
+            patch("qsync.interactive_menu.confirm", return_value=True) as mock_confirm,
+            patch.object(
+                orchestrator, "_get_inventory_cached", return_value={"name": "Test Survey"}
+            ),
+            patch.object(orchestrator, "_display_push_report"),
+            patch.object(orchestrator, "_orchestrated_publish"),
+            patch.object(
+                orchestrator, "sync_dimension", side_effect=[failed, succeeded]
+            ) as mock_sync,
+        ):
+            resolved = orchestrator._resolve_staged_changes_interactive(
+                "SV_TEST",
+                pending={"eos": object()},
+                dimension_results={},
+                force_live=False,
+                force_preview=False,
+                auto_yes=False,
+                allow_drift=False,
+                skip_publish=False,
+            )
+
+        self.assertTrue(resolved)
+        self.assertEqual(mock_sync.call_count, 2)
+        self.assertEqual(
+            mock_sync.call_args_list[0],
+            call(
+                "SV_TEST",
+                "eos",
+                interactive=True,
+                force_live=False,
+                force_preview=False,
+                auto_yes=False,
+                allow_drift=False,
+                skip_publish=True,
+                prefer_pending=True,
+            ),
+        )
+        self.assertEqual(
+            mock_sync.call_args_list[1],
+            call(
+                "SV_TEST",
+                "eos",
+                interactive=True,
+                force_live=True,
+                force_preview=False,
+                auto_yes=False,
+                allow_drift=False,
+                skip_publish=True,
+                prefer_pending=True,
+            ),
+        )
+        mock_confirm.assert_called_once()
 
 
 if __name__ == "__main__":
