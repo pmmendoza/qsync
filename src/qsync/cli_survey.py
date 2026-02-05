@@ -3714,14 +3714,23 @@ def handle_translations_languages_set(args: argparse.Namespace) -> None:
 
 
 def handle_translations_pull(args: argparse.Namespace) -> None:
-    from .terminal_output import success
-    from .translations import pull_translations
+    from .terminal_output import info, success, warn
+    from .qualtrics_client import refresh_survey_cache
 
     survey_id = args.survey_id
     languages = _collect_languages_from_args(args)
-    paths = pull_translations(survey_id, languages)
-    for path in paths:
-        success("[qsync:translations]", f"Pulled: {path}")
+    if languages:
+        warn(
+            "[qsync:translations]",
+            "Note: --language/--languages are ignored for `translations pull` "
+            "(translations live in the survey definition).",
+        )
+
+    cache, changed = refresh_survey_cache(survey_id)
+    if changed:
+        success("[qsync:translations]", f"Pulled: {cache.path}")
+    else:
+        info("[qsync:translations]", f"Cache already up to date: {cache.path}")
 
 
 def _warn_legacy_translations(args: argparse.Namespace) -> None:
