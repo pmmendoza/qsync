@@ -21,7 +21,7 @@ from qsync.push_logger import log_push_event
 from qsync.config import resolve_root
 from qsync.qualtrics_client import fetch_survey_definition_live, load_cached_survey
 
-DimensionType = Literal["items", "js", "translations", "eos"]
+DimensionType = Literal["items", "js", "translations", "eos", "flow"]
 
 
 def _translation_value_fingerprint(value: object) -> str:
@@ -434,6 +434,9 @@ def check_drift(
 
         if dimension == "eos":
             return _check_eos_drift(survey_id, context=context)
+
+        if dimension == "flow":
+            return _check_flow_drift(survey_id, context=context)
 
     except FileNotFoundError:
         # No cached survey - not really drift, but missing cache
@@ -1035,7 +1038,103 @@ def _drift_recommendation(dimension: DimensionType, survey_id: str) -> str:
             "to refresh cache before continuing. Or use --allow-drift to proceed anyway "
             "(changes may overwrite recent API edits)."
         )
+    if dimension == "flow":
+        return (
+            f"Run 'qsync flow pull --survey-id {survey_id}' "
+            "to refresh flow baseline before continuing. Or use --allow-drift to proceed anyway "
+            "(changes may overwrite recent API edits)."
+        )
     return (
         f"Run 'qsync {dimension} pull' to refresh cache before continuing. "
         "Or use --allow-drift to proceed anyway (changes may overwrite recent API edits)."
+    )
+
+
+def _check_flow_drift(survey_id: str, *, context: dict | None = None) -> DriftReport:
+    """Check for flow drift between baseline and live API.
+
+    Args:
+        survey_id: Survey ID to check
+        context: Optional context (not used currently)
+
+    Returns:
+        DriftReport with drift status
+    """
+    from .dimensions.flow import _baseline_path
+
+    baseline_path = _baseline_path(survey_id)
+
+    if not baseline_path.exists():
+        return DriftReport(
+            has_drift=False,
+            summary="No flow baseline found",
+            diff_lines=[],
+            recommendation=f"Run 'qsync flow pull --survey-id {survey_id}' to initialize flow.",
+            changed_count=0,
+        )
+
+    # Load baseline
+    try:
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return DriftReport(
+            has_drift=False,
+            summary=f"Could not read flow baseline: {e}",
+            diff_lines=[],
+            recommendation=f"Run 'qsync flow pull --survey-id {survey_id}' to refresh.",
+            changed_count=0,
+        )
+
+    # Fetch live flow from API
+    live_payload = fetch_survey_definition_live(survey_id)
+    live_flow = live_payload.get("result", {}).get("SurveyFlow", {})
+
+    # Compare flows
+    baseline_json = json.dumps(baseline, indent=2, sort_keys=True)
+    live_json = json.dumps(live_flow, indent=2, sort_keys=True)
+
+    if baseline_json == live_json:
+        return DriftReport(
+            has_drift=False,
+            summary="Flow matches API",
+            diff_lines=[],
+            recommendation="No action needed.",
+            changed_count=0,
+        )
+
+    # Generate diff
+    diff_lines = list(
+        difflib.unified_diff(
+            baseline_json.splitlines(keepends=False),
+            live_json.splitlines(keepends=False),
+            fromfile="baseline [local]",
+            tofile="live [Qualtrics]",
+            lineterm="",
+        )
+    )
+
+    # Count changes
+    changed_count = sum(
+        1
+        for line in diff_lines
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+    )
+    additions = sum(
+        1 for line in diff_lines if line.startswith("+") and not line.startswith("+++")
+    )
+    deletions = sum(
+        1 for line in diff_lines if line.startswith("-") and not line.startswith("---")
+    )
+
+    return DriftReport(
+        has_drift=True,
+        summary="Flow differs from API",
+        diff_lines=diff_lines,
+        recommendation=_drift_recommendation("flow", survey_id),
+        context_lines=[
+            f"context: baseline={baseline_path}, remote=Qualtrics live survey flow",
+        ],
+        changed_count=changed_count,
+        additions=additions,
+        deletions=deletions,
     )

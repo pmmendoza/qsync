@@ -23,6 +23,7 @@ from typing import Dict, List, Optional
 
 from .pending_stage import clear_pending, list_pending, load_pending
 from .dimensions import eos as eos_dimension
+from .dimensions import flow as flow_dimension
 from .dimensions import items as items_dimension
 from .dimensions import js as js_dimension
 from .dimensions import translations as translations_dimension
@@ -74,6 +75,8 @@ def _autofix_command(dimension: str, survey_id: str) -> Optional[str]:
         return f"qsync items pull --survey-id {survey_id}"
     if dimension == "eos":
         return f"qsync eos pull --survey-id {survey_id}"
+    if dimension == "flow":
+        return f"qsync flow pull --survey-id {survey_id}"
     return None
 
 
@@ -111,6 +114,9 @@ def _run_autofix(dimension: str, survey_id: str) -> str:
 
         pull_eos_messages(survey_id=survey_id, allow_shared=True)
         return "Pulled EOS messages to contents/qualtrics_library_messages"
+    if dimension == "flow":
+        flow_dimension.pull(survey_id, force=True)
+        return f"Pulled flow to surveys/flow/{survey_id}/flow.yaml"
     raise ValueError(f"Unknown auto-fix dimension: {dimension}")
 
 
@@ -246,7 +252,7 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
 
     Args:
         survey_id: Survey ID
-        dimension: Dimension name (items, js, translations, eos)
+        dimension: Dimension name (items, js, translations, eos, flow)
 
     Returns:
         DimensionChanges with detection status and affected QIDs
@@ -260,6 +266,8 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
             return translations_dimension.detect_changes(survey_id)
         if dimension == "eos":
             return eos_dimension.detect_changes(survey_id)
+        if dimension == "flow":
+            return flow_dimension.detect_changes(survey_id)
 
         return DimensionChanges(
             dimension=dimension,
@@ -386,8 +394,8 @@ def resolve_conflict_interactive(conflict: Conflict) -> List[str]:
     if selection is None or "Skip" in selection:
         return []
     elif "Apply all" in selection:
-        # Safe merge order: items first, then js, then translations
-        order = ["items", "js", "translations", "eos"]
+        # Safe merge order: items first, then js, then translations, then flow
+        order = ["items", "js", "translations", "eos", "flow"]
         return [d for d in order if d in conflict.dimensions]
     elif "─" in selection:
         return []
@@ -431,7 +439,7 @@ def resolve_conflicts_auto(conflicts: List[Conflict]) -> Dict[str, List[str]]:
         Dict mapping QID to list of dimensions to apply (in order)
     """
     resolutions = {}
-    order = ["items", "js", "translations", "eos"]
+    order = ["items", "js", "translations", "eos", "flow"]
 
     for conflict in conflicts:
         # Apply all dimensions in safe merge order
@@ -949,7 +957,7 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
 
     # Show error explanations if any
     errors = []
-    for dim in ["items", "js", "translations", "eos"]:
+    for dim in ["items", "js", "translations", "eos", "flow"]:
         if changes.dimensions[dim].error_detail:
             errors.append((dim, changes.dimensions[dim].error_detail))
 
@@ -1113,6 +1121,13 @@ def stage_dimension(
                 interactive=interactive,
             )
 
+        if dimension == "flow":
+            return flow_dimension.stage(
+                survey_id,
+                allow_drift=allow_drift,
+                interactive=interactive,
+            )
+
         logger.warning(f"[sync:stage] Unknown dimension: {dimension}")
         return False
 
@@ -1161,6 +1176,7 @@ def sync_dimension(
             JsPendingPayload,
             TranslationsPendingPayload,
             EosPendingPayload,
+            FlowPendingPayload,
             load_pending,
         )
 
@@ -1183,6 +1199,8 @@ def sync_dimension(
             return bool(list(payload.qids or []) or list(payload.metadata_keys or []))
         if dimension == "eos" and isinstance(payload, EosPendingPayload):
             return bool(list(payload.operations or []))
+        if dimension == "flow" and isinstance(payload, FlowPendingPayload):
+            return bool(list(payload.changes or []))
 
         return True
 
@@ -1264,6 +1282,16 @@ def sync_dimension(
                 interactive=interactive,
                 force_live=force_live,
                 force_preview=force_preview,
+                auto_yes=auto_yes,
+                allow_drift=allow_drift,
+                skip_publish=skip_publish,
+            )
+
+        elif dimension == "flow":
+            ok = flow_dimension.push(
+                survey_id,
+                interactive=interactive,
+                force_live=force_live,
                 auto_yes=auto_yes,
                 allow_drift=allow_drift,
                 skip_publish=skip_publish,
@@ -1379,6 +1407,10 @@ def _summarize_pending_record(dimension: str, pending) -> str:
         count = len(payload.operations) if getattr(payload, "operations", None) else 0
         return f"staged: {count} operation(s)"
 
+    if dimension == "flow":
+        count = len(payload.changes) if getattr(payload, "changes", None) else 0
+        return f"staged: {count} change(s)"
+
     return "staged"
 
 
@@ -1399,7 +1431,7 @@ def _build_pending_abort_guidance(
     force_preview: bool,
     scope_expr: Optional[str],
 ) -> tuple[str, dict[str, object]]:
-    ordered_dims = ["items", "js", "translations", "eos"]
+    ordered_dims = ["items", "js", "translations", "eos", "flow"]
     pending_summary = {
         dim: _summarize_pending_record(dim, pending.get(dim)) for dim in ordered_dims
     }
@@ -1581,6 +1613,10 @@ def _detect_unstaged_eos(survey_id: str) -> DimensionChanges:
     return eos_dimension.detect_unstaged_changes(survey_id)
 
 
+def _detect_unstaged_flow(survey_id: str) -> DimensionChanges:
+    return flow_dimension.detect_changes(survey_id)
+
+
 def _detect_unstaged_changes(
     survey_id: str,
     *,
@@ -1591,6 +1627,7 @@ def _detect_unstaged_changes(
         "js": _detect_unstaged_js(survey_id, scope=scope),
         "translations": _detect_unstaged_translations(survey_id, scope=scope),
         "eos": _detect_unstaged_eos(survey_id),
+        "flow": _detect_unstaged_flow(survey_id),
     }
 
 
@@ -1604,7 +1641,7 @@ def _display_survey_overview(
 
     print(f"\n{Colors.BLUE}═══ Survey Overview {survey_ref} ═══{Colors.RESET}")
     print(f"{Colors.BOLD}Staged changes:{Colors.RESET}")
-    for dim in ["items", "js", "translations", "eos"]:
+    for dim in ["items", "js", "translations", "eos", "flow"]:
         summary = staged.get(dim, "none")
         print(f"  • {dim}: {summary}")
 
@@ -1633,22 +1670,24 @@ def _display_survey_overview(
         f"{'Items':<{col_dim}} "
         f"{'JS':<{col_dim}} "
         f"{'Trans':<{col_dim}} "
-        f"{'EOS':<{col_dim}}"
+        f"{'EOS':<{col_dim}} "
+        f"{'Flow':<{col_dim}}"
         f"{Colors.RESET}"
     )
-    separator = f"{Colors.DIM}{'─' * (col_dim * 4 + 3)}{Colors.RESET}"
+    separator = f"{Colors.DIM}{'─' * (col_dim * 5 + 4)}{Colors.RESET}"
     row = (
         f"{_pad_to_width(_format_status(unstaged['items']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['js']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['translations']), col_dim)} "
-        f"{_pad_to_width(_format_status(unstaged['eos']), col_dim)}"
+        f"{_pad_to_width(_format_status(unstaged['eos']), col_dim)} "
+        f"{_pad_to_width(_format_status(unstaged['flow']), col_dim)}"
     )
     print(header)
     print(separator)
     print(row)
 
     errors: list[tuple[str, str]] = []
-    for dim in ["items", "js", "translations", "eos"]:
+    for dim in ["items", "js", "translations", "eos", "flow"]:
         info = unstaged.get(dim)
         if info and info.error_detail:
             errors.append((dim, info.error_detail))
@@ -1694,7 +1733,7 @@ def _preview_staged_changes(
         return
 
     print(f"\n{Colors.BLUE}═══ Preview: Drift + Staged Changes ═══{Colors.RESET}")
-    safe_order = ["items", "js", "translations", "eos"]
+    safe_order = ["items", "js", "translations", "eos", "flow"]
     use_context = True
     shown_no_drift_note = False
     if interactive:
@@ -2028,7 +2067,7 @@ def _resolve_staged_changes_interactive(
     from .interactive_menu import select_from_list
     from .qualtrics_client import refresh_survey_cache
 
-    safe_order = ["items", "js", "translations", "eos"]
+    safe_order = ["items", "js", "translations", "eos", "flow"]
 
     while True:
         choices = [
@@ -2368,7 +2407,7 @@ def _sync_dimensions_once(
             )
 
     # Sort dimensions in safe merge order
-    safe_order = ["items", "js", "translations", "eos"]
+    safe_order = ["items", "js", "translations", "eos", "flow"]
     dimensions_sorted = [d for d in safe_order if d in dimensions]
 
     # Show preview before syncing (unless --yes bypasses all prompts)
@@ -2772,7 +2811,7 @@ def sync_survey(
                 survey_id, getattr(changes, "survey_name", None)
             )
         elif action == "push":
-            safe_order = ["items", "js", "translations", "eos"]
+            safe_order = ["items", "js", "translations", "eos", "flow"]
             pending_dims = [d for d in safe_order if d in pending]
             if dimensions is not None:
                 pending_dims = [d for d in pending_dims if d in set(dimensions)]
@@ -3865,6 +3904,50 @@ def display_dimension_preview(
                     print(f"  {line}")
 
             return True
+
+        elif dimension == "flow":
+            # Reuse existing flow preview
+            from .drift_check import confirm_preview_drift
+
+            try:
+
+                def _update_cache() -> None:
+                    flow_dimension.pull(survey_id, force=True)
+                    print("[qsync:flow] Refreshed flow baseline from API.")
+
+                confirm_preview_drift(
+                    survey_id=survey_id,
+                    dimension="flow",
+                    allow_drift=allow_drift,
+                    interactive=interactive,
+                    update_cache=_update_cache,
+                )
+
+                changes = flow_dimension.preview(survey_id)
+
+                if not changes:
+                    print(f"{Colors.DIM}No flow differences detected.{Colors.RESET}")
+                    return True
+
+                print(f"{Colors.DIM}Flow preview:{Colors.RESET}\n")
+                from .dimensions.flow_diff import format_diff_for_display
+
+                for line in format_diff_for_display(changes):
+                    # Color-code the status
+                    if line.startswith("+"):
+                        print(f"  {Colors.GREEN}{line}{Colors.RESET}")
+                    elif line.startswith("-"):
+                        print(f"  {Colors.RED}{line}{Colors.RESET}")
+                    elif line.startswith("~"):
+                        print(f"  {Colors.YELLOW}{line}{Colors.RESET}")
+                    else:
+                        print(f"  {line}")
+
+                return True
+
+            except Exception as e:
+                print(f"{Colors.RED}✗ Error previewing flow:{Colors.RESET} {e}")
+                return False
 
         else:
             print(f"{Colors.RED}✗ Unknown dimension: {dimension}{Colors.RESET}")

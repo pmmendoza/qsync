@@ -1,7 +1,7 @@
 """Canonical dimension entrypoints for qsync."""
 
 from .types import DimensionChanges
-from . import items, js, translations, eos
+from . import items, js, translations, eos, flow
 
 __all__ = [
     "DimensionChanges",
@@ -9,4 +9,5 @@ __all__ = [
     "js",
     "translations",
     "eos",
+    "flow",
 ]
