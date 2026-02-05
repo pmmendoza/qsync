@@ -1759,6 +1759,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Proceed even if cached survey differs from the live API",
     )
     p_sync.add_argument(
+        "--allow-skip-embedded",
+        action="store_true",
+        help="Allow sync to proceed when Embedded_Data is invalid by skipping embedded defaults",
+    )
+    p_sync.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON when blocked by pending changes",
@@ -3764,6 +3769,9 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     skip_publish=bool(getattr(args, "skip_publish", False)),
                     refresh_workbooks=refresh_workbooks,
                     allow_drift=bool(getattr(args, "allow_drift", False)),
+                    allow_skip_embedded=bool(
+                        getattr(args, "allow_skip_embedded", False)
+                    ),
                     json_output=json_output,
                 )
                 elapsed = time.perf_counter() - start_time
@@ -3796,6 +3804,9 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     skip_publish=bool(getattr(args, "skip_publish", False)),
                     refresh_workbooks=refresh_workbooks,
                     allow_drift=bool(getattr(args, "allow_drift", False)),
+                    allow_skip_embedded=bool(
+                        getattr(args, "allow_skip_embedded", False)
+                    ),
                     json_output=json_output,
                 )
 

@@ -17,7 +17,9 @@ from .items_core import (
     preview_changes,
     push_staged_changes,
     _collect_embedded_data_changes,
+    check_embedded_data_health,
     ERROR_ID_EMBEDDED_DANGEROUS_SKIPPED,
+    format_embedded_data_health_warning,
 )
 from ..terminal_colors import colorize_unified_diff_lines
 from ..workbook_resolver import WorkbookResolver
@@ -58,6 +60,7 @@ def _build_pending_payload_from_workbook(
         include_tags=include_tags,
         scope_expr=scope_expr,
         embedded_only=False,
+        skip_embedded=ignore_embedded,
         check_drift=False,
         annotate_dirty=False,
         self_heal_system_columns=False,
@@ -136,6 +139,7 @@ def _ensure_pending_changes(
     scope_expr: str | None,
     allow_drift: bool,
     interactive: bool,
+    ignore_embedded: bool = False,
 ) -> PendingStagedChanges | None:
     if not isinstance(pending.payload, ItemsPendingPayload):
         return pending
@@ -153,7 +157,7 @@ def _ensure_pending_changes(
         scope_expr=scope_expr,
         filter_column=pending.payload.filter_column,
         filter_value=pending.payload.filter_value,
-        ignore_embedded=False,
+        ignore_embedded=ignore_embedded,
         allow_drift=allow_drift,
         interactive=interactive,
         existing=pending.payload,
@@ -192,7 +196,27 @@ def detect_changes(survey_id: str) -> DimensionChanges:
     resolver = WorkbookResolver()
     xlsx_path = resolver.resolve(survey_id)
     if xlsx_path.exists():
-        changes = preview_changes(survey_id, xlsx_path, check_drift=False)
+        warning_detail = None
+        skip_embedded = False
+        try:
+            survey = load_cached_survey(survey_id)
+            health = check_embedded_data_health(
+                survey_id, survey.payload, xlsx_path
+            )
+            if not health.is_valid:
+                skip_embedded = True
+                warning_detail = format_embedded_data_health_warning(
+                    health, survey_id=survey_id
+                )
+        except Exception:
+            pass
+
+        changes = preview_changes(
+            survey_id,
+            xlsx_path,
+            check_drift=False,
+            skip_embedded=skip_embedded,
+        )
         if changes:
             qids = set(c.qid for c in changes if c.qid)
             return DimensionChanges(
@@ -200,6 +224,16 @@ def detect_changes(survey_id: str) -> DimensionChanges:
                 has_changes=True,
                 change_summary=f"⚡ Unstaged: {len(changes)} change(s) in {len(qids)} QID(s)",
                 affected_qids=qids,
+                warning_detail=warning_detail,
+            )
+
+        if warning_detail:
+            return DimensionChanges(
+                dimension="items",
+                has_changes=False,
+                change_summary="No changes",
+                affected_qids=set(),
+                warning_detail=warning_detail,
             )
 
     return DimensionChanges(
@@ -271,6 +305,7 @@ def push(
     allow_drift: bool,
     skip_publish: bool,
     prefer_pending: bool | None = None,
+    ignore_embedded: bool = False,
 ) -> bool:
     """Push staged items changes (re-stage from Excel if needed)."""
     resolver = WorkbookResolver()
@@ -288,6 +323,7 @@ def push(
         check_drift=False,
         annotate_dirty=False,
         self_heal_system_columns=False,
+        skip_embedded=ignore_embedded,
     )
 
     pending = load_pending(survey_id, "items")
@@ -426,7 +462,7 @@ def push(
             scope_expr=scope_expr,
             filter_column=existing_payload.filter_column if existing_payload else None,
             filter_value=existing_payload.filter_value if existing_payload else None,
-            ignore_embedded=False,
+            ignore_embedded=ignore_embedded,
             allow_drift=allow_drift,
             interactive=interactive and not auto_yes,
             existing=existing_payload,
@@ -460,6 +496,7 @@ def push(
         scope_expr=scope_expr,
         allow_drift=allow_drift,
         interactive=interactive and not auto_yes,
+        ignore_embedded=ignore_embedded,
     )
     if not pending or not isinstance(pending.payload, ItemsPendingPayload):
         print("[sync:items] No staged changes found")

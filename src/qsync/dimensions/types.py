@@ -13,4 +13,5 @@ class DimensionChanges:
     change_summary: str
     affected_qids: Set[str]
     error_detail: Optional[str] = None
+    warning_detail: Optional[str] = None
     safe_to_autofix: bool = False

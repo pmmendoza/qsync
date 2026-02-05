@@ -15,6 +15,7 @@ Created: 2026-01-22 for QSYNC-HARM-022 (Stage 3: Orchestration)
 
 import json
 import logging
+import re
 import shlex
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -35,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 # Performance optimization: Cache inventory records
 _inventory_cache: Optional[Dict[str, dict]] = None
+
+_EMBEDDED_FIELD_TOKEN_RE = re.compile(r"\$\{e://Field/([^}]+)\}")
 
 
 def _get_inventory_cached(survey_id: str) -> Optional[dict]:
@@ -65,6 +68,22 @@ def _clear_inventory_cache():
     """Clear the inventory cache."""
     global _inventory_cache
     _inventory_cache = None
+
+
+def _extract_embedded_field_refs(text: str) -> set[str]:
+    if not text:
+        return set()
+    return {match.group(1).strip() for match in _EMBEDDED_FIELD_TOKEN_RE.finditer(text)}
+
+
+def _collect_embedded_refs_from_changes(changes: list) -> set[str]:
+    refs: set[str] = set()
+    for change in changes or []:
+        if getattr(change, "kind", None) == "embedded":
+            continue
+        new_html = getattr(change, "new_html", "") or ""
+        refs.update(_extract_embedded_field_refs(new_html))
+    return {ref for ref in refs if ref}
 
 
 def _autofix_command(dimension: str, survey_id: str) -> Optional[str]:
@@ -532,6 +551,8 @@ def display_change_detection_table(
     for changes in display_changes:
         # Get status for each dimension - show actual summary or dash
         def format_status(dim_changes):
+            if dim_changes.error_detail:
+                return f"{Colors.RED}✗ error{Colors.RESET}"
             if dim_changes.has_changes:
                 summary = dim_changes.change_summary
                 dim_name = dim_changes.dimension
@@ -582,6 +603,8 @@ def display_change_detection_table(
                     return f"{Colors.RED}✗ error{Colors.RESET}"
                 else:
                     return summary
+            if dim_changes.warning_detail:
+                return f"{Colors.YELLOW}⚠ warn{Colors.RESET}"
             return f"{Colors.DIM}─{Colors.RESET}"
 
         items_status = format_status(changes.dimensions["items"])
@@ -615,10 +638,15 @@ def display_change_detection_table(
 
     # Print error explanations if any
     errors = []
+    warnings = []
     for changes in display_changes:
         for dim_name, dim_changes in changes.dimensions.items():
             if dim_changes.error_detail:
                 errors.append((changes.survey_name, dim_name, dim_changes.error_detail))
+            if dim_changes.warning_detail:
+                warnings.append(
+                    (changes.survey_name, dim_name, dim_changes.warning_detail)
+                )
 
     if errors:
         print(f"\n{Colors.YELLOW}⚠️  Errors detected:{Colors.RESET}")
@@ -632,6 +660,31 @@ def display_change_detection_table(
                     prefix = parts[0].strip()
                     cmd = parts[1].strip()
                     separator = "Run:" if "Run:" in detail else "Add"
+                    print(
+                        f"  {Colors.DIM}•{Colors.RESET} {survey_name} ({dimension}): {prefix} {separator} {Colors.CYAN}{cmd}{Colors.RESET}"
+                    )
+                else:
+                    print(
+                        f"  {Colors.DIM}•{Colors.RESET} {survey_name} ({dimension}): {detail}"
+                    )
+            else:
+                print(
+                    f"  {Colors.DIM}•{Colors.RESET} {survey_name} ({dimension}): {detail}"
+                )
+
+    if warnings:
+        print(f"\n{Colors.YELLOW}⚠️  Warnings:{Colors.RESET}")
+        for survey_name, dimension, detail in warnings:
+            if "Run:" in detail or "Repair:" in detail:
+                parts = (
+                    detail.split("Run:")
+                    if "Run:" in detail
+                    else detail.split("Repair:")
+                )
+                if len(parts) == 2:
+                    prefix = parts[0].strip()
+                    cmd = parts[1].strip()
+                    separator = "Run:" if "Run:" in detail else "Repair:"
                     print(
                         f"  {Colors.DIM}•{Colors.RESET} {survey_name} ({dimension}): {prefix} {separator} {Colors.CYAN}{cmd}{Colors.RESET}"
                     )
@@ -709,6 +762,8 @@ def display_qid_mode_change_table(
         if dim_changes.error_detail:
             return f"{Colors.RED}✗ error{Colors.RESET}"
         if not dim_changes.has_changes:
+            if dim_changes.warning_detail:
+                return f"{Colors.YELLOW}⚠ warn{Colors.RESET}"
             return f"{Colors.DIM}─{Colors.RESET}"
         summary = dim_changes.change_summary
         max_len = col_dim - 2
@@ -766,6 +821,8 @@ def _prompt_qid_mode_dimension_selection(
         if dim_changes.error_detail:
             return "✗ error"
         if not dim_changes.has_changes:
+            if dim_changes.warning_detail:
+                return "⚠ warn"
             return "none"
         match = re.search(r"(\d+)", dim_changes.change_summary or "")
         return f"⚡ {match.group(1)}" if match else "⚡ ?"
@@ -971,6 +1028,33 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
                 print(f"  {Colors.DIM}•{Colors.RESET} {dimension}: {detail}")
         print()  # Blank line after errors
 
+    warnings = []
+    for dim in ["items", "js", "translations", "eos"]:
+        if changes.dimensions[dim].warning_detail:
+            warnings.append((dim, changes.dimensions[dim].warning_detail))
+
+    if warnings:
+        print(f"\n{Colors.YELLOW}⚠️  Warnings:{Colors.RESET}")
+        for dimension, detail in warnings:
+            if "Run:" in detail or "Repair:" in detail:
+                parts = (
+                    detail.split("Run:")
+                    if "Run:" in detail
+                    else detail.split("Repair:")
+                )
+                if len(parts) == 2:
+                    prefix = parts[0].strip()
+                    cmd = parts[1].strip()
+                    separator = "Run:" if "Run:" in detail else "Repair:"
+                    print(
+                        f"  {Colors.DIM}•{Colors.RESET} {dimension}: {prefix} {separator} {Colors.CYAN}{cmd}{Colors.RESET}"
+                    )
+                else:
+                    print(f"  {Colors.DIM}•{Colors.RESET} {dimension}: {detail}")
+            else:
+                print(f"  {Colors.DIM}•{Colors.RESET} {dimension}: {detail}")
+        print()
+
     # Build choices
     choices = []
     for dim in changed:
@@ -1132,6 +1216,7 @@ def sync_dimension(
     skip_publish: bool,
     scope: Optional[ScopeFilter] = None,
     prefer_pending: bool | None = None,
+    ignore_embedded: bool = False,
 ) -> DimensionSyncResult:
     """Sync a single dimension for a survey (push staged changes).
 
@@ -1204,6 +1289,7 @@ def sync_dimension(
                         check_drift=False,
                         annotate_dirty=False,
                         self_heal_system_columns=False,
+                        skip_embedded=ignore_embedded,
                     )
                 )
             except Exception:
@@ -1232,6 +1318,7 @@ def sync_dimension(
                 allow_drift=allow_drift,
                 skip_publish=skip_publish,
                 prefer_pending=prefer_pending,
+                ignore_embedded=ignore_embedded,
             )
 
         elif dimension == "js":
@@ -1486,16 +1573,37 @@ def _detect_unstaged_items(
 ) -> DimensionChanges:
     from .sync_core import preview_changes
     from .workbook_resolver import WorkbookResolver
+    from .qualtrics_client import load_cached_survey
+    from .dimensions.items_core import (
+        check_embedded_data_health,
+        format_embedded_data_health_warning,
+    )
 
     resolver = WorkbookResolver()
     xlsx_path = resolver.resolve(survey_id)
     if xlsx_path.exists():
+        warning_detail = None
+        skip_embedded = False
+        try:
+            survey = load_cached_survey(survey_id)
+            health = check_embedded_data_health(
+                survey_id, survey.payload, xlsx_path
+            )
+            if not health.is_valid:
+                skip_embedded = True
+                warning_detail = format_embedded_data_health_warning(
+                    health, survey_id=survey_id
+                )
+        except Exception:
+            pass
+
         scope_expr = scope.expression if scope and scope.expression else None
         changes = preview_changes(
             survey_id,
             xlsx_path,
             scope_expr=scope_expr,
             check_drift=False,
+            skip_embedded=skip_embedded,
         )
         if changes:
             qids = set(c.qid for c in changes if c.qid)
@@ -1504,6 +1612,15 @@ def _detect_unstaged_items(
                 has_changes=True,
                 change_summary=f"⚡ Unstaged: {len(changes)} change(s) in {len(qids)} QID(s)",
                 affected_qids=qids,
+                warning_detail=warning_detail,
+            )
+        if warning_detail:
+            return DimensionChanges(
+                dimension="items",
+                has_changes=False,
+                change_summary="No changes",
+                affected_qids=set(),
+                warning_detail=warning_detail,
             )
     return DimensionChanges(
         dimension="items",
@@ -1648,13 +1765,20 @@ def _display_survey_overview(
     print(row)
 
     errors: list[tuple[str, str]] = []
+    warnings: list[tuple[str, str]] = []
     for dim in ["items", "js", "translations", "eos"]:
         info = unstaged.get(dim)
         if info and info.error_detail:
             errors.append((dim, info.error_detail))
+        if info and info.warning_detail:
+            warnings.append((dim, info.warning_detail))
     if errors:
         print(f"\n{Colors.YELLOW}⚠️  Errors:{Colors.RESET}")
         for dim, detail in errors:
+            print(f"  {Colors.DIM}•{Colors.RESET} {dim}: {detail}")
+    if warnings:
+        print(f"\n{Colors.YELLOW}⚠️  Warnings:{Colors.RESET}")
+        for dim, detail in warnings:
             print(f"  {Colors.DIM}•{Colors.RESET} {dim}: {detail}")
 
     print(f"\n{Colors.BOLD}Next actions:{Colors.RESET}")
@@ -2337,6 +2461,7 @@ def _sync_dimensions_once(
     scope: Optional[ScopeFilter],
     per_dimension: bool,
     ignore_embedded: bool = False,
+    allow_skip_embedded: bool = False,
     prefer_pending: bool | None = None,
 ) -> Optional[SurveySyncSummary]:
     from .survey_ref import format_survey_ref
@@ -2371,6 +2496,106 @@ def _sync_dimensions_once(
     safe_order = ["items", "js", "translations", "eos"]
     dimensions_sorted = [d for d in safe_order if d in dimensions]
 
+    skip_embedded = bool(ignore_embedded)
+    embedded_warning_detail: str | None = None
+
+    if "items" in dimensions_sorted:
+        from .workbook_resolver import WorkbookResolver
+        from .qualtrics_client import load_cached_survey
+        from .dimensions.items_core import (
+            check_embedded_data_health,
+            format_embedded_data_health_warning,
+        )
+
+        resolver = WorkbookResolver()
+        xlsx_path = resolver.resolve(survey_id)
+        if xlsx_path.exists():
+            try:
+                survey = load_cached_survey(survey_id)
+                health = check_embedded_data_health(
+                    survey_id, survey.payload, xlsx_path
+                )
+                if not health.is_valid:
+                    embedded_warning_detail = format_embedded_data_health_warning(
+                        health, survey_id=survey_id
+                    )
+            except Exception:
+                embedded_warning_detail = None
+
+    if embedded_warning_detail:
+        from .terminal_output import warn
+
+        warn("[sync:items]", embedded_warning_detail)
+        warn(
+            "[sync:items]",
+            "Embedded defaults will be skipped if you continue.",
+        )
+
+        if not skip_embedded:
+            if auto_yes or not interactive:
+                if not allow_skip_embedded:
+                    raise SystemExit(
+                        "[sync:items] Embedded_Data is invalid. "
+                        "Run `qsync items pull --survey-id ...` to repair, "
+                        "or re-run with --allow-skip-embedded."
+                    )
+                skip_embedded = True
+            else:
+                from .interactive_menu import confirm
+
+                proceed = confirm(
+                    message="Continue and skip embedded defaults?", default=False
+                )
+                if not proceed:
+                    print(f"{Colors.DIM}Sync cancelled by user.{Colors.RESET}")
+                    return None
+                skip_embedded = True
+
+        if skip_embedded:
+            print(
+                f"{Colors.DIM}Rollback tip: list versions via `qsync survey versions --survey-id {survey_id}` "
+                "and rollback via `qsync survey rollback --survey-id ... --version-id ... --question-id ...`."
+                f"{Colors.RESET}"
+            )
+
+    if skip_embedded and "items" in dimensions_sorted:
+        from .sync_core import preview_changes
+        from .workbook_resolver import WorkbookResolver
+
+        resolver = WorkbookResolver()
+        xlsx_path = resolver.resolve(survey_id)
+        if xlsx_path.exists():
+            scope_expr = scope.expression if scope and scope.expression else None
+            try:
+                changes = preview_changes(
+                    survey_id,
+                    xlsx_path,
+                    scope_expr=scope_expr,
+                    check_drift=False,
+                    annotate_dirty=False,
+                    self_heal_system_columns=False,
+                    skip_embedded=True,
+                )
+                refs = _collect_embedded_refs_from_changes(changes)
+                if refs:
+                    from .terminal_output import warn
+
+                    warn(
+                        "[sync:items]",
+                        "Detected embedded-field references in wording changes while skipping embedded defaults "
+                        f"(fields: {', '.join(sorted(refs))}).",
+                    )
+                    if interactive and not auto_yes:
+                        from .interactive_menu import confirm
+
+                        if not confirm(
+                            message="Proceed anyway?", default=False
+                        ):
+                            print(f"{Colors.DIM}Sync cancelled by user.{Colors.RESET}")
+                            return None
+            except Exception:
+                pass
+
     # Show preview before syncing (unless --yes bypasses all prompts)
     if not auto_yes:
         print(f"\n{Colors.BLUE}═══ Preview Changes ═══{Colors.RESET}")
@@ -2382,6 +2607,7 @@ def _sync_dimensions_once(
             scope=scope,
             allow_drift=allow_drift,
             interactive=interactive and not auto_yes,
+            skip_embedded=skip_embedded,
         )
 
         if not preview_success:
@@ -2428,7 +2654,7 @@ def _sync_dimensions_once(
                         survey_id,
                         dim,
                         scope=scope,
-                        ignore_embedded=ignore_embedded if dim == "items" else False,
+                        ignore_embedded=skip_embedded if dim == "items" else False,
                         allow_drift=allow_drift,
                         interactive=interactive and not auto_yes,
                     )
@@ -2604,6 +2830,7 @@ def _sync_dimensions_once(
                 skip_publish=True,  # Suppress per-dimension publish for orchestrated flow
                 scope=scope,
                 prefer_pending=prefer_pending,
+                ignore_embedded=skip_embedded if dimension == "items" else False,
             )
         except Exception as e:
             dimension_results[dimension] = DimensionSyncResult(
@@ -2646,6 +2873,7 @@ def sync_survey(
     skip_publish: bool = False,
     refresh_workbooks: bool = False,
     allow_drift: bool = False,
+    allow_skip_embedded: bool = False,
     json_output: bool = False,
 ) -> Optional[SurveySyncSummary]:
     """Sync one or more dimensions for a survey.
@@ -2663,6 +2891,7 @@ def sync_survey(
         skip_publish: Skip auto-publish step
         refresh_workbooks: Refresh Excel workbooks after successful sync
         allow_drift: Allow drift during sync
+        allow_skip_embedded: Allow skip-embedded pushes when EDF is invalid
         json_output: Emit machine-readable JSON for blocked runs
 
     Returns:
@@ -2790,6 +3019,7 @@ def sync_survey(
                 skip_publish=skip_publish,
                 scope=scope,
                 per_dimension=per_dimension,
+                allow_skip_embedded=allow_skip_embedded,
                 prefer_pending=True,
             )
         else:
@@ -2812,6 +3042,7 @@ def sync_survey(
             skip_publish=skip_publish,
             scope=scope,
             per_dimension=per_dimension,
+            allow_skip_embedded=allow_skip_embedded,
         )
 
     # Interactive overview loop
@@ -2862,6 +3093,7 @@ def sync_survey(
                 skip_publish=skip_publish,
                 scope=scope,
                 per_dimension=per_dimension,
+                allow_skip_embedded=allow_skip_embedded,
             )
             if summary:
                 dimension_results.update(summary.dimension_results)
@@ -3037,6 +3269,7 @@ def sync_survey(
                         scope=qid_scope,
                         per_dimension=per_dimension,
                         ignore_embedded=True,
+                        allow_skip_embedded=allow_skip_embedded,
                     )
                     if summary:
                         dimension_results.update(summary.dimension_results)
@@ -3073,6 +3306,7 @@ def sync_survey(
                 scope=qid_scope,
                 per_dimension=per_dimension,
                 ignore_embedded=True,
+                allow_skip_embedded=allow_skip_embedded,
             )
             if summary:
                 dimension_results.update(summary.dimension_results)
@@ -3098,6 +3332,7 @@ def sync_survey(
             skip_publish=skip_publish,
             scope=scope,
             per_dimension=per_dimension,
+            allow_skip_embedded=allow_skip_embedded,
         )
         if summary:
             dimension_results.update(summary.dimension_results)
@@ -3170,6 +3405,7 @@ def sync_focal_surveys(
     skip_publish: bool = False,
     refresh_workbooks: bool = False,
     allow_drift: bool = False,
+    allow_skip_embedded: bool = False,
     json_output: bool = False,
 ) -> bool:
     """Sync all focal surveys with detected changes.
@@ -3186,6 +3422,7 @@ def sync_focal_surveys(
         skip_publish: Skip auto-publish step
         refresh_workbooks: Refresh Excel workbooks after successful sync
         allow_drift: Allow drift during sync
+        allow_skip_embedded: Allow skip-embedded pushes when EDF is invalid
         json_output: Emit machine-readable JSON for blocked runs
 
     Returns:
@@ -3503,6 +3740,7 @@ def sync_focal_surveys(
                     skip_publish=skip_publish,
                     refresh_workbooks=refresh_workbooks,
                     allow_drift=allow_drift,
+                    allow_skip_embedded=allow_skip_embedded,
                     json_output=json_output,
                     process_all=False,  # Always show menu after fix
                 )
@@ -3534,6 +3772,7 @@ def sync_focal_surveys(
                     skip_publish=skip_publish,
                     refresh_workbooks=refresh_workbooks,
                     allow_drift=allow_drift,
+                    allow_skip_embedded=allow_skip_embedded,
                     json_output=json_output,
                 )
                 if summary:
@@ -3555,6 +3794,7 @@ def sync_focal_surveys(
                 skip_publish=skip_publish,
                 refresh_workbooks=refresh_workbooks,
                 allow_drift=allow_drift,
+                allow_skip_embedded=allow_skip_embedded,
                 json_output=json_output,
             )
             if summary:
@@ -3607,6 +3847,7 @@ def display_dimension_preview(
     scope: Optional[ScopeFilter] = None,
     allow_drift: bool = False,
     interactive: bool = True,
+    skip_embedded: bool = False,
 ) -> bool:
     """Display preview for a single dimension using existing preview functions.
 
@@ -3643,6 +3884,10 @@ def display_dimension_preview(
             from .qualtrics_client import load_cached_survey
             from .drift_check import confirm_preview_drift
             from .qualtrics_client import refresh_survey_cache
+            from .dimensions.items_core import (
+                check_embedded_data_health,
+                format_embedded_data_health_warning,
+            )
 
             resolver = WorkbookResolver()
             xlsx_path = resolver.resolve(survey_id)
@@ -3651,6 +3896,25 @@ def display_dimension_preview(
             if not xlsx_path.exists():
                 print(f"{Colors.DIM}No workbook found at {xlsx_path}{Colors.RESET}")
                 return False
+
+            warning_detail = None
+            if not skip_embedded:
+                try:
+                    health = check_embedded_data_health(
+                        survey_id, load_cached_survey(survey_id).payload, xlsx_path
+                    )
+                    if not health.is_valid:
+                        skip_embedded = True
+                        warning_detail = format_embedded_data_health_warning(
+                            health, survey_id=survey_id
+                        )
+                except Exception:
+                    pass
+            if warning_detail:
+                print(f"{Colors.YELLOW}⚠ {warning_detail}{Colors.RESET}")
+                print(
+                    f"{Colors.DIM}Embedded defaults will be skipped for this preview.{Colors.RESET}"
+                )
 
             def _update_cache() -> None:
                 refresh_survey_cache(survey_id)
@@ -3670,6 +3934,7 @@ def display_dimension_preview(
                 xlsx_path,
                 scope_expr=scope_expr,
                 check_drift=False,
+                skip_embedded=skip_embedded,
             )
 
             if not changes:
@@ -3885,6 +4150,7 @@ def display_unified_preview(
     scope: Optional[ScopeFilter] = None,
     allow_drift: bool = False,
     interactive: bool = True,
+    skip_embedded: bool = False,
 ) -> bool:
     """Display unified preview across multiple dimensions.
 
@@ -3914,6 +4180,7 @@ def display_unified_preview(
                 scope=scope,
                 allow_drift=allow_drift,
                 interactive=interactive,
+                skip_embedded=skip_embedded if dim == "items" else False,
             )
             success = success and dim_success
 
@@ -3930,6 +4197,7 @@ def display_unified_preview(
                 scope=scope,
                 allow_drift=allow_drift,
                 interactive=interactive,
+                skip_embedded=skip_embedded if dim == "items" else False,
             )
             success = success and dim_success
             print()  # Blank line between dimensions

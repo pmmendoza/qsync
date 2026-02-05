@@ -57,6 +57,17 @@ class ApplyResult:
     embedded_fields: list[dict[str, str]]
 
 
+@dataclass
+class EmbeddedDataHealth:
+    """Health status for Embedded_Data rows in a workbook."""
+
+    is_valid: bool
+    missing_fields: list[str]
+    extra_fields: list[str]
+    duplicate_fields: list[str]
+    ambiguous_fields: list[str]
+
+
 def _display_to_str(obj: dict) -> str:
     """Convert a Qualtrics Display field to a stable string.
 
@@ -110,6 +121,104 @@ def _normalize_embedded_value(value: str | None) -> str | None:
 
 def _display_embedded_value(value: str | None) -> str:
     return value if value is not None else excel_io.EMBEDDED_EMPTY_VALUE
+
+
+def _format_field_list(fields: List[str], *, limit: int = 6) -> str:
+    if not fields:
+        return ""
+    deduped = sorted({str(field).strip() for field in fields if str(field).strip()})
+    if len(deduped) <= limit:
+        return ", ".join(deduped)
+    overflow = len(deduped) - limit
+    return f"{', '.join(deduped[:limit])}, +{overflow} more"
+
+
+def check_embedded_data_health(
+    survey_id: str, survey_payload: dict, workbook_path: Path
+) -> EmbeddedDataHealth:
+    """Check if Embedded_Data rows align with expected SurveyFlow rows.
+
+    Returns:
+        EmbeddedDataHealth with missing/extra/duplicate/ambiguous field lists.
+    """
+
+    expected_rows = excel_io.build_embedded_data_rows(survey_id, survey_payload)
+    excel_rows = excel_io.load_embedded_data_from_workbook(workbook_path)
+
+    expected_by_key: Dict[Tuple[str, str], excel_io.EmbeddedDataRow] = {}
+    expected_by_field: Dict[str, List[excel_io.EmbeddedDataRow]] = {}
+    for row in expected_rows:
+        key = (row.flow_id or "", row.field)
+        expected_by_key[key] = row
+        expected_by_field.setdefault(row.field, []).append(row)
+
+    mapped_excel: Dict[Tuple[str, str], excel_io.EmbeddedDataRow] = {}
+    extra_fields: List[str] = []
+    duplicate_fields: List[str] = []
+    ambiguous_fields: List[str] = []
+
+    for row in excel_rows:
+        flow_id = row.flow_id or ""
+        field = row.field
+        key: Tuple[str, str] | None = None
+        if flow_id:
+            key = (flow_id, field)
+            if key not in expected_by_key:
+                extra_fields.append(field)
+                continue
+        else:
+            matches = expected_by_field.get(field, [])
+            if not matches:
+                extra_fields.append(field)
+                continue
+            if len(matches) > 1:
+                ambiguous_fields.append(field)
+                continue
+            key = (matches[0].flow_id or "", field)
+        if key in mapped_excel:
+            duplicate_fields.append(field)
+            continue
+        mapped_excel[key] = row
+
+    missing_keys = set(expected_by_key) - set(mapped_excel)
+    missing_fields = sorted({field for _, field in missing_keys})
+
+    is_valid = not (
+        missing_fields or extra_fields or duplicate_fields or ambiguous_fields
+    )
+    return EmbeddedDataHealth(
+        is_valid=is_valid,
+        missing_fields=missing_fields,
+        extra_fields=sorted({f for f in extra_fields if str(f).strip()}),
+        duplicate_fields=sorted({f for f in duplicate_fields if str(f).strip()}),
+        ambiguous_fields=sorted({f for f in ambiguous_fields if str(f).strip()}),
+    )
+
+
+def format_embedded_data_health_warning(
+    health: EmbeddedDataHealth, *, survey_id: str
+) -> str:
+    if health.is_valid:
+        return ""
+    issues: List[str] = []
+    if health.missing_fields:
+        issues.append(f"missing fields: {_format_field_list(health.missing_fields)}")
+    if health.extra_fields:
+        issues.append(f"extra fields: {_format_field_list(health.extra_fields)}")
+    if health.duplicate_fields:
+        issues.append(
+            f"duplicate fields: {_format_field_list(health.duplicate_fields)}"
+        )
+    if health.ambiguous_fields:
+        issues.append(
+            f"ambiguous fields (missing FlowID): {_format_field_list(health.ambiguous_fields)}"
+        )
+    issue_summary = "; ".join([issue for issue in issues if issue])
+    return (
+        "Embedded_Data worksheet is inconsistent with the cached survey "
+        f"({issue_summary}). Repair: qsync items pull --survey-id {survey_id} "
+        "(warning: may overwrite unstaged changes)"
+    )
 
 
 def _collect_embedded_data_changes(
@@ -992,6 +1101,7 @@ def preview_changes(
     include_qids: Set[str] | None = None,
     include_tags: Set[str] | None = None,
     embedded_only: bool = False,
+    skip_embedded: bool = False,
     scope_expr: str | None = None,
     check_drift: bool = True,
     self_heal_system_columns: bool = True,
@@ -1015,6 +1125,7 @@ def preview_changes(
         filter_value: Optional value for the filter column (defaults to `"TRUE"`).
         include_qids: Optional explicit set of QIDs to include.
         include_tags: Optional explicit set of DataExportTags to include.
+        skip_embedded: If True, do not read or validate Embedded_Data rows.
         scope_expr: Optional scope filter expression (e.g., 'qid:Q1 OR tag:baseline').
 
     Returns:
@@ -1189,27 +1300,30 @@ def preview_changes(
             )
 
     # Embedded data default changes
-    embedded_changes = _collect_embedded_data_changes(
-        survey_id, survey.payload, Path(xlsx_path)
-    )
-    for change in embedded_changes:
-        row = change["row"]
-        old_display = _display_embedded_value(change["old_value"])
-        new_display = _display_embedded_value(change["new_value"])
-        # Include field name in diff context for better readability
-        field_context = f"Field: {row.field}"
-        changes.append(
-            PreviewChange(
-                kind="embedded",
-                qid=row.field,
-                field=row.field,
-                flow_id=row.flow_id,
-                old_html=old_display,
-                new_html=new_display,
-                diff_lines=_diff_lines(old_display, new_display, context=field_context),
-                is_dangerous=bool(change.get("is_dangerous")),
-            )
+    if not skip_embedded:
+        embedded_changes = _collect_embedded_data_changes(
+            survey_id, survey.payload, Path(xlsx_path)
         )
+        for change in embedded_changes:
+            row = change["row"]
+            old_display = _display_embedded_value(change["old_value"])
+            new_display = _display_embedded_value(change["new_value"])
+            # Include field name in diff context for better readability
+            field_context = f"Field: {row.field}"
+            changes.append(
+                PreviewChange(
+                    kind="embedded",
+                    qid=row.field,
+                    field=row.field,
+                    flow_id=row.flow_id,
+                    old_html=old_display,
+                    new_html=new_display,
+                    diff_lines=_diff_lines(
+                        old_display, new_display, context=field_context
+                    ),
+                    is_dangerous=bool(change.get("is_dangerous")),
+                )
+            )
 
     if embedded_only:
         changes = [change for change in changes if change.kind == "embedded"]
