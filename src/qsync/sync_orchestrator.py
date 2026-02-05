@@ -1696,6 +1696,7 @@ def _preview_staged_changes(
     print(f"\n{Colors.BLUE}═══ Preview: Drift + Staged Changes ═══{Colors.RESET}")
     safe_order = ["items", "js", "translations", "eos"]
     use_context = True
+    shown_no_drift_note = False
     if interactive:
         scope_choice = select_from_list(
             message="What do you want to preview?",
@@ -1748,6 +1749,12 @@ def _preview_staged_changes(
             if report.has_drift and report.diff_lines and interactive:
                 show_full = confirm("Show full diff?", default=False)
             report.display(interactive=interactive, show_full=show_full)
+            if not report.has_drift and record and not shown_no_drift_note:
+                print(
+                    f"{Colors.DIM}Note:{Colors.RESET} Drift preview compares live vs cache. "
+                    "Staged changes are local pending—use 'Staged changes (pending vs cache)' to preview them."
+                )
+                shown_no_drift_note = True
             continue
 
         # Staged-only preview (pending vs cache), with live drift warning (cache may be stale vs live).
