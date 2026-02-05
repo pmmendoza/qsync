@@ -372,6 +372,94 @@ def _prompt_confirmation(message: str) -> bool:
         return resp in {"y", "yes"}
 
 
+def _should_offer_workspace_onboard_hint(args: argparse.Namespace) -> bool:
+    """Return True if we should offer `qsync onboard` for this command.
+
+    Some commands are API-only (or otherwise workspace-optional) and should not
+    prompt users to onboard just because the current directory isn't a qsync
+    workspace. The command itself will fail with a config error if credentials
+    are missing; onboarding should remain a suggestion for workspace-heavy flows.
+    """
+
+    raw = (os.environ.get("QSYNC_SKIP_ONBOARD_HINT") or "").strip().lower()
+    if raw in {"1", "true", "t", "yes", "y", "on"}:
+        return False
+
+    cmd = getattr(args, "command", None)
+    if cmd in {None, "doctor", "onboard", "self-update"}:
+        return False
+
+    if cmd == "survey":
+        sub = getattr(args, "survey_command", None)
+        # API-only commands: should run anywhere (credentials permitting).
+        api_only = {
+            "list",
+            "copy",
+            "copy-cross-account",
+            "rename",
+            "delete",
+            "cleanup-embedded-data",
+            "publish",
+            "activate",
+            "deactivate",
+            "versions",
+            "version-fetch",
+            "rollback",
+            "push-question",
+            "export-responses",
+            "export-translation",
+        }
+        if sub in api_only:
+            return False
+
+        # Some "mostly-workspace" commands can operate without a workspace if an
+        # explicit path is provided.
+        if sub == "pull" and getattr(args, "dest", None):
+            return False
+        if sub == "inspect-question" and getattr(args, "survey_file", None):
+            return False
+
+        # Everything else under `qsync survey` is workspace-centric.
+        return True
+
+    # Default: most top-level commands are workspace-centric.
+    return True
+
+
+def _workspace_dirs_for_onboard_hint(args: argparse.Namespace) -> list[str]:
+    """Return the workspace dirs required for this command (best-effort)."""
+
+    cmd = getattr(args, "command", None)
+    if cmd == "survey":
+        sub = getattr(args, "survey_command", None)
+        if sub in {"label", "focal", "inventory"}:
+            return ["surveys"]
+        if sub in {"prepare", "master"}:
+            return ["surveys", "excel", "survey_js"]
+        if sub == "pull":
+            if getattr(args, "dest", None):
+                return []
+            return ["surveys"]
+        if sub == "inspect-question":
+            if getattr(args, "survey_file", None):
+                return []
+            return ["surveys"]
+        return ["surveys"]
+
+    if cmd == "items":
+        return ["surveys", "excel"]
+    if cmd == "js":
+        return ["surveys", "survey_js"]
+    if cmd == "sync":
+        return ["surveys", "excel", "survey_js"]
+    if cmd in {"compare", "init", "preview", "apply", "push", "translations"}:
+        return ["surveys", "excel"]
+    if cmd in {"export", "eos"}:
+        return ["surveys"]
+
+    return ["surveys", "excel", "survey_js"]
+
+
 def _parse_extras_args(raw_extras: list[str] | None) -> list[str]:
     extras: list[str] = []
     if not raw_extras:
@@ -2467,47 +2555,42 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             _handle_self_update(args)
             return
 
-        # First-run hint: suggest onboarding if .env missing or folders absent (non-onboard).
+        # First-run hint: suggest onboarding when a workspace-centric command is
+        # executed outside a qsync workspace.
         try:
-            from .config import resolve_env_path, resolve_root
+            from .config import resolve_root
 
-            root_hint = resolve_root(required=False) or Path.cwd()
-            env_path_hint = resolve_env_path(root=root_hint) or (root_hint / ".env")
-            surveys_hint = root_hint / "surveys"
-            excel_hint = root_hint / "excel"
-            js_hint = root_hint / "survey_js"
-            missing_workspace = (
-                not surveys_hint.exists()
-                or not excel_hint.exists()
-                or not js_hint.exists()
-            )
-            if args.command not in {"doctor", "self-update"} and (
-                not Path(env_path_hint).exists() or missing_workspace
-            ):
-                from .interactive_menu import confirm, is_interactive
-
-                if is_interactive():
-                    wants_onboard = confirm(
-                        "No workspace found. Run `qsync onboard` now?",
-                        default=True,
-                    )
-                    if wants_onboard:
-                        from .onboarding import run_onboard
-
-                        run_onboard(
-                            argparse.Namespace(
-                                root=getattr(args, "root", None),
-                                datacenter=None,
-                                token=None,
-                                skip_gitignore=False,
-                                non_interactive=False,
-                            )
-                        )
-                        print("✅ Onboarding complete. Re-run your command.")
-                        return
-                print(
-                    "ℹ️  No workspace found. Run `qsync onboard` to set up this workspace."
+            if _should_offer_workspace_onboard_hint(args):
+                root_hint = resolve_root(required=False) or Path.cwd()
+                required_dirs = _workspace_dirs_for_onboard_hint(args)
+                missing_workspace = any(
+                    not (root_hint / name).exists() for name in required_dirs
                 )
+                if missing_workspace:
+                    from .interactive_menu import confirm, is_interactive
+
+                    if is_interactive():
+                        wants_onboard = confirm(
+                            "No workspace found. Run `qsync onboard` now?",
+                            default=True,
+                        )
+                        if wants_onboard:
+                            from .onboarding import run_onboard
+
+                            run_onboard(
+                                argparse.Namespace(
+                                    root=getattr(args, "root", None),
+                                    datacenter=None,
+                                    token=None,
+                                    skip_gitignore=False,
+                                    non_interactive=False,
+                                )
+                            )
+                            print("✅ Onboarding complete. Re-run your command.")
+                            return
+                    print(
+                        "ℹ️  No workspace found. Run `qsync onboard` to set up this workspace."
+                    )
         except Exception:
             pass
 

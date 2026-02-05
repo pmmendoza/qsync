@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -123,6 +124,35 @@ class QsyncCliOutputTests(unittest.TestCase):
             "qsync[langcheck,pdf] @ git+https://github.com/pmmendoza/qsync.git@main",
             output,
         )
+
+    @patch("qsync.cli_survey.list_surveys", return_value=[])
+    @patch(
+        "qsync.cli_survey.get_client_config",
+        return_value=("example.qualtrics.com", {}),
+    )
+    def test_survey_list_does_not_prompt_onboard_without_workspace(
+        self, _cfg, _list
+    ) -> None:
+        from qsync.cli import main
+
+        with tempfile.TemporaryDirectory() as td:
+            old_cwd = os.getcwd()
+            os.chdir(td)
+            try:
+                buf = io.StringIO()
+                with patch.dict(
+                    os.environ,
+                    {"QSYNC_ROOT": "", "QSYNC_DATA_DIR": "", "QSYNC_ENV_PATH": ""},
+                    clear=False,
+                ):
+                    with redirect_stdout(buf):
+                        main(["survey", "list"])
+            finally:
+                os.chdir(old_cwd)
+
+        out = buf.getvalue()
+        self.assertIn("Fetching surveys from example.qualtrics.com", out)
+        self.assertNotIn("No workspace found", out)
 
     @patch("qsync.cli_survey.publish_survey_definition")
     def test_survey_publish_dry_run_skips_api(self, mock_publish) -> None:
