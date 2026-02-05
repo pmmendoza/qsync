@@ -105,6 +105,68 @@ def _survey_payload_with_labels() -> dict:
     }
 
 
+def _survey_payload_with_translation_blocks() -> dict:
+    return {
+        "result": {
+            "SurveyID": "SV_TEST",
+            "SurveyOptions": {
+                "SurveyLanguage": "EN",
+                "AvailableLanguages": ["EN", "FR"],
+            },
+            "SurveyFlow": {"Flow": [{"Type": "Standard", "ID": "BL_1"}]},
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Default",
+                    "Description": "Block 1",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": "QID1"},
+                        {"Type": "Question", "QuestionID": "QID2"},
+                    ],
+                }
+            },
+            "Questions": {
+                "QID1": {
+                    "QuestionType": "MC",
+                    "Selector": "SAVR",
+                    "QuestionText": "Base Q1",
+                    "DataExportTag": "q1",
+                    "Choices": {
+                        "1": {"Display": "Yes"},
+                        "2": {"Display": "No"},
+                    },
+                    "ChoiceOrder": ["1", "2"],
+                    "Language": {
+                        "FR": {
+                            "QuestionText": "FR Q1",
+                            "Choices": {
+                                "1": {"Display": "Oui"},
+                                "2": {"Display": "Non"},
+                            },
+                        }
+                    },
+                },
+                "QID2": {
+                    "QuestionType": "Matrix",
+                    "Selector": "Likert",
+                    "QuestionText": "Base Q2",
+                    "DataExportTag": "q2",
+                    "Choices": {"1": {"Display": "Row 1"}},
+                    "ChoiceOrder": ["1"],
+                    "Answers": {"1": {"Display": "Col 1"}},
+                    "AnswerOrder": ["1"],
+                    "Language": {
+                        "FR": {
+                            "QuestionText": "FR Q2",
+                            "Choices": {"1": {"Display": "Ligne 1"}},
+                            "Answers": {"1": {"Display": "Colonne 1"}},
+                        }
+                    },
+                },
+            },
+        }
+    }
+
+
 def test_init_workbook_adds_translation_columns(tmp_path: Path) -> None:
     payload = _survey_payload()
     workbook_path = tmp_path / "workbook.xlsx"
@@ -144,6 +206,102 @@ def test_init_workbook_adds_translation_columns(tmp_path: Path) -> None:
     q_table = q_ws._tables.get("QuestionsTable")
     assert q_table is not None
     assert q_table.ref == f"A1:{get_column_letter(q_ws.max_column)}{q_ws.max_row}"
+
+
+def test_init_workbook_populates_translation_cells(tmp_path: Path) -> None:
+    payload = _survey_payload_with_translation_blocks()
+    workbook_path = tmp_path / "workbook.xlsx"
+
+    init_workbook_from_survey("SV_TEST", payload, workbook_path, languages=["FR"])
+
+    wb = load_workbook(workbook_path)
+
+    q_ws = wb[QUESTION_SHEET]
+    q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
+    qid_idx = q_headers.index("QID") + 1
+    text_fr_idx = q_headers.index("Text_fr_MD") + 1
+    q1_row = None
+    q2_row = None
+    for row in range(2, q_ws.max_row + 1):
+        qid = str(q_ws.cell(row=row, column=qid_idx).value or "").strip()
+        if qid == "QID1":
+            q1_row = row
+        elif qid == "QID2":
+            q2_row = row
+    assert q1_row is not None
+    assert q2_row is not None
+    assert q_ws.cell(row=q1_row, column=text_fr_idx).value == "FR Q1"
+    assert q_ws.cell(row=q2_row, column=text_fr_idx).value == "FR Q2"
+
+    o_ws = wb[OPTIONS_SHEET]
+    o_headers = [cell.value for cell in next(o_ws.iter_rows(max_row=1))]
+    o_qid_idx = o_headers.index("QID") + 1
+    o_choice_idx = o_headers.index("ChoiceId") + 1
+    label_fr_idx = o_headers.index("Label_fr_MD") + 1
+    q1_choice1_row = None
+    q2_answer1_row = None
+    for row in range(2, o_ws.max_row + 1):
+        qid = str(o_ws.cell(row=row, column=o_qid_idx).value or "").strip()
+        choice_id = str(o_ws.cell(row=row, column=o_choice_idx).value or "").strip()
+        if qid == "QID1" and choice_id == "1":
+            q1_choice1_row = row
+        elif qid == "QID2" and choice_id == "1":
+            q2_answer1_row = row
+    assert q1_choice1_row is not None
+    assert q2_answer1_row is not None
+    assert o_ws.cell(row=q1_choice1_row, column=label_fr_idx).value == "Oui"
+    assert o_ws.cell(row=q2_answer1_row, column=label_fr_idx).value == "Colonne 1"
+
+    s_ws = wb[SUBITEMS_SHEET]
+    s_headers = [cell.value for cell in next(s_ws.iter_rows(max_row=1))]
+    s_qid_idx = s_headers.index("QID") + 1
+    s_answer_idx = s_headers.index("AnswerId") + 1
+    s_field_idx = s_headers.index("Field") + 1
+    s_label_fr_idx = s_headers.index("Label_fr_MD") + 1
+    q2_row1_row = None
+    for row in range(2, s_ws.max_row + 1):
+        qid = str(s_ws.cell(row=row, column=s_qid_idx).value or "").strip()
+        answer_id = str(s_ws.cell(row=row, column=s_answer_idx).value or "").strip()
+        field = str(s_ws.cell(row=row, column=s_field_idx).value or "").strip()
+        if qid == "QID2" and field == "Answer" and answer_id == "1":
+            q2_row1_row = row
+            break
+    assert q2_row1_row is not None
+    assert s_ws.cell(row=q2_row1_row, column=s_label_fr_idx).value == "Ligne 1"
+
+    q_ws.cell(row=q1_row, column=text_fr_idx).value = "Custom FR Q1"
+    o_ws.cell(row=q1_choice1_row, column=label_fr_idx).value = "Custom Oui"
+    wb.save(workbook_path)
+
+    init_workbook_from_survey("SV_TEST", payload, workbook_path, languages=["FR"])
+    wb = load_workbook(workbook_path)
+    q_ws = wb[QUESTION_SHEET]
+    q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
+    qid_idx = q_headers.index("QID") + 1
+    text_fr_idx = q_headers.index("Text_fr_MD") + 1
+    q1_row = None
+    for row in range(2, q_ws.max_row + 1):
+        qid = str(q_ws.cell(row=row, column=qid_idx).value or "").strip()
+        if qid == "QID1":
+            q1_row = row
+            break
+    assert q1_row is not None
+    assert q_ws.cell(row=q1_row, column=text_fr_idx).value == "Custom FR Q1"
+
+    o_ws = wb[OPTIONS_SHEET]
+    o_headers = [cell.value for cell in next(o_ws.iter_rows(max_row=1))]
+    o_qid_idx = o_headers.index("QID") + 1
+    o_choice_idx = o_headers.index("ChoiceId") + 1
+    label_fr_idx = o_headers.index("Label_fr_MD") + 1
+    q1_choice1_row = None
+    for row in range(2, o_ws.max_row + 1):
+        qid = str(o_ws.cell(row=row, column=o_qid_idx).value or "").strip()
+        choice_id = str(o_ws.cell(row=row, column=o_choice_idx).value or "").strip()
+        if qid == "QID1" and choice_id == "1":
+            q1_choice1_row = row
+            break
+    assert q1_choice1_row is not None
+    assert o_ws.cell(row=q1_choice1_row, column=label_fr_idx).value == "Custom Oui"
 
 
 def test_workbook_doctor_flags_placeholder(tmp_path: Path, monkeypatch) -> None:

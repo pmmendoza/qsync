@@ -67,6 +67,28 @@ def _language_from_suffix(suffix: str) -> str:
     return raw.replace("_", "-").upper()
 
 
+def _lookup_language_block(language_blocks: object, lang_code: str) -> dict:
+    if not isinstance(language_blocks, dict):
+        return {}
+    code = _normalize_language_code(lang_code)
+    if not code:
+        return {}
+
+    candidates: list[str] = []
+    for variant in (code, code.replace("-", "_")):
+        candidates.extend([variant, variant.upper(), variant.lower()])
+
+    seen: set[str] = set()
+    for key in candidates:
+        if key in seen:
+            continue
+        seen.add(key)
+        block = language_blocks.get(key)
+        if isinstance(block, dict):
+            return block
+    return {}
+
+
 def _normalize_subitem_field(value: str | None) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -1379,6 +1401,7 @@ def init_workbook_from_survey(
         questions_map,
         option_previews,
         subitem_previews,
+        survey_payload,
         languages=languages,
     )
     _init_options_sheet(wb, options_map, survey_payload, languages=languages)
@@ -1416,6 +1439,7 @@ def _init_questions_sheet(
     questions_map: Dict[str, QuestionRow],
     option_previews: Dict[str, str],
     subitem_previews: Dict[str, str],
+    survey_payload: dict,
     *,
     languages: Sequence[str] | None = None,
 ) -> None:
@@ -1447,7 +1471,24 @@ def _init_questions_sheet(
         if qid:
             existing_rows[qid] = idx
 
+    questions = survey_payload.get("result", {}).get("Questions", {})
+    text_lang_columns: dict[str, tuple[str, str | None]] = {}
+    for name in headers:
+        header = str(name or "")
+        if not header.startswith("Text_") or not header.endswith("_MD"):
+            continue
+        suffix = header[len("Text_") : -len("_MD")]
+        lang_code = _language_from_suffix(suffix)
+        is_html_name = f"Text_{suffix}_IsHTML"
+        text_lang_columns[lang_code] = (
+            header,
+            is_html_name if is_html_name in col_index else None,
+        )
+
     for qid, row_data in questions_map.items():
+        q_json = questions.get(qid, {}) if isinstance(questions, dict) else {}
+        language_blocks = q_json.get("Language") or {}
+
         if qid in existing_rows:
             row_idx = existing_rows[qid]
             # Update read-only metadata; do not touch user-managed cells unless blank.
@@ -1478,6 +1519,27 @@ def _init_questions_sheet(
             ) and row_data.text_en_md:
                 text_cell.value = row_data.text_en_md
             is_html_cell.value = bool(row_data.text_en_is_html)
+
+            for lang_code, (md_col, html_col) in text_lang_columns.items():
+                if lang_code == "EN":
+                    continue
+                lang_block = _lookup_language_block(language_blocks, lang_code)
+                if not lang_block:
+                    continue
+                lang_text = lang_block.get("QuestionText")
+                text_md, is_html = _metadata_cell_value(lang_text)
+                if not text_md:
+                    continue
+                lang_cell = ws.cell(row=row_idx, column=col_index[md_col] + 1)
+                if lang_cell.value is not None and str(lang_cell.value).strip() != "":
+                    continue
+                lang_cell.value = text_md
+                if html_col:
+                    ws.cell(
+                        row=row_idx,
+                        column=col_index[html_col] + 1,
+                        value=bool(is_html),
+                    )
             if "OptionsPreview" in col_index:
                 col_letter = get_column_letter(col_index["OptionsPreview"] + 1)
                 cell_ref = f"{col_letter}{row_idx}"
@@ -1530,6 +1592,27 @@ def _init_questions_sheet(
                 column=col_index["Text_en_IsHTML"] + 1,
                 value=bool(row_data.text_en_is_html),
             )
+
+            for lang_code, (md_col, html_col) in text_lang_columns.items():
+                if lang_code == "EN":
+                    continue
+                lang_block = _lookup_language_block(language_blocks, lang_code)
+                if not lang_block:
+                    continue
+                lang_text = lang_block.get("QuestionText")
+                text_md, is_html = _metadata_cell_value(lang_text)
+                if not text_md:
+                    continue
+                lang_cell = ws.cell(row=new_row_idx, column=col_index[md_col] + 1)
+                if lang_cell.value is not None and str(lang_cell.value).strip() != "":
+                    continue
+                lang_cell.value = text_md
+                if html_col:
+                    ws.cell(
+                        row=new_row_idx,
+                        column=col_index[html_col] + 1,
+                        value=bool(is_html),
+                    )
             # Routing flags start empty/False
 
             if "OptionsPreview" in col_index:
@@ -1578,6 +1661,19 @@ def _init_options_sheet(
     col_index = _ensure_columns(ws, required_cols)
 
     headers, data_rows = _iter_sheet_rows(ws)
+    label_lang_columns: dict[str, tuple[str, str | None]] = {}
+    for name in headers:
+        header = str(name or "")
+        if not header.startswith("Label_") or not header.endswith("_MD"):
+            continue
+        suffix = header[len("Label_") : -len("_MD")]
+        lang_code = _language_from_suffix(suffix)
+        is_html_name = f"Label_{suffix}_IsHTML"
+        label_lang_columns[lang_code] = (
+            header,
+            is_html_name if is_html_name in col_index else None,
+        )
+
     qid_col = col_index["QID"]
     choice_col = col_index["ChoiceId"]
     existing_rows: Dict[Tuple[str, str], int] = {}
@@ -1682,6 +1778,41 @@ def _init_options_sheet(
                     row_data.externally_managed_by
                 )
 
+            row_idx = new_row_idx
+
+        q_json = questions.get(qid, {}) if isinstance(questions, dict) else {}
+        language_blocks = q_json.get("Language") or {}
+        section = "Choices"
+        if str(row_data.question_type or "").strip().lower() == "matrix":
+            section = "Answers"
+
+        for lang_code, (md_col, html_col) in label_lang_columns.items():
+            if lang_code == "EN":
+                continue
+            lang_block = _lookup_language_block(language_blocks, lang_code)
+            if not lang_block:
+                continue
+            items = lang_block.get(section) if isinstance(lang_block, dict) else None
+            if not isinstance(items, dict):
+                continue
+            entry = items.get(str(choice_id))
+            if not isinstance(entry, dict):
+                continue
+            lang_display = entry.get("Display")
+            text_md, is_html = _metadata_cell_value(lang_display)
+            if not text_md:
+                continue
+            lang_cell = ws.cell(row=row_idx, column=col_index[md_col] + 1)
+            if lang_cell.value is not None and str(lang_cell.value).strip() != "":
+                continue
+            lang_cell.value = text_md
+            if html_col:
+                ws.cell(
+                    row=row_idx,
+                    column=col_index[html_col] + 1,
+                    value=bool(is_html),
+                )
+
 
 def _init_subitems_sheet(
     wb: Workbook,
@@ -1705,6 +1836,19 @@ def _init_subitems_sheet(
     col_index = _ensure_columns(ws, required_cols)
 
     headers, data_rows = _iter_sheet_rows(ws)
+    label_lang_columns: dict[str, tuple[str, str | None]] = {}
+    for name in headers:
+        header = str(name or "")
+        if not header.startswith("Label_") or not header.endswith("_MD"):
+            continue
+        suffix = header[len("Label_") : -len("_MD")]
+        lang_code = _language_from_suffix(suffix)
+        is_html_name = f"Label_{suffix}_IsHTML"
+        label_lang_columns[lang_code] = (
+            header,
+            is_html_name if is_html_name in col_index else None,
+        )
+
     qid_col = col_index["QID"]
     answer_col = col_index["AnswerId"]
     field_col = col_index.get("Field")
@@ -1718,6 +1862,8 @@ def _init_subitems_sheet(
         field = _normalize_subitem_field(field_val)
         key = (str(qid_val).strip(), field, str(answer_val).strip())
         existing_rows[key] = idx
+
+    questions = survey_payload.get("result", {}).get("Questions", {})
 
     for key, row_data in subitems_map.items():
         qid, field_key, answer_id = key
@@ -1793,19 +1939,44 @@ def _init_subitems_sheet(
                 value=bool(row_data.label_en_is_html),
             )
 
-    # Backfill label endpoints for slider/scale questions (Field=Label)
-    questions = survey_payload.get("result", {}).get("Questions", {})
-    label_lang_columns: dict[str, tuple[str, str | None]] = {}
-    for name in headers:
-        if str(name).startswith("Label_") and str(name).endswith("_MD"):
-            suffix = str(name)[len("Label_") : -len("_MD")]
-            lang_code = _language_from_suffix(suffix)
-            is_html_name = f"Label_{suffix}_IsHTML"
-            label_lang_columns[lang_code] = (
-                str(name),
-                is_html_name if is_html_name in col_index else None,
-            )
+            row_idx = new_row_idx
 
+        q_json = questions.get(qid, {}) if isinstance(questions, dict) else {}
+        language_blocks = q_json.get("Language") or {}
+        section = "Answers"
+        if field_key == "Label":
+            section = "Labels"
+        elif str(row_data.question_type or "").strip().lower() == "matrix":
+            section = "Choices"
+
+        for lang_code, (md_col, html_col) in label_lang_columns.items():
+            if lang_code == "EN":
+                continue
+            lang_block = _lookup_language_block(language_blocks, lang_code)
+            if not lang_block:
+                continue
+            items = lang_block.get(section) if isinstance(lang_block, dict) else None
+            if not isinstance(items, dict):
+                continue
+            entry = items.get(str(answer_id))
+            if not isinstance(entry, dict):
+                continue
+            lang_display = entry.get("Display")
+            text_md, is_html = _metadata_cell_value(lang_display)
+            if not text_md:
+                continue
+            lang_cell = ws.cell(row=row_idx, column=col_index[md_col] + 1)
+            if lang_cell.value is not None and str(lang_cell.value).strip() != "":
+                continue
+            lang_cell.value = text_md
+            if html_col:
+                ws.cell(
+                    row=row_idx,
+                    column=col_index[html_col] + 1,
+                    value=bool(is_html),
+                )
+
+    # Backfill label endpoints for slider/scale questions (Field=Label)
     for qid, q in questions.items():
         labels = q.get("Labels") or {}
         if not labels:
@@ -1870,7 +2041,9 @@ def _init_subitems_sheet(
             for lang_code, (md_col, html_col) in label_lang_columns.items():
                 if lang_code == "EN":
                     continue
-                lang_block = language_blocks.get(lang_code) or {}
+                lang_block = _lookup_language_block(language_blocks, lang_code)
+                if not lang_block:
+                    continue
                 lang_labels = lang_block.get("Labels") or {}
                 lang_entry = lang_labels.get(str(label_id)) or {}
                 lang_display = lang_entry.get("Display")
