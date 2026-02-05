@@ -1683,7 +1683,11 @@ def _preview_staged_changes(
     )
     from .dimensions.items import _ensure_pending_changes
     from .dimensions.items_core import _diff_lines, _display_embedded_value
-    from .pending_stage import ItemsPendingPayload, TranslationsPendingPayload
+    from .pending_stage import (
+        ItemsPendingPayload,
+        JsPendingPayload,
+        TranslationsPendingPayload,
+    )
 
     if not pending:
         print(f"{Colors.DIM}No staged changes to preview.{Colors.RESET}")
@@ -1752,6 +1756,176 @@ def _preview_staged_changes(
             print(
                 f"{Colors.YELLOW}⚠ Live drift detected; preview shows staged vs cache.{Colors.RESET}"
             )
+
+        if dim == "js" and record:
+            from .config import resolve_root
+            from .dimensions.js_preview import compare_js_pair
+            from .qualtrics_client import find_cached_survey_file
+
+            if not isinstance(getattr(record, "payload", None), JsPendingPayload):
+                print(f"{Colors.DIM}No staged JS changes to preview.{Colors.RESET}")
+                continue
+
+            core_dir = (
+                (resolve_root(required=False) or Path.cwd()) / "survey_js" / "core"
+            ).resolve()
+            cache_path = find_cached_survey_file(survey_id, in_backups=False)
+            if not cache_path or not cache_path.exists():
+                print(
+                    f"{Colors.YELLOW}⚠{Colors.RESET} No cached survey JSON found for {survey_id}."
+                )
+                print(f"  Run: qsync survey pull --survey-id {survey_id}")
+                continue
+
+            try:
+                cached_root = json.loads(cache_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                print(
+                    f"{Colors.YELLOW}⚠{Colors.RESET} Failed to read cached survey JSON: {exc}"
+                )
+                continue
+            cached_payload = (
+                cached_root.get("result")
+                if isinstance(cached_root, dict) and isinstance(cached_root.get("result"), dict)
+                else cached_root
+            )
+            questions = (
+                cached_payload.get("Questions")
+                if isinstance(cached_payload, dict)
+                else {}
+            ) or {}
+
+            entries = list(getattr(record.payload, "entries", None) or [])
+            if not entries:
+                print(f"{Colors.DIM}No staged JS entries to preview.{Colors.RESET}")
+                continue
+
+            rows: list[dict[str, object]] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                qid = str(entry.get("qid") or "").strip()
+                js_file = str(entry.get("js_file") or "").strip()
+                if not qid or not js_file:
+                    continue
+
+                local_path = (core_dir / js_file).resolve()
+                if core_dir not in local_path.parents:
+                    rows.append(
+                        {
+                            "qid": qid,
+                            "js_file": js_file,
+                            "status": "missing",
+                            "detail": "Unsafe js_file path (outside survey_js/core).",
+                            "diff_lines": [],
+                        }
+                    )
+                    continue
+
+                if not local_path.exists():
+                    rows.append(
+                        {
+                            "qid": qid,
+                            "js_file": js_file,
+                            "status": "missing",
+                            "detail": f"Local JS file not found: {local_path}",
+                            "diff_lines": [],
+                        }
+                    )
+                    continue
+
+                question = questions.get(qid) if isinstance(questions, dict) else None
+                if not isinstance(question, dict):
+                    rows.append(
+                        {
+                            "qid": qid,
+                            "js_file": js_file,
+                            "status": "missing",
+                            "detail": f"QID {qid} not found in cached survey JSON.",
+                            "diff_lines": [],
+                        }
+                    )
+                    continue
+
+                question_js = (
+                    question.get("QuestionJS") or question.get("QuestionJSContent") or ""
+                ).strip()
+                if not question_js:
+                    rows.append(
+                        {
+                            "qid": qid,
+                            "js_file": js_file,
+                            "status": "missing",
+                            "detail": "Cached question has no QuestionJS/QuestionJSContent block.",
+                            "diff_lines": [],
+                        }
+                    )
+                    continue
+
+                local_code = local_path.read_text(encoding="utf-8")
+                diff = compare_js_pair(
+                    local_code,
+                    question_js,
+                    label=js_file,
+                    from_label=f"{qid}:cache [{cache_path.name}]",
+                    to_label=f"{qid}:local [{js_file}]",
+                )
+                rows.append(
+                    {
+                        "qid": qid,
+                        "js_file": js_file,
+                        "status": diff.status,
+                        "detail": diff.detail,
+                        "diff_lines": list(diff.diff_lines or []),
+                        "local_path": local_path,
+                        "cache_path": cache_path,
+                    }
+                )
+
+            changed = [
+                r
+                for r in rows
+                if r.get("status") in {"diff", "comments-only", "missing"}
+            ]
+            if not changed:
+                print(f"{Colors.DIM}No staged JS diffs to preview.{Colors.RESET}")
+                continue
+
+            # Print a compact summary first.
+            total = len(rows)
+            diffs = sum(1 for r in rows if r.get("status") == "diff")
+            comment_only = sum(1 for r in rows if r.get("status") == "comments-only")
+            missing = sum(1 for r in rows if r.get("status") == "missing")
+            matches = sum(1 for r in rows if r.get("status") == "match")
+            print(
+                f"Staged JS entries: {total} total "
+                f"({diffs} diff, {comment_only} comments-only, {missing} missing, {matches} match)"
+            )
+
+            show_diffs = True
+            if interactive and len(changed) > 3:
+                show_diffs = confirm(
+                    f"Show unified diffs for {len(changed)} JS entry/entries?",
+                    default=False,
+                )
+
+            if show_diffs:
+                for r in changed:
+                    qid = r.get("qid") or ""
+                    js_file = r.get("js_file") or ""
+                    status = r.get("status") or ""
+                    detail = r.get("detail") or ""
+                    print(f"JS qid={qid}, file={js_file}: {status}")
+                    if detail:
+                        print(f"  {detail}")
+                    diff_lines = list(r.get("diff_lines") or [])
+                    if diff_lines:
+                        local_path = r.get("local_path")
+                        print(f"  context: local={local_path}, cache={cache_path}")
+                        for line in colorize_unified_diff_lines(diff_lines):
+                            print("  " + line)
+                    print()
+            continue
 
         if dim == "items" and record:
             ensured = _ensure_pending_changes(

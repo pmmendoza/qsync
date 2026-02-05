@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 from ..config import resolve_root
+from ..drift_check import check_drift as run_drift_check
 from ..scope_filter import ScopeFilter
 
 ROOT = resolve_root(required=False) or Path.cwd()
@@ -268,7 +269,9 @@ def preview_differences(
 
     # Check for drift before preview
     if check_drift:
-        drift_report = check_drift(survey_id, dimension="js", interactive=interactive)
+        drift_report = run_drift_check(
+            survey_id, dimension="js", interactive=interactive
+        )
         if drift_report.has_drift:
             drift_report.display(interactive=False)
 
