@@ -144,3 +144,69 @@ def write_label_display(
     entry = labels.get(str(label_id)) or {}
     entry["Display"] = value
     labels[str(label_id)] = entry
+
+
+def read_subquestion_description(
+    question: dict,
+    language: str,
+    subquestion_id: str,
+) -> str | None:
+    lang = normalize_language_code(language)
+    language_block = question.get("Language")
+    if not isinstance(language_block, dict):
+        return None
+    lang_block = language_block.get(lang)
+    if not isinstance(lang_block, dict):
+        return None
+    sub_questions = (
+        lang_block.get("SubQuestions", {})
+        if isinstance(lang_block.get("SubQuestions"), dict)
+        else {}
+    )
+    value = sub_questions.get(str(subquestion_id), {}).get("Description")
+    return str(value) if value is not None else None
+
+
+def write_subquestion_description(
+    question: dict,
+    language: str,
+    subquestion_id: str,
+    value: str,
+) -> None:
+    sub_questions = _ensure_section(question, language, "SubQuestions")
+    entry = sub_questions.get(str(subquestion_id)) or {}
+    entry["Description"] = value
+    sub_questions[str(subquestion_id)] = entry
+
+
+def read_choicegroup_description(
+    question: dict,
+    language: str,
+    group_id: str,
+) -> str | None:
+    lang = normalize_language_code(language)
+    language_block = question.get("Language")
+    if not isinstance(language_block, dict):
+        return None
+    lang_block = language_block.get(lang)
+    if not isinstance(lang_block, dict):
+        return None
+    groups = (
+        lang_block.get("ChoiceGroups", {})
+        if isinstance(lang_block.get("ChoiceGroups"), dict)
+        else {}
+    )
+    value = groups.get(str(group_id), {}).get("Description")
+    return str(value) if value is not None else None
+
+
+def write_choicegroup_description(
+    question: dict,
+    language: str,
+    group_id: str,
+    value: str,
+) -> None:
+    groups = _ensure_section(question, language, "ChoiceGroups")
+    entry = groups.get(str(group_id)) or {}
+    entry["Description"] = value
+    groups[str(group_id)] = entry

@@ -278,7 +278,7 @@ def build_translation_map_from_cache(
             q_text = question.get("QuestionText")
         else:
             q_text = read_question_text(question, lang)
-        translation_map[f"{qid_s}_QuestionText"] = str(q_text or "")
+        translation_map[f"{qid_s}_QuestionText"] = _coerce_display_text(q_text)
 
         choices = question.get("Choices") or {}
         if isinstance(choices, dict):
@@ -287,7 +287,7 @@ def build_translation_map_from_cache(
                     display = (choice or {}).get("Display")
                 else:
                     display = read_choice_display(question, lang, str(cid))
-                translation_map[f"{qid_s}_Choice{cid}"] = str(display or "")
+                translation_map[f"{qid_s}_Choice{cid}"] = _coerce_display_text(display)
 
         answers = question.get("Answers") or {}
         if isinstance(answers, dict):
@@ -296,7 +296,7 @@ def build_translation_map_from_cache(
                     display = (answer or {}).get("Display")
                 else:
                     display = read_answer_display(question, lang, str(aid))
-                translation_map[f"{qid_s}_Answer{aid}"] = str(display or "")
+                translation_map[f"{qid_s}_Answer{aid}"] = _coerce_display_text(display)
 
         labels = question.get("Labels") or {}
         if isinstance(labels, dict):
@@ -305,7 +305,7 @@ def build_translation_map_from_cache(
                     display = (label or {}).get("Display")
                 else:
                     display = read_label_display(question, lang, str(lid))
-                translation_map[f"{qid_s}_Label{lid}"] = str(display or "")
+                translation_map[f"{qid_s}_Label{lid}"] = _coerce_display_text(display)
 
     return translation_map
 
@@ -968,6 +968,7 @@ def _render_to_docx(content: ExportContent, *, render_mermaid: bool = False) -> 
         edf_overrides=content.edf_overrides,
         include_html_source=content.include_html_source,
         layout_heuristics=content.layout_heuristics,
+        base_language=content.base_language,
         render_language=content.render_language,
         compare_to_base=content.compare_to_base,
         translation_ctx=content.translation_ctx,
@@ -1399,6 +1400,7 @@ def _add_survey_content_section(
     edf_overrides: dict[str, str] | None,
     include_html_source: bool,
     layout_heuristics: bool,
+    base_language: str,
     render_language: str | None,
     compare_to_base: bool,
     translation_ctx: TranslationRenderContext | None,
@@ -1430,6 +1432,7 @@ def _add_survey_content_section(
         include_html_source=include_html_source,
         layout_heuristics=layout_heuristics,
         asked_qids=asked_qids,
+        base_language=base_language,
         render_language=render_language,
         compare_to_base=compare_to_base,
         translation_ctx=translation_ctx,
@@ -1523,6 +1526,7 @@ def _traverse_flow(
     include_html_source: bool,
     layout_heuristics: bool,
     asked_qids: set[str] | None,
+    base_language: str,
     render_language: str | None,
     compare_to_base: bool,
     translation_ctx: TranslationRenderContext | None,
@@ -1544,6 +1548,7 @@ def _traverse_flow(
             edf_overrides=edf_overrides,
             asked_qids=asked_qids,
             layout_heuristics=layout_heuristics,
+            base_language=base_language,
             render_language=render_language,
             compare_to_base=compare_to_base,
             translation_ctx=translation_ctx,
@@ -1628,6 +1633,7 @@ def _traverse_flow(
                 depth=depth_level + 1,
                 include_html_source=include_html_source,
                 layout_heuristics=layout_heuristics,
+                base_language=base_language,
                 render_language=render_language,
                 compare_to_base=compare_to_base,
             )
@@ -1675,6 +1681,7 @@ def _add_block(
     edf_overrides: dict[str, str] | None,
     asked_qids: set[str] | None,
     layout_heuristics: bool,
+    base_language: str,
     render_language: str | None,
     compare_to_base: bool,
     translation_ctx: TranslationRenderContext | None,
@@ -1773,6 +1780,7 @@ def _add_block(
                     qid_to_js=qid_to_js,
                     include_html_source=include_html_source,
                     layout_heuristics=layout_heuristics,
+                    base_language=base_language,
                     render_language=render_language,
                     compare_to_base=compare_to_base,
                     translation_ctx=translation_ctx,
@@ -1795,6 +1803,7 @@ def _add_question(
     qid_to_js: dict[str, str],
     include_html_source: bool,
     layout_heuristics: bool,
+    base_language: str,
     render_language: str | None,
     compare_to_base: bool,
     translation_ctx: TranslationRenderContext | None,
@@ -1936,16 +1945,16 @@ def _add_question(
             answers.keys(), key=lambda x: int(x) if str(x).isdigit() else str(x)
         ):
             ans = answers.get(aid) or {}
-            disp = ans.get("Display") or ""
-            if disp:
+            disp = _coerce_display_text(ans.get("Display"))
+            if disp.strip():
                 option_items.append((str(aid), disp, "answer"))
 
         labels = question.get("Labels") or {}
         if isinstance(labels, dict) and labels:
             for k in sorted(labels.keys(), key=str):
                 lab = labels.get(k) or {}
-                disp = lab.get("Display") or ""
-                if disp:
+                disp = _coerce_display_text(lab.get("Display"))
+                if disp.strip():
                     label_items.append((str(k), _strip_html(disp)))
 
         cfg = question.get("Configuration") or {}
@@ -1982,8 +1991,8 @@ def _add_question(
             answers.keys(), key=lambda x: int(x) if str(x).isdigit() else str(x)
         ):
             ans = answers.get(aid) or {}
-            disp = ans.get("Display") or ""
-            if disp:
+            disp = _coerce_display_text(ans.get("Display"))
+            if disp.strip():
                 option_items.append((str(aid), disp, "answer"))
 
     if not slider_like:
@@ -1991,8 +2000,8 @@ def _add_question(
         if isinstance(labels, dict) and labels:
             for k in sorted(labels.keys(), key=str):
                 lab = labels.get(k) or {}
-                disp = lab.get("Display") or ""
-                if disp:
+                disp = _coerce_display_text(lab.get("Display"))
+                if disp.strip():
                     option_items.append((f"label {k}", _strip_html(disp), "label"))
 
     # Apply translation overlay (if requested).
@@ -2105,7 +2114,8 @@ def _add_question(
     if has_js and include_js_strings:
         js_code = str(question.get("QuestionJS") or "")
         if js_code:
-            js_strings = _extract_js_strings(js_code, target_language=render_language)
+            js_lang = render_language or base_language
+            js_strings = _extract_js_strings(js_code, target_language=js_lang)
             if js_strings:
                 rows_to_render.append(("js_strings", js_strings))
 
@@ -2133,9 +2143,8 @@ def _add_question(
         if has_js and include_js_strings:
             js_code = str(question.get("QuestionJS") or "")
             if js_code:
-                js_strings = _extract_js_strings(
-                    js_code, target_language=render_language
-                )
+                js_lang = render_language or base_language
+                js_strings = _extract_js_strings(js_code, target_language=js_lang)
                 if js_strings:
                     bilingual_rows.append(("js_strings", js_strings))
 
@@ -2383,9 +2392,21 @@ def _iter_ordered_displays(
             ordered_ids.append(sk)
     for k in ordered_ids:
         item = mapping.get(k) or {}
-        disp = item.get("Display") or ""
-        if disp:
+        disp = _coerce_display_text(item.get("Display"))
+        if disp.strip():
             yield k, disp
+
+
+def _coerce_display_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return str(value)
 
 
 # ----------------------------
@@ -5414,7 +5435,7 @@ def _render_question_html_full(
             choice_data = choices.get(choice_id)
             if not isinstance(choice_data, dict):
                 continue
-            display = str(choice_data.get("Display") or "").strip()
+            display = _coerce_display_text(choice_data.get("Display")).strip()
             if content.translation_ctx:
                 key = content.translation_ctx.key_for_choice(qid, choice_id)
                 translated = content.translation_ctx.target_map.get(key)
@@ -5443,7 +5464,7 @@ def _render_question_html_full(
             lab = labels.get(lid)
             if not isinstance(lab, dict):
                 continue
-            display = str(lab.get("Display") or "").strip()
+            display = _coerce_display_text(lab.get("Display")).strip()
             if content.translation_ctx:
                 key = content.translation_ctx.key_for_label(qid, lid)
                 translated = content.translation_ctx.target_map.get(key)
@@ -5465,7 +5486,7 @@ def _render_question_html_full(
             ans_data = answers.get(ans_id)
             if not isinstance(ans_data, dict):
                 continue
-            display = str(ans_data.get("Display") or "").strip()
+            display = _coerce_display_text(ans_data.get("Display")).strip()
             if content.translation_ctx:
                 key = content.translation_ctx.key_for_answer(qid, ans_id)
                 translated = content.translation_ctx.target_map.get(key)
@@ -5526,9 +5547,8 @@ def _render_question_html_full(
     if has_js and content.include_js_strings:
         js_code = str(q.get("QuestionJS") or "")
         if js_code:
-            js_strings = _extract_js_strings(
-                js_code, target_language=content.render_language
-            )
+            js_lang = content.render_language or content.base_language
+            js_strings = _extract_js_strings(js_code, target_language=js_lang)
             if js_strings:
                 html += '<div class="js-strings"><strong>JavaScript User-Visible Strings:</strong></div>\n'
                 html += '<ul class="js-strings-list">\n'
@@ -5697,7 +5717,7 @@ def _render_end_survey_html(node: dict, content: ExportContent, depth: int) -> s
         if not isinstance(messages, dict) or not messages:
             return html
 
-        base_key = _DEFAULT_BASE_LANGUAGE.lower()
+        base_key = _normalize_lang_code(content.base_language).lower()
         target_key = (
             _normalize_lang_code(content.render_language).lower()
             if content.render_language
@@ -7194,6 +7214,7 @@ def _render_eos_message_content(
     depth: int,
     include_html_source: bool,
     layout_heuristics: bool,
+    base_language: str,
     render_language: str | None,
     compare_to_base: bool,
 ) -> None:
@@ -7228,7 +7249,7 @@ def _render_eos_message_content(
     # Align EOS message presentation with question translations:
     # - monolingual exports: one column (target language if specified, else base)
     # - bilingual exports (--compare-to-base): base + target side-by-side columns
-    base_key = _DEFAULT_BASE_LANGUAGE.lower()
+    base_key = _normalize_lang_code(base_language).lower()
     target_key = (
         _normalize_lang_code(render_language).lower() if render_language else ""
     )

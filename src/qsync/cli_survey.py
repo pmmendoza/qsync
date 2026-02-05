@@ -719,6 +719,323 @@ def handle_copy(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def handle_slice_language(args: argparse.Namespace) -> None:
+    """Slice a multilingual survey into a new survey rebased to one language."""
+
+    from .terminal_output import header, info, success, warn, error, dim, prompt_yes_no
+    from .translations_utils import normalize_language_code, normalize_language_list
+    from .survey_slice_language import (
+        compute_slice_coverage,
+        resolve_keep_languages,
+        slice_qsf_to_language,
+        warn_if_flow_text_present,
+        write_coverage_report,
+        write_slice_manifest,
+        sha256_of_qsf_upload_bytes,
+    )
+
+    import qsync
+
+    base, headers = get_client_config()
+
+    from .cli import _prompt_for_survey_id_if_needed
+    from .dimensions.translations_core import (
+        list_enabled_languages as api_list_enabled_languages,
+    )
+
+    source_id = _prompt_for_survey_id_if_needed(
+        getattr(args, "source_survey_id", None),
+        allow_all_surveys=True,
+    )
+
+    target_lang = normalize_language_code(getattr(args, "language", "") or "")
+    if not target_lang:
+        error(
+            "[qsync:slice-language]",
+            "ERROR: --language is required (e.g. DE, FR-CA).",
+        )
+        sys.exit(1)
+
+    keep_raw = str(
+        getattr(args, "keep_languages", "target-only") or "target-only"
+    ).strip()
+    allow_incomplete = bool(getattr(args, "allow_incomplete", False))
+    auto_yes = bool(getattr(args, "yes", False))
+
+    header("[qsync:slice-language]", "Preview:")
+
+    try:
+        enabled_langs = api_list_enabled_languages(source_id)
+    except Exception as exc:
+        error(
+            "[qsync:slice-language]",
+            f"ERROR: Failed to fetch enabled languages for {source_id}: {exc}",
+        )
+        sys.exit(1)
+
+    if target_lang not in set(enabled_langs):
+        error(
+            "[qsync:slice-language]",
+            f"ERROR: Target language {target_lang} is not enabled on source survey {source_id}.",
+        )
+        dim(
+            "[qsync:slice-language]",
+            f"Enabled languages: {', '.join(enabled_langs) if enabled_langs else '(none)'}",
+        )
+        sys.exit(1)
+
+    print()
+    info("  Source Survey:", "")
+    info("    ID:", source_id)
+    info("    Account:", base)
+    info("  Target:", "")
+    info("    Base language:", target_lang)
+    info("    Keep languages:", keep_raw)
+    if allow_incomplete:
+        warn("    ⚠", "--allow-incomplete enabled (may produce mixed-language output)")
+    if auto_yes:
+        dim("    (non-interactive):", "--yes")
+    print()
+
+    info("[qsync:slice-language]", f"Fetching source definition (QSF) for {source_id}...")
+    try:
+        qsf_content = fetch_survey_definition(base, headers, source_id, fmt="qsf")
+    except Exception as exc:
+        error(
+            "[qsync:slice-language]",
+            f"ERROR: Failed to fetch source survey definition: {exc}",
+        )
+        sys.exit(1)
+
+    source_name = qsf_content.get("SurveyEntry", {}).get("SurveyName", source_id)
+    default_new_name = f"{source_name} ({target_lang})"
+    requested_name = getattr(args, "name", None) or ""
+    if not requested_name.strip():
+        if auto_yes or not sys.stdin.isatty():
+            new_name = default_new_name
+        else:
+            new_name = (
+                input(f"Enter name for new survey [{default_new_name}]: ").strip()
+                or default_new_name
+            )
+    else:
+        new_name = requested_name.strip()
+
+    # Coverage preflight + report (always written to disk for traceability).
+    try:
+        report = compute_slice_coverage(qsf_content, target_language=target_lang)
+    except Exception as exc:
+        error(
+            "[qsync:slice-language]",
+            f"ERROR: Coverage preflight failed to run: {exc}",
+        )
+        sys.exit(1)
+
+    root = _workspace_root()
+    coverage_path = write_coverage_report(
+        root,
+        source_survey_id=source_id,
+        target_language=target_lang,
+        report=report,
+    )
+
+    if report.inactive_qids_total is not None and report.inactive_qids_total > 0:
+        dim(
+            "[qsync:slice-language]",
+            (
+                f"Coverage scope: {report.active_qids_total} active QID(s); "
+                f"skipped {report.inactive_qids_total} inactive/Trash QID(s)."
+            ),
+        )
+
+    if report.missing_required_total:
+        warn(
+            "[qsync:slice-language]",
+            (
+                f"Coverage: {report.ok_required_total}/{report.required_total} required keys "
+                f"({report.pct_required_ok:.1f}%), missing {report.missing_required_total}."
+            ),
+        )
+        shown = 0
+        order = [
+            "Meta",
+            "QuestionText",
+            "SubQuestion",
+            "ChoiceGroup",
+            "Choice",
+            "Answer",
+            "Label",
+        ]
+        for type_name in order:
+            keys = (report.missing_required_by_type or {}).get(type_name) or []
+            if not keys:
+                continue
+            remaining = max(0, 10 - shown)
+            if remaining <= 0:
+                break
+            sample = keys[:remaining]
+            shown += len(sample)
+            warn(
+                "[qsync:slice-language]",
+                f"Missing {type_name} (sample): " + ", ".join(sample),
+            )
+        if not shown:
+            missing_sample = report.missing_required[:10]
+            if missing_sample:
+                warn(
+                    "[qsync:slice-language]",
+                    "Missing keys (sample): " + ", ".join(missing_sample),
+                )
+        dim("[qsync:slice-language]", f"Full report: {coverage_path}")
+        dim(
+            "[qsync:slice-language]",
+            f"Remediation: qsync translations doctor --survey-id {source_id} --language {target_lang}",
+        )
+
+        if not allow_incomplete:
+            sys.exit(1)
+
+        if not auto_yes:
+            if not sys.stdin.isatty():
+                error(
+                    "[qsync:slice-language]",
+                    "ERROR: Non-interactive run with --allow-incomplete requires --yes.",
+                )
+                sys.exit(1)
+            if not prompt_yes_no(
+                f"Target language {target_lang} is incomplete. Create the sliced survey anyway?",
+                default=False,
+            ):
+                raise SystemExit("[qsync:slice-language] Aborted by user.")
+
+        warn(
+            "[qsync:slice-language]",
+            "Proceeding despite incomplete coverage (--allow-incomplete).",
+        )
+
+    # SurveyFlow warning (Stage 1 does not rebase flow text).
+    for line in warn_if_flow_text_present(qsf_content):
+        warn("[qsync:slice-language]", line)
+
+    # Resolve keep-languages and validate the request.
+    kept_languages = resolve_keep_languages(
+        enabled_langs,
+        target_language=target_lang,
+        base_language=report.base_language,
+        keep_languages_raw=keep_raw,
+    )
+    enabled_set = set(normalize_language_list(enabled_langs))
+    missing_kept = [lang for lang in kept_languages if lang not in enabled_set]
+    if missing_kept:
+        error(
+            "[qsync:slice-language]",
+            "ERROR: --keep-languages includes languages not enabled on the source: "
+            + ", ".join(missing_kept),
+        )
+        dim(
+            "[qsync:slice-language]",
+            f"Enabled languages: {', '.join(enabled_langs) if enabled_langs else '(none)'}",
+        )
+        sys.exit(1)
+
+    info(
+        "[qsync:slice-language]",
+        "Slicing with kept languages: " + ", ".join(kept_languages),
+    )
+
+    # Apply the in-place QSF transform.
+    transform = slice_qsf_to_language(
+        qsf_content,
+        target_language=target_lang,
+        kept_languages=kept_languages,
+    )
+    if transform.warnings:
+        warn(
+            "[qsync:slice-language]",
+            f"{len(transform.warnings)} warning(s) during rebase (showing up to 10):",
+        )
+        for line in transform.warnings[:10]:
+            warn("[qsync:slice-language]", line)
+
+    # Check for duplicate names unless forced.
+    try:
+        ensure_unique_survey_name(new_name, allow_duplicate=args.force_duplicate)
+    except Exception as exc:
+        error("[qsync:slice-language]", f"ERROR: {exc}")
+        sys.exit(1)
+
+    # Prepare for import (sets name/status; strips SurveyID).
+    prepare_qsf_for_import(
+        qsf_content,
+        new_name,
+        language=target_lang,
+        status="Inactive",
+    )
+    qsf_sha256 = sha256_of_qsf_upload_bytes(qsf_content)
+
+    info("[qsync:slice-language]", f"Creating survey '{new_name}'...")
+    try:
+        meta = {
+            "source_survey_id": source_id,
+            "target_language": target_lang,
+            "keep_languages": keep_raw,
+            "allow_incomplete": allow_incomplete,
+        }
+        new_id = upload_qsf_to_account(
+            qsf_content,
+            new_name,
+            base,
+            headers,
+            action="qsync.survey.slice_language",
+            log_meta=meta,
+        )
+    except Exception as exc:
+        error("[qsync:slice-language]", f"ERROR: Failed to create survey: {exc}")
+        sys.exit(1)
+
+    success(
+        "[qsync:slice-language]",
+        f"Created {new_name} ({new_id}) from {source_id} (base={target_lang}).",
+    )
+
+    edit_url = f"https://{base}/survey-builder/{new_id}/edit"
+    print()
+    info("Edit Link:", edit_url)
+
+    # Persist manifest for traceability.
+    manifest_path = write_slice_manifest(
+        root,
+        source_survey_id=source_id,
+        source_survey_name=str(source_name or source_id),
+        source_base_language=report.base_language,
+        target_language=target_lang,
+        new_survey_id=new_id,
+        new_survey_name=new_name,
+        keep_languages_mode=keep_raw,
+        kept_languages=kept_languages,
+        allow_incomplete=allow_incomplete,
+        coverage_report_path=coverage_path,
+        report=report,
+        qsf_sha256=qsf_sha256,
+        qsync_version=str(getattr(qsync, "__version__", "0.0.0")),
+    )
+    dim("[qsync:slice-language]", f"Manifest: {manifest_path}")
+    info("[qsync:slice-language]", "Next commands:")
+    info(None, f"  qsync survey activate {new_id}")
+    info(
+        None,
+        (
+            "  qsync survey publish "
+            f"{new_id} --description \"slice-language {source_id} -> {target_lang}\""
+        ),
+    )
+    info(None, f"  qsync translations pull --survey-id {new_id}")
+
+    from .terminal_output import log_confirmation
+
+    log_confirmation("[slice-language]")
+
+
 def handle_rename(args: argparse.Namespace) -> None:
     """Rename a survey by SurveyID (or interactively select from recent surveys)."""
 
@@ -4764,6 +5081,45 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--generate-qsf", action="store_true", help="Generate QSF locally only"
     )
     p_copy.set_defaults(func=handle_copy)
+
+    # slice-language
+    p_slice = survey_subs.add_parser(
+        "slice-language",
+        help="Copy a multilingual survey into a new survey rebased to one language",
+    )
+    p_slice.add_argument(
+        "source_survey_id", nargs="?", help="Existing Qualtrics survey ID to slice"
+    )
+    p_slice.add_argument(
+        "--language",
+        required=True,
+        help="Target language code to use as the new base language (e.g., DE, FR-CA)",
+    )
+    p_slice.add_argument(
+        "--name",
+        help="Name for the new survey (default: '<SourceName> (<LANG>)')",
+    )
+    p_slice.add_argument(
+        "--keep-languages",
+        default="target-only",
+        help="Languages to keep enabled: target-only|all|<comma-list> (default: target-only)",
+    )
+    p_slice.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="Proceed even if required keys are missing in the target language (writes a coverage report)",
+    )
+    p_slice.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip confirmation prompts (required for --allow-incomplete in non-interactive runs)",
+    )
+    p_slice.add_argument(
+        "--force-duplicate",
+        action="store_true",
+        help="Allow duplicate survey names (uses local inventory to detect conflicts)",
+    )
+    p_slice.set_defaults(func=handle_slice_language)
 
     # copy-cross-account
     p_copy_xacct = survey_subs.add_parser(
