@@ -12,6 +12,7 @@ from openpyxl import load_workbook
 from qsync import excel_io
 from qsync.dimensions import items as items_dimension
 from qsync.sync_core import preview_changes
+from qsync.workbook_resolver import WorkbookResolver
 
 
 def _payload_with_question_and_embedded() -> dict:
@@ -110,7 +111,7 @@ def test_preview_changes_skip_embedded_with_missing_rows() -> None:
 
         excel_dir = root / "excel"
         excel_dir.mkdir(parents=True, exist_ok=True)
-        xlsx_path = excel_dir / f"{survey_id}.xlsx"
+        xlsx_path = WorkbookResolver(root=root).resolve(survey_id)
         excel_io.init_workbook_from_survey(survey_id, payload, xlsx_path)
 
         _remove_embedded_row(xlsx_path, "DEBUG")
@@ -137,7 +138,7 @@ def test_stage_builds_payload_when_skip_embedded() -> None:
 
         excel_dir = root / "excel"
         excel_dir.mkdir(parents=True, exist_ok=True)
-        xlsx_path = excel_dir / f"{survey_id}.xlsx"
+        xlsx_path = WorkbookResolver(root=root).resolve(survey_id)
         excel_io.init_workbook_from_survey(survey_id, payload, xlsx_path)
 
         _remove_embedded_row(xlsx_path, "DEBUG")
@@ -169,12 +170,14 @@ def test_detect_changes_warns_but_not_items_changes_on_edf_only() -> None:
 
         excel_dir = root / "excel"
         excel_dir.mkdir(parents=True, exist_ok=True)
-        xlsx_path = excel_dir / f"{survey_id}.xlsx"
+        xlsx_path = WorkbookResolver(root=root).resolve(survey_id)
         excel_io.init_workbook_from_survey(survey_id, payload, xlsx_path)
 
         _remove_embedded_row(xlsx_path, "DEBUG")
 
-        with patch("qsync.qualtrics_client._workspace_root", return_value=root):
+        with patch("qsync.qualtrics_client._workspace_root", return_value=root), patch(
+            "qsync.workbook_resolver.resolve_root", lambda required=False: root
+        ):
             result = items_dimension.detect_changes(survey_id)
 
         assert result.has_changes is False
