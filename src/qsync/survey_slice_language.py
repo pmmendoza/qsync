@@ -17,6 +17,12 @@ from .dimensions.translations_language_blocks import (
     read_question_text,
     read_subquestion_description,
     read_choicegroup_description,
+    write_answer_display,
+    write_choice_display,
+    write_label_display,
+    write_question_text,
+    write_subquestion_description,
+    write_choicegroup_description,
 )
 
 
@@ -309,6 +315,26 @@ def _key(type_: str, qid: str | None = None, item_id: str | None = None) -> str:
     return f"{qid}_{type_}"
 
 
+def _parse_missing_key(key: str) -> tuple[str | None, str | None, str | None]:
+    if key in {"SurveyTitle", "SurveyMetaDescription"}:
+        return ("Meta", None, key)
+    if "_" not in key:
+        return (None, None, None)
+    qid, rest = key.split("_", 1)
+    for type_name in (
+        "QuestionText",
+        "Choice",
+        "Answer",
+        "Label",
+        "SubQuestion",
+        "ChoiceGroup",
+    ):
+        if rest.startswith(type_name):
+            item_id = rest[len(type_name) :] or None
+            return (type_name, qid, item_id)
+    return (None, None, None)
+
+
 def compute_slice_coverage(qsf: Mapping[str, Any], *, target_language: str) -> SliceCoverageReport:
     base_language = _resolve_base_language_from_qsf(qsf)
     target = normalize_language_code(target_language)
@@ -483,6 +509,121 @@ def compute_slice_coverage(qsf: Mapping[str, Any], *, target_language: str) -> S
         active_qids_total=active_qids_total,
         inactive_qids_total=inactive_qids_total,
     )
+
+
+def apply_fallback_translations(
+    qsf: dict[str, Any],
+    *,
+    target_language: str,
+    missing_keys: Iterable[str],
+) -> list[str]:
+    """Fill missing target-language values with base-language text."""
+
+    target = normalize_language_code(target_language)
+    if not target:
+        raise ValueError("target_language must be non-empty")
+
+    missing_list = list(missing_keys)
+    if not missing_list:
+        return []
+
+    options = _ensure_options_payload(qsf)
+    entry = _ensure_qsf_survey_entry(qsf)
+    base_meta = _get_survey_metadata_base(options, entry)
+    meta_trans = _metadata_translations(options)
+    target_meta = meta_trans.get(target) or {}
+    if not isinstance(target_meta, dict):
+        target_meta = {}
+
+    filled: list[str] = []
+
+    if "SurveyTitle" in missing_list and base_meta.get("SurveyTitle", "").strip():
+        target_meta["SurveyTitle"] = base_meta["SurveyTitle"]
+        filled.append("SurveyTitle")
+    if (
+        "SurveyMetaDescription" in missing_list
+        and base_meta.get("SurveyMetaDescription", "").strip()
+    ):
+        target_meta["SurveyMetaDescription"] = base_meta["SurveyMetaDescription"]
+        filled.append("SurveyMetaDescription")
+
+    if target_meta:
+        meta_trans[target] = target_meta
+        options["MetaDataTranslations"] = meta_trans
+
+    qid_map = {qid: payload for qid, payload in _iter_question_payloads(qsf)}
+
+    for key in missing_list:
+        type_name, qid, item_id = _parse_missing_key(key)
+        if type_name in {None, "Meta"} or not qid:
+            continue
+        question = qid_map.get(qid)
+        if not isinstance(question, dict):
+            continue
+
+        if type_name == "QuestionText":
+            base_val = str(question.get("QuestionText") or "")
+            if base_val.strip():
+                write_question_text(question, target, base_val)
+                filled.append(key)
+            continue
+
+        if type_name == "Choice":
+            if not item_id:
+                continue
+            choice = (question.get("Choices") or {}).get(item_id)
+            if isinstance(choice, dict):
+                base_val = str(choice.get("Display") or "")
+                if base_val.strip():
+                    write_choice_display(question, target, item_id, base_val)
+                    filled.append(key)
+            continue
+
+        if type_name == "Answer":
+            if not item_id:
+                continue
+            answer = (question.get("Answers") or {}).get(item_id)
+            if isinstance(answer, dict):
+                base_val = str(answer.get("Display") or "")
+                if base_val.strip():
+                    write_answer_display(question, target, item_id, base_val)
+                    filled.append(key)
+            continue
+
+        if type_name == "Label":
+            if not item_id:
+                continue
+            label = (question.get("Labels") or {}).get(item_id)
+            if isinstance(label, dict):
+                base_val = str(label.get("Display") or "")
+                if base_val.strip():
+                    write_label_display(question, target, item_id, base_val)
+                    filled.append(key)
+            continue
+
+        if type_name == "SubQuestion":
+            if not item_id:
+                continue
+            subq = (question.get("SubQuestions") or {}).get(item_id)
+            if isinstance(subq, dict):
+                base_val = str(subq.get("Description") or "")
+                if base_val.strip():
+                    write_subquestion_description(question, target, item_id, base_val)
+                    filled.append(key)
+            continue
+
+        if type_name == "ChoiceGroup":
+            if not item_id:
+                continue
+            group = (question.get("ChoiceGroups") or {}).get(item_id)
+            if isinstance(group, dict):
+                base_val = str(group.get("Description") or "")
+                if base_val.strip():
+                    write_choicegroup_description(question, target, item_id, base_val)
+                    filled.append(key)
+            continue
+
+    return filled
 
 
 def warn_if_flow_text_present(qsf: Mapping[str, Any]) -> list[str]:
@@ -910,6 +1051,9 @@ def write_slice_manifest(
     keep_languages_mode: str,
     kept_languages: list[str],
     allow_incomplete: bool,
+    allow_fallback: bool = False,
+    fallback_filled_total: int | None = None,
+    fallback_filled_sample: list[str] | None = None,
     coverage_report_path: Path,
     report: SliceCoverageReport,
     qsf_sha256: str,
@@ -927,6 +1071,9 @@ def write_slice_manifest(
         "keep_languages_mode": keep_languages_mode,
         "kept_languages": list(kept_languages),
         "allow_incomplete": bool(allow_incomplete),
+        "allow_fallback": bool(allow_fallback),
+        "fallback_filled_total": int(fallback_filled_total or 0),
+        "fallback_filled_sample": list(fallback_filled_sample or []),
         "coverage": {
             "required_total": report.required_total,
             "missing_required_total": report.missing_required_total,
@@ -939,4 +1086,17 @@ def write_slice_manifest(
         "qsync_version": qsync_version,
     }
     write_json_with_backup(path, payload)
+    return path
+
+
+def write_dry_run_qsf(
+    root: Path,
+    *,
+    source_survey_id: str,
+    target_language: str,
+    qsf: Mapping[str, Any],
+) -> Path:
+    slices = default_slices_dir(root)
+    path = slices / f"dryrun__{source_survey_id}__{normalize_language_code(target_language)}.qsf.json"
+    write_json_with_backup(path, dict(qsf))
     return path

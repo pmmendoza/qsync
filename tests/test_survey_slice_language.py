@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from qsync.survey_slice_language import (
+    apply_fallback_translations,
     compute_slice_coverage,
     resolve_keep_languages,
     slice_qsf_to_language,
@@ -264,6 +265,9 @@ def test_write_reports_and_manifest(tmp_path: Path) -> None:
     assert data["keep_languages_mode"] == "target-only"
     assert data["kept_languages"] == ["DE"]
     assert data["allow_incomplete"] is False
+    assert data["allow_fallback"] is False
+    assert data["fallback_filled_total"] == 0
+    assert data["fallback_filled_sample"] == []
     assert data["coverage_report_path"] == str(coverage_path)
     assert data["qsf_sha256"] == "deadbeef"
     assert data["qsync_version"] == "0.0.0"
@@ -345,3 +349,31 @@ def test_compute_slice_coverage_ignores_trash_block_qids() -> None:
     report = compute_slice_coverage(qsf, target_language="DE")
     assert "QID2_QuestionText" not in report.missing_required
     assert report.inactive_qids_total == 1
+
+
+def test_apply_fallback_translations_fills_missing_values() -> None:
+    qsf = _qsf_payload(
+        available_languages=["EN", "DE"],
+        meta_translations={},
+        question_payload={
+            "QuestionID": "QID1",
+            "QuestionText": "Hello",
+            "Choices": {"1": {"Display": "Yes"}},
+            "Language": {"DE": {"Choices": {"1": {"Display": "Ja"}}}},  # Missing text
+        },
+    )
+
+    report = compute_slice_coverage(qsf, target_language="DE")
+    filled = apply_fallback_translations(
+        qsf,
+        target_language="DE",
+        missing_keys=report.missing_required,
+    )
+
+    q1 = qsf["SurveyElements"][1]["Payload"]
+    assert "QID1_QuestionText" in filled
+    assert q1["Language"]["DE"]["QuestionText"] == "Hello"
+
+    so = qsf["SurveyElements"][0]["Payload"]
+    meta = (so.get("MetaDataTranslations") or {}).get("DE") or {}
+    assert meta.get("SurveyTitle") == "Base title"

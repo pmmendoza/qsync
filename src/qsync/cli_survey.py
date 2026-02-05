@@ -725,11 +725,13 @@ def handle_slice_language(args: argparse.Namespace) -> None:
     from .terminal_output import header, info, success, warn, error, dim, prompt_yes_no
     from .translations_utils import normalize_language_code, normalize_language_list
     from .survey_slice_language import (
+        apply_fallback_translations,
         compute_slice_coverage,
         resolve_keep_languages,
         slice_qsf_to_language,
         warn_if_flow_text_present,
         write_coverage_report,
+        write_dry_run_qsf,
         write_slice_manifest,
         sha256_of_qsf_upload_bytes,
     )
@@ -760,6 +762,9 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         getattr(args, "keep_languages", "target-only") or "target-only"
     ).strip()
     allow_incomplete = bool(getattr(args, "allow_incomplete", False))
+    allow_fallback = bool(getattr(args, "allow_fallback", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    verify_parity = bool(getattr(args, "verify_parity", False))
     auto_yes = bool(getattr(args, "yes", False))
 
     header("[qsync:slice-language]", "Preview:")
@@ -793,6 +798,12 @@ def handle_slice_language(args: argparse.Namespace) -> None:
     info("    Keep languages:", keep_raw)
     if allow_incomplete:
         warn("    ⚠", "--allow-incomplete enabled (may produce mixed-language output)")
+    if allow_fallback:
+        warn("    ⚠", "--allow-fallback enabled (fills gaps from base language)")
+    if dry_run:
+        dim("    Dry run:", "write rebased QSF only (no import)")
+    if verify_parity:
+        dim("    Verify parity:", "enabled (post-create check)")
     if auto_yes:
         dim("    (non-interactive):", "--yes")
     print()
@@ -848,6 +859,7 @@ def handle_slice_language(args: argparse.Namespace) -> None:
             ),
         )
 
+    fallback_filled: list[str] = []
     if report.missing_required_total:
         warn(
             "[qsync:slice-language]",
@@ -892,10 +904,20 @@ def handle_slice_language(args: argparse.Namespace) -> None:
             f"Remediation: qsync translations doctor --survey-id {source_id} --language {target_lang}",
         )
 
-        if not allow_incomplete:
+        if allow_fallback:
+            fallback_filled = apply_fallback_translations(
+                qsf_content,
+                target_language=target_lang,
+                missing_keys=report.missing_required,
+            )
+            warn(
+                "[qsync:slice-language]",
+                f"Applied fallback for {len(fallback_filled)} key(s) from base language.",
+            )
+        elif not allow_incomplete:
             sys.exit(1)
 
-        if not auto_yes:
+        if not allow_fallback and not auto_yes:
             if not sys.stdin.isatty():
                 error(
                     "[qsync:slice-language]",
@@ -908,10 +930,11 @@ def handle_slice_language(args: argparse.Namespace) -> None:
             ):
                 raise SystemExit("[qsync:slice-language] Aborted by user.")
 
-        warn(
-            "[qsync:slice-language]",
-            "Proceeding despite incomplete coverage (--allow-incomplete).",
-        )
+        if not allow_fallback:
+            warn(
+                "[qsync:slice-language]",
+                "Proceeding despite incomplete coverage (--allow-incomplete).",
+            )
 
     # SurveyFlow warning (Stage 1 does not rebase flow text).
     for line in warn_if_flow_text_present(qsf_content):
@@ -956,6 +979,27 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         )
         for line in transform.warnings[:10]:
             warn("[qsync:slice-language]", line)
+
+    if dry_run:
+        prepare_qsf_for_import(
+            qsf_content,
+            new_name,
+            language=target_lang,
+            status="Inactive",
+        )
+        qsf_sha256 = sha256_of_qsf_upload_bytes(qsf_content)
+        dry_path = write_dry_run_qsf(
+            root,
+            source_survey_id=source_id,
+            target_language=target_lang,
+            qsf=qsf_content,
+        )
+        success(
+            "[qsync:slice-language]",
+            f"Dry run complete. Wrote rebased QSF: {dry_path}",
+        )
+        dim("[qsync:slice-language]", f"QSF SHA256: {qsf_sha256}")
+        return
 
     # Check for duplicate names unless forced.
     try:
@@ -1014,6 +1058,9 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         keep_languages_mode=keep_raw,
         kept_languages=kept_languages,
         allow_incomplete=allow_incomplete,
+        allow_fallback=allow_fallback,
+        fallback_filled_total=len(fallback_filled),
+        fallback_filled_sample=fallback_filled[:10],
         coverage_report_path=coverage_path,
         report=report,
         qsf_sha256=qsf_sha256,
@@ -1031,9 +1078,151 @@ def handle_slice_language(args: argparse.Namespace) -> None:
     )
     info(None, f"  qsync translations pull --survey-id {new_id}")
 
+    if verify_parity:
+        from .survey_parity import compare_qsf_parity
+
+        info("[qsync:slice-language]", "Running parity check (best-effort)...")
+        try:
+            source_qsf = fetch_survey_definition(base, headers, source_id, fmt="qsf")
+            target_qsf = fetch_survey_definition(base, headers, new_id, fmt="qsf")
+            parity = compare_qsf_parity(source_qsf, target_qsf)
+            ok = _emit_parity_report(
+                parity,
+                survey_a=source_id,
+                survey_b=new_id,
+                prefix="[qsync:slice-language:parity]",
+            )
+            if not ok:
+                raise SystemExit(
+                    "[qsync:slice-language] Parity check failed; see details above."
+                )
+        except Exception as exc:
+            warn(
+                "[qsync:slice-language]",
+                f"Parity check failed to run: {exc}",
+            )
+
     from .terminal_output import log_confirmation
 
     log_confirmation("[slice-language]")
+
+
+def _emit_parity_report(*, result, survey_a: str, survey_b: str, prefix: str) -> bool:
+    from .terminal_output import success, warn, dim
+
+    def _sample(items: list[str], limit: int = 10) -> str:
+        return ", ".join(items[:limit])
+
+    def _first_diff(a: list[str], b: list[str]) -> str | None:
+        for idx, (left, right) in enumerate(zip(a, b)):
+            if left != right:
+                return f"idx {idx}: {left} != {right}"
+        if len(a) != len(b):
+            return f"length {len(a)} != {len(b)}"
+        return None
+
+    if result.warnings:
+        warn(prefix, f"{len(result.warnings)} warning(s) during flow parsing:")
+        for line in result.warnings[:5]:
+            warn(prefix, line)
+
+    if result.qids_match:
+        success(prefix, "QID set match.")
+    else:
+        warn(
+            prefix,
+            f"QID set mismatch: +{len(result.qids_only_in_b)} in {survey_b}, "
+            f"+{len(result.qids_only_in_a)} in {survey_a}.",
+        )
+        if result.qids_only_in_a:
+            warn(prefix, f"Only in {survey_a}: {_sample(result.qids_only_in_a)}")
+        if result.qids_only_in_b:
+            warn(prefix, f"Only in {survey_b}: {_sample(result.qids_only_in_b)}")
+
+    if result.flow_types_match:
+        success(prefix, f"SurveyFlow types match (len={len(result.flow_types_a)}).")
+    else:
+        diff = _first_diff(result.flow_types_a, result.flow_types_b)
+        warn(
+            prefix,
+            f"SurveyFlow types differ (len {len(result.flow_types_a)} vs {len(result.flow_types_b)}).",
+        )
+        if diff:
+            warn(prefix, f"First type diff: {diff}")
+
+    if result.flow_qids_match:
+        success(prefix, f"SurveyFlow QID order match (len={len(result.flow_qids_a)}).")
+    else:
+        diff = _first_diff(result.flow_qids_a, result.flow_qids_b)
+        warn(
+            prefix,
+            f"SurveyFlow QID order differs (len {len(result.flow_qids_a)} vs {len(result.flow_qids_b)}).",
+        )
+        if diff:
+            warn(prefix, f"First QID diff: {diff}")
+
+    if result.block_memberships_match:
+        success(prefix, "Block memberships match (best-effort).")
+    else:
+        warn(
+            prefix,
+            f"Block membership mismatch: +{len(result.block_memberships_only_in_b)} in {survey_b}, "
+            f"+{len(result.block_memberships_only_in_a)} in {survey_a}.",
+        )
+        if result.block_memberships_only_in_a:
+            warn(prefix, f"Only in {survey_a} (sample): {result.block_memberships_only_in_a[:3]}")
+        if result.block_memberships_only_in_b:
+            warn(prefix, f"Only in {survey_b} (sample): {result.block_memberships_only_in_b[:3]}")
+
+    if result.tags_match:
+        success(prefix, "DataExportTag set match.")
+    else:
+        warn(
+            prefix,
+            f"DataExportTag mismatch: +{len(result.tags_only_in_b)} in {survey_b}, "
+            f"+{len(result.tags_only_in_a)} in {survey_a}.",
+        )
+        if result.tags_only_in_a:
+            warn(prefix, f"Only in {survey_a}: {_sample(result.tags_only_in_a)}")
+        if result.tags_only_in_b:
+            warn(prefix, f"Only in {survey_b}: {_sample(result.tags_only_in_b)}")
+
+    dim(prefix, "Out of scope: quotas/response sets/scoring and account-specific metadata.")
+    return bool(result.ok)
+
+
+def handle_parity_check(args: argparse.Namespace) -> None:
+    """Compare two surveys for parity using QSF definitions."""
+
+    from .terminal_output import header, info, error
+    from .survey_parity import compare_qsf_parity
+
+    base, headers = get_client_config()
+
+    survey_a = getattr(args, "a", None) or ""
+    survey_b = getattr(args, "b", None) or ""
+    if not survey_a or not survey_b:
+        error("[qsync:parity-check]", "ERROR: --a and --b are required.")
+        sys.exit(1)
+
+    header("[qsync:parity-check]", "Fetching survey definitions (QSF)...")
+    try:
+        qsf_a = fetch_survey_definition(base, headers, survey_a, fmt="qsf")
+        qsf_b = fetch_survey_definition(base, headers, survey_b, fmt="qsf")
+    except Exception as exc:
+        error("[qsync:parity-check]", f"ERROR: Failed to fetch definitions: {exc}")
+        sys.exit(1)
+
+    info("[qsync:parity-check]", f"Comparing {survey_a} vs {survey_b}...")
+    report = compare_qsf_parity(qsf_a, qsf_b)
+    ok = _emit_parity_report(
+        result=report,
+        survey_a=survey_a,
+        survey_b=survey_b,
+        prefix="[qsync:parity-check]",
+    )
+    if not ok:
+        sys.exit(2)
 
 
 def handle_rename(args: argparse.Namespace) -> None:
@@ -5110,9 +5299,24 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Proceed even if required keys are missing in the target language (writes a coverage report)",
     )
     p_slice.add_argument(
+        "--allow-fallback",
+        action="store_true",
+        help="Fill missing target-language keys from the source base language (writes a coverage report)",
+    )
+    p_slice.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Write the rebased QSF to disk without importing a new survey",
+    )
+    p_slice.add_argument(
         "--yes",
         action="store_true",
         help="Skip confirmation prompts (required for --allow-incomplete in non-interactive runs)",
+    )
+    p_slice.add_argument(
+        "--verify-parity",
+        action="store_true",
+        help="Run a parity check between the source and newly created survey",
     )
     p_slice.add_argument(
         "--force-duplicate",
@@ -5120,6 +5324,15 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Allow duplicate survey names (uses local inventory to detect conflicts)",
     )
     p_slice.set_defaults(func=handle_slice_language)
+
+    # parity-check
+    p_parity = survey_subs.add_parser(
+        "parity-check",
+        help="Compare two surveys for flow/QID/DataExportTag parity",
+    )
+    p_parity.add_argument("--a", required=True, help="Survey ID A")
+    p_parity.add_argument("--b", required=True, help="Survey ID B")
+    p_parity.set_defaults(func=handle_parity_check)
 
     # copy-cross-account
     p_copy_xacct = survey_subs.add_parser(
