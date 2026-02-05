@@ -143,6 +143,8 @@ def detect_unstaged_changes(survey_id: str) -> DimensionChanges:
                 has_changes=False,
                 change_summary="No changes",
                 affected_qids=set(),
+                status_kind="none",
+                edit_count=0,
             )
 
         missing_messages: list[tuple[str, str]] = []
@@ -172,6 +174,8 @@ def detect_unstaged_changes(survey_id: str) -> DimensionChanges:
                     f"Run: qsync eos pull --survey-id {survey_id}"
                 ),
                 safe_to_autofix=True,
+                status_kind="error",
+                edit_count=0,
             )
 
         if missing_baselines:
@@ -185,6 +189,8 @@ def detect_unstaged_changes(survey_id: str) -> DimensionChanges:
                     f"Run: qsync eos pull --survey-id {survey_id}"
                 ),
                 safe_to_autofix=True,
+                status_kind="error",
+                edit_count=0,
             )
 
         if changed_count:
@@ -193,6 +199,8 @@ def detect_unstaged_changes(survey_id: str) -> DimensionChanges:
                 has_changes=True,
                 change_summary=f"⚡ Unstaged: {changed_count} message(s)",
                 affected_qids=set(),
+                status_kind="unstaged",
+                edit_count=changed_count,
             )
 
     except Exception as e:
@@ -203,6 +211,8 @@ def detect_unstaged_changes(survey_id: str) -> DimensionChanges:
             affected_qids=set(),
             error_detail=f"EOS detection failed: {str(e).split(chr(10))[0]}",
             safe_to_autofix=False,
+            status_kind="error",
+            edit_count=0,
         )
 
     return DimensionChanges(
@@ -210,6 +220,8 @@ def detect_unstaged_changes(survey_id: str) -> DimensionChanges:
         has_changes=False,
         change_summary="No changes",
         affected_qids=set(),
+        status_kind="none",
+        edit_count=0,
     )
 
 
@@ -223,6 +235,8 @@ def detect_changes(survey_id: str) -> DimensionChanges:
             has_changes=True,
             change_summary=f"✓ Staged: {count} operations",
             affected_qids=set(),
+            status_kind="staged",
+            edit_count=count,
         )
 
     return detect_unstaged_changes(survey_id)

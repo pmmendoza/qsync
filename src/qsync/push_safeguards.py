@@ -25,7 +25,7 @@ from qsync.survey_lock import (
 )
 from qsync.survey_ref import format_survey_ref
 
-DimensionType = Literal["items", "js", "translations", "eos"]
+DimensionType = Literal["items", "edf", "js", "translations", "eos"]
 
 
 @dataclass

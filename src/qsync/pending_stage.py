@@ -6,7 +6,7 @@ pending_eos.py) into a single, dimension-aware schema with automatic migration.
 
 Storage: surveys/pending/{dimension}/{survey-id}.json
 
-Where dimension is one of: items, js, translations, eos
+Where dimension is one of: items, edf, js, translations, eos
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any, Literal, Optional
 
 from .config import resolve_root
 
-DimensionType = Literal["items", "js", "translations", "eos"]
+DimensionType = Literal["items", "edf", "js", "translations", "eos"]
 
 
 def _now_iso() -> str:
@@ -189,7 +189,7 @@ class PendingStagedChanges:
         payload_data = data.get("payload") or {}
 
         # Parse dimension-specific payload
-        if dimension == "items":
+        if dimension in {"items", "edf"}:
             payload = ItemsPendingPayload.from_dict(payload_data)
         elif dimension == "js":
             payload = JsPendingPayload.from_dict(payload_data)
@@ -234,6 +234,8 @@ def _legacy_pending_paths(survey_id: str, dimension: DimensionType) -> list[Path
 
     if dimension == "items":
         return [root / "surveys" / "pending" / f"{safe_id}.json"]
+    elif dimension == "edf":
+        return [root / "surveys" / "pending" / "edf" / f"{safe_id}.json"]
     elif dimension == "js":
         return [root / "surveys" / "pending" / "js" / f"{safe_id}.json"]
     elif dimension == "translations":
@@ -263,7 +265,7 @@ def _migrate_legacy_pending(
             continue
 
         # Migrate based on dimension
-        if dimension == "items":
+        if dimension in {"items", "edf"}:
             # Legacy: PendingPushRecord
             payload = ItemsPendingPayload.from_dict(data)
         elif dimension == "js":
@@ -386,7 +388,7 @@ def list_pending(survey_id: str) -> dict[DimensionType, PendingStagedChanges]:
     """
     result: dict[DimensionType, PendingStagedChanges] = {}
 
-    for dimension in ["items", "js", "translations", "eos"]:
+    for dimension in ["items", "edf", "js", "translations", "eos"]:
         record = load_pending(survey_id, dimension)  # type: ignore
         if record:
             result[dimension] = record  # type: ignore

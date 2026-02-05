@@ -5501,6 +5501,149 @@ def handle_master_push(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def handle_master_rollback(args: argparse.Namespace) -> None:
+    """Handle 'qsync survey master rollback' command."""
+    from .survey_master import list_rollback_versions, rollback_master
+    from .terminal_output import error, header, info, success, warn
+
+    survey_id = getattr(args, "survey_id", None)
+    list_only = bool(getattr(args, "list", False))
+
+    if list_only:
+        entries = list_rollback_versions(survey_id=survey_id)
+        if not entries:
+            info(
+                "[qsync:master-rollback]",
+                "No rollback snapshots found"
+                + (f" for {survey_id}" if survey_id else ""),
+            )
+            return
+
+        header(None, "Available rollback snapshots:")
+        current_survey = None
+        for entry in entries:
+            sid = entry.get("survey_id")
+            if sid != current_survey:
+                current_survey = sid
+                info(None, f"{sid}:")
+            fields = ", ".join(entry.get("fields") or [])
+            if len(fields) > 80:
+                fields = fields[:77] + "..."
+            info(
+                None,
+                f"  v{entry.get('version')} | {entry.get('captured_at')} | "
+                f"{entry.get('changes_count')} field(s)"
+                + (f" | {fields}" if fields else ""),
+            )
+        return
+
+    if not survey_id:
+        error("[qsync:master-rollback]", "--survey-id is required unless --list is used")
+        sys.exit(1)
+
+    version = int(getattr(args, "version", 1))
+    dry_run = bool(getattr(args, "dry_run", False))
+    yes = bool(getattr(args, "yes", False))
+    force = bool(getattr(args, "force", False))
+    allow_dangerous = bool(getattr(args, "allow_dangerous", False))
+    publish = not bool(getattr(args, "no_publish", False))
+    description = getattr(args, "description", None)
+
+    preview_result = rollback_master(
+        survey_id=survey_id,
+        version=version,
+        dry_run=True,
+        force=force,
+        allow_dangerous=allow_dangerous,
+        publish=False,
+        publish_description=description,
+        verbose=True,
+    )
+
+    if preview_result.get("error"):
+        error("[qsync:master-rollback]", preview_result["error"])
+        if preview_result.get("drifted_fields"):
+            warn(None, "Drifted fields:")
+            for item in preview_result["drifted_fields"]:
+                warn(
+                    None,
+                    f"- {item.get('field')}: expected '{item.get('expected_post_apply')}', "
+                    f"current '{item.get('current')}'",
+                )
+        sys.exit(1)
+
+    changes = preview_result.get("changes", [])
+    snapshot_path = preview_result.get("snapshot_path")
+    if snapshot_path:
+        info(None, f"Snapshot: {snapshot_path}")
+
+    if not changes:
+        success("[qsync:master-rollback]", "No changes needed (already at rollback target)")
+        return
+
+    header(None, "Rollback preview:")
+    for change in changes:
+        marker = "⚠️ " if change.get("is_dangerous") else "✏️ "
+        info(
+            None,
+            f"{marker}[{change.get('endpoint')}] {change.get('field')}: "
+            f"'{change.get('old_value')}' → '{change.get('new_value')}'",
+        )
+
+    if dry_run:
+        success(
+            "[qsync:master-rollback]",
+            f"Dry run complete: would restore {len(changes)} field(s)",
+        )
+        return
+
+    if not yes:
+        if not sys.stdin.isatty():
+            error(
+                "[qsync:master-rollback]",
+                "Confirmation required but stdin is not interactive. Re-run with --yes.",
+            )
+            sys.exit(1)
+        try:
+            from qsync.interactive_menu import confirm
+
+            if not confirm(
+                f"Rollback {survey_id} using snapshot version {version}?", default=False
+            ):
+                info("[qsync:master-rollback]", "Aborted.")
+                return
+        except Exception:
+            ans = (
+                input(f"Rollback {survey_id} using snapshot version {version}? [y/N]: ")
+                .strip()
+                .lower()
+            )
+            if ans != "y":
+                info("[qsync:master-rollback]", "Aborted.")
+                return
+
+    # Execute after confirmation to ensure the live check is fresh.
+    result = rollback_master(
+        survey_id=survey_id,
+        version=version,
+        dry_run=False,
+        force=force,
+        allow_dangerous=allow_dangerous,
+        publish=publish,
+        publish_description=description,
+        verbose=True,
+    )
+    if result.get("error"):
+        error("[qsync:master-rollback]", result["error"])
+        sys.exit(1)
+
+    published_suffix = " and published" if result.get("published") else ""
+    success(
+        "[qsync:master-rollback]",
+        f"Rollback complete: restored {len(result.get('changes', []))} field(s){published_suffix}",
+    )
+
+
 def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     """Register `qsync survey ...` subcommands."""
 
@@ -6495,3 +6638,54 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Publish only this specific survey (by SurveyID)",
     )
     p_master_push.set_defaults(func=handle_master_push)
+
+    # master rollback
+    p_master_rollback = master_subs.add_parser(
+        "rollback",
+        help="List or rollback pre-apply survey master snapshots",
+    )
+    p_master_rollback.add_argument(
+        "--survey-id",
+        help="Survey ID to rollback (required unless --list)",
+    )
+    p_master_rollback.add_argument(
+        "--list",
+        action="store_true",
+        help="List available rollback versions (optionally filtered by --survey-id)",
+    )
+    p_master_rollback.add_argument(
+        "--version",
+        type=int,
+        default=1,
+        help="Rollback snapshot version to use (1 = most recent, default: 1)",
+    )
+    p_master_rollback.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview rollback changes without applying writes",
+    )
+    p_master_rollback.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow rollback even if drift is detected from the expected post-apply state",
+    )
+    p_master_rollback.add_argument(
+        "--allow-dangerous",
+        action="store_true",
+        help="Allow rollback of dangerous fields (isActive, redirect URLs, etc.)",
+    )
+    p_master_rollback.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip publishing after rollback writes",
+    )
+    p_master_rollback.add_argument(
+        "--description",
+        help="Description to use when publishing rollback changes",
+    )
+    p_master_rollback.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip confirmation prompt for non-dry-run rollbacks",
+    )
+    p_master_rollback.set_defaults(func=handle_master_rollback)

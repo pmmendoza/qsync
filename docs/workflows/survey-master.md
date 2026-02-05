@@ -228,10 +228,11 @@ qsync survey master apply
 2. For each survey with changes:
    - Checks for dangerous field changes → **REFUSE** unless `--allow-dangerous`
    - Detects drift (values changed since last pull) → **REFUSE** unless `--force` or `--skip-drift`
+   - Captures a pre-apply rollback snapshot under `surveys/qualtrics_master_rollback/<survey_id>/`
    - Groups changes by endpoint (metadata, options, status)
    - Applies in order: metadata → options → status
    - Writes audit log entry (JSONL)
-   - Publishes new survey version (if definition changes)
+   - Does not publish (publishing is a separate `master push` step)
 3. Returns summary of applied/failed surveys
 
 ### Publishing vs Activation (Reminder)
@@ -365,10 +366,9 @@ qsync survey master apply --allow-dangerous --skip-drift
 ```
 [qsync:master-apply] Processing 2 surveys...
 [qsync:master-apply] Checking SV_abc123...
+[qsync:master-apply]   ✓ Rollback snapshot saved: 20260205T103015Z-pre-apply.json
 [qsync:master-apply]   Writing metadata...
 [qsync:master-apply]     ✓ Metadata written
-[qsync:master-apply]   Publishing new version...
-[qsync:master-apply]     ✓ Published
 
 [qsync:master-apply] Checking SV_def456...
 [qsync:master-apply]   No changes
@@ -472,28 +472,35 @@ The mismatch doesn't block apply (with `--force`), but it's safer to re-pull.
 
 ### When Does Publishing Happen?
 
-Publishing occurs automatically after successful apply **only if** you modified:
-- **Metadata fields** (definition changes), OR
-- **Options fields** (definition changes)
+Publishing is a separate explicit step:
 
-Status-only changes (e.g., just changing `isActive`) do **not** trigger publishing.
+```bash
+qsync survey master push
+```
+
+Use `master push` after `master apply` when you are ready to publish definition changes.
+
+Status-only changes (for example `isActive`) still do not require publishing.
 
 ### What Gets Published?
 
 A new **survey version** is created with:
-- Description: `"qsync master apply"`
+- Description: `"qsync master push"` (or `--description` override)
 - Published flag: `true` (in active status)
 
 This version becomes the new "published" version for the survey.
 
-### Manual Publishing
+### Rollback
 
-If publishing fails (rare), you'll see:
-```
-[qsync:master-apply]     ⚠️  Publish failed: <error>
+Use rollback snapshots captured during `master apply`:
+
+```bash
+qsync survey master rollback --list [--survey-id SV_xxx]
+qsync survey master rollback --survey-id SV_xxx --version 1 --dry-run
+qsync survey master rollback --survey-id SV_xxx --version 1
 ```
 
-The apply succeeds (changes were already written), but you may need to manually activate the new version in the Qualtrics UI.
+Rollback enforces drift and dangerous-field safeguards unless overridden with `--force` / `--allow-dangerous`.
 
 ---
 

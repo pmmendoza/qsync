@@ -11,6 +11,7 @@ from openpyxl import load_workbook
 
 from qsync import excel_io
 from qsync.dimensions import items as items_dimension
+from qsync.dimensions import edf as edf_dimension
 from qsync.sync_core import preview_changes
 from qsync.workbook_resolver import WorkbookResolver
 
@@ -179,6 +180,8 @@ def test_detect_changes_warns_but_not_items_changes_on_edf_only() -> None:
             "qsync.workbook_resolver.resolve_root", lambda required=False: root
         ):
             result = items_dimension.detect_changes(survey_id)
+            edf_result = edf_dimension.detect_changes(survey_id)
 
         assert result.has_changes is False
-        assert result.warning_detail
+        assert not result.warning_detail
+        assert edf_result.warning_detail

@@ -47,7 +47,14 @@ class SurveyMasterDriftTests(unittest.TestCase):
                             "qsync.survey_master._compute_schema_version",
                             return_value="20251220-abc123",
                         ):
-                            drift_result = detect_drift("SV_001", csv_row)
+                            with patch(
+                                "qsync.survey_master.get_client_config",
+                                return_value=(
+                                    "example.qualtrics.com",
+                                    {"X-API-TOKEN": "test"},
+                                ),
+                            ):
+                                drift_result = detect_drift("SV_001", csv_row)
 
         self.assertEqual(drift_result.get("drifted_fields", []), [])
         self.assertTrue(drift_result.get("schema_version_matches"))
@@ -93,7 +100,14 @@ class SurveyMasterDriftTests(unittest.TestCase):
                             "qsync.survey_master._compute_schema_version",
                             return_value="20251220-abc123",
                         ):
-                            drift_result = detect_drift("SV_001", csv_row)
+                            with patch(
+                                "qsync.survey_master.get_client_config",
+                                return_value=(
+                                    "example.qualtrics.com",
+                                    {"X-API-TOKEN": "test"},
+                                ),
+                            ):
+                                drift_result = detect_drift("SV_001", csv_row)
 
         self.assertGreater(len(drift_result.get("drifted_fields", [])), 0)
         self.assertTrue(drift_result.get("schema_version_matches"))
@@ -116,7 +130,11 @@ class SurveyMasterDriftTests(unittest.TestCase):
                     "qsync.survey_master._compute_schema_version",
                     return_value="20251220-new123",
                 ):
-                    drift_result = detect_drift("SV_001", csv_row)
+                    with patch(
+                        "qsync.survey_master.get_client_config",
+                        return_value=("example.qualtrics.com", {"X-API-TOKEN": "test"}),
+                    ):
+                        drift_result = detect_drift("SV_001", csv_row)
 
         self.assertFalse(drift_result.get("schema_version_matches"))
         self.assertIsNotNone(drift_result.get("schema_mismatch_warning"))
@@ -185,7 +203,14 @@ class SurveyMasterDriftTests(unittest.TestCase):
                             "qsync.survey_master._compute_schema_version",
                             return_value="20251220-abc123",
                         ):
-                            drift_result = detect_drift("SV_001", csv_row)
+                            with patch(
+                                "qsync.survey_master.get_client_config",
+                                return_value=(
+                                    "example.qualtrics.com",
+                                    {"X-API-TOKEN": "test"},
+                                ),
+                            ):
+                                drift_result = detect_drift("SV_001", csv_row)
 
         # Only the changed field should be checked for drift.
         drifted_fields = drift_result.get("drifted_fields", [])

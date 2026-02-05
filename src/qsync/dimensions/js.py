@@ -54,6 +54,8 @@ def detect_changes(survey_id: str) -> DimensionChanges:
                         has_changes=True,
                         change_summary=f"✓ Staged: {len(pending.payload.entries)} entries",
                         affected_qids=qids,
+                        status_kind="staged",
+                        edit_count=len(pending.payload.entries or []),
                     )
                 else:
                     # Staged entries are obsolete - clear them
@@ -70,6 +72,8 @@ def detect_changes(survey_id: str) -> DimensionChanges:
                     has_changes=True,
                     change_summary=f"✓ Staged: {len(pending.payload.entries)} entries",
                     affected_qids=qids,
+                    status_kind="staged",
+                    edit_count=len(pending.payload.entries or []),
                 )
 
     mapping_csv = _mapping_csv_path()
@@ -91,6 +95,8 @@ def detect_changes(survey_id: str) -> DimensionChanges:
                     has_changes=True,
                     change_summary=f"⚡ Unstaged: {len(changes)} JS file(s) changed",
                     affected_qids=qids,
+                    status_kind="unstaged",
+                    edit_count=len(changes),
                 )
         except Exception:
             pass
@@ -100,6 +106,8 @@ def detect_changes(survey_id: str) -> DimensionChanges:
         has_changes=False,
         change_summary="No changes",
         affected_qids=set(),
+        status_kind="none",
+        edit_count=0,
     )
 
 

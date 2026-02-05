@@ -1581,6 +1581,36 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Proceed even if cached survey differs from the live API",
     )
 
+    p_items_repair_edf = items_subparsers.add_parser(
+        "repair-edf",
+        help="Repair only the Embedded_Data sheet in the workbook",
+    )
+    p_items_repair_edf.add_argument(
+        "--survey-id", help="Target survey ID (omit to select interactively)"
+    )
+    p_items_repair_edf.add_argument("--xlsx", type=Path, help="Path to Excel workbook")
+    p_items_repair_edf.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the repair without writing the workbook",
+    )
+    p_items_repair_edf.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Refresh cached survey JSON from the API before repair",
+    )
+    p_items_repair_edf.add_argument(
+        "--retain-backups",
+        type=int,
+        default=5,
+        help="Number of `.bak` repair backups to retain (default: 5)",
+    )
+    p_items_repair_edf.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip confirmation prompt when applying the repair",
+    )
+
     p_items_inspect = items_subparsers.add_parser(
         "inspect",
         help="Inspect a single question (QID) from the cached survey definition",
@@ -3713,7 +3743,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             dimensions = None
             if getattr(args, "dimensions", None):
                 dimensions = [d.strip() for d in args.dimensions.split(",")]
-                valid_dims = {"items", "js", "translations", "eos"}
+                valid_dims = {"items", "edf", "js", "translations", "eos"}
                 invalid = [d for d in dimensions if d not in valid_dims]
                 if invalid:
                     error("[qsync:sync]", f"Invalid dimensions: {', '.join(invalid)}")
@@ -3968,6 +3998,118 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     "[qsync:items]",
                     f"Pending: surveys/pending/items/{args.survey_id}.json (schema v{record.schema_version})",
                 )
+                return
+
+            if args.items_command == "repair-edf":
+                from .terminal_output import dim, error, info, success, warn
+                from .dimensions import edf as edf_dimension
+                from .interactive_menu import confirm
+
+                survey_id = _prompt_for_survey_id_if_needed(
+                    getattr(args, "survey_id", None),
+                    allow_all_surveys=False,
+                )
+                xlsx_path = Path(getattr(args, "xlsx", None) or _default_xlsx_path(survey_id))
+
+                if not xlsx_path.exists():
+                    raise SystemExit(
+                        f"[qsync:items:repair-edf] Workbook not found at {xlsx_path}. "
+                        f"Run `qsync items pull --survey-id {survey_id}` first."
+                    )
+
+                retain_backups = int(getattr(args, "retain_backups", 5) or 0)
+                if retain_backups < 0:
+                    raise SystemExit("[qsync:items:repair-edf] --retain-backups must be >= 0")
+
+                def _print_report(report: edf_dimension.EdfRepairReport, *, prefix: str) -> None:
+                    before_issues = (
+                        len(report.before_health.missing_fields)
+                        + len(report.before_health.extra_fields)
+                        + len(report.before_health.duplicate_fields)
+                        + len(report.before_health.ambiguous_fields)
+                    )
+                    after_issues = (
+                        len(report.after_health.missing_fields)
+                        + len(report.after_health.extra_fields)
+                        + len(report.after_health.duplicate_fields)
+                        + len(report.after_health.ambiguous_fields)
+                    )
+                    info(prefix, f"Workbook: {report.workbook_path}")
+                    info(
+                        prefix,
+                        (
+                            f"Rows: {report.rows_before} -> {report.rows_after} "
+                            f"(+{report.rows_added}/-{report.rows_removed}, "
+                            f"duplicates removed={report.duplicate_rows_removed}, "
+                            f"unchanged={report.unchanged_rows})"
+                        ),
+                    )
+                    info(
+                        prefix,
+                        f"Issues: {before_issues} -> {after_issues} (extra rows preserved={report.extra_rows_preserved})",
+                    )
+                    if report.after_health.extra_fields:
+                        warn(
+                            prefix,
+                            "Unknown extra Embedded_Data rows remain; remove them manually if they are stale.",
+                        )
+                    if report.after_health.ambiguous_fields:
+                        warn(
+                            prefix,
+                            "Ambiguous rows remain (same field without FlowID in multiple nodes). "
+                            "Use `qsync items pull` if repair is incomplete.",
+                        )
+
+                try:
+                    planned = edf_dimension.repair_workbook(
+                        survey_id,
+                        xlsx_path=xlsx_path,
+                        dry_run=True,
+                        refresh_cache=bool(getattr(args, "refresh_cache", False)),
+                        retain_backups=retain_backups,
+                    )
+                except Exception as exc:
+                    error("[qsync:items:repair-edf]", str(exc))
+                    raise SystemExit(2)
+
+                _print_report(planned, prefix="[qsync:items:repair-edf]")
+
+                if getattr(args, "dry_run", False):
+                    dim("[qsync:items:repair-edf]", "Dry run complete; no workbook changes written.")
+                    return
+
+                if not planned.changed:
+                    success("[qsync:items:repair-edf]", "Embedded_Data is already aligned; no changes applied.")
+                    return
+
+                if not bool(getattr(args, "yes", False)):
+                    if not confirm(
+                        message=f"Apply Embedded_Data repair to {xlsx_path}?",
+                        default=True,
+                    ):
+                        dim("[qsync:items:repair-edf]", "Aborted by user.")
+                        return
+
+                try:
+                    applied = edf_dimension.repair_workbook(
+                        survey_id,
+                        xlsx_path=xlsx_path,
+                        dry_run=False,
+                        refresh_cache=False,
+                        retain_backups=retain_backups,
+                    )
+                except Exception as exc:
+                    error("[qsync:items:repair-edf]", str(exc))
+                    raise SystemExit(2)
+
+                _print_report(applied, prefix="[qsync:items:repair-edf]")
+                if applied.backup_path:
+                    success(
+                        "[qsync:items:repair-edf]",
+                        f"Applied repair (backup: {applied.backup_path})",
+                    )
+                else:
+                    success("[qsync:items:repair-edf]", "Applied repair.")
                 return
 
             if args.items_command == "inspect":

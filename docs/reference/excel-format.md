@@ -121,6 +121,21 @@ Behaviour:
 
 ---
 
+## 5. Workbook refresh preservation rules
+
+`qsync items pull` / `init_workbook_from_survey` will refresh system-owned columns and add missing rows, but **will not overwrite non-empty user-editable wording cells**. In practice:
+
+- Preserved when non-empty:
+  - `Text_*_MD` and `Label_*_MD` columns (base + translation languages).
+- Overwritten/refreshed each run:
+  - System-owned metadata columns (e.g., `SurveyID`, `QID`, `QuestionType`, `DataExportTag`, `ChoiceId`, `Code`).
+- Added when missing:
+  - New QIDs/choices/subitems and their default wording.
+
+This keeps local edits intact while still refreshing structure and metadata.
+
+---
+
 ## 5. Tables, filters, ordering, and widths
 
 ### 5.1 Tables and filters

@@ -103,7 +103,7 @@ def _autofix_command(dimension: str, survey_id: str) -> Optional[str]:
     if dimension == "items":
         return f"qsync items pull --survey-id {survey_id}"
     if dimension == "edf":
-        return f"qsync items pull --survey-id {survey_id}"
+        return f"qsync items repair-edf --survey-id {survey_id}"
     if dimension == "translations":
         return f"qsync items pull --survey-id {survey_id}"
     if dimension == "eos":
@@ -121,13 +121,19 @@ def _run_autofix(dimension: str, survey_id: str) -> str:
         init_survey_to_excel(survey_id, xlsx_path)
         return f"Regenerated Excel file at {xlsx_path}"
     if dimension == "edf":
-        from .sync_core import init_survey_to_excel
         from .workbook_resolver import WorkbookResolver
 
         resolver = WorkbookResolver()
         xlsx_path = resolver.resolve(survey_id)
-        init_survey_to_excel(survey_id, xlsx_path)
-        return f"Regenerated Excel file at {xlsx_path}"
+        report = edf_dimension.repair_workbook(
+            survey_id,
+            xlsx_path=xlsx_path,
+            dry_run=False,
+            refresh_cache=False,
+        )
+        if not report.changed:
+            return f"Embedded_Data already aligned at {xlsx_path}"
+        return f"Repaired Embedded_Data in {xlsx_path}"
     if dimension == "translations":
         from .sync_core import init_survey_to_excel
         from .workbook_resolver import WorkbookResolver

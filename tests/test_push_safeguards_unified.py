@@ -339,10 +339,10 @@ class TestEnforcePushSafeguards:
                 mock_prompt.assert_called_once_with(expected_prompt)
 
     def test_all_dimensions_enforce_consistently(self, mock_push_context):
-        """All dimensions (items, js, translations, eos) enforce safeguards consistently."""
+        """All dimensions (items, edf, js, translations, eos) enforce safeguards consistently."""
         mock_push_context.response_count = 5
 
-        for dimension in ["items", "js", "translations", "eos"]:
+        for dimension in ["items", "edf", "js", "translations", "eos"]:
             with (
                 patch("qsync.push_safeguards.ensure_unlocked"),
                 patch(

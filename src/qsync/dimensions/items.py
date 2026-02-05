@@ -17,9 +17,7 @@ from .items_core import (
     preview_changes,
     push_staged_changes,
     _collect_embedded_data_changes,
-    check_embedded_data_health,
     ERROR_ID_EMBEDDED_DANGEROUS_SKIPPED,
-    format_embedded_data_health_warning,
 )
 from ..terminal_colors import colorize_unified_diff_lines
 from ..workbook_resolver import WorkbookResolver
@@ -43,6 +41,8 @@ def _build_pending_payload_from_workbook(
     interactive: bool,
     allow_dangerous: bool = False,
     existing: Optional[ItemsPendingPayload] = None,
+    include_non_embedded: bool = True,
+    include_embedded: bool = True,
 ) -> ItemsPendingPayload | None:
     enforce_no_drift(
         survey_id=survey_id,
@@ -65,7 +65,7 @@ def _build_pending_payload_from_workbook(
         annotate_dirty=False,
         self_heal_system_columns=False,
     )
-    non_embedded = [c for c in changes if c.kind != "embedded"]
+    non_embedded = [c for c in changes if c.kind != "embedded"] if include_non_embedded else []
     pending_changes: list[dict[str, object]] = []
     qids: set[str] = set()
     for change in non_embedded:
@@ -84,7 +84,7 @@ def _build_pending_payload_from_workbook(
 
     embedded_pending: list[dict[str, object]] = []
     embedded_skipped: list[dict] = []
-    if not ignore_embedded:
+    if include_embedded and not ignore_embedded:
         survey = load_cached_survey(survey_id)
         embedded_changes = _collect_embedded_data_changes(
             survey_id, survey.payload, xlsx_path
@@ -116,9 +116,21 @@ def _build_pending_payload_from_workbook(
     if not pending_changes and not embedded_pending:
         return None
 
-    structural_ops = list(getattr(existing, "structural_ops", None) or [])
-    structural_summary = dict(getattr(existing, "structural_summary", None) or {})
-    push_journal = dict(getattr(existing, "push_journal", None) or {})
+    structural_ops = (
+        list(getattr(existing, "structural_ops", None) or [])
+        if include_non_embedded
+        else []
+    )
+    structural_summary = (
+        dict(getattr(existing, "structural_summary", None) or {})
+        if include_non_embedded
+        else {}
+    )
+    push_journal = (
+        dict(getattr(existing, "push_journal", None) or {})
+        if include_non_embedded
+        else {}
+    )
     return ItemsPendingPayload(
         qids=sorted(qids),
         embedded_fields=embedded_pending,
@@ -191,31 +203,18 @@ def detect_changes(survey_id: str) -> DimensionChanges:
                 )
             ),
             affected_qids=qids,
+            status_kind="staged",
+            edit_count=len(qids),
         )
 
     resolver = WorkbookResolver()
     xlsx_path = resolver.resolve(survey_id)
     if xlsx_path.exists():
-        warning_detail = None
-        skip_embedded = False
-        try:
-            survey = load_cached_survey(survey_id)
-            health = check_embedded_data_health(
-                survey_id, survey.payload, xlsx_path
-            )
-            if not health.is_valid:
-                skip_embedded = True
-                warning_detail = format_embedded_data_health_warning(
-                    health, survey_id=survey_id
-                )
-        except Exception:
-            pass
-
         changes = preview_changes(
             survey_id,
             xlsx_path,
             check_drift=False,
-            skip_embedded=skip_embedded,
+            skip_embedded=True,
         )
         if changes:
             qids = set(c.qid for c in changes if c.qid)
@@ -224,16 +223,8 @@ def detect_changes(survey_id: str) -> DimensionChanges:
                 has_changes=True,
                 change_summary=f"⚡ Unstaged: {len(changes)} change(s) in {len(qids)} QID(s)",
                 affected_qids=qids,
-                warning_detail=warning_detail,
-            )
-
-        if warning_detail:
-            return DimensionChanges(
-                dimension="items",
-                has_changes=False,
-                change_summary="No changes",
-                affected_qids=set(),
-                warning_detail=warning_detail,
+                status_kind="unstaged",
+                edit_count=len(qids),
             )
 
     return DimensionChanges(
@@ -241,6 +232,8 @@ def detect_changes(survey_id: str) -> DimensionChanges:
         has_changes=False,
         change_summary="No changes",
         affected_qids=set(),
+        status_kind="none",
+        edit_count=0,
     )
 
 

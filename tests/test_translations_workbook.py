@@ -519,6 +519,51 @@ def test_workbook_doctor_warns_large_delta(tmp_path: Path, monkeypatch) -> None:
     assert any("large delta" in warn for warn in report.warnings)
 
 
+def test_init_preserves_non_empty_cells(tmp_path: Path) -> None:
+    payload = _survey_payload()
+    payload["result"]["SurveyOptions"] = {
+        "SurveyLanguage": "EN",
+        "AvailableLanguages": ["EN", "FR"],
+    }
+
+    workbook_path = tmp_path / "workbook.xlsx"
+    init_workbook_from_survey(
+        "SV_TEST",
+        payload,
+        workbook_path,
+        languages=["FR"],
+    )
+
+    wb = load_workbook(workbook_path)
+    q_ws = wb[QUESTION_SHEET]
+    q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
+    en_idx = q_headers.index("Text_en_MD") + 1
+    fr_idx = q_headers.index("Text_fr_MD") + 1
+    q_ws.cell(row=2, column=en_idx).value = "Custom EN"
+    q_ws.cell(row=2, column=fr_idx).value = "Custom FR"
+
+    o_ws = wb[OPTIONS_SHEET]
+    o_headers = [cell.value for cell in next(o_ws.iter_rows(max_row=1))]
+    o_fr_idx = o_headers.index("Label_fr_MD") + 1
+    o_ws.cell(row=2, column=o_fr_idx).value = "Custom FR Opt"
+
+    wb.save(workbook_path)
+
+    init_workbook_from_survey(
+        "SV_TEST",
+        payload,
+        workbook_path,
+        languages=["FR"],
+    )
+
+    wb = load_workbook(workbook_path)
+    q_ws = wb[QUESTION_SHEET]
+    assert q_ws.cell(row=2, column=en_idx).value == "Custom EN"
+    assert q_ws.cell(row=2, column=fr_idx).value == "Custom FR"
+    o_ws = wb[OPTIONS_SHEET]
+    assert o_ws.cell(row=2, column=o_fr_idx).value == "Custom FR Opt"
+
+
 def test_workbook_doctor_rejects_overlong_values(tmp_path: Path, monkeypatch) -> None:
     from qsync.translations import QUALTRICS_TRANSLATION_VALUE_MAX_CHARS
 

@@ -39,6 +39,8 @@ def detect_unstaged_changes(
                 f"Run: qsync items pull --survey-id {survey_id}"
             ),
             safe_to_autofix=True,
+            status_kind="error",
+            edit_count=0,
         )
 
     try:
@@ -65,6 +67,8 @@ def detect_unstaged_changes(
             affected_qids=set(),
             error_detail=f"Translation detection failed: {str(exc).split(chr(10))[0]}",
             safe_to_autofix=False,
+            status_kind="error",
+            edit_count=0,
         )
 
     if changes:
@@ -74,6 +78,8 @@ def detect_unstaged_changes(
             has_changes=True,
             change_summary=f"⚡ Unstaged: {len(changes)} change(s)",
             affected_qids=affected_qids,
+            status_kind="unstaged",
+            edit_count=len(changes),
         )
 
     return DimensionChanges(
@@ -81,6 +87,8 @@ def detect_unstaged_changes(
         has_changes=False,
         change_summary="No changes",
         affected_qids=set(),
+        status_kind="none",
+        edit_count=0,
     )
 
 
@@ -94,6 +102,8 @@ def detect_changes(survey_id: str) -> DimensionChanges:
             has_changes=True,
             change_summary=f"✓ Staged: {count} QID(s)",
             affected_qids=set(pending.payload.qids or []),
+            status_kind="staged",
+            edit_count=count,
         )
 
     return detect_unstaged_changes(survey_id)

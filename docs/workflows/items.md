@@ -128,7 +128,7 @@ See `../reference/push-safeguards.md` for the full decision matrix and CLI flags
 ## 7. Tips & troubleshooting
 
 - Always run `qsync survey inventory` (and `qsync items pull`) before editing. This avoids working on stale caches and ensures push safeguards see fresh counts.
-- Use `qsync sync --survey-id SV_xxx` to get a holistic view across items/JS/translations/EOS in one go.
+- Use `qsync sync --survey-id SV_xxx` to get a holistic view across items/EDF/JS/translations/EOS in one go.
 - If Qualtrics introduces a new QID (e.g. question created in the UI), re-run `qsync items pull` so the workbook includes the new row before editing.
 - When collaborating, commit both the Excel workbook and the corresponding pending/cached artifacts. Reviewers can re-run `qsync items preview` (and/or `qsync sync`) to validate there are no hidden diffs before approving.
 - If `qsync preview` reports duplicate placeholder embedded fields (e.g. “Create New Field or Choose From Dropdown...”), run `qsync survey cleanup-embedded-data --survey-id SV_xxx --apply --publish` to remove the duplicates from SurveyFlow.

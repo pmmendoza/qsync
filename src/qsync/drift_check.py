@@ -21,7 +21,7 @@ from qsync.push_logger import log_push_event
 from qsync.config import resolve_root
 from qsync.qualtrics_client import fetch_survey_definition_live, load_cached_survey
 
-DimensionType = Literal["items", "js", "translations", "eos"]
+DimensionType = Literal["items", "edf", "js", "translations", "eos"]
 
 
 def _translation_value_fingerprint(value: object) -> str:
@@ -353,6 +353,8 @@ def check_drift(
         DriftReport with drift status and details
     """
     try:
+        if dimension == "edf":
+            dimension = "items"
         if dimension == "js":
             return _check_js_drift(survey_id, context=context)
 

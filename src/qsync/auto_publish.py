@@ -15,7 +15,7 @@ from qsync.qualtrics_client import (
     publish_survey_definition,
 )
 
-DimensionType = Literal["items", "js", "translations", "eos"]
+DimensionType = Literal["items", "edf", "js", "translations", "eos"]
 
 
 class PublishSkipped(Exception):
@@ -43,7 +43,7 @@ def auto_publish_after_push(
 
     Args:
         survey_id: Survey ID to publish
-        dimension: Dimension being pushed (items, js, translations, eos)
+        dimension: Dimension being pushed (items, edf, js, translations, eos)
         skip_publish: If True, skip publishing
         auto_yes: If True, use default description without prompting
         changed_qids: List of changed QIDs (for items/js)

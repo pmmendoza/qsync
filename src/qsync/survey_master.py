@@ -38,6 +38,14 @@ def _snapshots_dir() -> Path:
     return _surveys_dir() / "qualtrics_master_snapshots"
 
 
+def _rollback_dir() -> Path:
+    return _surveys_dir() / "qualtrics_master_rollback"
+
+
+def _rollback_survey_dir(survey_id: str) -> Path:
+    return _rollback_dir() / survey_id
+
+
 def _master_csv_path() -> Path:
     return _surveys_dir() / "qualtrics_master.csv"
 
@@ -330,6 +338,165 @@ def load_snapshot(survey_id: str) -> Optional[dict]:
         return json.loads(snapshot_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def _scalar_to_string(value: Any) -> str:
+    """Normalize values to the same string form used by master CSV comparisons."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _rollback_filename_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _load_rollback_snapshot_file(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _list_rollback_snapshot_paths(survey_id: str) -> List[Path]:
+    survey_dir = _rollback_survey_dir(survey_id)
+    if not survey_dir.exists():
+        return []
+    # Filenames are UTC timestamps, so lexical sort is chronological.
+    return sorted(survey_dir.glob("*-pre-apply.json"), reverse=True)
+
+
+def capture_pre_apply_snapshot(
+    survey_id: str,
+    changes: List[Dict[str, Any]],
+) -> Path:
+    """Capture a rollback snapshot before writing survey-master apply changes."""
+    base_url, headers = get_client_config()
+    captured_at = datetime.now(timezone.utc).isoformat() + "Z"
+
+    survey_name = _fetch_survey_name(base_url, headers, survey_id)
+    status_data, _ = _fetch_endpoint(base_url, headers, survey_id, "status")
+    metadata_data, _ = _fetch_endpoint(base_url, headers, survey_id, "metadata")
+    options_data, _ = _fetch_endpoint(base_url, headers, survey_id, "options")
+    versions_data, _ = _fetch_endpoint(base_url, headers, survey_id, "versions")
+
+    snapshot = create_snapshot(
+        survey_id=survey_id,
+        survey_name=survey_name,
+        status_data=status_data,
+        metadata_data=metadata_data,
+        options_data=options_data,
+        versions_data=versions_data,
+    )
+
+    mapping = _parse_mapping_csv()
+    rollback_changes: List[Dict[str, Any]] = []
+    for change in changes:
+        field_name = str(change.get("field") or "").strip()
+        if not field_name:
+            continue
+        field_info = mapping.get(field_name)
+        pre_apply_value = (
+            _extract_value_from_snapshot(snapshot, field_info) if field_info else None
+        )
+        rollback_changes.append(
+            {
+                "field": field_name,
+                "endpoint": change.get("endpoint") or (
+                    _derive_endpoint(field_info) if field_info else "unknown"
+                ),
+                "is_dangerous": bool(change.get("is_dangerous", False)),
+                "pre_apply_value": _scalar_to_string(pre_apply_value),
+                "target_value": _scalar_to_string(change.get("new_value")),
+            }
+        )
+
+    snapshot["rollback"] = {
+        "snapshot_type": "pre_apply",
+        "captured_at": captured_at,
+        "apply_timestamp": captured_at,
+        "schema_version": _compute_schema_version(),
+        "applied_changes": rollback_changes,
+    }
+
+    survey_dir = _rollback_survey_dir(survey_id)
+    survey_dir.mkdir(parents=True, exist_ok=True)
+    path = survey_dir / f"{_rollback_filename_timestamp()}-pre-apply.json"
+    path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+    return path
+
+
+def list_rollback_versions(survey_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List available rollback snapshots, newest first."""
+    root = _rollback_dir()
+    if not root.exists():
+        return []
+
+    survey_ids: List[str]
+    if survey_id:
+        survey_ids = [survey_id]
+    else:
+        survey_ids = sorted(
+            [p.name for p in root.iterdir() if p.is_dir()],
+        )
+
+    entries: List[Dict[str, Any]] = []
+    for sid in survey_ids:
+        paths = _list_rollback_snapshot_paths(sid)
+        for idx, path in enumerate(paths, start=1):
+            try:
+                snap = _load_rollback_snapshot_file(path)
+            except (json.JSONDecodeError, OSError):
+                continue
+            rollback_meta = snap.get("rollback", {})
+            applied_changes = rollback_meta.get("applied_changes", [])
+            captured_at = (
+                rollback_meta.get("captured_at")
+                or snap.get("pulled_at")
+                or path.name.split("-pre-apply.json")[0]
+            )
+            fields = [
+                str(c.get("field") or "").strip()
+                for c in applied_changes
+                if str(c.get("field") or "").strip()
+            ]
+            entries.append(
+                {
+                    "survey_id": sid,
+                    "version": idx,
+                    "captured_at": captured_at,
+                    "changes_count": len(fields),
+                    "fields": fields,
+                    "path": path,
+                }
+            )
+
+    entries.sort(
+        key=lambda row: (
+            str(row.get("survey_id") or ""),
+            int(row.get("version") or 0),
+        )
+    )
+    return entries
+
+
+def load_rollback_snapshot(survey_id: str, version: int = 1) -> Tuple[Path, dict]:
+    """Load the Nth most recent rollback snapshot for a survey."""
+    if version < 1:
+        raise ValueError("version must be >= 1")
+
+    paths = _list_rollback_snapshot_paths(survey_id)
+    if not paths:
+        raise FileNotFoundError(f"No rollback snapshots found for {survey_id}")
+    if version > len(paths):
+        raise ValueError(
+            f"Requested version {version}, but only {len(paths)} snapshot(s) exist for {survey_id}"
+        )
+    path = paths[version - 1]
+    try:
+        snap = _load_rollback_snapshot_file(path)
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"Invalid rollback snapshot: {path}") from exc
+    return path, snap
 
 
 def _get_column_order() -> List[str]:
@@ -1396,6 +1563,241 @@ def _write_audit_log(survey_id: str, applied_changes: Dict[str, Any]) -> None:
         pass  # Log write failures don't block the main operation
 
 
+def _write_rollback_audit_log(
+    survey_id: str,
+    snapshot_path: Path,
+    restored_changes: List[Dict[str, Any]],
+    *,
+    dry_run: bool,
+    published: bool,
+) -> None:
+    """Write an audit entry for survey-master rollback operations."""
+    try:
+        from .api_push import get_write_log_path
+
+        log_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+            "action": "qsync.master.rollback",
+            "survey_id": survey_id,
+            "snapshot_path": str(snapshot_path),
+            "dry_run": bool(dry_run),
+            "published": bool(published),
+            "restored_changes": restored_changes,
+        }
+        log_path = get_write_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(log_entry) + "\n")
+    except Exception:
+        pass
+
+
+def rollback_master(
+    survey_id: str,
+    *,
+    version: int = 1,
+    dry_run: bool = False,
+    force: bool = False,
+    allow_dangerous: bool = False,
+    publish: bool = True,
+    publish_description: Optional[str] = None,
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    """Rollback one survey to a pre-apply snapshot captured by survey master."""
+    from .qualtrics_client import publish_survey_definition
+
+    result: Dict[str, Any] = {
+        "survey_id": survey_id,
+        "version": version,
+        "snapshot_path": None,
+        "dry_run": dry_run,
+        "applied": False,
+        "published": False,
+        "changes": [],
+        "drifted_fields": [],
+        "error": None,
+    }
+
+    try:
+        snapshot_path, snapshot = load_rollback_snapshot(survey_id, version=version)
+    except Exception as exc:
+        result["error"] = str(exc)
+        return result
+
+    result["snapshot_path"] = str(snapshot_path)
+    rollback_meta = snapshot.get("rollback", {})
+    applied_changes = rollback_meta.get("applied_changes", [])
+    if not applied_changes:
+        result["error"] = (
+            f"Rollback snapshot {snapshot_path.name} has no applied_changes metadata"
+        )
+        return result
+
+    mapping = _parse_mapping_csv()
+    dangerous_fields = _get_dangerous_fields()
+    base_url, headers = get_client_config()
+
+    # Ensure survey is still accessible before attempting rollback.
+    try:
+        _fetch_survey_name(base_url, headers, survey_id)
+    except Exception as exc:
+        result["error"] = f"Unable to access survey {survey_id}: {exc}"
+        return result
+
+    target_fields: List[str] = []
+    endpoint_by_field: Dict[str, str] = {}
+    target_by_field: Dict[str, str] = {}
+    expected_post_apply_by_field: Dict[str, str] = {}
+    for change in applied_changes:
+        field_name = str(change.get("field") or "").strip()
+        if not field_name:
+            continue
+        field_info = mapping.get(field_name)
+        if not field_info:
+            continue
+        if field_info.get("survey_master", "").strip().lower() != "write":
+            continue
+        endpoint = _derive_endpoint(field_info)
+        if endpoint not in ("metadata", "options", "status"):
+            continue
+        target_fields.append(field_name)
+        endpoint_by_field[field_name] = endpoint
+        target_by_field[field_name] = _scalar_to_string(change.get("pre_apply_value"))
+        expected_post_apply_by_field[field_name] = _scalar_to_string(
+            change.get("target_value")
+        )
+
+    if not target_fields:
+        result["error"] = "No writable fields were found in rollback snapshot metadata"
+        return result
+
+    # Fetch each endpoint once for current-live comparisons.
+    live_endpoint_payloads: Dict[str, dict] = {}
+    for endpoint in sorted(set(endpoint_by_field.values())):
+        try:
+            data, _ = _fetch_endpoint(base_url, headers, survey_id, endpoint)
+            live_endpoint_payloads[endpoint] = data
+        except Exception as exc:
+            result["error"] = f"Failed to fetch live {endpoint} payload: {exc}"
+            return result
+
+    current_by_field: Dict[str, str] = {}
+    for field_name in target_fields:
+        endpoint = endpoint_by_field[field_name]
+        live_payload = live_endpoint_payloads.get(endpoint, {})
+        current_value = _extract_value_from_live(
+            live_payload, mapping[field_name], endpoint=endpoint
+        )
+        current_by_field[field_name] = _scalar_to_string(current_value)
+
+    drifted_fields: List[Dict[str, Any]] = []
+    for field_name in target_fields:
+        expected = expected_post_apply_by_field.get(field_name, "")
+        current = current_by_field.get(field_name, "")
+        if current != expected:
+            drifted_fields.append(
+                {
+                    "field": field_name,
+                    "expected_post_apply": expected,
+                    "current": current,
+                    "endpoint": endpoint_by_field[field_name],
+                }
+            )
+    result["drifted_fields"] = drifted_fields
+    if drifted_fields and not force:
+        fields = ", ".join(item["field"] for item in drifted_fields)
+        result["error"] = (
+            f"Drift detected before rollback ({fields}). Re-run with --force after review."
+        )
+        return result
+
+    changes_by_endpoint: Dict[str, Dict[str, str]] = {
+        "metadata": {},
+        "options": {},
+        "status": {},
+    }
+    rollback_changes: List[Dict[str, Any]] = []
+    has_dangerous = False
+    for field_name in target_fields:
+        current = current_by_field.get(field_name, "")
+        target = target_by_field.get(field_name, "")
+        if current == target:
+            continue
+        endpoint = endpoint_by_field[field_name]
+        changes_by_endpoint[endpoint][field_name] = target
+        is_dangerous = field_name in dangerous_fields
+        has_dangerous = has_dangerous or is_dangerous
+        rollback_changes.append(
+            {
+                "field": field_name,
+                "endpoint": endpoint,
+                "old_value": current,
+                "new_value": target,
+                "is_dangerous": is_dangerous,
+            }
+        )
+
+    result["changes"] = rollback_changes
+    if has_dangerous and not allow_dangerous:
+        result["error"] = "Dangerous changes require --allow-dangerous"
+        return result
+
+    if not rollback_changes:
+        result["applied"] = True
+        return result
+
+    if dry_run:
+        _write_rollback_audit_log(
+            survey_id,
+            snapshot_path,
+            rollback_changes,
+            dry_run=True,
+            published=False,
+        )
+        result["applied"] = True
+        return result
+
+    metadata_ok = _write_metadata(
+        base_url, headers, survey_id, changes_by_endpoint.get("metadata", {})
+    )
+    options_ok = _write_options(
+        base_url, headers, survey_id, changes_by_endpoint.get("options", {})
+    )
+    status_ok = _write_status(
+        base_url, headers, survey_id, changes_by_endpoint.get("status", {})
+    )
+
+    if not (metadata_ok and options_ok and status_ok):
+        result["error"] = "One or more endpoint writes failed during rollback"
+        return result
+
+    published = False
+    if publish:
+        description = (publish_description or "").strip() or "qsync master rollback"
+        try:
+            publish_survey_definition(survey_id, description=description)
+            published = True
+        except Exception as exc:
+            result["error"] = f"Rollback applied, but publish failed: {exc}"
+            return result
+
+    _write_rollback_audit_log(
+        survey_id,
+        snapshot_path,
+        rollback_changes,
+        dry_run=False,
+        published=published,
+    )
+
+    result["applied"] = True
+    result["published"] = published
+    if verbose:
+        print(
+            f"[qsync:master-rollback] Restored {len(rollback_changes)} field(s) for {survey_id}"
+        )
+    return result
+
+
 def apply_master(
     allow_dangerous: bool = False,
     force: bool = False,
@@ -1431,7 +1833,8 @@ def apply_master(
     - errors: list of error messages
     - dry_run: bool (True if this was a dry run)
     """
-    base_url, headers = get_client_config()
+    base_url: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
 
     # Load and validate CSV
     if csv_rows is None:
@@ -1553,6 +1956,29 @@ def apply_master(
             if verbose:
                 print("[qsync:master-apply]   (drift detection skipped)")
 
+        rollback_snapshot_path = None
+        if not dry_run:
+            try:
+                rollback_snapshot_path = capture_pre_apply_snapshot(survey_id, changes)
+                if verbose and rollback_snapshot_path is not None:
+                    print(
+                        f"[qsync:master-apply]   ✓ Rollback snapshot saved: {rollback_snapshot_path.name}"
+                    )
+            except Exception as exc:
+                surveys_failed += 1
+                details.append(
+                    {
+                        "survey_id": survey_id,
+                        "applied": False,
+                        "reason": f"Failed to capture pre-apply rollback snapshot: {exc}",
+                    }
+                )
+                if verbose:
+                    print(
+                        f"[qsync:master-apply]   ✗ {survey_ref} rollback snapshot failed: {exc}"
+                    )
+                continue
+
         # Group changes by endpoint
         changes_by_endpoint = {}
         for change in changes:
@@ -1566,6 +1992,9 @@ def apply_master(
 
         # Apply changes per endpoint
         try:
+            if base_url is None or headers is None:
+                base_url, headers = get_client_config()
+
             metadata_ok = True
             options_ok = True
             status_ok = True
