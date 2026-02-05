@@ -3891,7 +3891,7 @@ def sync_focal_surveys(
                 _clear_inventory_cache()
                 return True
 
-            # Handle fix operation specially - run fix and return to menu
+            # Handle fix operation specially - run fix and continue with this survey.
             if is_fix_operation:
                 from .interactive_menu import confirm
                 from .survey_ref import format_survey_ref
@@ -3941,23 +3941,18 @@ def sync_focal_surveys(
                             print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
                     except Exception as e:
                         print(f"{Colors.RED}✗ Failed to fix issues: {e}{Colors.RESET}")
+                else:
+                    print(f"{Colors.DIM}Fix cancelled by user.{Colors.RESET}")
+                    _clear_inventory_cache()
+                    return True
 
-                # Return to menu by recursively calling sync_focal_surveys
-                print(f"\n{Colors.DIM}Returning to sync menu...{Colors.RESET}\n")
-                return sync_focal_surveys(
-                    interactive=interactive,
-                    force_live=force_live,
-                    force_preview=force_preview,
-                    auto_yes=auto_yes,
-                    pending_action=pending_action,
-                    scope=scope,
-                    per_dimension=per_dimension,
-                    skip_publish=skip_publish,
-                    refresh_workbooks=refresh_workbooks,
-                    allow_drift=allow_drift,
-                    allow_skip_embedded=allow_skip_embedded,
-                    json_output=json_output,
-                    process_all=False,  # Always show menu after fix
+                try:
+                    selected = [detect_survey_changes(survey_id)]
+                except Exception:
+                    selected = [changes]
+
+                print(
+                    f"\n{Colors.DIM}Continuing with sync for {survey_ref}...{Colors.RESET}\n"
                 )
 
             if is_issue_operation:
@@ -3970,22 +3965,8 @@ def sync_focal_surveys(
                         print(f"  • {dim}: {info.error_detail}")
                     elif info.warning_detail:
                         print(f"  • {dim}: {info.warning_detail}")
-                print(f"\n{Colors.DIM}Returning to sync menu...{Colors.RESET}\n")
-                return sync_focal_surveys(
-                    interactive=interactive,
-                    force_live=force_live,
-                    force_preview=force_preview,
-                    auto_yes=auto_yes,
-                    pending_action=pending_action,
-                    scope=scope,
-                    per_dimension=per_dimension,
-                    skip_publish=skip_publish,
-                    refresh_workbooks=refresh_workbooks,
-                    allow_drift=allow_drift,
-                    allow_skip_embedded=allow_skip_embedded,
-                    json_output=json_output,
-                    process_all=False,
-                )
+                _clear_inventory_cache()
+                return True
     else:
         # Non-interactive or --yes: sync all
         selected = surveys_to_process
