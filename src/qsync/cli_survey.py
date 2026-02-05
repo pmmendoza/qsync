@@ -1772,33 +1772,107 @@ def _prompt_for_any_survey_id(survey_id: str | None) -> str:
         print("[qsync] ERROR: --survey-id required in non-interactive mode")
         raise SystemExit(1)
 
-    from .interactive_menu import select_from_list
-    from .survey_inventory import prompt_for_survey_id
-
-    selection = select_from_list(
-        message="Select a survey:",
-        choices=[
-            "✓ Select from inventory",
-            "✎ Enter SurveyID manually",
-            "✗ Cancel",
-        ],
+    from .interactive_menu import select_from_list, autocomplete_from_list
+    from .survey_inventory import (
+        INVENTORY_CSV,
+        LEGACY_SURVEY_CACHE,
+        _refresh_inventory_for_prompt,
+        _load_all_survey_records,
     )
-    if not selection or "Cancel" in selection:
-        print("[qsync] Operation cancelled.")
-        raise SystemExit(1)
 
-    if "inventory" in selection.lower():
-        picked = prompt_for_survey_id(allow_all_surveys=True, interactive=True)
-        if not picked:
+    def _manual_entry() -> str:
+        manual = input("Enter Qualtrics SurveyID (e.g. SV_...): ").strip()
+        if not manual:
             print("[qsync] Operation cancelled.")
             raise SystemExit(1)
-        return picked
+        return manual
 
-    manual = input("Enter Qualtrics SurveyID (e.g. SV_...): ").strip()
-    if not manual:
+    has_inventory = INVENTORY_CSV.exists() or LEGACY_SURVEY_CACHE.exists()
+    if not has_inventory:
+        selection = select_from_list(
+            message="Inventory file missing. What do you want to do?",
+            choices=[
+                "✓ Run `qsync survey inventory` now",
+                "✎ Enter SurveyID manually",
+                "✗ Cancel",
+            ],
+        )
+        if selection is None or "Cancel" in selection:
+            print("[qsync] Operation cancelled.")
+            raise SystemExit(1)
+        if "inventory" in selection.lower():
+            if not _refresh_inventory_for_prompt():
+                print(
+                    "[qsync] Could not refresh inventory. Next: verify credentials "
+                    "(run `qsync doctor --check-api`) or pass --survey-id."
+                )
+                raise SystemExit(1)
+        else:
+            return _manual_entry()
+
+    records = _load_all_survey_records()
+    if not records:
+        print("[qsync] No surveys found in inventory. Entering manual SurveyID.")
+        return _manual_entry()
+
+    labels = []
+    for record in records:
+        focal_tag = " (focal)" if record.get("focal") else ""
+        labels.append(f"{record['id']} - {record.get('name', 'Untitled')}{focal_tag}")
+
+    if len(labels) > 40:
+        mode = select_from_list(
+            "How do you want to select a survey?",
+            [
+                "Search by name/ID (autocomplete)",
+                "Browse all surveys (arrow list)",
+                "Enter SurveyID manually",
+                "Cancel",
+            ],
+        )
+        if not mode or "Cancel" in mode:
+            print("[qsync] Operation cancelled.")
+            raise SystemExit(1)
+        if mode.startswith("Enter"):
+            return _manual_entry()
+        if mode.startswith("Browse"):
+            selection = select_from_list("Select a survey:", labels)
+            if not selection:
+                print("[qsync] Operation cancelled.")
+                raise SystemExit(1)
+            return selection.split(" - ", 1)[0].strip()
+        selected = autocomplete_from_list(
+            message="Search survey (name or ID)",
+            choices=labels,
+            instruction="type to filter, enter to select",
+        )
+        if not selected:
+            print("[qsync] Operation cancelled.")
+            raise SystemExit(1)
+        return selected.split(" - ", 1)[0].strip()
+
+    choices = list(labels)
+    choices.append("─" * 60)
+    choices.append("Search by name/ID (autocomplete)")
+    choices.append("Enter SurveyID manually")
+    choices.append("Cancel")
+    selection = select_from_list("Select a survey:", choices)
+    if not selection or selection == "Cancel":
         print("[qsync] Operation cancelled.")
         raise SystemExit(1)
-    return manual
+    if selection.startswith("Search"):
+        selected = autocomplete_from_list(
+            message="Search survey (name or ID)",
+            choices=labels,
+            instruction="type to filter, enter to select",
+        )
+        if not selected:
+            print("[qsync] Operation cancelled.")
+            raise SystemExit(1)
+        return selected.split(" - ", 1)[0].strip()
+    if selection.startswith("Enter"):
+        return _manual_entry()
+    return selection.split(" - ", 1)[0].strip()
 
 
 def handle_prolific_auth(args: argparse.Namespace) -> None:

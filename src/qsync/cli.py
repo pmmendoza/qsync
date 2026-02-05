@@ -22,6 +22,15 @@ if TYPE_CHECKING:
     from .sync_core import PreviewChange
 
 
+def _resolve_help_formatter() -> type[argparse.HelpFormatter]:
+    try:
+        from rich_argparse import RichHelpFormatter
+
+        return RichHelpFormatter
+    except Exception:
+        return argparse.RawTextHelpFormatter
+
+
 def _extract_global_path_flags(
     argv: list[str],
 ) -> tuple[Path | None, Path | None, str | None, list[str]]:
@@ -1161,7 +1170,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "Qualtrics sync and survey management for NEWSFLOWS surveys.\n\n"
             "First-time setup: run `qsync onboard` to create folders and .env."
         ),
-        formatter_class=argparse.RawTextHelpFormatter,
+        formatter_class=_resolve_help_formatter(),
     )
     parser.add_argument(
         "--root",
