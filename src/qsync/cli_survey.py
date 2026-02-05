@@ -733,10 +733,12 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         write_coverage_report,
         write_dry_run_qsf,
         write_slice_manifest,
+        write_batch_manifest,
         sha256_of_qsf_upload_bytes,
     )
 
     import qsync
+    import copy
 
     base, headers = get_client_config()
 
@@ -750,14 +752,23 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         allow_all_surveys=True,
     )
 
-    target_lang = normalize_language_code(getattr(args, "language", "") or "")
-    if not target_lang:
+    raw_targets: list[str] = []
+    raw_csv = getattr(args, "languages", None)
+    if raw_csv:
+        raw_targets.extend([s.strip() for s in str(raw_csv).split(",") if s.strip()])
+    raw_single = getattr(args, "language", None)
+    if raw_single:
+        raw_targets.append(str(raw_single).strip())
+
+    target_langs = normalize_language_list(raw_targets)
+    if not target_langs:
         error(
             "[qsync:slice-language]",
-            "ERROR: --language is required (e.g. DE, FR-CA).",
+            "ERROR: --language or --languages is required (e.g. --language DE or --languages DE,FR-CA).",
         )
         sys.exit(1)
 
+    multi = len(target_langs) > 1
     keep_raw = str(
         getattr(args, "keep_languages", "target-only") or "target-only"
     ).strip()
@@ -766,6 +777,7 @@ def handle_slice_language(args: argparse.Namespace) -> None:
     dry_run = bool(getattr(args, "dry_run", False))
     verify_parity = bool(getattr(args, "verify_parity", False))
     auto_yes = bool(getattr(args, "yes", False))
+    no_flow_text = bool(getattr(args, "no_flow_text", False))
 
     header("[qsync:slice-language]", "Preview:")
 
@@ -778,10 +790,13 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    if target_lang not in set(enabled_langs):
+    enabled_set = set(normalize_language_list(enabled_langs))
+    missing_targets = [lang for lang in target_langs if lang not in enabled_set]
+    if missing_targets:
         error(
             "[qsync:slice-language]",
-            f"ERROR: Target language {target_lang} is not enabled on source survey {source_id}.",
+            "ERROR: Target language(s) not enabled on source survey "
+            f"{source_id}: {', '.join(missing_targets)}.",
         )
         dim(
             "[qsync:slice-language]",
@@ -793,13 +808,19 @@ def handle_slice_language(args: argparse.Namespace) -> None:
     info("  Source Survey:", "")
     info("    ID:", source_id)
     info("    Account:", base)
-    info("  Target:", "")
-    info("    Base language:", target_lang)
+    if multi:
+        info("  Targets:", "")
+        info("    Base languages:", ", ".join(target_langs))
+    else:
+        info("  Target:", "")
+        info("    Base language:", target_langs[0])
     info("    Keep languages:", keep_raw)
     if allow_incomplete:
         warn("    ⚠", "--allow-incomplete enabled (may produce mixed-language output)")
     if allow_fallback:
         warn("    ⚠", "--allow-fallback enabled (fills gaps from base language)")
+    if no_flow_text:
+        warn("    ⚠", "--no-flow-text enabled (SurveyFlow text left as-is)")
     if dry_run:
         dim("    Dry run:", "write rebased QSF only (no import)")
     if verify_parity:
@@ -818,95 +839,160 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    source_name = qsf_content.get("SurveyEntry", {}).get("SurveyName", source_id)
-    default_new_name = f"{source_name} ({target_lang})"
-    requested_name = getattr(args, "name", None) or ""
-    if not requested_name.strip():
-        if auto_yes or not sys.stdin.isatty():
-            new_name = default_new_name
-        else:
-            new_name = (
-                input(f"Enter name for new survey [{default_new_name}]: ").strip()
-                or default_new_name
-            )
-    else:
-        new_name = requested_name.strip()
+    source_name = str(
+        qsf_content.get("SurveyEntry", {}).get("SurveyName") or source_id
+    )
+    name_template = (getattr(args, "name", None) or "").strip()
 
-    # Coverage preflight + report (always written to disk for traceability).
-    try:
-        report = compute_slice_coverage(qsf_content, target_language=target_lang)
-    except Exception as exc:
-        error(
-            "[qsync:slice-language]",
-            f"ERROR: Coverage preflight failed to run: {exc}",
+    def _apply_name_template(template: str, lang: str) -> str:
+        return (
+            template.replace("{lang}", lang.lower())
+            .replace("{LANG}", lang.upper())
+            .strip()
         )
-        sys.exit(1)
+
+    def _resolve_new_name(lang: str) -> str:
+        lang_norm = normalize_language_code(lang)
+        if name_template:
+            if "{lang}" in name_template or "{LANG}" in name_template:
+                return _apply_name_template(name_template, lang_norm)
+            if multi:
+                return f"{name_template} ({lang_norm})"
+            return name_template
+        default_name = f"{source_name} ({lang_norm})"
+        if multi:
+            return default_name
+        if auto_yes or not sys.stdin.isatty():
+            return default_name
+        return (
+            input(f"Enter name for new survey [{default_name}]: ").strip()
+            or default_name
+        )
 
     root = _workspace_root()
-    coverage_path = write_coverage_report(
-        root,
-        source_survey_id=source_id,
-        target_language=target_lang,
-        report=report,
-    )
 
-    if report.inactive_qids_total is not None and report.inactive_qids_total > 0:
-        dim(
-            "[qsync:slice-language]",
-            (
-                f"Coverage scope: {report.active_qids_total} active QID(s); "
-                f"skipped {report.inactive_qids_total} inactive/Trash QID(s)."
-            ),
-        )
+    reports: dict[str, Any] = {}
+    coverage_paths: dict[str, Path] = {}
 
-    fallback_filled: list[str] = []
-    if report.missing_required_total:
-        warn(
-            "[qsync:slice-language]",
-            (
-                f"Coverage: {report.ok_required_total}/{report.required_total} required keys "
-                f"({report.pct_required_ok:.1f}%), missing {report.missing_required_total}."
-            ),
+    # Coverage preflight + report (always written to disk for traceability).
+    for target_lang in target_langs:
+        try:
+            report = compute_slice_coverage(qsf_content, target_language=target_lang)
+        except Exception as exc:
+            error(
+                "[qsync:slice-language]",
+                f"ERROR: Coverage preflight failed to run for {target_lang}: {exc}",
+            )
+            sys.exit(1)
+
+        reports[target_lang] = report
+        coverage_path = write_coverage_report(
+            root,
+            source_survey_id=source_id,
+            target_language=target_lang,
+            report=report,
         )
-        shown = 0
-        order = [
-            "Meta",
-            "QuestionText",
-            "SubQuestion",
-            "ChoiceGroup",
-            "Choice",
-            "Answer",
-            "Label",
-        ]
-        for type_name in order:
-            keys = (report.missing_required_by_type or {}).get(type_name) or []
-            if not keys:
-                continue
-            remaining = max(0, 10 - shown)
-            if remaining <= 0:
-                break
-            sample = keys[:remaining]
-            shown += len(sample)
+        coverage_paths[target_lang] = coverage_path
+
+        if report.inactive_qids_total is not None and report.inactive_qids_total > 0:
+            dim(
+                "[qsync:slice-language]",
+                (
+                    f"Coverage scope: {report.active_qids_total} active QID(s); "
+                    f"skipped {report.inactive_qids_total} inactive/Trash QID(s)."
+                ),
+            )
+
+        if report.missing_required_total:
+            prefix = f"[{target_lang}] " if multi else ""
             warn(
                 "[qsync:slice-language]",
-                f"Missing {type_name} (sample): " + ", ".join(sample),
+                (
+                    f"{prefix}Coverage: {report.ok_required_total}/{report.required_total} required keys "
+                    f"({report.pct_required_ok:.1f}%), missing {report.missing_required_total}."
+                ),
             )
-        if not shown:
-            missing_sample = report.missing_required[:10]
-            if missing_sample:
+            shown = 0
+            order = [
+                "Meta",
+                "QuestionText",
+                "SubQuestion",
+                "ChoiceGroup",
+                "Choice",
+                "Answer",
+                "Label",
+            ]
+            for type_name in order:
+                keys = (report.missing_required_by_type or {}).get(type_name) or []
+                if not keys:
+                    continue
+                remaining = max(0, 10 - shown)
+                if remaining <= 0:
+                    break
+                sample = keys[:remaining]
+                shown += len(sample)
                 warn(
                     "[qsync:slice-language]",
-                    "Missing keys (sample): " + ", ".join(missing_sample),
+                    f"{prefix}Missing {type_name} (sample): " + ", ".join(sample),
                 )
-        dim("[qsync:slice-language]", f"Full report: {coverage_path}")
-        dim(
-            "[qsync:slice-language]",
-            f"Remediation: qsync translations doctor --survey-id {source_id} --language {target_lang}",
-        )
+            if not shown:
+                missing_sample = report.missing_required[:10]
+                if missing_sample:
+                    warn(
+                        "[qsync:slice-language]",
+                        f"{prefix}Missing keys (sample): " + ", ".join(missing_sample),
+                    )
+            dim("[qsync:slice-language]", f"Full report: {coverage_path}")
+            dim(
+                "[qsync:slice-language]",
+                f"Remediation: qsync translations doctor --survey-id {source_id} --language {target_lang}",
+            )
 
-        if allow_fallback:
+            if not allow_fallback and not allow_incomplete:
+                sys.exit(1)
+
+            if not allow_fallback and not auto_yes:
+                if not sys.stdin.isatty():
+                    error(
+                        "[qsync:slice-language]",
+                        "ERROR: Non-interactive run with --allow-incomplete requires --yes.",
+                    )
+                    sys.exit(1)
+                if not prompt_yes_no(
+                    f"Target language {target_lang} is incomplete. Create the sliced survey anyway?",
+                    default=False,
+                ):
+                    raise SystemExit("[qsync:slice-language] Aborted by user.")
+
+            if not allow_fallback:
+                warn(
+                    "[qsync:slice-language]",
+                    "Proceeding despite incomplete coverage (--allow-incomplete).",
+                )
+
+    if no_flow_text:
+        for line in warn_if_flow_text_present(qsf_content):
+            warn("[qsync:slice-language]", line)
+
+    batch_entries: list[dict[str, Any]] = []
+
+    for idx, target_lang in enumerate(target_langs, start=1):
+        if multi:
+            header(
+                "[qsync:slice-language]",
+                f"Language {target_lang} ({idx}/{len(target_langs)})",
+            )
+
+        report = reports[target_lang]
+        coverage_path = coverage_paths[target_lang]
+        new_name = _resolve_new_name(target_lang)
+        fallback_filled: list[str] = []
+
+        qsf_working = copy.deepcopy(qsf_content)
+
+        if allow_fallback and report.missing_required_total:
             fallback_filled = apply_fallback_translations(
-                qsf_content,
+                qsf_working,
                 target_language=target_lang,
                 missing_keys=report.missing_required,
             )
@@ -914,197 +1000,402 @@ def handle_slice_language(args: argparse.Namespace) -> None:
                 "[qsync:slice-language]",
                 f"Applied fallback for {len(fallback_filled)} key(s) from base language.",
             )
-        elif not allow_incomplete:
+
+        # Resolve keep-languages and validate the request.
+        kept_languages = resolve_keep_languages(
+            enabled_langs,
+            target_language=target_lang,
+            base_language=report.base_language,
+            keep_languages_raw=keep_raw,
+        )
+        missing_kept = [lang for lang in kept_languages if lang not in enabled_set]
+        if missing_kept:
+            error(
+                "[qsync:slice-language]",
+                "ERROR: --keep-languages includes languages not enabled on the source: "
+                + ", ".join(missing_kept),
+            )
+            dim(
+                "[qsync:slice-language]",
+                f"Enabled languages: {', '.join(enabled_langs) if enabled_langs else '(none)'}",
+            )
             sys.exit(1)
 
-        if not allow_fallback and not auto_yes:
-            if not sys.stdin.isatty():
-                error(
-                    "[qsync:slice-language]",
-                    "ERROR: Non-interactive run with --allow-incomplete requires --yes.",
-                )
-                sys.exit(1)
-            if not prompt_yes_no(
-                f"Target language {target_lang} is incomplete. Create the sliced survey anyway?",
-                default=False,
-            ):
-                raise SystemExit("[qsync:slice-language] Aborted by user.")
+        info(
+            "[qsync:slice-language]",
+            "Slicing with kept languages: " + ", ".join(kept_languages),
+        )
 
-        if not allow_fallback:
+        # Apply the in-place QSF transform.
+        transform = slice_qsf_to_language(
+            qsf_working,
+            target_language=target_lang,
+            kept_languages=kept_languages,
+            rebase_flow_text=not no_flow_text,
+        )
+        if transform.warnings:
             warn(
                 "[qsync:slice-language]",
-                "Proceeding despite incomplete coverage (--allow-incomplete).",
+                f"{len(transform.warnings)} warning(s) during rebase (showing up to 10):",
             )
+            for line in transform.warnings[:10]:
+                warn("[qsync:slice-language]", line)
 
-    # SurveyFlow warning (Stage 1 does not rebase flow text).
-    for line in warn_if_flow_text_present(qsf_content):
-        warn("[qsync:slice-language]", line)
+        if dry_run:
+            prepare_qsf_for_import(
+                qsf_working,
+                new_name,
+                language=target_lang,
+                status="Inactive",
+            )
+            qsf_sha256 = sha256_of_qsf_upload_bytes(qsf_working)
+            dry_path = write_dry_run_qsf(
+                root,
+                source_survey_id=source_id,
+                target_language=target_lang,
+                qsf=qsf_working,
+            )
+            success(
+                "[qsync:slice-language]",
+                f"Dry run complete. Wrote rebased QSF: {dry_path}",
+            )
+            dim("[qsync:slice-language]", f"QSF SHA256: {qsf_sha256}")
+            if not multi:
+                return
+            batch_entries.append(
+                {
+                    "target_language": target_lang,
+                    "new_survey_id": None,
+                    "new_survey_name": new_name,
+                    "kept_languages": kept_languages,
+                    "allow_incomplete": allow_incomplete,
+                    "allow_fallback": allow_fallback,
+                    "fallback_filled_total": len(fallback_filled),
+                    "fallback_filled_sample": fallback_filled[:10],
+                    "coverage_report_path": str(coverage_path),
+                    "dry_run_qsf_path": str(dry_path),
+                    "qsf_sha256": qsf_sha256,
+                }
+            )
+            continue
 
-    # Resolve keep-languages and validate the request.
-    kept_languages = resolve_keep_languages(
-        enabled_langs,
-        target_language=target_lang,
-        base_language=report.base_language,
-        keep_languages_raw=keep_raw,
-    )
-    enabled_set = set(normalize_language_list(enabled_langs))
-    missing_kept = [lang for lang in kept_languages if lang not in enabled_set]
-    if missing_kept:
-        error(
-            "[qsync:slice-language]",
-            "ERROR: --keep-languages includes languages not enabled on the source: "
-            + ", ".join(missing_kept),
-        )
-        dim(
-            "[qsync:slice-language]",
-            f"Enabled languages: {', '.join(enabled_langs) if enabled_langs else '(none)'}",
-        )
-        sys.exit(1)
+        # Check for duplicate names unless forced.
+        try:
+            ensure_unique_survey_name(new_name, allow_duplicate=args.force_duplicate)
+        except Exception as exc:
+            error("[qsync:slice-language]", f"ERROR: {exc}")
+            sys.exit(1)
 
-    info(
-        "[qsync:slice-language]",
-        "Slicing with kept languages: " + ", ".join(kept_languages),
-    )
-
-    # Apply the in-place QSF transform.
-    transform = slice_qsf_to_language(
-        qsf_content,
-        target_language=target_lang,
-        kept_languages=kept_languages,
-    )
-    if transform.warnings:
-        warn(
-            "[qsync:slice-language]",
-            f"{len(transform.warnings)} warning(s) during rebase (showing up to 10):",
-        )
-        for line in transform.warnings[:10]:
-            warn("[qsync:slice-language]", line)
-
-    if dry_run:
+        # Prepare for import (sets name/status; strips SurveyID).
         prepare_qsf_for_import(
-            qsf_content,
+            qsf_working,
             new_name,
             language=target_lang,
             status="Inactive",
         )
-        qsf_sha256 = sha256_of_qsf_upload_bytes(qsf_content)
-        dry_path = write_dry_run_qsf(
-            root,
-            source_survey_id=source_id,
-            target_language=target_lang,
-            qsf=qsf_content,
-        )
+        qsf_sha256 = sha256_of_qsf_upload_bytes(qsf_working)
+
+        info("[qsync:slice-language]", f"Creating survey '{new_name}'...")
+        try:
+            meta = {
+                "source_survey_id": source_id,
+                "target_language": target_lang,
+                "keep_languages": keep_raw,
+                "allow_incomplete": allow_incomplete,
+            }
+            new_id = upload_qsf_to_account(
+                qsf_working,
+                new_name,
+                base,
+                headers,
+                action="qsync.survey.slice_language",
+                log_meta=meta,
+            )
+        except Exception as exc:
+            error("[qsync:slice-language]", f"ERROR: Failed to create survey: {exc}")
+            sys.exit(1)
+
         success(
             "[qsync:slice-language]",
-            f"Dry run complete. Wrote rebased QSF: {dry_path}",
+            f"Created {new_name} ({new_id}) from {source_id} (base={target_lang}).",
         )
-        dim("[qsync:slice-language]", f"QSF SHA256: {qsf_sha256}")
-        return
 
-    # Check for duplicate names unless forced.
-    try:
-        ensure_unique_survey_name(new_name, allow_duplicate=args.force_duplicate)
-    except Exception as exc:
-        error("[qsync:slice-language]", f"ERROR: {exc}")
-        sys.exit(1)
+        edit_url = f"https://{base}/survey-builder/{new_id}/edit"
+        print()
+        info("Edit Link:", edit_url)
 
-    # Prepare for import (sets name/status; strips SurveyID).
-    prepare_qsf_for_import(
-        qsf_content,
-        new_name,
-        language=target_lang,
-        status="Inactive",
-    )
-    qsf_sha256 = sha256_of_qsf_upload_bytes(qsf_content)
-
-    info("[qsync:slice-language]", f"Creating survey '{new_name}'...")
-    try:
-        meta = {
-            "source_survey_id": source_id,
-            "target_language": target_lang,
-            "keep_languages": keep_raw,
-            "allow_incomplete": allow_incomplete,
-        }
-        new_id = upload_qsf_to_account(
-            qsf_content,
-            new_name,
-            base,
-            headers,
-            action="qsync.survey.slice_language",
-            log_meta=meta,
+        # Persist manifest for traceability.
+        manifest_path = write_slice_manifest(
+            root,
+            source_survey_id=source_id,
+            source_survey_name=str(source_name or source_id),
+            source_base_language=report.base_language,
+            target_language=target_lang,
+            new_survey_id=new_id,
+            new_survey_name=new_name,
+            keep_languages_mode=keep_raw,
+            kept_languages=kept_languages,
+            allow_incomplete=allow_incomplete,
+            allow_fallback=allow_fallback,
+            fallback_filled_total=len(fallback_filled),
+            fallback_filled_sample=fallback_filled[:10],
+            coverage_report_path=coverage_path,
+            report=report,
+            qsf_sha256=qsf_sha256,
+            qsync_version=str(getattr(qsync, "__version__", "0.0.0")),
         )
-    except Exception as exc:
-        error("[qsync:slice-language]", f"ERROR: Failed to create survey: {exc}")
-        sys.exit(1)
+        dim("[qsync:slice-language]", f"Manifest: {manifest_path}")
+        info("[qsync:slice-language]", "Next commands:")
+        info(None, f"  qsync survey activate {new_id}")
+        info(
+            None,
+            (
+                "  qsync survey publish "
+                f"{new_id} --description \"slice-language {source_id} -> {target_lang}\""
+            ),
+        )
+        info(None, f"  qsync translations pull --survey-id {new_id}")
 
-    success(
-        "[qsync:slice-language]",
-        f"Created {new_name} ({new_id}) from {source_id} (base={target_lang}).",
-    )
+        if verify_parity:
+            from .survey_parity import compare_qsf_parity
 
-    edit_url = f"https://{base}/survey-builder/{new_id}/edit"
-    print()
-    info("Edit Link:", edit_url)
-
-    # Persist manifest for traceability.
-    manifest_path = write_slice_manifest(
-        root,
-        source_survey_id=source_id,
-        source_survey_name=str(source_name or source_id),
-        source_base_language=report.base_language,
-        target_language=target_lang,
-        new_survey_id=new_id,
-        new_survey_name=new_name,
-        keep_languages_mode=keep_raw,
-        kept_languages=kept_languages,
-        allow_incomplete=allow_incomplete,
-        allow_fallback=allow_fallback,
-        fallback_filled_total=len(fallback_filled),
-        fallback_filled_sample=fallback_filled[:10],
-        coverage_report_path=coverage_path,
-        report=report,
-        qsf_sha256=qsf_sha256,
-        qsync_version=str(getattr(qsync, "__version__", "0.0.0")),
-    )
-    dim("[qsync:slice-language]", f"Manifest: {manifest_path}")
-    info("[qsync:slice-language]", "Next commands:")
-    info(None, f"  qsync survey activate {new_id}")
-    info(
-        None,
-        (
-            "  qsync survey publish "
-            f"{new_id} --description \"slice-language {source_id} -> {target_lang}\""
-        ),
-    )
-    info(None, f"  qsync translations pull --survey-id {new_id}")
-
-    if verify_parity:
-        from .survey_parity import compare_qsf_parity
-
-        info("[qsync:slice-language]", "Running parity check (best-effort)...")
-        try:
-            source_qsf = fetch_survey_definition(base, headers, source_id, fmt="qsf")
-            target_qsf = fetch_survey_definition(base, headers, new_id, fmt="qsf")
-            parity = compare_qsf_parity(source_qsf, target_qsf)
-            ok = _emit_parity_report(
-                parity,
-                survey_a=source_id,
-                survey_b=new_id,
-                prefix="[qsync:slice-language:parity]",
-            )
-            if not ok:
-                raise SystemExit(
-                    "[qsync:slice-language] Parity check failed; see details above."
+            info("[qsync:slice-language]", "Running parity check (best-effort)...")
+            try:
+                source_qsf = fetch_survey_definition(base, headers, source_id, fmt="qsf")
+                target_qsf = fetch_survey_definition(base, headers, new_id, fmt="qsf")
+                parity = compare_qsf_parity(source_qsf, target_qsf)
+                ok = _emit_parity_report(
+                    parity,
+                    survey_a=source_id,
+                    survey_b=new_id,
+                    prefix="[qsync:slice-language:parity]",
                 )
-        except Exception as exc:
-            warn(
-                "[qsync:slice-language]",
-                f"Parity check failed to run: {exc}",
-            )
+                if not ok:
+                    raise SystemExit(
+                        "[qsync:slice-language] Parity check failed; see details above."
+                    )
+            except Exception as exc:
+                warn(
+                    "[qsync:slice-language]",
+                    f"Parity check failed to run: {exc}",
+                )
+
+        batch_entries.append(
+            {
+                "target_language": target_lang,
+                "new_survey_id": new_id,
+                "new_survey_name": new_name,
+                "kept_languages": kept_languages,
+                "allow_incomplete": allow_incomplete,
+                "allow_fallback": allow_fallback,
+                "fallback_filled_total": len(fallback_filled),
+                "fallback_filled_sample": fallback_filled[:10],
+                "coverage_report_path": str(coverage_path),
+                "manifest_path": str(manifest_path),
+                "qsf_sha256": qsf_sha256,
+            }
+        )
+
+    if multi:
+        batch_path = write_batch_manifest(
+            root,
+            source_survey_id=source_id,
+            source_survey_name=str(source_name or source_id),
+            source_base_language=reports[target_langs[0]].base_language,
+            slices=batch_entries,
+            qsync_version=str(getattr(qsync, "__version__", "0.0.0")),
+        )
+        dim("[qsync:slice-language]", f"Batch manifest: {batch_path}")
 
     from .terminal_output import log_confirmation
 
     log_confirmation("[slice-language]")
+
+
+def handle_slice_registry(args: argparse.Namespace) -> None:
+    """List local slice manifests and derived surveys."""
+
+    from .terminal_output import info, warn, dim
+
+    root = _workspace_root()
+    slices_dir = root / "surveys" / "slices"
+    if not slices_dir.exists():
+        info("[qsync:slice-registry]", "No slices directory found.")
+        return
+
+    source_filter = str(getattr(args, "source", "") or "").strip()
+    limit = getattr(args, "limit", None)
+    open_links = bool(getattr(args, "open", False))
+
+    entries: list[dict[str, Any]] = []
+    for path in sorted(slices_dir.glob("*.json")):
+        name = path.name
+        if name.startswith(("coverage__", "dryrun__", "batch__")):
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            warn(
+                "[qsync:slice-registry]",
+                f"Skipping unreadable manifest {path.name}: {exc}",
+            )
+            continue
+        if not isinstance(data, dict):
+            continue
+        if source_filter and str(data.get("source_survey_id") or "") != source_filter:
+            continue
+        new_id = str(data.get("new_survey_id") or "").strip()
+        if not new_id:
+            continue
+        entries.append(
+            {
+                "source_survey_id": str(data.get("source_survey_id") or ""),
+                "source_survey_name": str(data.get("source_survey_name") or ""),
+                "target_language": str(data.get("target_language") or ""),
+                "new_survey_id": new_id,
+                "new_survey_name": str(data.get("new_survey_name") or ""),
+                "created_at_utc": str(data.get("created_at_utc") or ""),
+                "manifest_path": str(path),
+            }
+        )
+
+    if not entries:
+        info("[qsync:slice-registry]", "No slice manifests found.")
+        return
+
+    entries.sort(key=lambda e: e.get("created_at_utc") or "")
+    if isinstance(limit, int) and limit > 0:
+        entries = entries[:limit]
+
+    info("[qsync:slice-registry]", f"Found {len(entries)} slice(s).")
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        grouped.setdefault(entry["source_survey_id"], []).append(entry)
+
+    for source_id, group in grouped.items():
+        source_name = (group[0].get("source_survey_name") or "").strip()
+        label = f"Source {source_id}"
+        if source_name:
+            label = f"{label} ({source_name})"
+        info("[qsync:slice-registry]", label)
+        for entry in group:
+            created = entry.get("created_at_utc") or ""
+            lang = entry.get("target_language") or ""
+            new_id = entry.get("new_survey_id") or ""
+            new_name = entry.get("new_survey_name") or ""
+            line = f"  - {created} {lang} -> {new_id}"
+            if new_name:
+                line += f" ({new_name})"
+            info(None, line)
+            dim(None, f"    Manifest: {entry.get('manifest_path')}")
+
+    if open_links:
+        try:
+            base, _headers = get_client_config()
+            edit_urls = [
+                f"https://{base}/survey-builder/{entry['new_survey_id']}/edit"
+                for entry in entries
+                if entry.get("new_survey_id")
+            ]
+            if not edit_urls:
+                return
+            import subprocess
+
+            for url in edit_urls:
+                if sys.platform == "darwin":
+                    subprocess.run(["open", url], check=False)
+                elif os.name == "nt":
+                    os.startfile(url)  # type: ignore[attr-defined]
+                else:
+                    subprocess.run(["xdg-open", url], check=False)
+        except Exception as exc:
+            warn("[qsync:slice-registry]", f"Could not open edit links ({exc}).")
+
+
+def handle_export_side_by_side(args: argparse.Namespace) -> None:
+    """Export two surveys side-by-side into a single DOCX."""
+
+    from .terminal_output import info, error, success, warn
+    from .translation_export import export_surveys_side_by_side_docx
+    from .survey_parity import compare_qsf_parity
+    from .interactive_menu import is_interactive
+
+    survey_a = str(getattr(args, "a", "") or "").strip()
+    survey_b = str(getattr(args, "b", "") or "").strip()
+    if not survey_a or not survey_b:
+        error("[qsync:export-side-by-side]", "ERROR: --a and --b are required.")
+        sys.exit(1)
+
+    output = getattr(args, "output", None)
+    label_a = getattr(args, "label_a", None)
+    label_b = getattr(args, "label_b", None)
+    refresh = bool(getattr(args, "refresh", False))
+    smart_name = bool(getattr(args, "smart_name", False))
+    no_html = bool(getattr(args, "no_html", False))
+    layout_heuristics = bool(getattr(args, "layout_heuristics", False))
+    skip_parity = bool(getattr(args, "skip_parity", False))
+    skip_js_strings = bool(getattr(args, "skip_js_strings", False))
+    do_open = bool(getattr(args, "open", False))
+
+    if not skip_parity:
+        info("[qsync:export-side-by-side]", "Running parity check...")
+        try:
+            base, headers = get_client_config()
+            qsf_a = fetch_survey_definition(base, headers, survey_a, fmt="qsf")
+            qsf_b = fetch_survey_definition(base, headers, survey_b, fmt="qsf")
+            parity = compare_qsf_parity(qsf_a, qsf_b)
+            ok = _emit_parity_report(
+                parity,
+                survey_a=survey_a,
+                survey_b=survey_b,
+                prefix="[qsync:export-side-by-side:parity]",
+            )
+            if not ok:
+                raise SystemExit(
+                    "[qsync:export-side-by-side] Parity check failed; see details above."
+                )
+        except Exception as exc:
+            error("[qsync:export-side-by-side]", f"ERROR: {exc}")
+            sys.exit(1)
+    else:
+        warn("[qsync:export-side-by-side]", "Skipping parity check (--skip-parity).")
+
+    try:
+        path = export_surveys_side_by_side_docx(
+            survey_a,
+            survey_b,
+            output_path=output,
+            label_a=label_a,
+            label_b=label_b,
+            smart_name=smart_name,
+            refresh=refresh,
+            include_html_source=not no_html,
+            layout_heuristics=layout_heuristics,
+            include_js_strings=not skip_js_strings,
+            interactive=is_interactive(),
+        )
+    except Exception as exc:
+        error("[qsync:export-side-by-side]", f"ERROR: {exc}")
+        sys.exit(1)
+
+    success("[qsync:export-side-by-side]", f"Exported: {path}")
+
+    if do_open:
+        try:
+            import subprocess
+
+            if sys.platform == "darwin":
+                subprocess.run(["open", str(path)], check=False)
+            elif os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except Exception:
+            warn(
+                "[qsync:export-side-by-side]",
+                "Could not open document automatically.",
+            )
 
 
 def _emit_parity_report(*, result, survey_a: str, survey_b: str, prefix: str) -> bool:
@@ -5281,8 +5572,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_slice.add_argument(
         "--language",
-        required=True,
         help="Target language code to use as the new base language (e.g., DE, FR-CA)",
+    )
+    p_slice.add_argument(
+        "--languages",
+        help="Comma-separated language codes to slice in one run (e.g., DE,FR,NL)",
     )
     p_slice.add_argument(
         "--name",
@@ -5302,6 +5596,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--allow-fallback",
         action="store_true",
         help="Fill missing target-language keys from the source base language (writes a coverage report)",
+    )
+    p_slice.add_argument(
+        "--no-flow-text",
+        action="store_true",
+        help="Do not rebase SurveyFlow participant-visible text (warns if present)",
     )
     p_slice.add_argument(
         "--dry-run",
@@ -5324,6 +5623,27 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Allow duplicate survey names (uses local inventory to detect conflicts)",
     )
     p_slice.set_defaults(func=handle_slice_language)
+
+    # slice-registry
+    p_slice_registry = survey_subs.add_parser(
+        "slice-registry",
+        help="List derived surveys from local slice manifests",
+    )
+    p_slice_registry.add_argument(
+        "--source",
+        help="Filter results by source survey ID",
+    )
+    p_slice_registry.add_argument(
+        "--limit",
+        type=int,
+        help="Limit the number of listed slices",
+    )
+    p_slice_registry.add_argument(
+        "--open",
+        action="store_true",
+        help="Open edit links for listed surveys",
+    )
+    p_slice_registry.set_defaults(func=handle_slice_registry)
 
     # parity-check
     p_parity = survey_subs.add_parser(
@@ -6000,6 +6320,57 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     _add_export_translation_args(p_export_translation)
     p_export_translation.set_defaults(func=handle_export_translation)
+
+    # export-side-by-side
+    p_export_side = survey_subs.add_parser(
+        "export-side-by-side",
+        help="Export two surveys side-by-side into a single DOCX",
+    )
+    p_export_side.add_argument("--a", required=True, help="Survey ID A")
+    p_export_side.add_argument("--b", required=True, help="Survey ID B")
+    p_export_side.add_argument(
+        "--output",
+        type=Path,
+        help="Output path for the DOCX (file or directory)",
+    )
+    p_export_side.add_argument("--label-a", help="Left column label")
+    p_export_side.add_argument("--label-b", help="Right column label")
+    p_export_side.add_argument(
+        "--skip-parity",
+        action="store_true",
+        help="Skip parity check (not recommended)",
+    )
+    p_export_side.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Refresh cached survey definitions before exporting",
+    )
+    p_export_side.add_argument(
+        "--smart-name",
+        action="store_true",
+        help="Append a timestamp to the output filename",
+    )
+    p_export_side.add_argument(
+        "--no-html",
+        action="store_true",
+        help="Do not include HTML source blocks",
+    )
+    p_export_side.add_argument(
+        "--layout-heuristics",
+        action="store_true",
+        help="Apply reviewer-friendly layout heuristics",
+    )
+    p_export_side.add_argument(
+        "--skip-js-strings",
+        action="store_true",
+        help="Skip JS user-visible string extraction",
+    )
+    p_export_side.add_argument(
+        "--open",
+        action="store_true",
+        help="Open the exported document after generation",
+    )
+    p_export_side.set_defaults(func=handle_export_side_by_side)
 
     # master
     p_master = survey_subs.add_parser(

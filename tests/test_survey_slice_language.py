@@ -9,6 +9,7 @@ from qsync.survey_slice_language import (
     resolve_keep_languages,
     slice_qsf_to_language,
     write_coverage_report,
+    write_batch_manifest,
     write_slice_manifest,
 )
 
@@ -377,3 +378,84 @@ def test_apply_fallback_translations_fills_missing_values() -> None:
     so = qsf["SurveyElements"][0]["Payload"]
     meta = (so.get("MetaDataTranslations") or {}).get("DE") or {}
     assert meta.get("SurveyTitle") == "Base title"
+
+
+def test_slice_qsf_rebases_flow_text_fields() -> None:
+    qsf = _qsf_payload(available_languages=["EN", "NL"])
+    qsf["SurveyElements"].append(
+        {
+            "Element": "FL",
+            "PrimaryAttribute": "Survey Flow",
+            "Payload": {
+                "Flow": [
+                    {
+                        "Type": "EndSurvey",
+                        "FlowID": "FL_END",
+                        "Message": {"EN": "Thanks", "NL": "Dank"},
+                    }
+                ]
+            },
+        }
+    )
+
+    slice_qsf_to_language(qsf, target_language="NL", kept_languages=["NL"])
+    flow_elem = next(
+        elem for elem in qsf["SurveyElements"] if elem.get("Element") == "FL"
+    )
+    node = flow_elem["Payload"]["Flow"][0]
+    assert node["Message"] == "Dank"
+
+
+def test_slice_qsf_no_flow_text_preserves_messages() -> None:
+    qsf = _qsf_payload(available_languages=["EN", "NL"])
+    qsf["SurveyElements"].append(
+        {
+            "Element": "FL",
+            "PrimaryAttribute": "Survey Flow",
+            "Payload": {
+                "Flow": [
+                    {
+                        "Type": "EndSurvey",
+                        "FlowID": "FL_END",
+                        "Message": {"EN": "Thanks", "NL": "Dank"},
+                    }
+                ]
+            },
+        }
+    )
+
+    result = slice_qsf_to_language(
+        qsf,
+        target_language="NL",
+        kept_languages=["NL"],
+        rebase_flow_text=False,
+    )
+    flow_elem = next(
+        elem for elem in qsf["SurveyElements"] if elem.get("Element") == "FL"
+    )
+    node = flow_elem["Payload"]["Flow"][0]
+    assert isinstance(node["Message"], dict)
+    assert any("not rebased (--no-flow-text)" in w for w in result.warnings)
+
+
+def test_write_batch_manifest(tmp_path: Path) -> None:
+    payload = [
+        {
+            "target_language": "DE",
+            "new_survey_id": "SV_DE",
+            "new_survey_name": "Survey (DE)",
+        }
+    ]
+    path = write_batch_manifest(
+        tmp_path,
+        source_survey_id="SV_SRC",
+        source_survey_name="Source Survey",
+        source_base_language="EN",
+        slices=payload,
+        qsync_version="0.0.0",
+    )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["source_survey_id"] == "SV_SRC"
+    assert data["source_base_language"] == "EN"
+    assert data["slices"][0]["target_language"] == "DE"
+    assert "created_at_utc" in data

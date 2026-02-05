@@ -106,6 +106,37 @@ def _normalize_lang_code(value: str | None) -> str:
     return normalize_language_code(value or "")
 
 
+def _normalize_label(value: str | None) -> str | None:
+    if value is None:
+        return None
+    label = str(value).strip()
+    return label or None
+
+
+def _resolve_compare_labels(
+    compare_labels: tuple[str, str] | None,
+    *,
+    base_language: str | None,
+    target_language: str | None,
+    fallback_base: str | None = None,
+    fallback_target: str | None = None,
+) -> tuple[str, str]:
+    base_label = None
+    target_label = None
+    if compare_labels:
+        base_label = _normalize_label(compare_labels[0])
+        target_label = _normalize_label(compare_labels[1])
+    if base_label is None:
+        base_label = _normalize_label(fallback_base) or (
+            _normalize_lang_code(base_language) or _DEFAULT_BASE_LANGUAGE
+        )
+    if target_label is None:
+        target_label = _normalize_label(fallback_target) or (
+            _normalize_lang_code(target_language) or "TARGET"
+        )
+    return base_label, target_label
+
+
 def _survey_result(payload: dict) -> dict:
     if isinstance(payload.get("result"), dict):
         return payload["result"]
@@ -402,6 +433,11 @@ class ExportContent:
     output_path: Path
     include_js_strings: bool
     flow_trace: Callable[[str], None] | None
+    compare_labels: tuple[str, str] | None = None
+    compare_survey_id: str | None = None
+    compare_survey_name: str | None = None
+    compare_survey_link: str | None = None
+    compare_survey_base_language: str | None = None
 
 
 def _sanitize_filename(value: str) -> str:
@@ -477,6 +513,44 @@ def _resolve_output_docx_path(
     return output_path
 
 
+def _resolve_output_side_by_side_docx_path(
+    *,
+    survey_a_id: str,
+    survey_a_name: str,
+    survey_b_id: str,
+    survey_b_name: str,
+    export_dir: Path,
+    output_path: Path | None,
+    smart_name: bool,
+) -> Path:
+    ext = ".docx"
+
+    def default_name() -> str:
+        safe_a = _sanitize_filename(survey_a_name) if survey_a_name else survey_a_id
+        safe_b = _sanitize_filename(survey_b_name) if survey_b_name else survey_b_id
+        base = f"{safe_a}__{survey_a_id}__VS__{safe_b}__{survey_b_id}"
+        if not smart_name:
+            return f"{base}{ext}"
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"{base}__{stamp}{ext}"
+
+    if output_path is None:
+        return export_dir / default_name()
+
+    output_path = Path(output_path)
+    if output_path.is_dir():
+        return output_path / default_name()
+
+    if not output_path.parent.exists():
+        raise ValueError(f"Output directory does not exist: {output_path.parent}")
+
+    if output_path.suffix == "":
+        return output_path.with_suffix(ext)
+    if output_path.suffix.lower() != ext:
+        raise ValueError(f"Output path must be a {ext} file (got: {output_path})")
+    return output_path
+
+
 def _build_survey_link(
     survey_id: str, *, edf_overrides: dict[str, str] | None, language: str | None
 ) -> str | None:
@@ -522,6 +596,13 @@ def _prepare_export_content(
     compare_to_base: bool = False,
     include_js_strings: bool = True,
     flow_trace: Callable[[str], None] | None = None,
+    translation_ctx_override: TranslationRenderContext | None = None,
+    render_plan_override: TranslationRenderPlan | None = None,
+    compare_labels: tuple[str, str] | None = None,
+    compare_survey_id: str | None = None,
+    compare_survey_name: str | None = None,
+    compare_survey_link: str | None = None,
+    compare_survey_base_language: str | None = None,
 ) -> ExportContent:
     """Prepare format-agnostic export content from survey payload.
 
@@ -542,6 +623,13 @@ def _prepare_export_content(
         render_language: Optional translation language code (e.g., "FR")
         compare_to_base: Whether to render bilingual (base + target) mode
         include_js_strings: Whether to extract and display user-visible JS strings
+        translation_ctx_override: Optional override for the translation context
+        render_plan_override: Optional override for the translation render plan
+        compare_labels: Optional labels for side-by-side rendering (left/right)
+        compare_survey_id: Optional secondary survey id (side-by-side exports)
+        compare_survey_name: Optional secondary survey name
+        compare_survey_link: Optional secondary survey link
+        compare_survey_base_language: Optional secondary survey base language
 
     Returns:
         ExportContent instance with all prepared data
@@ -589,10 +677,10 @@ def _prepare_export_content(
     active_qids = _active_qids_in_flow(result)
 
     # Build translation context if language specified
-    translation_ctx: TranslationRenderContext | None = None
-    render_plan: TranslationRenderPlan | None = None
+    translation_ctx: TranslationRenderContext | None = translation_ctx_override
+    render_plan: TranslationRenderPlan | None = render_plan_override
     lang = _normalize_lang_code(render_language)
-    if lang:
+    if translation_ctx is None and lang:
         if _normalize_lang_code(lang) != _normalize_lang_code(
             base_language
         ) and not _language_present_in_cache(survey_payload, lang):
@@ -625,6 +713,8 @@ def _prepare_export_content(
             compare_to_base=bool(compare_to_base),
             plan=render_plan,
         )
+    if translation_ctx is not None and render_plan is None:
+        render_plan = translation_ctx.plan
 
     # Build survey link
     survey_link = _build_survey_link(
@@ -667,6 +757,11 @@ def _prepare_export_content(
         output_path=output_path,
         include_js_strings=include_js_strings,
         flow_trace=flow_trace,
+        compare_labels=compare_labels,
+        compare_survey_id=compare_survey_id,
+        compare_survey_name=compare_survey_name,
+        compare_survey_link=compare_survey_link,
+        compare_survey_base_language=compare_survey_base_language,
     )
 
 
@@ -925,6 +1020,11 @@ def _render_to_docx(content: ExportContent, *, render_mermaid: bool = False) -> 
         base_language=content.base_language,
         render_language=content.render_language,
         compare_to_base=content.compare_to_base,
+        compare_labels=content.compare_labels,
+        compare_survey_id=content.compare_survey_id,
+        compare_survey_name=content.compare_survey_name,
+        compare_survey_link=content.compare_survey_link,
+        compare_survey_base_language=content.compare_survey_base_language,
     )
 
     # Extract data from content for rendering
@@ -938,6 +1038,7 @@ def _render_to_docx(content: ExportContent, *, render_mermaid: bool = False) -> 
             doc,
             plan=content.render_plan,
             compare_to_base=content.compare_to_base,
+            compare_labels=content.compare_labels,
         )
 
     _add_coverage_summary(doc, questions=questions, active_qids=content.active_qids)
@@ -974,6 +1075,7 @@ def _render_to_docx(content: ExportContent, *, render_mermaid: bool = False) -> 
         translation_ctx=content.translation_ctx,
         include_js_strings=content.include_js_strings,
         flow_trace=content.flow_trace,
+        compare_labels=content.compare_labels,
     )
     _add_external_translation_surfaces_section(
         doc,
@@ -1031,6 +1133,129 @@ def export_survey_payload_to_word(
     return _render_to_docx(content, render_mermaid=render_mermaid)
 
 
+def export_surveys_side_by_side_docx(
+    survey_a_id: str,
+    survey_b_id: str,
+    output_path: Path | None = None,
+    *,
+    label_a: str | None = None,
+    label_b: str | None = None,
+    smart_name: bool = False,
+    refresh: bool = False,
+    include_html_source: bool = True,
+    layout_heuristics: bool = False,
+    include_js_strings: bool = True,
+    interactive: bool = True,
+    flow_trace: Callable[[str], None] | None = None,
+) -> Path:
+    """Export two surveys side-by-side (Survey A vs Survey B) to a single DOCX."""
+
+    if refresh:
+        cache_a, _ = refresh_survey_cache(survey_a_id)
+        cache_b, _ = refresh_survey_cache(survey_b_id)
+    else:
+        _preflight_cache_freshness(survey_a_id, interactive=interactive)
+        _preflight_cache_freshness(survey_b_id, interactive=interactive)
+        cache_a = load_cached_survey(survey_a_id)
+        cache_b = load_cached_survey(survey_b_id)
+
+    payload_a = cache_a.payload
+    payload_b = cache_b.payload
+    result_a = _survey_result(payload_a)
+    result_b = _survey_result(payload_b)
+
+    survey_name_a = str(result_a.get("SurveyName") or "").strip()
+    survey_name_b = str(result_b.get("SurveyName") or "").strip()
+
+    base_lang_a = _normalize_lang_code(get_base_language(payload_a)) or _DEFAULT_BASE_LANGUAGE
+    base_lang_b = _normalize_lang_code(get_base_language(payload_b)) or _DEFAULT_BASE_LANGUAGE
+
+    label_a_clean = _normalize_label(label_a)
+    label_b_clean = _normalize_label(label_b)
+    if label_a_clean or label_b_clean:
+        compare_labels = (
+            label_a_clean or base_lang_a,
+            label_b_clean or base_lang_b,
+        )
+    else:
+        if base_lang_a != base_lang_b:
+            compare_labels = (base_lang_a, base_lang_b)
+        else:
+            compare_labels = ("Survey A", "Survey B")
+
+    root = resolve_root(required=False) or Path.cwd()
+    export_dir = root / EXPORT_DIRNAME
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = _resolve_output_side_by_side_docx_path(
+        survey_a_id=survey_a_id,
+        survey_a_name=survey_name_a,
+        survey_b_id=survey_b_id,
+        survey_b_name=survey_name_b,
+        export_dir=export_dir,
+        output_path=output_path,
+        smart_name=smart_name,
+    )
+
+    base_map = build_translation_map_from_cache(
+        payload_a,
+        language=base_lang_a,
+        base_language=base_lang_a,
+    )
+    target_map = build_translation_map_from_cache(
+        payload_b,
+        language=base_lang_b,
+        base_language=base_lang_b,
+    )
+
+    active_qids = _active_qids_in_flow(result_a)
+    questions = result_a.get("Questions", {}) or {}
+
+    render_plan = _build_translation_render_plan(
+        survey_id=survey_a_id,
+        base_language=base_lang_a,
+        target_language=base_lang_b,
+        questions=questions,
+        active_qids=active_qids,
+        target_map=target_map,
+        base_map=base_map,
+    )
+    translation_ctx = TranslationRenderContext(
+        survey_id=survey_a_id,
+        base_language=base_lang_a,
+        target_language=base_lang_b,
+        target_map=target_map,
+        base_map=base_map,
+        compare_to_base=True,
+        plan=render_plan,
+    )
+
+    compare_link = _build_survey_link(
+        survey_b_id, edf_overrides=None, language=base_lang_b
+    )
+
+    content = _prepare_export_content(
+        survey_id=survey_a_id,
+        survey_payload=payload_a,
+        output_path=output_path,
+        include_html_source=include_html_source,
+        layout_heuristics=layout_heuristics,
+        render_language=base_lang_b,
+        compare_to_base=True,
+        include_js_strings=include_js_strings,
+        flow_trace=flow_trace,
+        translation_ctx_override=translation_ctx,
+        render_plan_override=render_plan,
+        compare_labels=compare_labels,
+        compare_survey_id=survey_b_id,
+        compare_survey_name=survey_name_b,
+        compare_survey_link=compare_link,
+        compare_survey_base_language=base_lang_b,
+    )
+
+    return _render_to_docx(content)
+
+
 # ----------------------------
 # Document building
 # ----------------------------
@@ -1051,6 +1276,11 @@ def _add_doc_header(
     base_language: str,
     render_language: str | None,
     compare_to_base: bool,
+    compare_labels: tuple[str, str] | None = None,
+    compare_survey_id: str | None = None,
+    compare_survey_name: str | None = None,
+    compare_survey_link: str | None = None,
+    compare_survey_base_language: str | None = None,
 ) -> None:
     doc.add_heading("SURVEY TRANSLATION EXPORT", level=0)
 
@@ -1095,10 +1325,24 @@ def _add_doc_header(
             _add_row("Version description:", version_description)
     _add_row("Generated:", datetime.now().isoformat(timespec="seconds"))
 
+    if compare_survey_id:
+        _add_row("Compare SurveyID:", compare_survey_id)
+    if compare_survey_name:
+        _add_row("Compare survey name:", compare_survey_name)
+    if compare_survey_base_language:
+        _add_row("Compare base language:", compare_survey_base_language)
+    if compare_survey_link:
+        _add_row("Compare survey link:", None, hyperlink=compare_survey_link)
+
     base = _normalize_lang_code(base_language) or _DEFAULT_BASE_LANGUAGE
     target = _normalize_lang_code(render_language)
     if target:
-        mode = f"EN-{target}" if compare_to_base else target
+        base_label, target_label = _resolve_compare_labels(
+            compare_labels,
+            base_language=base,
+            target_language=target,
+        )
+        mode = f"{base_label}-{target_label}" if compare_to_base else target_label
         _add_row("Render language:", f"{mode} (base={base})")
     if edf_overrides:
         joined = ", ".join([f"{k}={v}" for k, v in sorted(edf_overrides.items())])
@@ -1185,11 +1429,17 @@ def _add_translation_rendering_summary(
     *,
     plan: TranslationRenderPlan,
     compare_to_base: bool,
+    compare_labels: tuple[str, str] | None = None,
     max_samples: int = 20,
 ) -> None:
     doc.add_heading("LANGUAGE RENDERING SUMMARY", level=1)
 
-    mode = f"EN-{plan.target_language}" if compare_to_base else plan.target_language
+    base_label, target_label = _resolve_compare_labels(
+        compare_labels,
+        base_language=plan.base_language,
+        target_language=plan.target_language,
+    )
+    mode = f"{base_label}-{target_label}" if compare_to_base else target_label
     doc.add_paragraph(f"Mode: {mode} (base={plan.base_language})")
     doc.add_paragraph(f"Expected keys rendered by export: {plan.total_expected}")
     doc.add_paragraph(f"OK (translated or allowed-empty): {plan.total_ok}")
@@ -1406,6 +1656,7 @@ def _add_survey_content_section(
     translation_ctx: TranslationRenderContext | None,
     include_js_strings: bool,
     flow_trace: Callable[[str], None] | None,
+    compare_labels: tuple[str, str] | None,
 ) -> None:
     doc.add_heading("SURVEY CONTENT (Flow Order)", level=1)
     flow = result.get("SurveyFlow") or {}
@@ -1438,6 +1689,7 @@ def _add_survey_content_section(
         translation_ctx=translation_ctx,
         include_js_strings=include_js_strings,
         flow_trace=flow_trace,
+        compare_labels=compare_labels,
         depth=0,
     )
 
@@ -1532,6 +1784,7 @@ def _traverse_flow(
     translation_ctx: TranslationRenderContext | None,
     include_js_strings: bool,
     flow_trace: Callable[[str], None] | None,
+    compare_labels: tuple[str, str] | None,
     depth: int,
 ) -> None:
     """Render SurveyFlow using the shared flow_traversal helper."""
@@ -1555,6 +1808,7 @@ def _traverse_flow(
             include_js_strings=include_js_strings,
             depth=depth_level,
             flow_trace=flow_trace,
+            compare_labels=compare_labels,
         )
 
     def on_group(node: dict, depth_level: int) -> None:
@@ -1687,6 +1941,7 @@ def _add_block(
     translation_ctx: TranslationRenderContext | None,
     include_js_strings: bool,
     flow_trace: Callable[[str], None] | None,
+    compare_labels: tuple[str, str] | None,
     depth: int,
 ) -> None:
     block = blocks.get(block_id) or {}
@@ -1786,6 +2041,7 @@ def _add_block(
                     translation_ctx=translation_ctx,
                     include_js_strings=include_js_strings,
                     depth=depth + 1,
+                    compare_labels=compare_labels,
                 )
                 if asked_qids is not None:
                     asked_qids.add(str(qid))
@@ -1808,6 +2064,7 @@ def _add_question(
     compare_to_base: bool,
     translation_ctx: TranslationRenderContext | None,
     include_js_strings: bool,
+    compare_labels: tuple[str, str] | None,
     depth: int,
 ) -> None:
     tag = (question.get("DataExportTag") or "").strip()
@@ -1827,6 +2084,11 @@ def _add_question(
     marker = _question_validation_marker(question)
     lang_ctx = translation_ctx
     target_lang = lang_ctx.target_language if lang_ctx else ""
+    base_label, target_label = _resolve_compare_labels(
+        compare_labels,
+        base_language=base_language,
+        target_language=target_lang or render_language,
+    )
 
     bilingual = bool(lang_ctx and compare_to_base)
 
@@ -2120,7 +2382,7 @@ def _add_question(
                 rows_to_render.append(("js_strings", js_strings))
 
     if bilingual:
-        # Side-by-side bilingual rendering: EN in the left column, target language in the right.
+        # Side-by-side bilingual rendering: base label in the left column, target in the right.
         # Metadata + (optional) display logic are shared (merged across columns).
         bilingual_rows: list[tuple[str, object]] = []
         bilingual_rows.append(("meta", (qid, qt_abbrev, has_js, tag, marker)))
@@ -2179,7 +2441,7 @@ def _add_question(
                 base_text, target_text = payload  # type: ignore[misc]
                 p_left = _container_add_paragraph(left)
                 _style_table_label_paragraph(p_left)
-                p_left.add_run("EN").bold = True
+                p_left.add_run(base_label).bold = True
                 _add_rich_text_block(
                     left,
                     str(base_text),
@@ -2189,7 +2451,7 @@ def _add_question(
                 )
                 p_right = _container_add_paragraph(right)
                 _style_table_label_paragraph(p_right)
-                p_right.add_run(target_lang or "TARGET").bold = True
+                p_right.add_run(target_label).bold = True
                 _add_rich_text_block(
                     right,
                     str(target_text),
@@ -2280,10 +2542,10 @@ def _add_question(
                 layout_heuristics=layout_heuristics,
             )
         elif kind == "text_bilingual":
-            base_text, target_text, lang_code = payload  # type: ignore[misc]
+            base_text, target_text, _lang_code = payload  # type: ignore[misc]
             p = _container_add_paragraph(cell)
             _style_table_label_paragraph(p)
-            p.add_run("EN").bold = True
+            p.add_run(base_label).bold = True
             _add_rich_text_block(
                 cell,
                 str(base_text),
@@ -2293,7 +2555,7 @@ def _add_question(
             )
             p2 = _container_add_paragraph(cell)
             _style_table_label_paragraph(p2)
-            p2.add_run(str(lang_code or "").strip() or "TARGET").bold = True
+            p2.add_run(target_label).bold = True
             _add_rich_text_block(
                 cell,
                 str(target_text),
@@ -2313,11 +2575,11 @@ def _add_question(
             p.add_run("Statements").bold = True
             for cid, base_disp, target_disp in payload:  # type: ignore[assignment]
                 _add_choice_line(
-                    cell, prefix=f"[{cid}] EN:", display=base_disp, depth=0
+                    cell, prefix=f"[{cid}] {base_label}:", display=base_disp, depth=0
                 )
                 _add_choice_line(
                     cell,
-                    prefix=f"[{cid}] {target_lang or 'TARGET'}:",
+                    prefix=f"[{cid}] {target_label}:",
                     display=target_disp,
                     depth=0,
                 )
@@ -2333,11 +2595,11 @@ def _add_question(
             p.add_run("Labels").bold = True
             for lid, base_disp, target_disp in payload:  # type: ignore[assignment]
                 _add_choice_line(
-                    cell, prefix=f"[{lid}] EN:", display=base_disp, depth=0
+                    cell, prefix=f"[{lid}] {base_label}:", display=base_disp, depth=0
                 )
                 _add_choice_line(
                     cell,
-                    prefix=f"[{lid}] {target_lang or 'TARGET'}:",
+                    prefix=f"[{lid}] {target_label}:",
                     display=target_disp,
                     depth=0,
                 )
@@ -2355,11 +2617,11 @@ def _add_question(
             p.add_run(label).bold = True
             for aid, base_disp, target_disp in payload:  # type: ignore[assignment]
                 _add_choice_line(
-                    cell, prefix=f"[{aid}] EN:", display=base_disp, depth=0
+                    cell, prefix=f"[{aid}] {base_label}:", display=base_disp, depth=0
                 )
                 _add_choice_line(
                     cell,
-                    prefix=f"[{aid}] {target_lang or 'TARGET'}:",
+                    prefix=f"[{aid}] {target_label}:",
                     display=target_disp,
                     depth=0,
                 )

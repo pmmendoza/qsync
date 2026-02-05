@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from .translations_utils import normalize_language_code, normalize_language_list
 from .dimensions.translations_language_blocks import (
@@ -626,9 +626,15 @@ def apply_fallback_translations(
     return filled
 
 
-def warn_if_flow_text_present(qsf: Mapping[str, Any]) -> list[str]:
-    """Best-effort detector for SurveyFlow nodes that may contain participant-visible text."""
+FLOW_TEXT_KEYS: tuple[str, ...] = (
+    "Message",
+    "CustomMessage",
+    "EndMessage",
+    "Text",
+)
 
+
+def _iter_flow_nodes(qsf: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
     elem = _find_element(qsf, "FL")
     if not isinstance(elem, dict):
         return []
@@ -639,28 +645,174 @@ def warn_if_flow_text_present(qsf: Mapping[str, Any]) -> list[str]:
     if not isinstance(flow, list):
         return []
 
+    nodes: list[dict[str, Any]] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, list):
+            for child in node:
+                _walk(child)
+            return
+        if not isinstance(node, dict):
+            return
+        nodes.append(node)
+        for key in ("Flow", "Then", "Else", "ElseFlow"):
+            child = node.get(key)
+            if isinstance(child, list):
+                _walk(child)
+
+    _walk(flow)
+    return nodes
+
+
+def _looks_like_language_map(value: Mapping[str, Any]) -> bool:
+    if not value:
+        return False
+    for key in value.keys():
+        norm = normalize_language_code(str(key or ""))
+        if norm:
+            return True
+    return False
+
+
+def _extract_lang_value(value: Any, *, target: str) -> str | None:
+    if isinstance(value, dict):
+        for key, entry in value.items():
+            if normalize_language_code(str(key or "")) == target:
+                if isinstance(entry, dict):
+                    text_val = entry.get("Text") or entry.get("Message")
+                    if isinstance(text_val, str) and text_val.strip():
+                        return text_val
+                if isinstance(entry, str) and entry.strip():
+                    return entry
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _filter_language_map(
+    value: Mapping[str, Any],
+    *,
+    kept_languages: Sequence[str],
+    target: str,
+    target_value: str | None,
+) -> dict[str, Any]:
+    keep_set = {normalize_language_code(lang) for lang in kept_languages}
+    keep_set.discard("")
+    filtered: dict[str, Any] = {}
+    for key, entry in value.items():
+        norm = normalize_language_code(str(key or ""))
+        if norm and norm in keep_set:
+            filtered[key] = entry
+    if target_value and target not in {
+        normalize_language_code(str(k or "")) for k in filtered.keys()
+    }:
+        filtered[target] = target_value
+    return filtered
+
+
+def rebase_flow_text(
+    qsf: dict[str, Any],
+    *,
+    target_language: str,
+    kept_languages: Sequence[str],
+    allow_rebase: bool,
+) -> list[str]:
+    """Rebase participant-visible SurveyFlow text fields to the target language."""
+
+    target = normalize_language_code(target_language)
+    if not target:
+        return []
     warnings: list[str] = []
+    keep_other = len(kept_languages) > 1
 
-    def _strings_in_node(node: Mapping[str, Any]) -> list[str]:
-        out: list[str] = []
-        for key, value in node.items():
-            if not isinstance(key, str):
+    for node in _iter_flow_nodes(qsf):
+        node_type = str(node.get("Type") or "").strip()
+        for key in FLOW_TEXT_KEYS:
+            if key not in node:
                 continue
-            if key.lower() not in {"message", "custommessage", "endmessage", "text"}:
+            value = node.get(key)
+            if not allow_rebase:
+                if isinstance(value, str) and value.strip():
+                    warnings.append(
+                        f"SurveyFlow node Type={node_type} has {key}; not rebased (--no-flow-text)."
+                    )
+                elif isinstance(value, dict) and _looks_like_language_map(value):
+                    warnings.append(
+                        f"SurveyFlow node Type={node_type} has {key} translations; not rebased (--no-flow-text)."
+                    )
                 continue
-            if isinstance(value, str) and value.strip():
-                out.append(key)
-        return out
 
-    for node in (n for n in flow if isinstance(n, dict)):
+            if isinstance(value, dict) and _looks_like_language_map(value):
+                target_val = _extract_lang_value(value, target=target)
+                if target_val:
+                    if keep_other:
+                        node[key] = _filter_language_map(
+                            value,
+                            kept_languages=kept_languages,
+                            target=target,
+                            target_value=target_val,
+                        )
+                    else:
+                        node[key] = target_val
+                else:
+                    warnings.append(
+                        f"SurveyFlow node Type={node_type} has {key} translations but no {target} value."
+                    )
+                continue
+
+            if isinstance(value, str):
+                lang_block = node.get("Language")
+                if isinstance(lang_block, dict):
+                    target_entry = None
+                    for lang, entry in lang_block.items():
+                        if normalize_language_code(str(lang or "")) == target and isinstance(
+                            entry, dict
+                        ):
+                            target_entry = entry
+                            break
+                    if target_entry and isinstance(target_entry.get(key), str):
+                        node[key] = str(target_entry.get(key) or "")
+                        if keep_other:
+                            keep_set = {
+                                normalize_language_code(lang) for lang in kept_languages
+                            }
+                            filtered: dict[str, Any] = {}
+                            for lang, entry in lang_block.items():
+                                if normalize_language_code(str(lang or "")) in keep_set:
+                                    filtered[lang] = entry
+                            node["Language"] = filtered
+                        else:
+                            node["Language"] = {target: target_entry}
+                    else:
+                        warnings.append(
+                            f"SurveyFlow node Type={node_type} has {key} but no {target} translation."
+                        )
+                elif value.strip():
+                    warnings.append(
+                        f"SurveyFlow node Type={node_type} has {key} text with no translations."
+                    )
+
+    return warnings
+
+
+def warn_if_flow_text_present(qsf: Mapping[str, Any]) -> list[str]:
+    """Best-effort detector for SurveyFlow nodes that may contain participant-visible text."""
+
+    warnings: list[str] = []
+    for node in _iter_flow_nodes(qsf):
         t = str(node.get("Type") or "").strip()
-        if t not in {"EndSurvey", "Authenticator"}:
-            continue
-        fields = _strings_in_node(node)
+        fields: list[str] = []
+        for key in FLOW_TEXT_KEYS:
+            if key not in node:
+                continue
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                fields.append(key)
+            elif isinstance(value, dict) and _looks_like_language_map(value):
+                fields.append(key)
         if fields:
             warnings.append(
-                f"SurveyFlow node Type={t} contains text fields ({', '.join(fields)}); "
-                "Stage 1 slice-language does not rebase these."
+                f"SurveyFlow node Type={t} contains text fields ({', '.join(fields)})."
             )
 
     return warnings
@@ -834,6 +986,7 @@ def slice_qsf_to_language(
     *,
     target_language: str,
     kept_languages: list[str],
+    rebase_flow_text: bool = True,
 ) -> SliceTransformResult:
     """Rebase the QSF so `target_language` becomes the base language.
 
@@ -995,6 +1148,16 @@ def slice_qsf_to_language(
                 else:
                     question.pop("Language", None)
 
+    # Rebase SurveyFlow participant-visible text (best-effort).
+    warnings.extend(
+        rebase_flow_text(
+            qsf,
+            target_language=target,
+            kept_languages=kept,
+            allow_rebase=bool(rebase_flow_text),
+        )
+    )
+
     return SliceTransformResult(
         qsf=qsf,
         base_language_before=base_before,
@@ -1084,6 +1247,30 @@ def write_slice_manifest(
         "qsf_sha256": qsf_sha256,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "qsync_version": qsync_version,
+    }
+    write_json_with_backup(path, payload)
+    return path
+
+
+def write_batch_manifest(
+    root: Path,
+    *,
+    source_survey_id: str,
+    source_survey_name: str,
+    source_base_language: str,
+    slices: Sequence[Mapping[str, Any]],
+    qsync_version: str,
+) -> Path:
+    slices_dir = default_slices_dir(root)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    path = slices_dir / f"batch__{source_survey_id}__{stamp}.json"
+    payload: dict[str, Any] = {
+        "source_survey_id": source_survey_id,
+        "source_survey_name": source_survey_name,
+        "source_base_language": source_base_language,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "qsync_version": qsync_version,
+        "slices": [dict(entry) for entry in slices],
     }
     write_json_with_backup(path, payload)
     return path
