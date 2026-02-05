@@ -1749,6 +1749,237 @@ def handle_pull(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _read_multiline_snippet_interactive(*, prompt: str) -> str:
+    print(prompt)
+    print("(Finish with an empty line; Ctrl-D cancels.)")
+    lines: list[str] = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if line == "":
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _prompt_for_any_survey_id(survey_id: str | None) -> str:
+    if survey_id:
+        return survey_id
+
+    if not sys.stdin.isatty():
+        print("[qsync] ERROR: --survey-id required in non-interactive mode")
+        raise SystemExit(1)
+
+    from .interactive_menu import select_from_list
+    from .survey_inventory import prompt_for_survey_id
+
+    selection = select_from_list(
+        message="Select a survey:",
+        choices=[
+            "✓ Select from inventory",
+            "✎ Enter SurveyID manually",
+            "✗ Cancel",
+        ],
+    )
+    if not selection or "Cancel" in selection:
+        print("[qsync] Operation cancelled.")
+        raise SystemExit(1)
+
+    if "inventory" in selection.lower():
+        picked = prompt_for_survey_id(allow_all_surveys=True, interactive=True)
+        if not picked:
+            print("[qsync] Operation cancelled.")
+            raise SystemExit(1)
+        return picked
+
+    manual = input("Enter Qualtrics SurveyID (e.g. SV_...): ").strip()
+    if not manual:
+        print("[qsync] Operation cancelled.")
+        raise SystemExit(1)
+    return manual
+
+
+def handle_prolific_auth(args: argparse.Namespace) -> None:
+    """Set or append a Prolific authenticity-check snippet in SurveyOptions.Header."""
+    from .qualtrics_client import ensure_backup, refresh_survey_cache
+    from .survey_ref import format_survey_ref
+    from .terminal_output import error, info, success, warn
+    from .interactive_menu import select_from_list
+    from .prolific_auth import (
+        ProlificSnippetValidation,
+        contains_prolific_qualtrics_script,
+        excerpt,
+        merge_header,
+        normalize_html_snippet,
+        redact_prolific_token,
+        validate_prolific_auth_snippet,
+    )
+
+    survey_id = _prompt_for_any_survey_id(args.survey_id)
+
+    base_url, headers = get_client_config()
+    resp = send_api_request(
+        action="qsync.survey.options.fetch",
+        method="GET",
+        base_url=base_url,
+        headers=headers,
+        path=f"survey-definitions/{survey_id}/options",
+        survey_id=survey_id,
+        timeout=30,
+    )
+    options = resp.json().get("result", {}) or {}
+    current_header = options.get("Header") or ""
+
+    if bool(getattr(args, "print_current", False)):
+        print(current_header)
+        return
+
+    # Resolve snippet source: --snippet, --file, stdin pipe, interactive paste.
+    raw_snippet = getattr(args, "snippet", None)
+    snippet_file = getattr(args, "file", None)
+    if raw_snippet is None and snippet_file:
+        raw_snippet = Path(str(snippet_file)).read_text(encoding="utf-8")
+    if raw_snippet is None and not sys.stdin.isatty():
+        raw_snippet = sys.stdin.read()
+    if raw_snippet is None:
+        raw_snippet = _read_multiline_snippet_interactive(
+            prompt=(
+                "[auth] Paste the Prolific authenticity-check HTML snippet to set in SurveyOptions.Header:"
+            )
+        )
+
+    snippet = normalize_html_snippet(raw_snippet or "")
+    if not snippet:
+        error("[qsync:auth]", "ERROR: no snippet provided.")
+        raise SystemExit(1)
+
+    no_validate = bool(getattr(args, "no_validate", False))
+    validation: ProlificSnippetValidation | None = None
+    if not no_validate:
+        validation = validate_prolific_auth_snippet(snippet)
+        for warning_msg in validation.warnings:
+            warn("[qsync:auth]", f"Warning: {warning_msg}")
+        if not validation.ok:
+            for err_msg in validation.errors:
+                error("[qsync:auth]", f"Error: {err_msg}")
+            if sys.stdin.isatty():
+                from .terminal_output import prompt_yes_no
+
+                if not prompt_yes_no(
+                    "Snippet does not look like a Prolific authenticity check. Continue anyway?",
+                    default=False,
+                ):
+                    raise SystemExit(1)
+            else:
+                error(
+                    "[qsync:auth]",
+                    "Non-interactive mode: pass --no-validate to proceed anyway.",
+                )
+                raise SystemExit(1)
+
+    if current_header and snippet in current_header:
+        success("[qsync:auth]", "No-op: snippet is already present in the current header.")
+        return
+
+    has_any_header = bool(str(current_header).strip())
+    has_prolific = contains_prolific_qualtrics_script(current_header)
+    if not has_any_header:
+        recommended_mode = "replace"
+    elif has_prolific:
+        recommended_mode = "replace"
+    else:
+        recommended_mode = "append"
+
+    mode = getattr(args, "mode", None)
+    assume_yes = bool(getattr(args, "yes", False))
+    if mode is None and assume_yes:
+        mode = recommended_mode
+    if mode is None and sys.stdin.isatty():
+        if has_any_header:
+            info(
+                "[qsync:auth]",
+                "Current Header (preview): "
+                + excerpt(redact_prolific_token(current_header), max_chars=240),
+            )
+        choices = []
+        if recommended_mode == "replace":
+            choices.append("Replace current Header (recommended)")
+            if has_any_header:
+                choices.append("Append to current Header")
+            else:
+                choices.append("Append to current Header (same as replace when empty)")
+            choices.append("Cancel")
+        else:
+            choices.append("Append to current Header (recommended)")
+            choices.append("Replace current Header")
+            choices.append("Cancel")
+        selection = select_from_list("How should qsync apply this snippet?", choices)
+        if not selection or selection == "Cancel":
+            info("[qsync:auth]", "Cancelled.")
+            return
+        mode = "append" if selection.startswith("Append") else "replace"
+    if mode is None:
+        error(
+            "[qsync:auth]",
+            "ERROR: non-interactive mode requires --mode {append,replace} (or --yes).",
+        )
+        raise SystemExit(1)
+    if mode not in {"append", "replace"}:
+        error("[qsync:auth]", "ERROR: --mode must be one of: append, replace")
+        raise SystemExit(1)
+
+    new_header = merge_header(current_header, snippet, mode=mode)
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    if dry_run:
+        info("[qsync:auth]", f"DRY RUN for {format_survey_ref(survey_id)}")
+        if has_any_header:
+            info(
+                "[qsync:auth]",
+                "Old Header (preview): "
+                + excerpt(redact_prolific_token(current_header), max_chars=240),
+            )
+        info(
+            "[qsync:auth]",
+            "New Header (preview): " + excerpt(redact_prolific_token(new_header), max_chars=240),
+        )
+        return
+
+    # Safety: ensure a full definition backup exists before mutating options.
+    try:
+        backup_path = ensure_backup(survey_id)
+        info("[qsync:auth]", f"Backup ensured: {backup_path}")
+    except Exception as exc:  # noqa: BLE001
+        warn("[qsync:auth]", f"Warning: could not ensure backup: {exc}")
+
+    options["Header"] = new_header
+    send_api_request(
+        action="qsync.survey.options.write",
+        method="PUT",
+        base_url=base_url,
+        headers=headers,
+        path=f"survey-definitions/{survey_id}/options",
+        survey_id=survey_id,
+        json=options,
+        timeout=30,
+        log_meta={
+            "operation": "set_auth_header",
+            "mode": mode,
+            "had_header": has_any_header,
+            "had_prolific": has_prolific,
+        },
+    )
+    success("[qsync:auth]", f"Updated SurveyOptions.Header for {format_survey_ref(survey_id)}.")
+
+    try:
+        refresh_survey_cache(survey_id)
+        success("[qsync:auth]", "Refreshed local survey cache.")
+    except Exception as exc:  # noqa: BLE001
+        warn("[qsync:auth]", f"Warning: could not refresh local cache: {exc}")
+
+
 def handle_publish(args: argparse.Namespace) -> None:
     """Publish staged survey-definition changes by creating a new published version."""
     from .cli import _prompt_for_survey_id_if_needed
@@ -4723,6 +4954,54 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Skip confirmation prompt",
     )
     p_cleanup.set_defaults(func=handle_cleanup_embedded_data)
+
+    # prolific-auth (Prolific authenticity checks)
+    p_prolific_auth = survey_subs.add_parser(
+        "prolific-auth",
+        help="Set (or append) a Prolific authenticity-check HTML snippet in SurveyOptions.Header",
+    )
+    p_prolific_auth.add_argument(
+        "--survey-id",
+        dest="survey_id",
+        help="Qualtrics survey ID to update (omit to select interactively or enter manually)",
+    )
+    p_prolific_auth.add_argument(
+        "--snippet",
+        dest="snippet",
+        help="HTML snippet to set (useful for scripting; otherwise you'll be prompted to paste)",
+    )
+    p_prolific_auth.add_argument(
+        "--file",
+        dest="file",
+        help="Read the snippet from a file path (UTF-8)",
+    )
+    p_prolific_auth.add_argument(
+        "--mode",
+        choices=["append", "replace"],
+        help="How to apply the snippet when Header already exists (default: prompt; non-interactive requires this or --yes)",
+    )
+    p_prolific_auth.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip prompts and use the recommended mode (replace if Prolific is already present; otherwise append)",
+    )
+    p_prolific_auth.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the change without calling the API",
+    )
+    p_prolific_auth.add_argument(
+        "--print-current",
+        dest="print_current",
+        action="store_true",
+        help="Print the current SurveyOptions.Header and exit",
+    )
+    p_prolific_auth.add_argument(
+        "--no-validate",
+        action="store_true",
+        help="Skip Prolific-specific snippet validation checks",
+    )
+    p_prolific_auth.set_defaults(func=handle_prolific_auth)
 
     # publish
     p_publish = survey_subs.add_parser(

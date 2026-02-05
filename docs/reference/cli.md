@@ -413,11 +413,11 @@ JSON to stdout and exit non-zero. The payload includes:
 
 ```text
 usage: qsync survey [-h]
-                    {label,focal,list,copy,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,pull,cleanup-embedded-data,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,translations,master}
+                    {label,focal,list,copy,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
                     ...
 
 positional arguments:
-  {label,focal,list,copy,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,pull,cleanup-embedded-data,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,translations,master}
+  {label,focal,list,copy,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
     label               Print '<SurveyID> - <Name>' using
                         surveys/inventory.csv (legacy:
                         surveys/qualtrics_surveys.csv)
@@ -440,6 +440,9 @@ positional arguments:
     cleanup-embedded-data
                         Remove duplicate embedded data placeholder rows in
                         SurveyFlow
+    prolific-auth
+                        Set (or append) a Prolific authenticity-check HTML
+                        snippet in SurveyOptions.Header
     publish             Publish staged survey-definition changes (create a
                         published version)
     activate            Activate a survey (set isActive=true)
@@ -498,6 +501,33 @@ options:
                         Qualtrics survey ID to download (omit to select
                         interactively)
   --dest DEST           Destination directory (default: surveys/)
+```
+
+## `qsync survey prolific-auth`
+
+```text
+usage: qsync survey prolific-auth [-h] [--survey-id SURVEY_ID]
+                                  [--snippet SNIPPET] [--file FILE]
+                                  [--mode {append,replace}] [--yes] [--dry-run]
+                                  [--print-current] [--no-validate]
+
+options:
+  -h, --help            show this help message and exit
+  --survey-id SURVEY_ID
+                        Qualtrics survey ID to update (omit to select
+                        interactively or enter manually)
+  --snippet SNIPPET     HTML snippet to set (useful for scripting; otherwise
+                        you'll be prompted to paste)
+  --file FILE           Read the snippet from a file path (UTF-8)
+  --mode {append,replace}
+                        How to apply the snippet when Header already exists
+                        (default: prompt; non-interactive requires this or
+                        --yes)
+  --yes                 Skip prompts and use the recommended mode (replace if
+                        Prolific is already present; otherwise append)
+  --dry-run             Preview the change without calling the API
+  --print-current       Print the current SurveyOptions.Header and exit
+  --no-validate         Skip Prolific-specific snippet validation checks
 ```
 
 ## `qsync survey copy`
