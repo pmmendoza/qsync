@@ -408,6 +408,7 @@ def compose_inventory_record(
     payload: Dict[str, Any] | None = None,
     flow_payload: Dict[str, Any] | None = None,
     include_counts: bool = True,
+    flow_routing_warnings: Dict[str, List[Tuple[str, str | None]]] | None = None,
 ) -> dict:
     """Compose a full inventory record, preserving existing metadata."""
     survey_id = summary.get("id")
@@ -431,20 +432,48 @@ def compose_inventory_record(
             legacy_cntry = _extract_embedded_field_value(flow_payload, "surveylang")
             if legacy_cntry:
                 record["cntry"] = legacy_cntry
-                print(
-                    f"[inventory] NOTE: Survey {survey_id} uses legacy surveylang for cntry; please migrate to country."
-                )
+                if flow_routing_warnings is not None and survey_id:
+                    flow_routing_warnings.setdefault("legacy_surveylang", []).append(
+                        (survey_id, summary.get("name") or detail.get("name"))
+                    )
             else:
-                print(
-                    f"[inventory] WARNING: Survey {survey_id} missing country/surveylang embedded field; leaving cntry unchanged. "
-                    "Next: add an EmbeddedData field named 'country' (preferred) and re-run inventory."
-                )
+                if flow_routing_warnings is not None and survey_id:
+                    flow_routing_warnings.setdefault("missing_country", []).append(
+                        (survey_id, summary.get("name") or detail.get("name"))
+                    )
 
     if payload is not None and include_counts:
         counts = payload.get("responseCounts") or {}
         record["preview_count"] = _parse_int(counts.get("generated"))
         record["response_count"] = _parse_int(counts.get("auditable"))
     return record
+
+
+def _format_inventory_warning_examples(
+    examples: List[Tuple[str, str | None]],
+    *,
+    max_examples: int = 5,
+) -> str:
+    """Format a short "Affected: ..." list for inventory warning summaries."""
+    if not examples:
+        return ""
+
+    def format_ref(entry: Tuple[str, str | None]) -> str:
+        survey_id, name = entry
+        name = (name or "").strip()
+        if not name:
+            return survey_id
+        return f"{name} ({survey_id})"
+
+    sorted_examples = sorted(
+        examples, key=lambda entry: ((entry[1] or "").lower(), entry[0])
+    )
+    shown = sorted_examples[:max_examples]
+    remaining = len(sorted_examples) - len(shown)
+    label = ", ".join(format_ref(entry) for entry in shown)
+    if remaining > 0:
+        label = f"{label}, … (+{remaining} more)"
+    return label
 
 
 def persist_surveys(surveys: Iterable[dict], *, current_user_id: str | None) -> Path:
@@ -585,6 +614,7 @@ def refresh_inventory(
         Tuple of (all inventory records, changed records)
     """
     warnings: list[str] = []
+    flow_routing_warnings: Dict[str, List[Tuple[str, str | None]]] = {}
 
     from .rich_support import should_use_rich, track_iterable, rich_status
 
@@ -654,6 +684,7 @@ def refresh_inventory(
                 existing_locks=existing_locks,
                 payload=payload,
                 flow_payload=flow_payload,
+                flow_routing_warnings=flow_routing_warnings,
             )
             inventory_map[survey_id] = record
         inventory = list(inventory_map.values())
@@ -690,6 +721,7 @@ def refresh_inventory(
                 payload=payload,
                 flow_payload=flow_payload,
                 include_counts=False,
+                flow_routing_warnings=flow_routing_warnings,
             )
             inventory.append(record)
         if counts_scope in {"focal", "full"}:
@@ -725,6 +757,31 @@ def refresh_inventory(
                     continue
                 record["preview_count"] = _parse_int(counts.get("generated"))
                 record["response_count"] = _parse_int(counts.get("auditable"))
+
+    if flow_routing_warnings:
+        legacy = flow_routing_warnings.get("legacy_surveylang") or []
+        missing = flow_routing_warnings.get("missing_country") or []
+
+        if legacy:
+            examples = _format_inventory_warning_examples(legacy)
+            msg = f"[inventory] NOTE: {len(legacy)} survey(s) use legacy surveylang for cntry; please migrate to country."
+            if examples:
+                msg = f"{msg} Affected: {examples}"
+            warnings.append(msg)
+            if not quiet:
+                print(msg)
+
+        if missing:
+            examples = _format_inventory_warning_examples(missing)
+            msg = (
+                f"[inventory] WARNING: {len(missing)} survey(s) missing country/surveylang embedded field; leaving cntry unchanged. "
+                "Next: add an EmbeddedData field named 'country' (preferred) and re-run inventory."
+            )
+            if examples:
+                msg = f"{msg} Affected: {examples}"
+            warnings.append(msg)
+            if not quiet:
+                print(msg)
 
     changed_records = determine_changed_records(inventory, previous_records)
 
