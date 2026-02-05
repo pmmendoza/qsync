@@ -103,6 +103,11 @@ def _format_edf_guidance(health, survey_id: str, has_local_edits: bool) -> str:
         "Embedded_Data worksheet is inconsistent with the cached survey "
         f"({issue_summary}). {action_summary}."
     )
+    message += (
+        " `qsync items repair-edf` only updates the Embedded_Data sheet "
+        "(question text and non-empty translation cells are preserved)."
+    )
+    message += " Repair uses local cache by default; pass `--refresh-cache` to fetch live survey data first."
     if has_local_edits:
         message += (
             " Local edits detected (items/translations). "
@@ -115,7 +120,9 @@ def _row_key(row: excel_io.EmbeddedDataRow) -> tuple[str, str]:
     return (str(row.flow_id or "").strip(), str(row.field or "").strip())
 
 
-def _row_signature(row: excel_io.EmbeddedDataRow) -> tuple[str, str, int, str, str, str]:
+def _row_signature(
+    row: excel_io.EmbeddedDataRow,
+) -> tuple[str, str, int, str, str, str]:
     return (
         str(row.flow_id or "").strip(),
         str(row.field or "").strip(),
@@ -212,7 +219,9 @@ def repair_workbook(
     expected_rows = excel_io.build_embedded_data_rows(survey_id, survey_payload)
     expected_keys = {_row_key(row) for row in expected_rows}
     before_extra_keys = {
-        key for key in {_row_key(row) for row in before_rows} if key not in expected_keys
+        key
+        for key in {_row_key(row) for row in before_rows}
+        if key not in expected_keys
     }
 
     temp_path: Optional[Path] = None
@@ -266,7 +275,9 @@ def repair_workbook(
             try:
                 temp_path.unlink()
             except OSError:
-                logger.warning(f"[qsync:edf] Failed to clean up temp workbook {temp_path}")
+                logger.warning(
+                    f"[qsync:edf] Failed to clean up temp workbook {temp_path}"
+                )
 
 
 def _has_local_edits(survey_id: str) -> bool:
@@ -306,8 +317,11 @@ def detect_unstaged_changes(survey_id: str) -> DimensionChanges:
                 change_summary="No changes",
                 affected_qids=set(),
                 warning_detail=_format_edf_guidance(
-                    health, survey_id=survey_id, has_local_edits=_has_local_edits(survey_id)
+                    health,
+                    survey_id=survey_id,
+                    has_local_edits=_has_local_edits(survey_id),
                 ),
+                safe_to_autofix=True,
                 status_kind="none",
                 edit_count=0,
             )

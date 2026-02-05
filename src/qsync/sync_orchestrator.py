@@ -42,7 +42,9 @@ _EMBEDDED_FIELD_TOKEN_RE = re.compile(r"\$\{e://Field/([^}]+)\}")
 _ISSUE_KEYS_SEEN: set[str] = set()
 
 
-def _filter_new_issue_lines(issues: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+def _filter_new_issue_lines(
+    issues: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
     fresh: list[tuple[str, str, str]] = []
     for survey_label, dim, detail in issues:
         key = f"{survey_label}::{dim}::{detail}"
@@ -109,6 +111,13 @@ def _autofix_command(dimension: str, survey_id: str) -> Optional[str]:
     if dimension == "eos":
         return f"qsync eos pull --survey-id {survey_id}"
     return None
+
+
+def _fixable_detail(info: DimensionChanges) -> Optional[str]:
+    """Return the actionable issue detail when a dimension can be auto-fixed."""
+    if not info.safe_to_autofix:
+        return None
+    return info.error_detail or info.warning_detail
 
 
 def _run_autofix(dimension: str, survey_id: str) -> str:
@@ -682,9 +691,7 @@ def display_change_detection_table(
             if dim_changes.error_detail:
                 errors.append((survey_label, dim_name, dim_changes.error_detail))
             if dim_changes.warning_detail:
-                warnings.append(
-                    (survey_label, dim_name, dim_changes.warning_detail)
-                )
+                warnings.append((survey_label, dim_name, dim_changes.warning_detail))
     errors = list(dict.fromkeys(errors))
     warnings = list(dict.fromkeys(warnings))
 
@@ -1814,6 +1821,7 @@ def _detect_unstaged_changes(
 
 
 def _display_survey_overview(
+    survey_id: str,
     survey_ref: str,
     *,
     staged: Dict[str, str],
@@ -1888,14 +1896,32 @@ def _display_survey_overview(
             print(f"  {Colors.DIM}•{Colors.RESET} {dim}: {detail}")
 
     print(f"\n{Colors.BOLD}Next actions:{Colors.RESET}")
+    sync_actions: list[str] = []
+    repair_actions: list[str] = []
+
     if has_pending:
-        print("  • Preview drift (live vs cache) / staged (pending vs cache)")
-        print("  • Push staged changes now")
-        print("  • Discard staged changes (clear pending + refresh cache)")
+        sync_actions.append("Preview drift (live vs cache) / staged (pending vs cache)")
+        sync_actions.append("Push staged changes now")
+        sync_actions.append("Discard staged changes (clear pending + refresh cache)")
     if any(info.has_changes for info in unstaged.values()):
-        print("  • Sync dimensions (preview → stage → push)")
-        print("  • QID-mode (items/js/translations + global EDF status)")
-    if not has_pending and not any(info.has_changes for info in unstaged.values()):
+        sync_actions.append("Sync dimensions (preview → stage → push)")
+        sync_actions.append("QID-mode (items/js/translations + global EDF status)")
+
+    edf_info = unstaged.get("edf")
+    if edf_info and (edf_info.warning_detail or edf_info.error_detail):
+        cmd = _autofix_command("edf", survey_id)
+        if cmd:
+            repair_actions.append(f"Repair workbook issues only (no API writes): {cmd}")
+
+    if sync_actions:
+        print(f"  {Colors.BOLD}Sync:{Colors.RESET}")
+        for action in sync_actions:
+            print(f"    • {action}")
+    if repair_actions:
+        print(f"  {Colors.BOLD}Repair:{Colors.RESET}")
+        for action in repair_actions:
+            print(f"    • {action}")
+    if not sync_actions and not repair_actions:
         print("  • No pending or unstaged changes detected")
 
 
@@ -2026,7 +2052,8 @@ def _preview_staged_changes(
                 continue
             cached_payload = (
                 cached_root.get("result")
-                if isinstance(cached_root, dict) and isinstance(cached_root.get("result"), dict)
+                if isinstance(cached_root, dict)
+                and isinstance(cached_root.get("result"), dict)
                 else cached_root
             )
             questions = (
@@ -2088,7 +2115,9 @@ def _preview_staged_changes(
                     continue
 
                 question_js = (
-                    question.get("QuestionJS") or question.get("QuestionJSContent") or ""
+                    question.get("QuestionJS")
+                    or question.get("QuestionJSContent")
+                    or ""
                 ).strip()
                 if not question_js:
                     rows.append(
@@ -2351,7 +2380,8 @@ def _resolve_staged_changes_interactive(
             force_live_retry_dims = [
                 dim
                 for dim in safe_order
-                if dim in pending and _requires_force_live_retry(dimension_results.get(dim))
+                if dim in pending
+                and _requires_force_live_retry(dimension_results.get(dim))
             ]
             if force_live_retry_dims and not force_live:
                 retry_label = ", ".join(force_live_retry_dims)
@@ -2663,6 +2693,36 @@ def _sync_dimensions_once(
     safe_order = ["items", "edf", "js", "translations", "eos"]
     dimensions_sorted = [d for d in safe_order if d in dimensions]
 
+    edf_info = changes.dimensions.get("edf")
+    edf_unhealthy = bool(
+        edf_info and (edf_info.warning_detail or edf_info.error_detail)
+    )
+    if "items" in dimensions_sorted and edf_unhealthy:
+        if (auto_yes or not interactive) and not allow_skip_embedded:
+            print(
+                f"[sync:items] {Colors.RED}✗{Colors.RESET} Embedded_Data is unhealthy. "
+                "Non-interactive sync requires --allow-skip-embedded to proceed with items while skipping embedded defaults."
+            )
+            repair_cmd = _autofix_command("edf", survey_id)
+            if repair_cmd:
+                print(f"[sync:items] Repair first: {repair_cmd}")
+            return None
+        if interactive and not auto_yes:
+            from .interactive_menu import confirm
+
+            print(
+                f"{Colors.YELLOW}⚠{Colors.RESET} Embedded_Data is unhealthy; items sync will skip embedded defaults."
+            )
+            repair_cmd = _autofix_command("edf", survey_id)
+            if repair_cmd:
+                print(f"{Colors.DIM}Repair command:{Colors.RESET} {repair_cmd}")
+            if not confirm(
+                message="Continue with items-only (skip embedded defaults)?",
+                default=False,
+            ):
+                print(f"{Colors.DIM}Sync cancelled by user.{Colors.RESET}")
+                return None
+
     # Items is intentionally non-embedded in orchestrated sync (EDF is separate).
     skip_embedded = True
 
@@ -2696,9 +2756,7 @@ def _sync_dimensions_once(
                     if interactive and not auto_yes:
                         from .interactive_menu import confirm
 
-                        if not confirm(
-                            message="Proceed anyway?", default=False
-                        ):
+                        if not confirm(message="Proceed anyway?", default=False):
                             print(f"{Colors.DIM}Sync cancelled by user.{Colors.RESET}")
                             return None
             except Exception:
@@ -3023,13 +3081,14 @@ def sync_survey(
         fixable_errors = [
             (dim, info)
             for dim, info in changes.dimensions.items()
-            if info.safe_to_autofix and info.error_detail
+            if _fixable_detail(info)
         ]
 
         if fixable_errors:
             print(f"\n{Colors.YELLOW}⚠ Fixable Issues Detected{Colors.RESET}")
             for dim, info in fixable_errors:
-                print(f"  • {Colors.BOLD}{dim}{Colors.RESET}: {info.error_detail}")
+                detail = _fixable_detail(info) or "Issue requires repair."
+                print(f"  • {Colors.BOLD}{dim}{Colors.RESET}: {detail}")
 
             ordered = ["items", "edf", "translations", "eos", "js"]
             fixable_errors.sort(
@@ -3168,6 +3227,7 @@ def sync_survey(
         }
 
         _display_survey_overview(
+            survey_id,
             survey_ref,
             staged=staged_summary,
             unstaged=unstaged,
@@ -3638,9 +3698,7 @@ def sync_focal_surveys(
         c
         for c in all_changes
         if not c.has_any_changes
-        and any(
-            dim.safe_to_autofix and dim.error_detail for dim in c.dimensions.values()
-        )
+        and any(_fixable_detail(dim) for dim in c.dimensions.values())
     ]
 
     surveys_with_issues = [
@@ -3722,7 +3780,7 @@ def sync_focal_surveys(
         surveys_with_fixable_only = [
             c
             for c in surveys_to_process
-            if any(d.safe_to_autofix and d.error_detail for d in c.dimensions.values())
+            if any(_fixable_detail(d) for d in c.dimensions.values())
         ]
 
         if surveys_with_fixable_only:
@@ -3731,9 +3789,9 @@ def sync_focal_surveys(
 
             for changes in surveys_with_fixable_only:
                 fixable_dims = [
-                    (dim, info.error_detail)
+                    (dim, detail)
                     for dim, info in changes.dimensions.items()
-                    if info.safe_to_autofix and info.error_detail
+                    if (detail := _fixable_detail(info))
                 ]
                 # Create compact error description
                 error_desc = "; ".join(
@@ -3747,9 +3805,7 @@ def sync_focal_surveys(
             for c in surveys_to_process
             if (not c.has_any_changes)
             and c.has_any_issues
-            and not any(
-                d.safe_to_autofix and d.error_detail for d in c.dimensions.values()
-            )
+            and not any(_fixable_detail(d) for d in c.dimensions.values())
         ]
         if surveys_with_issues_only:
             choices.append("─" * 60)
@@ -3800,9 +3856,9 @@ def sync_focal_surveys(
 
                 # Check for fix option
                 fixable_dims = [
-                    (dim, info.error_detail)
+                    (dim, detail)
                     for dim, info in changes.dimensions.items()
-                    if info.safe_to_autofix and info.error_detail
+                    if (detail := _fixable_detail(info))
                 ]
                 if fixable_dims:
                     error_desc = "; ".join(
@@ -3822,7 +3878,9 @@ def sync_focal_surveys(
                     if info.error_detail or info.warning_detail
                 ]
                 if issue_dims:
-                    issues_choice = f"issues {changes.survey_name} ({', '.join(issue_dims)})"
+                    issues_choice = (
+                        f"issues {changes.survey_name} ({', '.join(issue_dims)})"
+                    )
                     if issues_choice == selection:
                         selected = [changes]
                         is_issue_operation = True
@@ -3846,14 +3904,15 @@ def sync_focal_surveys(
                 fixable_errors = [
                     (dim, info)
                     for dim, info in changes.dimensions.items()
-                    if info.safe_to_autofix and info.error_detail
+                    if _fixable_detail(info)
                 ]
 
                 print(
                     f"\n{Colors.YELLOW}⚠ Fixable Issues Detected for {survey_ref}{Colors.RESET}"
                 )
                 for dim, info in fixable_errors:
-                    print(f"  • {Colors.BOLD}{dim}{Colors.RESET}: {info.error_detail}")
+                    detail = _fixable_detail(info) or "Issue requires repair."
+                    print(f"  • {Colors.BOLD}{dim}{Colors.RESET}: {detail}")
 
                 ordered = ["items", "edf", "translations", "eos", "js"]
                 fixable_errors.sort(
@@ -4166,7 +4225,9 @@ def display_dimension_preview(
 
             health = check_embedded_data_health(survey_id, cache.payload, xlsx_path)
             if not health.is_valid:
-                warning = format_embedded_data_health_warning(health, survey_id=survey_id)
+                warning = format_embedded_data_health_warning(
+                    health, survey_id=survey_id
+                )
                 print(f"{Colors.YELLOW}⚠ {warning}{Colors.RESET}")
                 return True
 

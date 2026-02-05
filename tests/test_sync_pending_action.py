@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import call, patch
 
+from qsync.dimensions.types import DimensionChanges
 from qsync.pending_stage import (
     EosPendingPayload,
     ItemsPendingPayload,
@@ -17,6 +18,28 @@ class TestSyncPendingAction(unittest.TestCase):
     @staticmethod
     def _record(payload):
         return SimpleNamespace(payload=payload)
+
+    @staticmethod
+    def _changes_with_edf_warning() -> SimpleNamespace:
+        return SimpleNamespace(
+            survey_name="Test Survey",
+            dimensions={
+                "items": DimensionChanges("items", False, "No changes", set()),
+                "edf": DimensionChanges(
+                    "edf",
+                    False,
+                    "No changes",
+                    set(),
+                    warning_detail="Embedded_Data worksheet is inconsistent.",
+                    safe_to_autofix=True,
+                ),
+                "js": DimensionChanges("js", False, "No changes", set()),
+                "translations": DimensionChanges(
+                    "translations", False, "No changes", set()
+                ),
+                "eos": DimensionChanges("eos", False, "No changes", set()),
+            },
+        )
 
     def test_pending_action_push_calls_sync_with_prefer_pending(self):
         import qsync.sync_orchestrator as orchestrator
@@ -250,7 +273,9 @@ class TestSyncPendingAction(unittest.TestCase):
             ),
             patch("qsync.interactive_menu.confirm", return_value=True) as mock_confirm,
             patch.object(
-                orchestrator, "_get_inventory_cached", return_value={"name": "Test Survey"}
+                orchestrator,
+                "_get_inventory_cached",
+                return_value={"name": "Test Survey"},
             ),
             patch.object(orchestrator, "_display_push_report"),
             patch.object(orchestrator, "_orchestrated_publish"),
@@ -300,6 +325,92 @@ class TestSyncPendingAction(unittest.TestCase):
             ),
         )
         mock_confirm.assert_called_once()
+
+    def test_sync_dimensions_once_blocks_noninteractive_items_without_allow_skip_embedded(
+        self,
+    ):
+        import qsync.sync_orchestrator as orchestrator
+
+        changes = self._changes_with_edf_warning()
+        buf = io.StringIO()
+        with (
+            redirect_stdout(buf),
+            patch.object(orchestrator, "detect_survey_changes", return_value=changes),
+            patch.object(orchestrator, "detect_conflicts", return_value=[]),
+            patch.object(orchestrator, "sync_dimension") as mock_sync_dimension,
+        ):
+            summary = orchestrator._sync_dimensions_once(
+                survey_id="SV_TEST",
+                dimensions=["items"],
+                interactive=False,
+                force_live=False,
+                force_preview=False,
+                auto_yes=True,
+                allow_drift=False,
+                skip_publish=True,
+                scope=None,
+                per_dimension=False,
+                allow_skip_embedded=False,
+            )
+
+        self.assertIsNone(summary)
+        self.assertFalse(mock_sync_dimension.called)
+        output = buf.getvalue()
+        self.assertIn("--allow-skip-embedded", output)
+
+    def test_sync_dimensions_once_allows_noninteractive_items_with_allow_skip_embedded(
+        self,
+    ):
+        import qsync.sync_orchestrator as orchestrator
+
+        changes = self._changes_with_edf_warning()
+        sync_result = orchestrator.DimensionSyncResult(
+            dimension="items",
+            success=True,
+            applied_changes=False,
+        )
+
+        with (
+            patch.object(orchestrator, "detect_survey_changes", return_value=changes),
+            patch.object(orchestrator, "detect_conflicts", return_value=[]),
+            patch.object(orchestrator, "_display_push_report"),
+            patch.object(orchestrator, "_orchestrated_publish"),
+            patch.object(orchestrator, "_get_inventory_cached", return_value={}),
+            patch.object(
+                orchestrator, "sync_dimension", return_value=sync_result
+            ) as mock_sync_dimension,
+        ):
+            summary = orchestrator._sync_dimensions_once(
+                survey_id="SV_TEST",
+                dimensions=["items"],
+                interactive=False,
+                force_live=False,
+                force_preview=False,
+                auto_yes=True,
+                allow_drift=False,
+                skip_publish=True,
+                scope=None,
+                per_dimension=False,
+                allow_skip_embedded=True,
+            )
+
+        self.assertIsNotNone(summary)
+        mock_sync_dimension.assert_called_once()
+        self.assertEqual(mock_sync_dimension.call_args.kwargs["ignore_embedded"], True)
+
+    def test_fixable_detail_uses_warning_for_autofixable_warnings(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        info = DimensionChanges(
+            dimension="edf",
+            has_changes=False,
+            change_summary="No changes",
+            affected_qids=set(),
+            warning_detail="repair suggested",
+            safe_to_autofix=True,
+        )
+
+        self.assertEqual(orchestrator._fixable_detail(info), "repair suggested")
 
 
 if __name__ == "__main__":
