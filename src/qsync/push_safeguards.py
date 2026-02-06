@@ -25,7 +25,7 @@ from qsync.survey_lock import (
 )
 from qsync.survey_ref import format_survey_ref
 
-DimensionType = Literal["items", "edf", "js", "translations", "eos"]
+DimensionType = Literal["items", "edf", "js", "translations", "eos", "flow"]
 
 
 @dataclass
@@ -162,9 +162,11 @@ def _dimension_preview_prompt(dimension: DimensionType) -> str:
     """Get dimension-specific confirmation prompt for preview responses."""
     prompts = {
         "items": "Push item wording anyway?",
+        "edf": "Push embedded data changes anyway?",
         "js": "Continue with JS push?",
         "translations": "Continue with translation push?",
         "eos": "Continue with EOS message push?",
+        "flow": "Continue with flow push?",
     }
     return prompts.get(dimension, "Continue with push?")
 

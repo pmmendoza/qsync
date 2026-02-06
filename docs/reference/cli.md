@@ -8,13 +8,13 @@ For the most up-to-date view, run `qsync --help` and `qsync <command> --help`.
 ```text
 usage: qsync [-h] [--root ROOT] [--env-path ENV_PATH]
              [--color {auto,always,never}] [--allow-locked]
-             {doctor,compare,init,preview,apply,push,items,sync,export,survey,logs,js,eos,translations}
+             {doctor,compare,init,preview,apply,push,items,sync,export,survey,logs,js,eos,flow,translations}
              ...
 
 Qualtrics sync and survey management for Qualtrics surveys
 
 positional arguments:
-  {doctor,compare,init,preview,apply,push,items,sync,export,survey,logs,js,eos,translations}
+  {doctor,compare,init,preview,apply,push,items,sync,export,survey,logs,js,eos,flow,translations}
     doctor              Print resolved workspace/config paths for debugging
     compare             Compare two surveys (items + JS + metadata) using
                         cached or refreshed definitions.
@@ -35,6 +35,7 @@ positional arguments:
     logs                View and analyze operation logs
     js                  Manage Qualtrics QuestionJS via the mapping CSV
     eos                 Manage Qualtrics EndSurvey (EOS) library messages
+    flow                Manage survey flow (branching logic, block ordering, routing)
     translations        Manage survey translations
 
 options:
@@ -484,7 +485,10 @@ options:
 ## `qsync survey list`
 
 ```text
-usage: qsync survey list [-h]
+usage: qsync survey list [-h] [name_pattern]
+
+positional arguments:
+  name_pattern  Optional regex to match survey names (case-insensitive)
 
 options:
   -h, --help  show this help message and exit
@@ -1183,6 +1187,85 @@ options:
                         Also scan surveys/backups when detecting shared
                         message usage (local-only).
   --yes                 Skip interactive confirmations (required for push).
+```
+
+## `qsync flow`
+
+```text
+usage: qsync flow [-h] {pull,preview,stage,push} ...
+
+positional arguments:
+  {pull,preview,stage,push}
+    pull                Pull survey flow from Qualtrics and save as YAML
+    preview             Preview differences between local flow YAML and cached
+                        baseline
+    stage               Stage flow changes into pending cache (no API writes)
+    push                Push staged flow changes to Qualtrics
+
+options:
+  -h, --help            show this help message and exit
+```
+
+## `qsync flow pull`
+
+```text
+usage: qsync flow pull [-h] [--survey-id SURVEY_ID] [--yes] [--force]
+
+options:
+  -h, --help            show this help message and exit
+  --survey-id SURVEY_ID
+                        Target survey ID (omit to select interactively)
+  --yes                 Skip interactive confirmations.
+  --force               Overwrite existing YAML even if it has local changes
+```
+
+## `qsync flow preview`
+
+```text
+usage: qsync flow preview [-h] [--survey-id SURVEY_ID] [--yes] [--verbose]
+                          [--visual] [--allow-drift]
+
+options:
+  -h, --help            show this help message and exit
+  --survey-id SURVEY_ID
+                        Target survey ID (omit to select interactively)
+  --yes                 Skip interactive confirmations.
+  --verbose             Include detailed diff output with old/new values
+  --visual              Generate Mermaid diagrams for visual diff
+                        (placeholder)
+  --allow-drift         Allow preview against a drifted baseline without
+                        prompting
+```
+
+## `qsync flow stage`
+
+```text
+usage: qsync flow stage [-h] [--survey-id SURVEY_ID] [--yes] [--allow-drift]
+
+options:
+  -h, --help            show this help message and exit
+  --survey-id SURVEY_ID
+                        Target survey ID (omit to select interactively)
+  --yes                 Skip interactive confirmations.
+  --allow-drift         Allow staging even if remote has drifted
+```
+
+## `qsync flow push`
+
+```text
+usage: qsync flow push [-h] [--survey-id SURVEY_ID] [--yes] [--force-live]
+                       [--force-preview] [--allow-drift] [--no-publish]
+
+options:
+  -h, --help            show this help message and exit
+  --survey-id SURVEY_ID
+                        Target survey ID (omit to select interactively)
+  --yes                 Skip interactive confirmations.
+  --force-live          Allow pushes even if finished responses exist
+  --force-preview       Force push to preview database even with responses
+  --allow-drift         Proceed even if flow baseline differs from the live
+                        API
+  --no-publish          Skip publishing the survey after pushing flow updates
 ```
 
 ## `qsync translations`

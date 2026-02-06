@@ -2161,6 +2161,94 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Skip publishing the survey after rewriting SurveyFlow.",
     )
 
+    # flow command group
+    p_flow = subparsers.add_parser(
+        "flow",
+        help="Manage survey flow (branching logic, block ordering, routing)",
+    )
+    flow_subparsers = p_flow.add_subparsers(dest="flow_command", required=True)
+
+    def _add_flow_common_args(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--survey-id",
+            dest="survey_id",
+            help="Target survey ID (omit to select interactively)",
+        )
+        parser.add_argument(
+            "--yes",
+            action="store_true",
+            help="Skip interactive confirmations.",
+        )
+
+    p_flow_pull = flow_subparsers.add_parser(
+        "pull",
+        help="Pull survey flow from Qualtrics and save as YAML",
+    )
+    _add_flow_common_args(p_flow_pull)
+    p_flow_pull.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing YAML even if it has local changes",
+    )
+
+    p_flow_preview = flow_subparsers.add_parser(
+        "preview",
+        help="Preview differences between local flow YAML and cached baseline",
+    )
+    _add_flow_common_args(p_flow_preview)
+    p_flow_preview.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Include detailed diff output with old/new values",
+    )
+    p_flow_preview.add_argument(
+        "--visual",
+        action="store_true",
+        help="Generate Mermaid diagrams for visual diff (placeholder)",
+    )
+    p_flow_preview.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="Allow preview against a drifted baseline without prompting",
+    )
+
+    p_flow_stage = flow_subparsers.add_parser(
+        "stage",
+        help="Stage flow changes into pending cache (no API writes)",
+    )
+    _add_flow_common_args(p_flow_stage)
+    p_flow_stage.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="Allow staging even if remote has drifted",
+    )
+
+    p_flow_push = flow_subparsers.add_parser(
+        "push",
+        help="Push staged flow changes to Qualtrics",
+    )
+    _add_flow_common_args(p_flow_push)
+    p_flow_push.add_argument(
+        "--force-live",
+        action="store_true",
+        help="Allow pushes even if finished responses exist",
+    )
+    p_flow_push.add_argument(
+        "--force-preview",
+        action="store_true",
+        help="Force push to preview database even with responses",
+    )
+    p_flow_push.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="Proceed even if flow baseline differs from the live API",
+    )
+    p_flow_push.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip publishing the survey after pushing flow updates",
+    )
+
     # translations command group
     p_translations = subparsers.add_parser(
         "translations",
@@ -3242,6 +3330,112 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             error("[qsync:eos]", f"Unknown eos command: {args.eos_command}")
             raise SystemExit(2)
 
+        if args.command == "flow":
+            from .terminal_output import error, header, info, success, warn
+            from .dimensions import flow as flow_dimension
+            from .drift_check import confirm_preview_drift
+            from .qualtrics_client import refresh_survey_cache
+
+            survey_id = _prompt_for_survey_id_if_needed(
+                getattr(args, "survey_id", None),
+                allow_all_surveys=False,
+            )
+            if not survey_id:
+                error("[qsync:flow]", "Missing --survey-id")
+                raise SystemExit(2)
+
+            yes = bool(getattr(args, "yes", False))
+            interactive = sys.stdin.isatty() and not yes
+
+            if args.flow_command == "pull":
+                header("[qsync:flow]", "Pulling survey flow...")
+                try:
+                    yaml_path = flow_dimension.pull(
+                        survey_id,
+                        force=bool(getattr(args, "force", False)),
+                    )
+                except FileExistsError as exc:
+                    warn("[qsync:flow]", str(exc))
+                    raise SystemExit(1)
+                except Exception as exc:
+                    error("[qsync:flow]", f"ERROR: {exc}")
+                    raise SystemExit(2)
+                success("[qsync:flow]", f"Pulled flow to {yaml_path}")
+                return
+
+            if args.flow_command == "preview":
+                header("[qsync:flow]", "Previewing flow changes...")
+
+                def _update_cache() -> None:
+                    refresh_survey_cache(survey_id)
+                    flow_dimension.pull(survey_id, force=True)
+                    info("[qsync:flow]", "Refreshed flow baseline from API.")
+
+                try:
+                    confirm_preview_drift(
+                        survey_id=survey_id,
+                        dimension="flow",
+                        allow_drift=bool(getattr(args, "allow_drift", False)),
+                        interactive=sys.stdin.isatty(),
+                        update_cache=_update_cache,
+                    )
+                    changes = flow_dimension.preview(
+                        survey_id,
+                        verbose=bool(getattr(args, "verbose", False)),
+                        visual=bool(getattr(args, "visual", False)),
+                    )
+                except Exception as exc:
+                    error("[qsync:flow]", f"ERROR: {exc}")
+                    raise SystemExit(2)
+                if not changes:
+                    info("[qsync:flow]", "No changes to preview")
+                return
+
+            if args.flow_command == "stage":
+                header("[qsync:flow]", "Staging flow changes...")
+                try:
+                    staged = flow_dimension.stage(
+                        survey_id,
+                        allow_drift=bool(getattr(args, "allow_drift", False)),
+                        interactive=interactive,
+                    )
+                except SystemExit:
+                    raise
+                except Exception as exc:
+                    error("[qsync:flow]", f"ERROR: {exc}")
+                    raise SystemExit(2)
+                if staged:
+                    success("[qsync:flow]", "Flow changes staged successfully")
+                    return
+                warn("[qsync:flow]", "Staging failed or no changes to stage")
+                raise SystemExit(1)
+
+            if args.flow_command == "push":
+                header("[qsync:flow]", "Pushing staged flow changes...")
+                try:
+                    pushed = flow_dimension.push(
+                        survey_id,
+                        interactive=interactive,
+                        force_live=bool(getattr(args, "force_live", False)),
+                        force_preview=bool(getattr(args, "force_preview", False)),
+                        auto_yes=yes,
+                        allow_drift=bool(getattr(args, "allow_drift", False)),
+                        skip_publish=bool(getattr(args, "no_publish", False)),
+                    )
+                except SystemExit:
+                    raise
+                except Exception as exc:
+                    error("[qsync:flow]", f"ERROR: {exc}")
+                    raise SystemExit(2)
+                if pushed:
+                    success("[qsync:flow]", "Flow pushed successfully")
+                    return
+                warn("[qsync:flow]", "Push failed")
+                raise SystemExit(1)
+
+            error("[qsync:flow]", f"Unknown flow command: {args.flow_command}")
+            raise SystemExit(2)
+
         # translations command dispatcher
         if args.command == "translations":
             from .terminal_output import error
@@ -3743,7 +3937,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             dimensions = None
             if getattr(args, "dimensions", None):
                 dimensions = [d.strip() for d in args.dimensions.split(",")]
-                valid_dims = {"items", "edf", "js", "translations", "eos"}
+                valid_dims = {"items", "edf", "js", "translations", "eos", "flow"}
                 invalid = [d for d in dimensions if d not in valid_dims]
                 if invalid:
                     error("[qsync:sync]", f"Invalid dimensions: {', '.join(invalid)}")

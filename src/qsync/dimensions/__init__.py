@@ -50,6 +50,49 @@ except Exception as exc:  # pragma: no cover - defensive compatibility fallback
 
     edf = _MissingEdfModule()
 
+try:
+    from . import flow
+except Exception as exc:  # pragma: no cover - defensive compatibility fallback
+
+    class _MissingFlowModule:
+        """Compatibility shim when an install is missing qsync.dimensions.flow."""
+
+        _reason = exc
+        _message = (
+            "Flow dimension is unavailable in this qsync installation. "
+            "Reinstall/update qsync and retry."
+        )
+
+        @classmethod
+        def _as_changes(cls) -> DimensionChanges:
+            return DimensionChanges(
+                dimension="flow",
+                has_changes=False,
+                change_summary="⚠ unavailable",
+                affected_qids=set(),
+                warning_detail=f"{cls._message} (import error: {cls._reason})",
+                status_kind="none",
+                edit_count=0,
+            )
+
+        @classmethod
+        def detect_unstaged_changes(cls, *_args, **_kwargs) -> DimensionChanges:
+            return cls._as_changes()
+
+        @classmethod
+        def detect_changes(cls, *_args, **_kwargs) -> DimensionChanges:
+            return cls._as_changes()
+
+        @classmethod
+        def stage(cls, *_args, **_kwargs) -> bool:
+            return False
+
+        @classmethod
+        def push(cls, *_args, **_kwargs) -> bool:
+            return False
+
+    flow = _MissingFlowModule()
+
 __all__ = [
     "DimensionChanges",
     "items",
@@ -57,4 +100,5 @@ __all__ = [
     "js",
     "translations",
     "eos",
+    "flow",
 ]

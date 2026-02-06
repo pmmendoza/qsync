@@ -153,6 +153,67 @@ class QsyncCliOutputTests(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("Fetching surveys from example.qualtrics.com", out)
         self.assertNotIn("No workspace found", out)
+        self.assertIn("Found surveys (0):", out)
+
+    @patch(
+        "qsync.cli_survey.list_surveys",
+        return_value=[
+            {
+                "id": "SV_MAIN_1",
+                "name": "Main Tracker",
+                "isActive": True,
+                "creationDate": "2026-01-02T09:15:00Z",
+            },
+            {
+                "id": "SV_ALT_2",
+                "name": "Ad Hoc Followup",
+                "isActive": False,
+                "creationDate": "2026-01-03T09:15:00Z",
+            },
+            {
+                "id": "SV_MAIN_3",
+                "name": "MAIN outcomes pilot",
+                "isActive": True,
+                "creationDate": "2026-01-04T09:15:00Z",
+            },
+        ],
+    )
+    @patch(
+        "qsync.cli_survey.get_client_config",
+        return_value=("example.qualtrics.com", {}),
+    )
+    def test_survey_list_with_pattern_prints_matched_and_unmatched(
+        self, _cfg, _list
+    ) -> None:
+        from qsync.cli import main
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            main(["survey", "list", "main"])
+
+        out = buf.getvalue()
+        self.assertIn("Applied name regex (case-insensitive): 'main'", out)
+        self.assertIn("Matched surveys (2):", out)
+        self.assertIn("Unmatched surveys (1):", out)
+        self.assertIn("SV_MAIN_1", out)
+        self.assertIn("SV_MAIN_3", out)
+        self.assertIn("SV_ALT_2", out)
+
+    @patch(
+        "qsync.cli_survey.get_client_config",
+        return_value=("example.qualtrics.com", {}),
+    )
+    @patch("qsync.cli_survey.list_surveys", return_value=[])
+    def test_survey_list_with_invalid_pattern_exits(self, _list, _cfg) -> None:
+        from qsync.cli import main
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as ctx:
+                main(["survey", "list", "(main"])
+
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("ERROR: Invalid regex pattern", buf.getvalue())
 
     @patch("qsync.cli_survey.publish_survey_definition")
     def test_survey_publish_dry_run_skips_api(self, mock_publish) -> None:

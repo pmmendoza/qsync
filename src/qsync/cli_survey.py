@@ -5,12 +5,13 @@ Survey management CLI commands for qsync.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
-import sys
 import os
+import re
+import sys
 import time
 import zipfile
-import csv
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
@@ -591,19 +592,43 @@ def handle_list(args: argparse.Namespace) -> None:
     print(f"Fetching surveys from {base}...")
     surveys = list_surveys(base, headers)
 
-    print(f"\nFound {len(surveys)} surveys:\n")
-    print(f"{'Survey ID':<20} | {'Status':<10} | {'Created':<20} | {'Name'}")
-    print("-" * 80)
+    pattern_raw = (getattr(args, "name_pattern", "") or "").strip()
+    matcher: re.Pattern[str] | None = None
+    if pattern_raw:
+        try:
+            matcher = re.compile(pattern_raw, flags=re.IGNORECASE)
+        except re.error as exc:
+            print(f"ERROR: Invalid regex pattern {pattern_raw!r}: {exc}")
+            sys.exit(2)
 
+    def _print_table(title: str, rows: list[dict[str, Any]]) -> None:
+        print(f"\n{title} ({len(rows)}):\n")
+        print(f"{'Survey ID':<20} | {'Status':<10} | {'Created':<20} | {'Name'}")
+        print("-" * 80)
+
+        for survey in rows:
+            sid = survey.get("id")
+            name = survey.get("name")
+            status = survey.get("isActive")
+            created = survey.get("creationDate")
+            status_str = "Active" if status else "Inactive"
+            date_str = created[:10] if created else "N/A"
+
+            print(f"{sid:<20} | {status_str:<10} | {date_str:<20} | {name}")
+
+    if matcher is None:
+        _print_table("Found surveys", surveys)
+        return
+
+    matched: list[dict[str, Any]] = []
+    unmatched: list[dict[str, Any]] = []
     for survey in surveys:
-        sid = survey.get("id")
-        name = survey.get("name")
-        status = survey.get("isActive")
-        created = survey.get("creationDate")
-        status_str = "Active" if status else "Inactive"
-        date_str = created[:10] if created else "N/A"
+        name = str(survey.get("name") or "")
+        (matched if matcher.search(name) else unmatched).append(survey)
 
-        print(f"{sid:<20} | {status_str:<10} | {date_str:<20} | {name}")
+    print(f"\nApplied name regex (case-insensitive): {pattern_raw!r}")
+    _print_table("Matched surveys", matched)
+    _print_table("Unmatched surveys", unmatched)
 
 
 def handle_copy(args: argparse.Namespace) -> None:
@@ -5682,6 +5707,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
 
     # list
     p_list = survey_subs.add_parser("list", help="List all surveys")
+    p_list.add_argument(
+        "name_pattern",
+        nargs="?",
+        help="Optional regex to match survey names (case-insensitive)",
+    )
     p_list.set_defaults(func=handle_list)
 
     # copy
