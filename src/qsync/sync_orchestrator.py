@@ -3535,7 +3535,10 @@ def sync_survey(
                 # Show safety warning before prompt
                 print(f"\n{Colors.YELLOW}⚠ Workbook Refresh Warning{Colors.RESET}")
                 print(
-                    f"{Colors.DIM}Refreshing the workbook will overwrite any uncommitted local edits in Excel.{Colors.RESET}"
+                    f"{Colors.DIM}Refreshing rebuilds workbook structure from the survey definition/cache.{Colors.RESET}"
+                )
+                print(
+                    f"{Colors.DIM}Non-empty translation cells are preserved, but unstaged local edits in non-translation fields may be replaced.{Colors.RESET}"
                 )
                 print(f"{Colors.DIM}Target workbook: {xlsx_path}{Colors.RESET}\n")
 
