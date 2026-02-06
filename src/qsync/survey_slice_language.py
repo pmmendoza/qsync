@@ -710,7 +710,7 @@ def _filter_language_map(
     return filtered
 
 
-def rebase_flow_text(
+def _rebase_flow_text(
     qsf: dict[str, Any],
     *,
     target_language: str,
@@ -1150,11 +1150,11 @@ def slice_qsf_to_language(
 
     # Rebase SurveyFlow participant-visible text (best-effort).
     warnings.extend(
-        rebase_flow_text(
+        _rebase_flow_text(
             qsf,
             target_language=target,
             kept_languages=kept,
-            allow_rebase=bool(rebase_flow_text),
+            allow_rebase=rebase_flow_text,
         )
     )
 
