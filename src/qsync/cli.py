@@ -14,22 +14,14 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from .argparse_support import QsyncArgumentParser
+
 SURVEYS_DIR = Path("surveys")
 DEFAULT_MAPPING_PATH = Path("survey_js") / "survey_qid_js_map.csv"
 
 if TYPE_CHECKING:
     from .push_policy import PushContext
     from .sync_core import PreviewChange
-
-
-def _resolve_help_formatter() -> type[argparse.HelpFormatter]:
-    try:
-        from rich_argparse import RichHelpFormatter
-
-        return RichHelpFormatter
-    except Exception:
-        return argparse.RawTextHelpFormatter
-
 
 def _extract_global_path_flags(
     argv: list[str],
@@ -1224,13 +1216,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             except Exception:
                 pass
 
-    parser = argparse.ArgumentParser(
+    parser = QsyncArgumentParser(
         prog="qsync",
         description=(
             "Qualtrics sync and survey management for NEWSFLOWS surveys.\n\n"
             "First-time setup: run `qsync onboard` to create folders and .env."
         ),
-        formatter_class=_resolve_help_formatter(),
     )
     parser.add_argument(
         "--root",

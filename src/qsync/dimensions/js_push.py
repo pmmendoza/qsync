@@ -15,11 +15,11 @@ QuestionJS reflects the ground-truth files under survey_js/core.
 
 from __future__ import annotations
 
-import argparse
 import csv
 from pathlib import Path
 from typing import Dict, Iterable, List, Set
 
+from ..argparse_support import QsyncArgumentParser
 from ..qualtrics_client import SurveyCache, load_cached_survey, push_questions
 from ..drift_check import enforce_no_drift
 from ..config import resolve_root
@@ -272,7 +272,7 @@ def push_js_from_cache(
 def main(argv: Iterable[str] | None = None) -> None:
     """CLI entry point for pushing local `survey_js/core/*.js` into Qualtrics QuestionJS."""
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = QsyncArgumentParser(description=__doc__)
     parser.add_argument(
         "--survey-id",
         default=DEFAULT_SURVEY_ID,

@@ -13,12 +13,12 @@ avoiding automatic changes where there are substantive code differences.
 
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+from ..argparse_support import QsyncArgumentParser
 from ..config import resolve_root
 
 ROOT = resolve_root(required=False) or Path.cwd()
@@ -227,7 +227,7 @@ def sync_js_with_cached(
 def main(argv: Iterable[str] | None = None) -> None:
     """CLI entry point for syncing cached QuestionJS from local `survey_js/core`."""
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = QsyncArgumentParser(description=__doc__)
     parser.add_argument(
         "--survey-id",
         default=DEFAULT_SURVEY_ID,

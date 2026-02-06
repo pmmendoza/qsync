@@ -13,7 +13,6 @@ It reports, per (js_file, QID) pair:
 
 from __future__ import annotations
 
-import argparse
 import csv
 import difflib
 import json
@@ -22,6 +21,7 @@ import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+from ..argparse_support import QsyncArgumentParser
 from ..config import resolve_root
 from ..drift_check import check_drift as run_drift_check
 from ..scope_filter import ScopeFilter
@@ -489,7 +489,7 @@ def preview_differences(
 def main(argv: Iterable[str] | None = None) -> None:
     """CLI entry point for previewing diffs between `survey_js/core` and cached QuestionJS."""
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = QsyncArgumentParser(description=__doc__)
     parser.add_argument(
         "--survey-id",
         default=DEFAULT_SURVEY_ID,

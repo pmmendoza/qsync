@@ -548,9 +548,46 @@ def persist_surveys(surveys: Iterable[dict], *, current_user_id: str | None) -> 
 
 
 def load_focal_snapshot() -> Dict[str, bool]:
-    """Load focal survey snapshot from disk."""
+    """Load focal survey snapshot.
+
+    Source of truth is surveys/inventory.csv (or legacy surveys/qualtrics_surveys.csv).
+    The JSON snapshot is a cached copy that some workflows rely on; keep it in sync
+    when the inventory file changes (e.g. manual focal edits).
+    """
+
+    inventory_path = resolve_inventory_csv_path(required=False)
+
+    def snapshot_from_inventory() -> Dict[str, bool]:
+        snapshot: Dict[str, bool] = {}
+        for entry in _read_csv_rows():
+            sid = (entry.get("id") or "").strip()
+            if not sid:
+                continue
+            snapshot[sid] = _as_bool(entry.get("focal"))
+        return snapshot
+
+    if inventory_path.exists():
+        try:
+            inventory_mtime = inventory_path.stat().st_mtime
+            snapshot_mtime = FOCAL_SNAPSHOT.stat().st_mtime if FOCAL_SNAPSHOT.exists() else 0
+        except OSError:
+            inventory_mtime = 0
+            snapshot_mtime = 0
+
+        # If the inventory has changed since the snapshot was written (or the
+        # snapshot doesn't exist), rebuild from inventory and persist.
+        if not FOCAL_SNAPSHOT.exists() or inventory_mtime > snapshot_mtime:
+            rebuilt = snapshot_from_inventory()
+            if rebuilt:
+                try:
+                    save_focal_snapshot(rebuilt)
+                except OSError:
+                    pass
+                return rebuilt
+
     if not FOCAL_SNAPSHOT.exists():
         return {}
+
     try:
         data = json.loads(FOCAL_SNAPSHOT.read_text(encoding="utf-8"))
     except json.JSONDecodeError:

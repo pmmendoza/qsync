@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+from .argparse_support import QsyncArgumentParser
 from .config import resolve_root
 from .survey_inventory import _read_csv_rows
 
@@ -200,7 +200,7 @@ def rebuild_mapping(mapping_path: Path, *, dry_run: bool = False) -> None:
 def main(argv: Iterable[str] | None = None) -> None:
     """CLI entry point for rebuilding `survey_js/survey_qid_js_map.csv`."""
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = QsyncArgumentParser(description=__doc__)
     parser.add_argument(
         "--mapping",
         type=Path,
