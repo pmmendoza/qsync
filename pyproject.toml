@@ -44,7 +44,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-qsync = ["py.typed", "resources/*.csv"]
+qsync = ["py.typed", "resources/*.csv", "resources/*.json"]
 
 [tool.black]
 line-length = 88

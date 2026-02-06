@@ -122,8 +122,8 @@ class SurveyMasterParsingTests(unittest.TestCase):
             # Should contain date and hash
             self.assertRegex(version1, r"^\d{8}-[0-9a-f]{8}$")
 
-    def test_compute_schema_version_missing_returns_unknown(self) -> None:
-        """Returns 'unknown' when file missing."""
+    def test_compute_schema_version_missing_csv_uses_packaged_json(self) -> None:
+        """Falls through to packaged JSON when workspace CSV is missing."""
         from qsync.survey_master import _compute_schema_version
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -135,7 +135,28 @@ class SurveyMasterParsingTests(unittest.TestCase):
             ):
                 version = _compute_schema_version()
 
-            self.assertEqual(version, "unknown")
+            # Should return a valid hash from packaged JSON, not "unknown"
+            self.assertRegex(version, r"^\d{8}-[0-9a-f]{8}$")
+
+    def test_parse_mapping_falls_through_to_packaged_json(self) -> None:
+        """Uses packaged JSON when no workspace CSV exists."""
+        from qsync.survey_master import _parse_mapping_csv
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            nonexistent_path = root / "surveys" / "nonexistent.csv"
+
+            with patch(
+                "qsync.survey_master._mapping_csv_path", return_value=nonexistent_path
+            ):
+                fields = _parse_mapping_csv()
+
+            # Should load the full packaged mapping (84 entries)
+            self.assertGreater(len(fields), 50)
+            self.assertIn("SurveyID", fields)
+            self.assertIn("SurveyName", fields)
+            self.assertIn("isActive", fields)
+            self.assertIn("_focal", fields)
 
     def test_derive_endpoint_metadata(self) -> None:
         """Domain containing 'metadata' → 'metadata' endpoint."""

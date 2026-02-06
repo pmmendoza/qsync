@@ -64,8 +64,11 @@ def _mapping_csv_path() -> Path:
 
 
 def _load_mapping_csv_text() -> tuple[str, str]:
-    """Return (csv_text, source_label) for the survey master mapping."""
+    """Return (csv_text, source_label) for a workspace CSV override, if any.
 
+    Checks workspace paths and QSYNC_MAPPING_CSV env var.
+    Returns (csv_text, source_label) or raises FileNotFoundError.
+    """
     mapping_path = _mapping_csv_path()
     if os.environ.get("QSYNC_MAPPING_CSV") and not mapping_path.exists():
         raise FileNotFoundError(
@@ -74,42 +77,85 @@ def _load_mapping_csv_text() -> tuple[str, str]:
     if mapping_path.exists():
         return mapping_path.read_text(encoding="utf-8"), str(mapping_path)
 
-    packaged = resources.files("qsync").joinpath(
-        "resources/qualtrics_api_key_mapping.csv"
-    )
-    return (
-        packaged.read_text(encoding="utf-8"),
-        "package:qsync/resources/qualtrics_api_key_mapping.csv",
-    )
+    raise FileNotFoundError("No workspace mapping CSV found")
+
+
+def _parse_csv_text(csv_text: str) -> Dict[str, Dict[str, Any]]:
+    """Parse CSV text into a field mapping dict.
+
+    Returns a dict mapping field_name -> field_info (dict with CSV columns).
+    Only includes fields with survey_master=read or write.
+    """
+    fields: Dict[str, Dict[str, Any]] = {}
+    fh = io.StringIO(csv_text)
+    reader = csv.DictReader(fh)
+    for row in reader:
+        field_name = (row.get("field_name") or "").strip()
+        survey_master = (row.get("survey_master") or "").strip().lower()
+
+        if survey_master not in ("read", "write"):
+            continue
+        if not field_name:
+            continue
+
+        if field_name not in fields:
+            fields[field_name] = row
+    return fields
+
+
+def _load_packaged_json() -> Dict[str, Dict[str, Any]]:
+    """Load the packaged field mapping JSON shipped with qsync.
+
+    Returns a dict mapping field_name -> field_info, same shape as CSV parsing.
+    """
+    packaged = resources.files("qsync").joinpath("resources/field_mapping.json")
+    data = json.loads(packaged.read_text(encoding="utf-8"))
+    fields: Dict[str, Dict[str, Any]] = {}
+    for entry in data:
+        field_name = (entry.get("field_name") or "").strip()
+        survey_master = (entry.get("survey_master") or "").strip().lower()
+
+        if survey_master not in ("read", "write"):
+            continue
+        if not field_name:
+            continue
+
+        if field_name not in fields:
+            fields[field_name] = entry
+    return fields
 
 
 def _parse_mapping_csv() -> Dict[str, Dict[str, Any]]:
-    """Parse the mapping CSV and return fields with survey_master=read or write.
+    """Parse the field mapping and return fields with survey_master=read or write.
 
-    Returns a dict mapping field_name -> field_info (dict with all CSV columns).
+    Resolution order:
+    1. QSYNC_MAPPING_CSV env var (CSV)
+    2. surveys/qualtrics_api_key_mapping.csv (CSV)
+    3. appendices/qualtrics_api_key_mapping.csv (CSV, legacy)
+    4. Packaged field_mapping.json (JSON, shipped with qsync)
+
+    Returns a dict mapping field_name -> field_info.
     """
-    csv_text, source = _load_mapping_csv_text()
-    fields: Dict[str, Dict[str, Any]] = {}
-    try:
-        fh = io.StringIO(csv_text)
-        reader = csv.DictReader(fh)
-        for row in reader:
-            field_name = (row.get("field_name") or "").strip()
-            survey_master = (row.get("survey_master") or "").strip().lower()
+    # Try workspace CSV override first
+    mapping_path = _mapping_csv_path()
+    override = os.environ.get("QSYNC_MAPPING_CSV")
 
-            if survey_master not in ("read", "write"):
-                continue
-            if not field_name:
-                continue
-
-            if field_name not in fields:
-                fields[field_name] = row
-    except Exception as exc:
+    if override and not mapping_path.exists():
         raise FileNotFoundError(
-            f"Failed to parse mapping CSV ({source}): {exc}"
-        ) from exc
+            f"Mapping CSV not found: {mapping_path} (from QSYNC_MAPPING_CSV)"
+        )
 
-    return fields
+    if mapping_path.exists():
+        try:
+            csv_text = mapping_path.read_text(encoding="utf-8")
+            return _parse_csv_text(csv_text)
+        except Exception as exc:
+            raise FileNotFoundError(
+                f"Failed to parse mapping CSV ({mapping_path}): {exc}"
+            ) from exc
+
+    # Fall through to packaged JSON
+    return _load_packaged_json()
 
 
 def _derive_endpoint(field_info: Dict[str, str]) -> str:
@@ -134,18 +180,25 @@ def _derive_endpoint(field_info: Dict[str, str]) -> str:
 
 
 def _compute_schema_version() -> str:
-    """Compute schema version hash from mapping CSV."""
+    """Compute schema version hash from the active mapping source.
+
+    Uses the workspace CSV if present, otherwise the packaged JSON.
+    """
     try:
         mapping_path = _mapping_csv_path()
-        if not mapping_path.exists() and not os.environ.get("QSYNC_MAPPING_CSV"):
-            return "unknown"
-        csv_text, _source = _load_mapping_csv_text()
-        csv_hash = hashlib.md5(csv_text.encode("utf-8")).hexdigest()[:8]
+        if mapping_path.exists():
+            source_text = mapping_path.read_text(encoding="utf-8")
+        else:
+            packaged = resources.files("qsync").joinpath(
+                "resources/field_mapping.json"
+            )
+            source_text = packaged.read_text(encoding="utf-8")
+        source_hash = hashlib.md5(source_text.encode("utf-8")).hexdigest()[:8]
     except Exception:
         return "unknown"
 
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    return f"{date_str}-{csv_hash}"
+    return f"{date_str}-{source_hash}"
 
 
 def _fetch_endpoint(
