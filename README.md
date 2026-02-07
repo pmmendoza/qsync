@@ -357,6 +357,11 @@ qsync items pull --survey-id SV_xxx
 qsync items preview --survey-id SV_xxx --embedded-data-only
 qsync items stage --survey-id SV_xxx --embedded-data-only --yes
 qsync items push --survey-id SV_xxx --force-live
+
+# Optional: rename an embedded field directly in SurveyFlow (stage-only)
+qsync survey rename-embedded-field --survey-id SV_xxx --from OLD_FIELD --to NEW_FIELD
+# then push staged flow updates
+qsync push --survey-id SV_xxx --yes
 ```
 
 ### Bulk survey metadata/status (Survey Master)

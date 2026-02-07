@@ -414,11 +414,11 @@ JSON to stdout and exit non-zero. The payload includes:
 
 ```text
 usage: qsync survey [-h]
-                    {label,focal,list,copy,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
+                    {label,focal,list,copy,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,rename-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
                     ...
 
 positional arguments:
-  {label,focal,list,copy,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
+  {label,focal,list,copy,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,rename-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
     label               Print '<SurveyID> - <Name>' using
                         surveys/inventory.csv (legacy:
                         surveys/qualtrics_surveys.csv)
@@ -436,6 +436,9 @@ positional arguments:
                         (requires qsync push)
     remove-embedded-field
                         Stage removal of an embedded data field in SurveyFlow
+                        (requires qsync push)
+    rename-embedded-field
+                        Stage renaming an embedded data field in SurveyFlow
                         (requires qsync push)
     pull                Download a survey definition JSON to local cache
     cleanup-embedded-data

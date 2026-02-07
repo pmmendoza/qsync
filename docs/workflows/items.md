@@ -105,6 +105,8 @@ Each workbook ships with an `Instructions` sheet regenerated at every `qsync ite
 - **Options sheet** – 1 row per choice/scale point; edit `Label_en_MD` (Markdown) or mark `Label_en_IsHTML`. `MetaComment` conveys ownership (e.g. “Externally managed by recognition script”).
 - **Subitems sheet** – 1 row per matrix row/sub-statement; same Markdown/HTML toggles as Options.
 - **Embedded_Data sheet** – 1 row per embedded field; edit `Value` for defaults. Fields without defaults show `---` and require `qsync apply --allow-dangerous` to stage. `WrittenByQIDs` lists JS writers (map via `survey_js/survey_qid_js_map.csv`).
+- **Embedded field renames** – use CLI staging for field-name changes:
+  `qsync survey rename-embedded-field --survey-id SV_xxx --from OLD_FIELD --to NEW_FIELD`
 - **System sheet** – read-only (timing, display logic metadata). Provided for context.
 
 `qsync preview` only reports differences when Markdown (for non-HTML cells) or normalized HTML actually changes, so formatting tweaks that don’t alter rendered output remain silent.

@@ -521,6 +521,122 @@ def stage_remove_embedded_field(
     return removed
 
 
+def stage_rename_embedded_field(
+    survey_id: str,
+    *,
+    old_field: str,
+    new_field: str,
+    flow_id: str | None = None,
+    all_occurrences: bool = False,
+    dry_run: bool = False,
+) -> list[dict[str, str]]:
+    """Stage a rename of an embedded data field in the cached SurveyFlow."""
+
+    old_name = (old_field or "").strip()
+    new_name = (new_field or "").strip()
+    if not old_name:
+        raise ValueError("Source embedded field name must be non-empty.")
+    if not new_name:
+        raise ValueError("Target embedded field name must be non-empty.")
+    if old_name == new_name:
+        raise ValueError("Source and target embedded field names are identical.")
+
+    survey: SurveyCache = load_cached_survey(survey_id)
+    old_js_match = _find_js_field_match(survey.payload, old_name)
+    if old_js_match:
+        pattern, qids = old_js_match
+        qid_list = ", ".join(sorted(qids)) if qids else "unknown QIDs"
+        raise ValueError(
+            f"Embedded field '{old_name}' is written by QuestionJS ({pattern}) in {qid_list}; "
+            "aborting."
+        )
+    new_js_match = _find_js_field_match(survey.payload, new_name)
+    if new_js_match:
+        pattern, qids = new_js_match
+        qid_list = ", ".join(sorted(qids)) if qids else "unknown QIDs"
+        raise ValueError(
+            f"Embedded field '{new_name}' is written by QuestionJS ({pattern}) in {qid_list}; "
+            "aborting."
+        )
+
+    target_flow_id = (flow_id or "").strip() or None
+    matches = _find_embedded_field_in_flow(survey.payload, old_name)
+    if not matches:
+        raise ValueError(
+            f"Embedded field '{old_name}' was not found in SurveyFlow; aborting."
+        )
+
+    flow_id_map, _ = _index_embedded_flow_nodes(survey.payload)
+    if target_flow_id:
+        node = flow_id_map.get(target_flow_id)
+        if not node:
+            raise ValueError(
+                f"EmbeddedData FlowID '{target_flow_id}' not found; aborting."
+            )
+        entry = _find_embedded_entry(node, old_name)
+        if not entry:
+            raise ValueError(
+                f"Embedded field '{old_name}' not found in FlowID={target_flow_id}; aborting."
+            )
+        matches = [{"flow_id": target_flow_id, "entry": entry}]
+    elif len(matches) > 1 and not all_occurrences:
+        flow_ids = ", ".join(
+            sorted(
+                {
+                    str(match.get("flow_id") or "")
+                    for match in matches
+                    if str(match.get("flow_id") or "")
+                }
+            )
+        )
+        suffix = f" (FlowID(s)={flow_ids})" if flow_ids else ""
+        raise ValueError(
+            f"Embedded field '{old_name}' appears in multiple EmbeddedData nodes{suffix}; "
+            "use --all or --flow-id."
+        )
+
+    rename_plan: list[dict[str, str]] = []
+    for match in matches:
+        match_flow_id = str(match.get("flow_id") or "")
+        entry = match.get("entry")
+        if not isinstance(entry, dict):
+            continue
+        node = flow_id_map.get(match_flow_id)
+        if node:
+            existing_target = _find_embedded_entry(node, new_name)
+            if existing_target and existing_target is not entry:
+                raise ValueError(
+                    f"Embedded field '{new_name}' already exists in FlowID={match_flow_id}; aborting."
+                )
+        rename_plan.append(
+            {
+                "flow_id": match_flow_id,
+                "from_field": old_name,
+                "field": new_name,
+            }
+        )
+
+    if not rename_plan:
+        raise ValueError(
+            f"Embedded field '{old_name}' was not found in the requested scope; aborting."
+        )
+
+    if dry_run:
+        return rename_plan
+
+    for match in matches:
+        entry = match.get("entry")
+        if not isinstance(entry, dict):
+            continue
+        entry["Field"] = new_name
+        description = str(entry.get("Description") or "").strip()
+        if not description or description == old_name:
+            entry["Description"] = new_name
+
+    survey.save()
+    return rename_plan
+
+
 def init_survey_to_excel(
     survey_id: str, xlsx_path: Path, *, languages: set[str] | list[str] | None = None
 ) -> None:

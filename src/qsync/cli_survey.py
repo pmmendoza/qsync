@@ -412,7 +412,9 @@ def list_surveys(base: str, headers: Dict[str, str]) -> List[Dict[str, Any]]:
     return resp.json().get("result", {}).get("elements", [])
 
 
-def _order_surveys_like_inventory(surveys: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _order_surveys_like_inventory(
+    surveys: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     """Apply the same default ordering used for inventory.csv persistence."""
 
     stage_order = {"main": 0}
@@ -907,7 +909,9 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         dim("    (non-interactive):", "--yes")
     print()
 
-    info("[qsync:slice-language]", f"Fetching source definition (QSF) for {source_id}...")
+    info(
+        "[qsync:slice-language]", f"Fetching source definition (QSF) for {source_id}..."
+    )
     try:
         qsf_content = fetch_survey_definition(base, headers, source_id, fmt="qsf")
     except Exception as exc:
@@ -917,9 +921,7 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    source_name = str(
-        qsf_content.get("SurveyEntry", {}).get("SurveyName") or source_id
-    )
+    source_name = str(qsf_content.get("SurveyEntry", {}).get("SurveyName") or source_id)
     name_template = (getattr(args, "name", None) or "").strip()
 
     def _apply_name_template(template: str, lang: str) -> str:
@@ -1229,7 +1231,7 @@ def handle_slice_language(args: argparse.Namespace) -> None:
             None,
             (
                 "  qsync survey publish "
-                f"{new_id} --description \"slice-language {source_id} -> {target_lang}\""
+                f'{new_id} --description "slice-language {source_id} -> {target_lang}"'
             ),
         )
         info(None, f"  qsync translations pull --survey-id {new_id}")
@@ -1239,7 +1241,9 @@ def handle_slice_language(args: argparse.Namespace) -> None:
 
             info("[qsync:slice-language]", "Running parity check (best-effort)...")
             try:
-                source_qsf = fetch_survey_definition(base, headers, source_id, fmt="qsf")
+                source_qsf = fetch_survey_definition(
+                    base, headers, source_id, fmt="qsf"
+                )
                 target_qsf = fetch_survey_definition(base, headers, new_id, fmt="qsf")
                 parity = compare_qsf_parity(source_qsf, target_qsf)
                 ok = _emit_parity_report(
@@ -1539,9 +1543,15 @@ def _emit_parity_report(*, result, survey_a: str, survey_b: str, prefix: str) ->
             f"+{len(result.block_memberships_only_in_a)} in {survey_a}.",
         )
         if result.block_memberships_only_in_a:
-            warn(prefix, f"Only in {survey_a} (sample): {result.block_memberships_only_in_a[:3]}")
+            warn(
+                prefix,
+                f"Only in {survey_a} (sample): {result.block_memberships_only_in_a[:3]}",
+            )
         if result.block_memberships_only_in_b:
-            warn(prefix, f"Only in {survey_b} (sample): {result.block_memberships_only_in_b[:3]}")
+            warn(
+                prefix,
+                f"Only in {survey_b} (sample): {result.block_memberships_only_in_b[:3]}",
+            )
 
     if result.tags_match:
         success(prefix, "DataExportTag set match.")
@@ -1556,7 +1566,10 @@ def _emit_parity_report(*, result, survey_a: str, survey_b: str, prefix: str) ->
         if result.tags_only_in_b:
             warn(prefix, f"Only in {survey_b}: {_sample(result.tags_only_in_b)}")
 
-    dim(prefix, "Out of scope: quotas/response sets/scoring and account-specific metadata.")
+    dim(
+        prefix,
+        "Out of scope: quotas/response sets/scoring and account-specific metadata.",
+    )
     return bool(result.ok)
 
 
@@ -2520,6 +2533,63 @@ def _merge_embedded_pending(survey_id: str, additions: list[dict[str, str]]) -> 
     save_pending(record)
 
 
+def _merge_embedded_rename_pending(
+    survey_id: str, renames: list[dict[str, str]]
+) -> None:
+    from .pending_stage import (
+        ItemsPendingPayload,
+        PendingStagedChanges,
+        load_pending,
+        save_pending,
+    )
+
+    existing = load_pending(survey_id, "items")
+    if existing and isinstance(existing.payload, ItemsPendingPayload):
+        qids = list(existing.payload.qids or [])
+        embedded_fields = list(existing.payload.embedded_fields or [])
+        workbook = existing.payload.workbook
+        filter_column = existing.payload.filter_column
+        filter_value = existing.payload.filter_value
+    else:
+        qids = []
+        embedded_fields = []
+        workbook = None
+        filter_column = None
+        filter_value = None
+
+    replaced_keys = {
+        (entry.get("flow_id") or "", entry.get("from_field") or "") for entry in renames
+    }
+    cleaned = []
+    for entry in embedded_fields:
+        key = (entry.get("flow_id") or "", entry.get("field") or "")
+        if key not in replaced_keys:
+            cleaned.append(entry)
+
+    _merge_list = list(cleaned)
+    seen = {
+        (entry.get("flow_id") or "", entry.get("field") or "") for entry in _merge_list
+    }
+    for entry in renames:
+        key = (entry.get("flow_id") or "", entry.get("field") or "")
+        if key not in seen:
+            _merge_list.append({"flow_id": key[0], "field": key[1]})
+            seen.add(key)
+
+    record = PendingStagedChanges(
+        survey_id=survey_id,
+        dimension="items",
+        payload=ItemsPendingPayload(
+            qids=qids,
+            embedded_fields=_merge_list,
+            workbook=workbook,
+            filter_column=filter_column,
+            filter_value=filter_value,
+        ),
+    )
+    save_pending(record)
+
+
 def handle_add_embedded_field(args: argparse.Namespace) -> None:
     from .sync_core import stage_add_embedded_field
     from .cli import _prompt_for_survey_id_if_needed
@@ -2600,6 +2670,60 @@ def handle_remove_embedded_field(args: argparse.Namespace) -> None:
     print(
         f"[remove-embedded-field] Staged removal of '{field}' from {len(removed)} node(s)."
         f"{suffix} Run 'qsync push' to upload SurveyFlow."
+    )
+
+
+def handle_rename_embedded_field(args: argparse.Namespace) -> None:
+    from .sync_core import stage_rename_embedded_field
+    from .cli import _prompt_for_survey_id_if_needed
+
+    survey_id = _prompt_for_survey_id_if_needed(args.survey_id, allow_all_surveys=False)
+    old_field = (getattr(args, "from_field", None) or "").strip()
+    new_field = (getattr(args, "to_field", None) or "").strip()
+    flow_id = getattr(args, "flow_id", None)
+    all_occurrences = bool(getattr(args, "all_occurrences", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    if not old_field:
+        raise SystemExit("[rename-embedded-field] ERROR: --from is required.")
+    if not new_field:
+        raise SystemExit("[rename-embedded-field] ERROR: --to is required.")
+    try:
+        renamed = stage_rename_embedded_field(
+            survey_id,
+            old_field=old_field,
+            new_field=new_field,
+            flow_id=flow_id,
+            all_occurrences=all_occurrences,
+            dry_run=dry_run,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[rename-embedded-field] ERROR: {exc}") from exc
+    if dry_run:
+        flow_list = ", ".join(
+            sorted(
+                {
+                    entry.get("flow_id") or ""
+                    for entry in renamed
+                    if entry.get("flow_id")
+                }
+            )
+        )
+        suffix = f" FlowID(s)={flow_list}." if flow_list else ""
+        print(
+            f"[rename-embedded-field] DRY RUN: Would rename '{old_field}' -> '{new_field}' "
+            f"in {len(renamed)} node(s).{suffix}"
+        )
+        return
+    _merge_embedded_rename_pending(survey_id, renamed)
+    flow_list = ", ".join(
+        sorted(
+            {entry.get("flow_id") or "" for entry in renamed if entry.get("flow_id")}
+        )
+    )
+    suffix = f" FlowID(s)={flow_list}." if flow_list else ""
+    print(
+        f"[rename-embedded-field] Staged rename '{old_field}' -> '{new_field}' "
+        f"in {len(renamed)} node(s).{suffix} Run 'qsync push' to upload SurveyFlow."
     )
 
 
@@ -2827,7 +2951,11 @@ def _prompt_for_any_survey_id(survey_id: str | None) -> str:
 
 def handle_prolific_auth(args: argparse.Namespace) -> None:
     """Set or append a Prolific authenticity-check snippet in SurveyOptions.Header."""
-    from .qualtrics_client import ensure_backup, publish_survey_definition, refresh_survey_cache
+    from .qualtrics_client import (
+        ensure_backup,
+        publish_survey_definition,
+        refresh_survey_cache,
+    )
     from .survey_ref import format_survey_ref
     from .terminal_output import error, info, success, warn
     from .interactive_menu import select_from_list
@@ -2904,7 +3032,9 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
                 raise SystemExit(1)
 
     if current_header and snippet in current_header:
-        success("[qsync:auth]", "No-op: snippet is already present in the current header.")
+        success(
+            "[qsync:auth]", "No-op: snippet is already present in the current header."
+        )
         return
 
     has_any_header = bool(str(current_header).strip())
@@ -2967,7 +3097,8 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
             )
         info(
             "[qsync:auth]",
-            "New Header (preview): " + excerpt(redact_prolific_token(new_header), max_chars=240),
+            "New Header (preview): "
+            + excerpt(redact_prolific_token(new_header), max_chars=240),
         )
         return
 
@@ -2995,7 +3126,10 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
             "had_prolific": has_prolific,
         },
     )
-    success("[qsync:auth]", f"Updated SurveyOptions.Header for {format_survey_ref(survey_id)}.")
+    success(
+        "[qsync:auth]",
+        f"Updated SurveyOptions.Header for {format_survey_ref(survey_id)}.",
+    )
 
     # Auto-publish so the definition change is immediately live.
     no_publish = bool(getattr(args, "no_publish", False))
@@ -5713,7 +5847,9 @@ def handle_master_rollback(args: argparse.Namespace) -> None:
         return
 
     if not survey_id:
-        error("[qsync:master-rollback]", "--survey-id is required unless --list is used")
+        error(
+            "[qsync:master-rollback]", "--survey-id is required unless --list is used"
+        )
         sys.exit(1)
 
     version = int(getattr(args, "version", 1))
@@ -5753,7 +5889,9 @@ def handle_master_rollback(args: argparse.Namespace) -> None:
         info(None, f"Snapshot: {snapshot_path}")
 
     if not changes:
-        success("[qsync:master-rollback]", "No changes needed (already at rollback target)")
+        success(
+            "[qsync:master-rollback]", "No changes needed (already at rollback target)"
+        )
         return
 
     header(None, "Rollback preview:")
@@ -6191,6 +6329,45 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Show what would change without staging",
     )
     p_remove_embedded.set_defaults(func=handle_remove_embedded_field)
+
+    p_rename_embedded = survey_subs.add_parser(
+        "rename-embedded-field",
+        help="Stage renaming an embedded data field in SurveyFlow (requires qsync push)",
+    )
+    p_rename_embedded.add_argument(
+        "--survey-id",
+        dest="survey_id",
+        help="Qualtrics survey ID to update (omit to select interactively)",
+    )
+    p_rename_embedded.add_argument(
+        "--from",
+        dest="from_field",
+        required=True,
+        help="Existing embedded data field name",
+    )
+    p_rename_embedded.add_argument(
+        "--to",
+        dest="to_field",
+        required=True,
+        help="New embedded data field name",
+    )
+    p_rename_embedded.add_argument(
+        "--flow-id",
+        dest="flow_id",
+        help="Target EmbeddedData FlowID (default: requires unique match unless --all)",
+    )
+    p_rename_embedded.add_argument(
+        "--all",
+        dest="all_occurrences",
+        action="store_true",
+        help="Rename across all matching EmbeddedData blocks",
+    )
+    p_rename_embedded.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would change without staging",
+    )
+    p_rename_embedded.set_defaults(func=handle_rename_embedded_field)
 
     # pull
     p_pull = survey_subs.add_parser(
