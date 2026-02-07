@@ -494,6 +494,10 @@ def _extract_extras_from_spec(spec: str) -> list[str]:
 
 
 def _get_installed_extras() -> list[str]:
+    return _get_installed_extras_for_installer(None)
+
+
+def _get_installed_extras_for_installer(installer: str | None) -> list[str]:
     extras: set[str] = set()
 
     # Prefer direct_url metadata when available (captures requested_extras).
@@ -511,8 +515,9 @@ def _get_installed_extras() -> list[str]:
     except Exception:
         pass
 
-    # Fall back to pipx metadata if present.
-    if shutil.which("pipx"):
+    # Fall back to pipx metadata only when pipx is the active/preferred installer.
+    use_pipx_metadata = installer == "pipx" if installer else _looks_like_pipx_env()
+    if use_pipx_metadata and shutil.which("pipx"):
         try:
             result = subprocess.run(
                 ["pipx", "list", "--json"],
@@ -628,6 +633,10 @@ def _pipx_has_qsync() -> bool:
         return False
 
 
+def _active_installer() -> str:
+    return "pipx" if _looks_like_pipx_env() else "pip"
+
+
 def _resolve_installer(force_pip: bool, force_pipx: bool) -> str:
     if force_pip and force_pipx:
         raise SystemExit("Choose only one of --pip or --pipx.")
@@ -635,9 +644,51 @@ def _resolve_installer(force_pip: bool, force_pipx: bool) -> str:
         return "pipx"
     if force_pip:
         return "pip"
-    if _looks_like_pipx_env() or _pipx_has_qsync():
-        return "pipx"
-    return "pip"
+    # Canonical default: update the installer used by the currently running qsync.
+    return _active_installer()
+
+
+def _qsync_entrypoints_on_path() -> list[Path]:
+    found: list[Path] = []
+    seen: set[str] = set()
+    executable_name = "qsync.exe" if os.name == "nt" else "qsync"
+    for path_entry in os.environ.get("PATH", "").split(os.pathsep):
+        path_entry = path_entry.strip()
+        if not path_entry:
+            continue
+        candidate = Path(path_entry) / executable_name
+        if not candidate.exists():
+            continue
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(resolved)
+    return found
+
+
+def _parallel_install_warnings(installer: str) -> list[str]:
+    warnings: list[str] = []
+
+    qsync_bins = _qsync_entrypoints_on_path()
+    if len(qsync_bins) > 1:
+        rendered = ", ".join(str(path) for path in qsync_bins)
+        warnings.append(
+            f"Multiple qsync executables are on PATH: {rendered}. "
+            "Keep only one install location first on PATH to avoid version drift."
+        )
+
+    if installer == "pip" and _pipx_has_qsync():
+        warnings.append(
+            "A separate pipx qsync install is also present. "
+            "This run updates the active pip install only. "
+            "Optional cleanup: `pipx uninstall qsync`."
+        )
+    return warnings
 
 
 def _handle_self_update(args: argparse.Namespace) -> None:
@@ -654,9 +705,13 @@ def _handle_self_update(args: argparse.Namespace) -> None:
     repo = getattr(args, "repo", None) or default_repo
     ref = getattr(args, "ref", None) or os.environ.get("QSYNC_UPDATE_REF") or "main"
 
+    installer = _resolve_installer(
+        force_pip=bool(getattr(args, "pip", False)),
+        force_pipx=bool(getattr(args, "pipx", False)),
+    )
     available_extras = _get_available_extras()
     extras = _parse_extras_args(getattr(args, "extras", None))
-    installed_extras = _get_installed_extras()
+    installed_extras = _get_installed_extras_for_installer(installer)
 
     if getattr(args, "all_extras", False) and available_extras:
         extras = list(available_extras)
@@ -688,10 +743,6 @@ def _handle_self_update(args: argparse.Namespace) -> None:
         )
 
     spec = _build_self_update_spec(repo, ref, extras)
-    installer = _resolve_installer(
-        force_pip=bool(getattr(args, "pip", False)),
-        force_pipx=bool(getattr(args, "pipx", False)),
-    )
 
     if installer == "pipx":
         # pipx reinstall does not accept --spec; use install --force with VCS spec.
@@ -701,6 +752,8 @@ def _handle_self_update(args: argparse.Namespace) -> None:
 
     info("[qsync:self-update]", f"Installer: {installer}")
     info("[qsync:self-update]", f"Target: {spec}")
+    for msg in _parallel_install_warnings(installer):
+        warn("[qsync:self-update]", msg)
 
     if getattr(args, "dry_run", False):
         info("[qsync:self-update]", "Dry run; would execute:")

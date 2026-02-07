@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .api_push import send_api_request
 from .config import get_client_config, resolve_root
+from .rich_support import progress_context, should_use_rich
 from .survey_inventory import load_focal_snapshot, load_existing_metadata
 from .survey_master_validation import validate_all_changes, format_validation_errors
 
@@ -1198,9 +1199,12 @@ def pull_master(
         print(f"[qsync:master-pull] Pulling {len(survey_ids)} focal surveys...")
 
     snapshots_created = 0
+    fetch_errors: list[str] = []
+    show_progress = (
+        not verbose and len(survey_ids) > 1 and should_use_rich()
+    )
 
-    # Fetch snapshots for each survey
-    for survey_id in survey_ids:
+    def _pull_single(survey_id: str) -> None:
         try:
             if verbose:
                 from .survey_ref import format_survey_ref
@@ -1226,6 +1230,7 @@ def pull_master(
                 versions_data,
             )
             save_snapshot(survey_id, snapshot)
+            nonlocal snapshots_created
             snapshots_created += 1
 
             if verbose:
@@ -1234,11 +1239,32 @@ def pull_master(
         except Exception as e:
             from .survey_ref import format_survey_ref
 
-            print(
+            fetch_errors.append(
                 f"[qsync:master-pull] ERROR fetching {format_survey_ref(survey_id)}: {e}",
-                flush=True,
             )
             # Continue with next survey
+
+    # Fetch snapshots for each survey
+    if show_progress:
+        total = len(survey_ids)
+        with progress_context("Pulling Survey Master snapshots", total=total) as prog:
+            for idx, survey_id in enumerate(survey_ids, start=1):
+                if prog:
+                    progress, task_id = prog
+                    progress.update(
+                        task_id,
+                        description=f"Pulling Survey Master snapshots ({idx}/{total})",
+                    )
+                _pull_single(survey_id)
+                if prog:
+                    progress, task_id = prog
+                    progress.advance(task_id)
+    else:
+        for survey_id in survey_ids:
+            _pull_single(survey_id)
+
+    for msg in fetch_errors:
+        print(msg, flush=True)
 
     # Generate master CSV from snapshots
     if verbose:

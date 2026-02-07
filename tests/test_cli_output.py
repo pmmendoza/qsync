@@ -125,6 +125,47 @@ class QsyncCliOutputTests(unittest.TestCase):
             output,
         )
 
+    @patch("qsync.cli._pipx_has_qsync", return_value=True)
+    @patch("qsync.cli._looks_like_pipx_env", return_value=False)
+    def test_self_update_dry_run_uses_active_installer_not_other_install(
+        self, _looks_like_pipx_env, _pipx_has_qsync
+    ) -> None:
+        from qsync.cli import main
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            main(
+                [
+                    "self-update",
+                    "--dry-run",
+                    "--yes",
+                    "--repo",
+                    "https://github.com/pmmendoza/qsync.git",
+                    "--ref",
+                    "main",
+                ]
+            )
+        output = buf.getvalue()
+        self.assertIn("Installer: pip", output)
+        self.assertIn("pip install --upgrade", output)
+        self.assertNotIn("pipx install --force", output)
+
+    def test_resolve_installer_defaults_to_active_env(self) -> None:
+        from qsync import cli
+
+        with patch("qsync.cli._looks_like_pipx_env", return_value=False), patch(
+            "qsync.cli._pipx_has_qsync", return_value=True
+        ):
+            self.assertEqual(
+                cli._resolve_installer(force_pip=False, force_pipx=False), "pip"
+            )
+        with patch("qsync.cli._looks_like_pipx_env", return_value=True), patch(
+            "qsync.cli._pipx_has_qsync", return_value=False
+        ):
+            self.assertEqual(
+                cli._resolve_installer(force_pip=False, force_pipx=False), "pipx"
+            )
+
     @patch("qsync.cli_survey.list_surveys", return_value=[])
     @patch(
         "qsync.cli_survey.get_client_config",
