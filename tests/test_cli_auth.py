@@ -3,6 +3,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
+class _ExistsPath:
+    def exists(self) -> bool:
+        return True
+
+
 class CliProlificAuthTests(unittest.TestCase):
     @patch("qsync.qualtrics_client.refresh_survey_cache")
     @patch("qsync.qualtrics_client.ensure_backup")
@@ -148,6 +153,80 @@ class CliProlificAuthTests(unittest.TestCase):
             if call.kwargs.get("method") == "PUT"
         ]
         self.assertEqual(len(put_calls), 0)
+
+    @patch("qsync.cli_survey.sys.stdin.isatty", return_value=True)
+    @patch("qsync.interactive_menu.autocomplete_from_list")
+    @patch("qsync.interactive_menu.select_from_list")
+    @patch("qsync.survey_inventory._load_all_survey_records")
+    @patch("qsync.survey_inventory.LEGACY_SURVEY_CACHE", new=_ExistsPath())
+    @patch("qsync.survey_inventory.INVENTORY_CSV", new=_ExistsPath())
+    def test_prompt_for_any_survey_id_resolves_partial_autocomplete_input(
+        self,
+        mock_records,
+        mock_select,
+        mock_autocomplete,
+        _mock_isatty,
+    ) -> None:
+        from qsync.cli_survey import _prompt_for_any_survey_id
+
+        mock_records.return_value = [
+            {
+                "id": "SV_AAA",
+                "name": "BSKY_main_pre_iad",
+                "focal": True,
+                "lastModified": "",
+            },
+            {
+                "id": "SV_BBB",
+                "name": "Other Survey",
+                "focal": False,
+                "lastModified": "",
+            },
+        ]
+        mock_select.return_value = "Search by name/ID (autocomplete)"
+        mock_autocomplete.return_value = "BSKY_main_pre_i"
+
+        selected = _prompt_for_any_survey_id(None)
+        self.assertEqual(selected, "SV_AAA")
+
+    @patch("qsync.cli_survey.sys.stdin.isatty", return_value=True)
+    @patch("qsync.interactive_menu.autocomplete_from_list")
+    @patch("qsync.interactive_menu.select_from_list")
+    @patch("qsync.survey_inventory._load_all_survey_records")
+    @patch("qsync.survey_inventory.LEGACY_SURVEY_CACHE", new=_ExistsPath())
+    @patch("qsync.survey_inventory.INVENTORY_CSV", new=_ExistsPath())
+    def test_prompt_for_any_survey_id_disambiguates_partial_input(
+        self,
+        mock_records,
+        mock_select,
+        mock_autocomplete,
+        _mock_isatty,
+    ) -> None:
+        from qsync.cli_survey import _prompt_for_any_survey_id
+
+        mock_records.return_value = [
+            {
+                "id": "SV_AAA",
+                "name": "BSKY_main_pre_iad",
+                "focal": True,
+                "lastModified": "",
+            },
+            {
+                "id": "SV_BBB",
+                "name": "BSKY_main_pre_ireland",
+                "focal": False,
+                "lastModified": "",
+            },
+        ]
+        # First menu call chooses search mode; second call disambiguates.
+        mock_select.side_effect = [
+            "Search by name/ID (autocomplete)",
+            "SV_BBB - BSKY_main_pre_ireland",
+        ]
+        mock_autocomplete.return_value = "BSKY_main_pre_i"
+
+        selected = _prompt_for_any_survey_id(None)
+        self.assertEqual(selected, "SV_BBB")
 
 
 if __name__ == "__main__":

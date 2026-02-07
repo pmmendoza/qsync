@@ -241,6 +241,58 @@ class QsyncCliOutputTests(unittest.TestCase):
         self.assertIn("SV_ALT_2", out)
 
     @patch(
+        "qsync.cli_survey.list_surveys",
+        return_value=[
+            {
+                "id": "SV_1",
+                "name": "US survey",
+                "isActive": True,
+                "creationDate": "2026-01-03T09:15:00Z",
+            },
+            {
+                "id": "SV_2",
+                "name": "IE focal",
+                "isActive": True,
+                "creationDate": "2026-01-02T09:15:00Z",
+            },
+            {
+                "id": "SV_3",
+                "name": "NL survey",
+                "isActive": True,
+                "creationDate": "2026-01-04T09:15:00Z",
+            },
+        ],
+    )
+    @patch(
+        "qsync.cli_survey.get_client_config",
+        return_value=("example.qualtrics.com", {}),
+    )
+    def test_survey_list_uses_inventory_default_order(self, _cfg, _list) -> None:
+        from qsync.cli import main
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            write_inventory_csv(
+                root,
+                (
+                    "id,name,focal,locked,isActive,preview_count,response_count,lastModified,"
+                    "component,stage,cntry,creationDate,editableViaApi,generated_at,ownerId\n"
+                    "SV_1,US survey,FALSE,FALSE,TRUE,,,2026-01-03T09:15:00Z,pre,main,US,2026-01-03T09:15:00Z,TRUE,2026-01-03T09:15:00Z,\n"
+                    "SV_2,IE focal,TRUE,FALSE,TRUE,,,2026-01-02T09:15:00Z,pre,main,IE,2026-01-02T09:15:00Z,TRUE,2026-01-03T09:15:00Z,\n"
+                    "SV_3,NL survey,FALSE,FALSE,TRUE,,,2026-01-04T09:15:00Z,pre,main,NL,2026-01-04T09:15:00Z,TRUE,2026-01-03T09:15:00Z,\n"
+                ),
+            )
+            _touch_env(root)
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                main(["--root", str(root), "survey", "list"])
+
+        out = buf.getvalue()
+        self.assertLess(out.index("SV_2"), out.index("SV_3"))
+        self.assertLess(out.index("SV_3"), out.index("SV_1"))
+
+    @patch(
         "qsync.cli_survey.get_client_config",
         return_value=("example.qualtrics.com", {}),
     )

@@ -412,6 +412,59 @@ def list_surveys(base: str, headers: Dict[str, str]) -> List[Dict[str, Any]]:
     return resp.json().get("result", {}).get("elements", [])
 
 
+def _order_surveys_like_inventory(surveys: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Apply the same default ordering used for inventory.csv persistence."""
+
+    stage_order = {"main": 0}
+    component_order = {"pre": 0}
+    cntry_order = {"IE": 0, "NL": 1, "CZ": 2, "FR": 3, "UK": 4, "US": 5}
+    true_tokens = {"1", "true", "t", "yes", "y", "on"}
+
+    inventory_by_id: dict[str, dict] = {}
+    csv_path = _inventory_csv_path(_workspace_root())
+    if csv_path.exists():
+        for row in _iter_inventory_rows(csv_path):
+            survey_id = str(row.get("id") or "").strip()
+            if survey_id:
+                inventory_by_id[survey_id] = row
+
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in true_tokens
+        return bool(value)
+
+    def _inventory_last_modified(survey: dict) -> str:
+        survey_id = str(survey.get("id") or "").strip()
+        inv = inventory_by_id.get(survey_id, {})
+        return str(
+            inv.get("lastModified")
+            or survey.get("lastModified")
+            or survey.get("creationDate")
+            or ""
+        )
+
+    def _inventory_sort_key(survey: dict) -> tuple:
+        survey_id = str(survey.get("id") or "").strip()
+        inv = inventory_by_id.get(survey_id, {})
+        focal = _as_bool(inv.get("focal"))
+        stage = str(inv.get("stage") or "main").strip()
+        component = str(inv.get("component") or "pre").strip()
+        cntry = str(inv.get("cntry") or "US").strip()
+        return (
+            0 if focal else 1,
+            stage_order.get(stage, 99),
+            component_order.get(component, 99),
+            cntry_order.get(cntry, 99),
+        )
+
+    sorted_by_modified = sorted(
+        surveys,
+        key=_inventory_last_modified,
+        reverse=True,
+    )
+    return sorted(sorted_by_modified, key=_inventory_sort_key)
+
+
 def fetch_survey_definition(
     base: str, headers: Dict[str, str], survey_id: str, fmt: str = "json"
 ) -> dict:
@@ -590,7 +643,7 @@ def handle_list(args: argparse.Namespace) -> None:
     base, headers = get_client_config()
 
     print(f"Fetching surveys from {base}...")
-    surveys = list_surveys(base, headers)
+    surveys = _order_surveys_like_inventory(list_surveys(base, headers))
 
     pattern_raw = (getattr(args, "name_pattern", "") or "").strip()
     matcher: re.Pattern[str] | None = None
@@ -2341,7 +2394,7 @@ def handle_inventory(args: argparse.Namespace) -> None:
 
     base, headers = get_client_config()
     quiet = bool(getattr(args, "quiet", False))
-    progress = bool(
+    explicit_progress = bool(
         getattr(args, "progress", False) or getattr(args, "progress_only", False)
     )
     progress_only = bool(getattr(args, "progress_only", False))
@@ -2358,6 +2411,10 @@ def handle_inventory(args: argparse.Namespace) -> None:
                     survey_filter.append(token)
     # Preserve insertion order while deduplicating
     survey_filter = list(dict.fromkeys(survey_filter)) if survey_filter else None
+    auto_progress = bool(
+        not quiet and (survey_filter is None or len(survey_filter) > 1)
+    )
+    progress = bool(explicit_progress or auto_progress)
 
     dry_run = getattr(args, "dry_run", False)
     counts_scope = getattr(args, "counts_scope", None)
@@ -2642,6 +2699,93 @@ def _prompt_for_any_survey_id(survey_id: str | None) -> str:
         focal_tag = " (focal)" if record.get("focal") else ""
         labels.append(f"{record['id']} - {record.get('name', 'Untitled')}{focal_tag}")
 
+    label_to_id = {
+        label.strip().lower(): record["id"] for label, record in zip(labels, records)
+    }
+
+    def _resolve_selected_survey(raw_selection: str | None) -> str | None:
+        if raw_selection is None:
+            return None
+        raw = str(raw_selection).strip()
+        if not raw:
+            return None
+
+        # Exact label match from autocomplete list.
+        exact_label = label_to_id.get(raw.lower())
+        if exact_label:
+            return exact_label
+
+        # Accept direct SurveyID input (case-insensitive).
+        first_token = raw.split(" - ", 1)[0].strip()
+        for record in records:
+            sid = str(record.get("id", "")).strip()
+            if sid and sid.lower() == first_token.lower():
+                return sid
+
+        # Try exact survey-name match.
+        exact_name_matches = [
+            record
+            for record in records
+            if str(record.get("name", "")).strip().lower() == raw.lower()
+        ]
+        if len(exact_name_matches) == 1:
+            return str(exact_name_matches[0]["id"])
+
+        # Fallback for users pressing Enter on partial autocomplete input.
+        prefix_matches = [
+            record
+            for record in records
+            if str(record.get("id", "")).lower().startswith(raw.lower())
+            or str(record.get("name", "")).lower().startswith(raw.lower())
+        ]
+        if len(prefix_matches) == 1:
+            return str(prefix_matches[0]["id"])
+
+        contains_matches = [
+            record
+            for record in records
+            if raw.lower() in str(record.get("id", "")).lower()
+            or raw.lower() in str(record.get("name", "")).lower()
+        ]
+        if len(contains_matches) == 1:
+            return str(contains_matches[0]["id"])
+
+        candidate_matches = prefix_matches or contains_matches
+        if len(candidate_matches) > 1:
+            candidate_labels = []
+            for record in candidate_matches:
+                focal_tag = " (focal)" if record.get("focal") else ""
+                candidate_labels.append(
+                    f"{record['id']} - {record.get('name', 'Untitled')}{focal_tag}"
+                )
+            matched = select_from_list(
+                "Multiple surveys match your search:",
+                candidate_labels + ["Cancel"],
+            )
+            if not matched or matched == "Cancel":
+                return None
+            return matched.split(" - ", 1)[0].strip()
+
+        return None
+
+    def _select_via_autocomplete() -> str:
+        while True:
+            selected = autocomplete_from_list(
+                message="Search survey (name or ID)",
+                choices=labels,
+                instruction="type to filter, enter to select",
+            )
+            if not selected:
+                print("[qsync] Operation cancelled.")
+                raise SystemExit(1)
+            resolved = _resolve_selected_survey(selected)
+            if resolved:
+                return resolved
+            print(
+                "[qsync] Could not match that input to a unique survey. "
+                "Please refine your search, select a listed option, or enter SurveyID manually."
+            )
+
     if len(labels) > 40:
         mode = select_from_list(
             "How do you want to select a survey?",
@@ -2663,15 +2807,7 @@ def _prompt_for_any_survey_id(survey_id: str | None) -> str:
                 print("[qsync] Operation cancelled.")
                 raise SystemExit(1)
             return selection.split(" - ", 1)[0].strip()
-        selected = autocomplete_from_list(
-            message="Search survey (name or ID)",
-            choices=labels,
-            instruction="type to filter, enter to select",
-        )
-        if not selected:
-            print("[qsync] Operation cancelled.")
-            raise SystemExit(1)
-        return selected.split(" - ", 1)[0].strip()
+        return _select_via_autocomplete()
 
     choices = list(labels)
     choices.append("─" * 60)
@@ -2683,15 +2819,7 @@ def _prompt_for_any_survey_id(survey_id: str | None) -> str:
         print("[qsync] Operation cancelled.")
         raise SystemExit(1)
     if selection.startswith("Search"):
-        selected = autocomplete_from_list(
-            message="Search survey (name or ID)",
-            choices=labels,
-            instruction="type to filter, enter to select",
-        )
-        if not selected:
-            print("[qsync] Operation cancelled.")
-            raise SystemExit(1)
-        return selected.split(" - ", 1)[0].strip()
+        return _select_via_autocomplete()
     if selection.startswith("Enter"):
         return _manual_entry()
     return selection.split(" - ", 1)[0].strip()
@@ -2699,7 +2827,7 @@ def _prompt_for_any_survey_id(survey_id: str | None) -> str:
 
 def handle_prolific_auth(args: argparse.Namespace) -> None:
     """Set or append a Prolific authenticity-check snippet in SurveyOptions.Header."""
-    from .qualtrics_client import ensure_backup, refresh_survey_cache
+    from .qualtrics_client import ensure_backup, publish_survey_definition, refresh_survey_cache
     from .survey_ref import format_survey_ref
     from .terminal_output import error, info, success, warn
     from .interactive_menu import select_from_list
@@ -2868,6 +2996,28 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
         },
     )
     success("[qsync:auth]", f"Updated SurveyOptions.Header for {format_survey_ref(survey_id)}.")
+
+    # Auto-publish so the definition change is immediately live.
+    no_publish = bool(getattr(args, "no_publish", False))
+    if not no_publish:
+        try:
+            payload = publish_survey_definition(
+                survey_id,
+                description="Prolific authenticity header update (auto-publish)",
+                base_url=base_url,
+                headers=headers,
+            )
+            version_id = (
+                ((payload or {}).get("result") or {}).get("metadata") or {}
+            ).get("versionID", "")
+            suffix = f" (version {version_id})" if version_id else ""
+            success("[qsync:auth]", f"Published survey definition{suffix}.")
+        except Exception as exc:  # noqa: BLE001
+            warn(
+                "[qsync:auth]",
+                f"Warning: auto-publish failed: {exc}. "
+                "Run 'qsync survey publish' manually to make changes live.",
+            )
 
     try:
         refresh_survey_cache(survey_id)
@@ -6145,6 +6295,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--no-validate",
         action="store_true",
         help="Skip Prolific-specific snippet validation checks",
+    )
+    p_prolific_auth.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip auto-publish after writing the header (by default, qsync publishes so changes are immediately live)",
     )
     p_prolific_auth.set_defaults(func=handle_prolific_auth)
 
