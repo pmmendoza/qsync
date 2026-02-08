@@ -517,6 +517,7 @@ usage: qsync survey prolific-auth [-h] [--survey-id SURVEY_ID]
                                   [--snippet SNIPPET] [--file FILE]
                                   [--mode {append,replace}] [--yes] [--dry-run]
                                   [--print-current] [--no-validate]
+                                  [--no-publish] [--no-activate]
 
 options:
   -h, --help            show this help message and exit
@@ -535,6 +536,11 @@ options:
   --dry-run             Preview the change without calling the API
   --print-current       Print the current SurveyOptions.Header and exit
   --no-validate         Skip Prolific-specific snippet validation checks
+  --no-publish          Skip auto-publish after writing the header (by
+                        default, qsync publishes so changes are immediately
+                        live)
+  --no-activate         Skip auto-activate after updating the header (by
+                        default, qsync sets isActive=true)
 ```
 
 ## `qsync survey copy`

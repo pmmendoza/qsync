@@ -2770,7 +2770,7 @@ def _read_multiline_snippet_interactive(*, prompt: str) -> str:
 
 def _prompt_for_any_survey_id(survey_id: str | None) -> str:
     if survey_id:
-        return survey_id
+        return str(survey_id).strip()
 
     if not sys.stdin.isatty():
         print("[qsync] ERROR: --survey-id required in non-interactive mode")
@@ -2970,6 +2970,10 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
         validate_prolific_auth_snippet,
     )
 
+    def _flag(name: str) -> bool:
+        value = getattr(args, name, False)
+        return value if isinstance(value, bool) else False
+
     survey_id = _prompt_for_any_survey_id(args.survey_id)
 
     base_url, headers = get_client_config()
@@ -2985,7 +2989,7 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
     options = resp.json().get("result", {}) or {}
     current_header = options.get("Header") or ""
 
-    if bool(getattr(args, "print_current", False)):
+    if _flag("print_current"):
         print(current_header)
         return
 
@@ -3008,7 +3012,7 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
         error("[qsync:auth]", "ERROR: no snippet provided.")
         raise SystemExit(1)
 
-    no_validate = bool(getattr(args, "no_validate", False))
+    no_validate = _flag("no_validate")
     validation: ProlificSnippetValidation | None = None
     if not no_validate:
         validation = validate_prolific_auth_snippet(snippet)
@@ -3048,7 +3052,7 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
         recommended_mode = "append"
 
     mode = getattr(args, "mode", None)
-    assume_yes = bool(getattr(args, "yes", False))
+    assume_yes = _flag("yes")
     if mode is None and assume_yes:
         mode = recommended_mode
     if mode is None and sys.stdin.isatty():
@@ -3087,7 +3091,7 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
 
     new_header = merge_header(current_header, snippet, mode=mode)
 
-    dry_run = bool(getattr(args, "dry_run", False))
+    dry_run = _flag("dry_run")
     if dry_run:
         info("[qsync:auth]", f"DRY RUN for {format_survey_ref(survey_id)}")
         if has_any_header:
@@ -3133,7 +3137,7 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
     )
 
     # Auto-publish so the definition change is immediately live.
-    no_publish = bool(getattr(args, "no_publish", False))
+    no_publish = _flag("no_publish")
     if not no_publish:
         try:
             payload = publish_survey_definition(
@@ -3152,6 +3156,44 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
                 "[qsync:auth]",
                 f"Warning: auto-publish failed: {exc}. "
                 "Run 'qsync survey publish' manually to make changes live.",
+            )
+
+    no_activate = _flag("no_activate")
+    if not no_activate:
+        try:
+            status = _fetch_survey_status(base_url, headers, survey_id)
+            is_active = status.get("isActive")
+            if is_active is True:
+                info("[qsync:auth]", "Survey is already active.")
+            else:
+                activation_response = send_api_request(
+                    action="qsync.survey.activate",
+                    method="PUT",
+                    base_url=base_url,
+                    headers=headers,
+                    path=f"surveys/{survey_id}",
+                    survey_id=survey_id,
+                    json={"isActive": True},
+                    timeout=30,
+                    log_meta={
+                        "operation": "activate",
+                        "trigger": "prolific_auth",
+                    },
+                )
+                if not activation_response.ok:
+                    warn(
+                        "[qsync:auth]",
+                        "Warning: auto-activate request was not OK "
+                        f"({activation_response.status_code} {activation_response.reason}). "
+                        "Run 'qsync survey activate --survey-id <ID>' manually if needed.",
+                    )
+                else:
+                    success("[qsync:auth]", "Activated survey.")
+        except Exception as exc:  # noqa: BLE001
+            warn(
+                "[qsync:auth]",
+                f"Warning: auto-activate failed: {exc}. "
+                "Run 'qsync survey activate --survey-id <ID>' manually if needed.",
             )
 
     try:
@@ -6478,6 +6520,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--no-publish",
         action="store_true",
         help="Skip auto-publish after writing the header (by default, qsync publishes so changes are immediately live)",
+    )
+    p_prolific_auth.add_argument(
+        "--no-activate",
+        action="store_true",
+        help="Skip auto-activate after updating the header (by default, qsync sets isActive=true)",
     )
     p_prolific_auth.set_defaults(func=handle_prolific_auth)
 

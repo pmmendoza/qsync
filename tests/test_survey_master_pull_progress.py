@@ -105,4 +105,3 @@ class SurveyMasterPullProgressTests(unittest.TestCase):
                                             )
 
         progress_mock.assert_not_called()
-

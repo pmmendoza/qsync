@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-
 PROLIFIC_QUALTRICS_SCRIPT_URL = (
     "https://assets.prolific.com/assets/js/qualtrics/qualtrics.min.js"
 )

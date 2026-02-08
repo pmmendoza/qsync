@@ -37,4 +37,3 @@ def test_load_focal_snapshot_refreshes_from_inventory_when_newer(tmp_path, monke
         "SV_1": True,
         "SV_2": False,
     }
-

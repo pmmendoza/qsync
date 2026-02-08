@@ -23,4 +23,3 @@ class QsyncArgumentParser(argparse.ArgumentParser):
     def add_subparsers(self, **kwargs):
         kwargs.setdefault("parser_class", QsyncArgumentParser)
         return super().add_subparsers(**kwargs)
-

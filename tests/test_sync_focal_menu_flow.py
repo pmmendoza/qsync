@@ -51,7 +51,8 @@ def _survey_changes(
 
 
 class TestSyncFocalMenuFlow(unittest.TestCase):
-    def test_fix_selection_continues_to_sync_selected_survey(self):
+    def test_fix_selection_returns_to_menu_then_sync(self):
+        """After fixing, user returns to menu and can sync the now-ready survey."""
         import qsync.sync_orchestrator as orchestrator
 
         survey_id = "SV_FIX"
@@ -60,6 +61,7 @@ class TestSyncFocalMenuFlow(unittest.TestCase):
         fix_choice = (
             "fix BSKY_main_post " "(⚠ edf: Embedded_Data worksheet is inconsistent)"
         )
+        sync_choice = "sync BSKY_main_post (items)"
 
         initial = _survey_changes(
             survey_id=survey_id,
@@ -90,7 +92,10 @@ class TestSyncFocalMenuFlow(unittest.TestCase):
             patch.object(orchestrator, "display_change_detection_table"),
             patch.object(orchestrator, "display_sync_summary_table"),
             patch.object(orchestrator, "display_recovery_instructions"),
-            patch("qsync.interactive_menu.select_from_list", return_value=fix_choice),
+            patch(
+                "qsync.interactive_menu.select_from_list",
+                side_effect=[fix_choice, sync_choice],
+            ),
             patch("qsync.interactive_menu.confirm", return_value=True),
             patch.object(orchestrator, "_run_autofix", return_value="ok"),
             patch.object(
@@ -105,11 +110,14 @@ class TestSyncFocalMenuFlow(unittest.TestCase):
             )
 
         self.assertTrue(result)
+        # detect called twice: initial scan + re-detect after fix
         self.assertEqual(mock_detect.call_count, 2)
+        # sync only happens after user selects it from the returned menu
         mock_sync_survey.assert_called_once()
         self.assertEqual(mock_sync_survey.call_args.args[0], survey_id)
 
-    def test_issues_selection_reports_and_exits_without_recursive_restart(self):
+    def test_issues_selection_returns_to_menu(self):
+        """After viewing issues, user returns to menu and can cancel."""
         import qsync.sync_orchestrator as orchestrator
 
         survey_id = "SV_ISSUE"
@@ -138,7 +146,10 @@ class TestSyncFocalMenuFlow(unittest.TestCase):
             ),
             patch("qsync.rich_support.should_use_rich", return_value=False),
             patch.object(orchestrator, "display_change_detection_table"),
-            patch("qsync.interactive_menu.select_from_list", return_value=issue_choice),
+            patch(
+                "qsync.interactive_menu.select_from_list",
+                side_effect=[issue_choice, "✗ Skip / Cancel"],
+            ),
             patch.object(orchestrator, "sync_survey") as mock_sync_survey,
         ):
             result = orchestrator.sync_focal_surveys(
@@ -147,6 +158,7 @@ class TestSyncFocalMenuFlow(unittest.TestCase):
             )
 
         self.assertTrue(result)
+        # detect called once (no re-detect needed for issue viewing)
         self.assertEqual(mock_detect.call_count, 1)
         self.assertFalse(mock_sync_survey.called)
 

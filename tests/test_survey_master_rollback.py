@@ -43,7 +43,9 @@ class SurveyMasterRollbackTests(SurveyMasterTestBase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
-    def test_capture_pre_apply_snapshot_writes_snapshot_with_change_metadata(self) -> None:
+    def test_capture_pre_apply_snapshot_writes_snapshot_with_change_metadata(
+        self,
+    ) -> None:
         """Snapshot capture stores field-level before/after metadata."""
         from qsync.survey_master import capture_pre_apply_snapshot
 
@@ -111,7 +113,9 @@ class SurveyMasterRollbackTests(SurveyMasterTestBase):
         versions = list_rollback_versions("SV_001")
         self.assertEqual(len(versions), 2)
         self.assertEqual(versions[0]["version"], 1)
-        self.assertTrue(str(versions[0]["path"]).endswith("20260205T100000Z-pre-apply.json"))
+        self.assertTrue(
+            str(versions[0]["path"]).endswith("20260205T100000Z-pre-apply.json")
+        )
         self.assertEqual(versions[1]["version"], 2)
 
     def test_rollback_master_dry_run_returns_changes(self) -> None:

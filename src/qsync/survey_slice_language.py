@@ -25,7 +25,6 @@ from .dimensions.translations_language_blocks import (
     write_choicegroup_description,
 )
 
-
 _DEFAULT_BASE_LANGUAGE = "EN"
 
 
@@ -207,7 +206,9 @@ def _active_qids_in_qsf(qsf: Mapping[str, Any]) -> set[str]:
     return active
 
 
-def _iter_question_payloads(qsf: Mapping[str, Any]) -> Iterable[tuple[str, dict[str, Any]]]:
+def _iter_question_payloads(
+    qsf: Mapping[str, Any],
+) -> Iterable[tuple[str, dict[str, Any]]]:
     for elem in _qsf_elements(qsf):
         if str(elem.get("Element") or "").strip().upper() != "SQ":
             continue
@@ -215,7 +216,9 @@ def _iter_question_payloads(qsf: Mapping[str, Any]) -> Iterable[tuple[str, dict[
         payload = elem.get("Payload")
         if not qid:
             if isinstance(payload, dict):
-                qid = str(payload.get("QuestionID") or payload.get("QuestionId") or "").strip()
+                qid = str(
+                    payload.get("QuestionID") or payload.get("QuestionId") or ""
+                ).strip()
         if not qid or not isinstance(payload, dict):
             continue
         yield qid, payload
@@ -259,7 +262,9 @@ def _is_numeric_value(value: object) -> bool:
     return False
 
 
-def _get_survey_metadata_base(options: Mapping[str, Any], entry: Mapping[str, Any]) -> dict[str, str]:
+def _get_survey_metadata_base(
+    options: Mapping[str, Any], entry: Mapping[str, Any]
+) -> dict[str, str]:
     title = str(options.get("SurveyTitle") or "")
     desc = str(
         options.get("SurveyMetaDescription")
@@ -335,7 +340,9 @@ def _parse_missing_key(key: str) -> tuple[str | None, str | None, str | None]:
     return (None, None, None)
 
 
-def compute_slice_coverage(qsf: Mapping[str, Any], *, target_language: str) -> SliceCoverageReport:
+def compute_slice_coverage(
+    qsf: Mapping[str, Any], *, target_language: str
+) -> SliceCoverageReport:
     base_language = _resolve_base_language_from_qsf(qsf)
     target = normalize_language_code(target_language)
     if not target:
@@ -474,7 +481,9 @@ def compute_slice_coverage(qsf: Mapping[str, Any], *, target_language: str) -> S
     base_meta = _get_survey_metadata_base(options, entry)
     meta_trans = _metadata_translations(options)
     meta_target = meta_trans.get(target) or {}
-    target_meta = _target_metadata_value(meta_target) if isinstance(meta_target, dict) else {}
+    target_meta = (
+        _target_metadata_value(meta_target) if isinstance(meta_target, dict) else {}
+    )
 
     scanned_total += 1
     if not _empty(base_meta.get("SurveyTitle")):
@@ -765,9 +774,9 @@ def _rebase_flow_text(
                 if isinstance(lang_block, dict):
                     target_entry = None
                     for lang, entry in lang_block.items():
-                        if normalize_language_code(str(lang or "")) == target and isinstance(
-                            entry, dict
-                        ):
+                        if normalize_language_code(
+                            str(lang or "")
+                        ) == target and isinstance(entry, dict):
                             target_entry = entry
                             break
                     if target_entry and isinstance(target_entry.get(key), str):
@@ -1104,7 +1113,9 @@ def slice_qsf_to_language(
             choice_groups = question.get("ChoiceGroups") or {}
             if isinstance(choice_groups, dict):
                 for group_id in list(choice_groups.keys()):
-                    value = read_choicegroup_description(question, target, str(group_id))
+                    value = read_choicegroup_description(
+                        question, target, str(group_id)
+                    )
                     if isinstance(value, str) and value.strip():
                         base_item = choice_groups.get(group_id) or {}
                         if isinstance(base_item, dict):
@@ -1139,8 +1150,11 @@ def slice_qsf_to_language(
                 filtered: dict[str, Any] = {}
                 for lang, lang_entry in lang_block.items():
                     norm = normalize_language_code(lang)
-                    if norm and norm in keep_set and norm != target and isinstance(
-                        lang_entry, dict
+                    if (
+                        norm
+                        and norm in keep_set
+                        and norm != target
+                        and isinstance(lang_entry, dict)
                     ):
                         filtered[norm] = lang_entry
                 if filtered:
@@ -1194,7 +1208,10 @@ def write_coverage_report(
     report: SliceCoverageReport,
 ) -> Path:
     slices = default_slices_dir(root)
-    path = slices / f"coverage__{source_survey_id}__{normalize_language_code(target_language)}.json"
+    path = (
+        slices
+        / f"coverage__{source_survey_id}__{normalize_language_code(target_language)}.json"
+    )
     payload = dict(report.to_json())
     payload["source_survey_id"] = source_survey_id
     payload["created_at_utc"] = datetime.now(timezone.utc).isoformat()
@@ -1223,7 +1240,9 @@ def write_slice_manifest(
     qsync_version: str,
 ) -> Path:
     slices = default_slices_dir(root)
-    path = slices / f"{source_survey_id}__{normalize_language_code(target_language)}.json"
+    path = (
+        slices / f"{source_survey_id}__{normalize_language_code(target_language)}.json"
+    )
     payload: dict[str, Any] = {
         "source_survey_id": source_survey_id,
         "source_survey_name": source_survey_name,
@@ -1284,6 +1303,9 @@ def write_dry_run_qsf(
     qsf: Mapping[str, Any],
 ) -> Path:
     slices = default_slices_dir(root)
-    path = slices / f"dryrun__{source_survey_id}__{normalize_language_code(target_language)}.qsf.json"
+    path = (
+        slices
+        / f"dryrun__{source_survey_id}__{normalize_language_code(target_language)}.qsf.json"
+    )
     write_json_with_backup(path, dict(qsf))
     return path

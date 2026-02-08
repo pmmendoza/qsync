@@ -439,7 +439,9 @@ def push(
                 change.change_type,
                 "?",
             )
-            print(f"  {symbol} {change.node_type} [{change.node_id}]: {change.description}")
+            print(
+                f"  {symbol} {change.node_type} [{change.node_id}]: {change.description}"
+            )
         if len(current_changes) > 5:
             print(f"  ... and {len(current_changes) - 5} more")
         if not _confirm("Proceed with flow push?"):

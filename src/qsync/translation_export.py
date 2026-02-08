@@ -1167,8 +1167,12 @@ def export_surveys_side_by_side_docx(
     survey_name_a = str(result_a.get("SurveyName") or "").strip()
     survey_name_b = str(result_b.get("SurveyName") or "").strip()
 
-    base_lang_a = _normalize_lang_code(get_base_language(payload_a)) or _DEFAULT_BASE_LANGUAGE
-    base_lang_b = _normalize_lang_code(get_base_language(payload_b)) or _DEFAULT_BASE_LANGUAGE
+    base_lang_a = (
+        _normalize_lang_code(get_base_language(payload_a)) or _DEFAULT_BASE_LANGUAGE
+    )
+    base_lang_b = (
+        _normalize_lang_code(get_base_language(payload_b)) or _DEFAULT_BASE_LANGUAGE
+    )
 
     label_a_clean = _normalize_label(label_a)
     label_b_clean = _normalize_label(label_b)

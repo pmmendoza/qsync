@@ -1,7 +1,5 @@
 """Tests for flow structural diff algorithm."""
 
-import pytest
-
 from qsync.dimensions.flow_diff import (
     FlowChange,
     diff_flows,

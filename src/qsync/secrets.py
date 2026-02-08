@@ -91,7 +91,9 @@ def _iter_qualtrics_keyring_candidates(
             yield (service, username)
 
 
-def get_qualtrics_api_token_from_keyring(env: Mapping[str, str] | None = None) -> str | None:
+def get_qualtrics_api_token_from_keyring(
+    env: Mapping[str, str] | None = None,
+) -> str | None:
     """Return a Qualtrics API token from system keychain (if available)."""
 
     if not keyring_enabled(env):
@@ -126,7 +128,9 @@ class ResolvedToken:
     key: str | None = None
 
 
-def resolve_qualtrics_api_token(file_env: Mapping[str, str] | None = None) -> ResolvedToken:
+def resolve_qualtrics_api_token(
+    file_env: Mapping[str, str] | None = None,
+) -> ResolvedToken:
     """Resolve Qualtrics API token with precedence: env > .env > keyring."""
 
     for key in QUALTRICS_TOKEN_KEYS:

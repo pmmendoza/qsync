@@ -461,7 +461,9 @@ def resolve_conflict_interactive(conflict: Conflict) -> List[str]:
     for dim in conflict.dimensions:
         choices.append(f"Apply {dim} only")
     choices.append("─" * 40)
-    choices.append("✓ Apply all (safe merge: items → edf → js → translations → eos → flow)")
+    choices.append(
+        "✓ Apply all (safe merge: items → edf → js → translations → eos → flow)"
+    )
     choices.append("✗ Skip this QID")
 
     selection = select_from_list(
@@ -3804,236 +3806,290 @@ def sync_focal_surveys(
         _clear_inventory_cache()
         return True
 
-    # Show table of surveys with changes
-    display_change_detection_table(all_changes, show_all=True)
+    def _display_focal_status() -> None:
+        """Display change detection table and status summary."""
+        display_change_detection_table(all_changes, show_all=True)
+        change_count = len(surveys_with_changes)
+        fixable_count = len(surveys_with_fixable_errors)
+        issues_count = len(surveys_with_issues)
+        parts = []
+        if change_count:
+            parts.append(f"{change_count} survey(s) with changes")
+        if fixable_count:
+            parts.append(f"{fixable_count} survey(s) with fixable issues")
+        if issues_count:
+            parts.append(f"{issues_count} survey(s) with issues")
+        status_msg = " + ".join(parts) if parts else "No changes"
+        print(f"\n{Colors.YELLOW}→{Colors.RESET} {status_msg}")
 
-    # Build descriptive message
-    change_count = len(surveys_with_changes)
-    fixable_count = len(surveys_with_fixable_errors)
-    issues_count = len(surveys_with_issues)
+    def _recategorize() -> None:
+        """Re-categorize all_changes into surveys_with_changes / fixable / issues."""
+        nonlocal surveys_with_changes, surveys_with_fixable_errors
+        nonlocal surveys_with_issues, surveys_to_process
+        surveys_with_changes = [c for c in all_changes if c.has_any_changes]
+        surveys_with_fixable_errors = [
+            c
+            for c in all_changes
+            if not c.has_any_changes
+            and any(_fixable_detail(dim) for dim in c.dimensions.values())
+        ]
+        surveys_with_issues = [
+            c
+            for c in all_changes
+            if (not c.has_any_changes)
+            and c.has_any_issues
+            and c not in surveys_with_fixable_errors
+        ]
+        surveys_to_process = (
+            surveys_with_changes + surveys_with_fixable_errors + surveys_with_issues
+        )
+        surveys_to_process.sort(
+            key=lambda s: (_get_inventory_cached(s.survey_id) or {}).get(
+                "lastModified", ""
+            ),
+            reverse=True,
+        )
 
-    parts = []
-    if change_count:
-        parts.append(f"{change_count} survey(s) with changes")
-    if fixable_count:
-        parts.append(f"{fixable_count} survey(s) with fixable issues")
-    if issues_count:
-        parts.append(f"{issues_count} survey(s) with issues")
-
-    status_msg = " + ".join(parts) if parts else "No changes"
-    print(f"\n{Colors.YELLOW}→{Colors.RESET} {status_msg}")
+    # Show table and status summary
+    _display_focal_status()
 
     # Select surveys to sync
     if process_all:
         # --all flag: process all without prompting
         selected = surveys_to_process
     elif interactive and not auto_yes:
-        # Interactive selection with arrow-key menu
+        # Interactive selection loop — returns to menu after fix/issue actions.
         from .interactive_menu import select_from_list
 
-        # Build choice list with survey info
-        choices = []
+        selected = []
 
-        # Section 1: Surveys with changes to sync
-        surveys_with_changes_only = [c for c in surveys_to_process if c.has_any_changes]
-        for changes in surveys_with_changes_only:
-            dims = ", ".join(changes.changed_dimensions)
-            choice = f"sync {changes.survey_name} ({dims})"
-            choices.append(choice)
+        while True:
+            # Build choice list with survey info
+            choices = []
 
-        # Section 2: Surveys with fixable issues (separator + repair options)
-        surveys_with_fixable_only = [
-            c
-            for c in surveys_to_process
-            if any(_fixable_detail(d) for d in c.dimensions.values())
-        ]
-
-        if surveys_with_fixable_only:
-            # Add separator
-            choices.append("─" * 60)
-
-            for changes in surveys_with_fixable_only:
-                fixable_dims = [
-                    (dim, detail)
-                    for dim, info in changes.dimensions.items()
-                    if (detail := _fixable_detail(info))
-                ]
-                # Create compact error description
-                error_desc = "; ".join(
-                    [f"{dim}: {detail.split('.')[0]}" for dim, detail in fixable_dims]
-                )
-                choice = f"fix {changes.survey_name} (⚠ {error_desc})"
+            # Section 1: Surveys with changes to sync
+            surveys_with_changes_only = [
+                c for c in surveys_to_process if c.has_any_changes
+            ]
+            for changes in surveys_with_changes_only:
+                dims = ", ".join(changes.changed_dimensions)
+                choice = f"sync {changes.survey_name} ({dims})"
                 choices.append(choice)
 
-        surveys_with_issues_only = [
-            c
-            for c in surveys_to_process
-            if (not c.has_any_changes)
-            and c.has_any_issues
-            and not any(_fixable_detail(d) for d in c.dimensions.values())
-        ]
-        if surveys_with_issues_only:
-            choices.append("─" * 60)
-            for changes in surveys_with_issues_only:
-                issue_dims = [
-                    dim
-                    for dim, info in changes.dimensions.items()
-                    if info.error_detail or info.warning_detail
-                ]
-                choice = f"issues {changes.survey_name} ({', '.join(issue_dims)})"
-                choices.append(choice)
+            # Section 2: Surveys with fixable issues (separator + repair options)
+            surveys_with_fixable_only = [
+                c
+                for c in surveys_to_process
+                if any(_fixable_detail(d) for d in c.dimensions.values())
+            ]
 
-        # Section 3: Special options
-        choices.append("─" * 60)
-        choices.append("✓ Sync all surveys")
-        choices.append("✗ Skip / Cancel")
+            if surveys_with_fixable_only:
+                # Add separator
+                choices.append("─" * 60)
 
-        selection = select_from_list(
-            message="What do you want to do?",
-            choices=choices,
-        )
-
-        if selection is None or "Skip" in selection or "Cancel" in selection:
-            print(f"\n{Colors.DIM}Sync cancelled{Colors.RESET}")
-            _clear_inventory_cache()
-            return True
-        elif "Sync all surveys" in selection or "All surveys" in selection:
-            selected = surveys_to_process
-        elif "─" in selection:
-            # User selected separator, treat as cancel
-            print(f"\n{Colors.DIM}Sync cancelled{Colors.RESET}")
-            _clear_inventory_cache()
-            return True
-        else:
-            # Find which survey was selected (handle both sync and fix commands)
-            selected = []
-            is_fix_operation = False
-            is_issue_operation = False
-
-            for changes in surveys_to_process:
-                # Check for sync option
-                if changes.has_any_changes:
-                    dims = ", ".join(changes.changed_dimensions)
-                    sync_choice = f"sync {changes.survey_name} ({dims})"
-                    if sync_choice == selection:
-                        selected = [changes]
-                        break
-
-                # Check for fix option
-                fixable_dims = [
-                    (dim, detail)
-                    for dim, info in changes.dimensions.items()
-                    if (detail := _fixable_detail(info))
-                ]
-                if fixable_dims:
+                for changes in surveys_with_fixable_only:
+                    fixable_dims = [
+                        (dim, detail)
+                        for dim, info in changes.dimensions.items()
+                        if (detail := _fixable_detail(info))
+                    ]
+                    # Create compact error description
                     error_desc = "; ".join(
                         [
                             f"{dim}: {detail.split('.')[0]}"
                             for dim, detail in fixable_dims
                         ]
                     )
-                    fix_choice = f"fix {changes.survey_name} (⚠ {error_desc})"
-                    if fix_choice == selection:
-                        selected = [changes]
-                        is_fix_operation = True
-                        break
-                issue_dims = [
-                    dim
-                    for dim, info in changes.dimensions.items()
-                    if info.error_detail or info.warning_detail
-                ]
-                if issue_dims:
-                    issues_choice = (
-                        f"issues {changes.survey_name} ({', '.join(issue_dims)})"
+                    choice = f"fix {changes.survey_name} (⚠ {error_desc})"
+                    choices.append(choice)
+
+            surveys_with_issues_only = [
+                c
+                for c in surveys_to_process
+                if (not c.has_any_changes)
+                and c.has_any_issues
+                and not any(_fixable_detail(d) for d in c.dimensions.values())
+            ]
+            if surveys_with_issues_only:
+                choices.append("─" * 60)
+                for changes in surveys_with_issues_only:
+                    issue_dims = [
+                        dim
+                        for dim, info in changes.dimensions.items()
+                        if info.error_detail or info.warning_detail
+                    ]
+                    choice = f"issues {changes.survey_name} ({', '.join(issue_dims)})"
+                    choices.append(choice)
+
+            # Section 3: Special options
+            choices.append("─" * 60)
+            choices.append("✓ Sync all surveys")
+            choices.append("✗ Skip / Cancel")
+
+            selection = select_from_list(
+                message="What do you want to do?",
+                choices=choices,
+            )
+
+            if selection is None or "Skip" in selection or "Cancel" in selection:
+                print(f"\n{Colors.DIM}Sync cancelled{Colors.RESET}")
+                break
+            elif "Sync all surveys" in selection or "All surveys" in selection:
+                selected = surveys_to_process
+                break
+            elif "─" in selection:
+                # User selected separator, re-show menu
+                continue
+            else:
+                # Find which survey was selected (handle both sync and fix commands)
+                matched = []
+                is_fix_operation = False
+                is_issue_operation = False
+
+                for changes in surveys_to_process:
+                    # Check for sync option
+                    if changes.has_any_changes:
+                        dims = ", ".join(changes.changed_dimensions)
+                        sync_choice = f"sync {changes.survey_name} ({dims})"
+                        if sync_choice == selection:
+                            matched = [changes]
+                            break
+
+                    # Check for fix option
+                    fixable_dims = [
+                        (dim, detail)
+                        for dim, info in changes.dimensions.items()
+                        if (detail := _fixable_detail(info))
+                    ]
+                    if fixable_dims:
+                        error_desc = "; ".join(
+                            [
+                                f"{dim}: {detail.split('.')[0]}"
+                                for dim, detail in fixable_dims
+                            ]
+                        )
+                        fix_choice = f"fix {changes.survey_name} (⚠ {error_desc})"
+                        if fix_choice == selection:
+                            matched = [changes]
+                            is_fix_operation = True
+                            break
+                    issue_dims = [
+                        dim
+                        for dim, info in changes.dimensions.items()
+                        if info.error_detail or info.warning_detail
+                    ]
+                    if issue_dims:
+                        issues_choice = (
+                            f"issues {changes.survey_name} ({', '.join(issue_dims)})"
+                        )
+                        if issues_choice == selection:
+                            matched = [changes]
+                            is_issue_operation = True
+                            break
+
+                if not matched:
+                    print(f"\n{Colors.DIM}No valid selection{Colors.RESET}")
+                    break
+
+                # Handle fix operation — run fix, re-detect, return to menu.
+                if is_fix_operation:
+                    from .interactive_menu import confirm
+                    from .survey_ref import format_survey_ref
+
+                    changes = matched[0]
+                    survey_id = changes.survey_id
+                    survey_ref = format_survey_ref(survey_id, changes.survey_name)
+
+                    # Show fixable errors
+                    fixable_errors = [
+                        (dim, info)
+                        for dim, info in changes.dimensions.items()
+                        if _fixable_detail(info)
+                    ]
+
+                    print(
+                        f"\n{Colors.YELLOW}⚠ Fixable Issues Detected for {survey_ref}{Colors.RESET}"
                     )
-                    if issues_choice == selection:
-                        selected = [changes]
-                        is_issue_operation = True
-                        break
+                    for dim, info in fixable_errors:
+                        detail = _fixable_detail(info) or "Issue requires repair."
+                        print(f"  • {Colors.BOLD}{dim}{Colors.RESET}: {detail}")
 
-            if not selected:
-                print(f"\n{Colors.DIM}No valid selection{Colors.RESET}")
-                _clear_inventory_cache()
-                return True
-
-            # Handle fix operation specially - run fix and continue with this survey.
-            if is_fix_operation:
-                from .interactive_menu import confirm
-                from .survey_ref import format_survey_ref
-
-                changes = selected[0]
-                survey_id = changes.survey_id
-                survey_ref = format_survey_ref(survey_id, changes.survey_name)
-
-                # Show fixable errors
-                fixable_errors = [
-                    (dim, info)
-                    for dim, info in changes.dimensions.items()
-                    if _fixable_detail(info)
-                ]
-
-                print(
-                    f"\n{Colors.YELLOW}⚠ Fixable Issues Detected for {survey_ref}{Colors.RESET}"
-                )
-                for dim, info in fixable_errors:
-                    detail = _fixable_detail(info) or "Issue requires repair."
-                    print(f"  • {Colors.BOLD}{dim}{Colors.RESET}: {detail}")
-
-                ordered = ["items", "edf", "translations", "eos", "flow", "js"]
-                fixable_errors.sort(
-                    key=lambda entry: (
-                        ordered.index(entry[0]) if entry[0] in ordered else 99
+                    ordered = ["items", "edf", "translations", "eos", "flow", "js"]
+                    fixable_errors.sort(
+                        key=lambda entry: (
+                            ordered.index(entry[0]) if entry[0] in ordered else 99
+                        )
                     )
-                )
-                fix_cmds = [
-                    (dim, _autofix_command(dim, survey_id)) for dim, _ in fixable_errors
-                ]
-                fix_cmds = [(dim, cmd) for dim, cmd in fix_cmds if cmd]
+                    fix_cmds = [
+                        (dim, _autofix_command(dim, survey_id))
+                        for dim, _ in fixable_errors
+                    ]
+                    fix_cmds = [(dim, cmd) for dim, cmd in fix_cmds if cmd]
 
-                print(
-                    f"\n{Colors.DIM}These issues can be fixed automatically by running:{Colors.RESET}"
-                )
-                for dim, cmd in fix_cmds:
-                    print(f"  • {dim}: {Colors.CYAN}{cmd}{Colors.RESET}")
+                    print(
+                        f"\n{Colors.DIM}These issues can be fixed automatically by running:{Colors.RESET}"
+                    )
+                    for dim, cmd in fix_cmds:
+                        print(f"  • {dim}: {Colors.CYAN}{cmd}{Colors.RESET}")
 
-                should_fix = confirm(message="Fix these issues now?", default=True)
+                    should_fix = confirm(message="Fix these issues now?", default=True)
 
-                if should_fix:
-                    try:
-                        for dim, cmd in fix_cmds:
-                            print(f"\n[sync:fix] Running {cmd} for {survey_ref}...")
-                            result = _run_autofix(dim, survey_id)
-                            print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
-                    except Exception as e:
-                        print(f"{Colors.RED}✗ Failed to fix issues: {e}{Colors.RESET}")
-                else:
-                    print(f"{Colors.DIM}Fix cancelled by user.{Colors.RESET}")
-                    _clear_inventory_cache()
-                    return True
+                    if should_fix:
+                        try:
+                            for dim, cmd in fix_cmds:
+                                print(f"\n[sync:fix] Running {cmd} for {survey_ref}...")
+                                result = _run_autofix(dim, survey_id)
+                                print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
+                        except Exception as e:
+                            print(
+                                f"{Colors.RED}✗ Failed to fix issues: {e}{Colors.RESET}"
+                            )
 
-                try:
-                    selected = [detect_survey_changes(survey_id)]
-                except Exception:
-                    selected = [changes]
+                        # Re-detect changes for the fixed survey and refresh categories
+                        try:
+                            new_changes = detect_survey_changes(survey_id)
+                            all_changes = [
+                                new_changes if c.survey_id == survey_id else c
+                                for c in all_changes
+                            ]
+                        except Exception:
+                            pass
+                        _recategorize()
 
-                print(
-                    f"\n{Colors.DIM}Continuing with sync for {survey_ref}...{Colors.RESET}\n"
-                )
+                        if not surveys_to_process:
+                            _display_focal_status()
+                            print(
+                                f"\n{Colors.GREEN}✓{Colors.RESET} All issues resolved, no remaining changes"
+                            )
+                            break
+                        _display_focal_status()
+                    else:
+                        print(f"{Colors.DIM}Fix cancelled by user.{Colors.RESET}")
 
-            if is_issue_operation:
-                changes = selected[0]
-                print(
-                    f"\n{Colors.YELLOW}⚠ Issues for {changes.survey_name} ({changes.survey_id}){Colors.RESET}"
-                )
-                for dim, info in changes.dimensions.items():
-                    if info.error_detail:
-                        print(f"  • {dim}: {info.error_detail}")
-                    elif info.warning_detail:
-                        print(f"  • {dim}: {info.warning_detail}")
-                _clear_inventory_cache()
-                return True
+                    continue
+
+                if is_issue_operation:
+                    changes = matched[0]
+                    print(
+                        f"\n{Colors.YELLOW}⚠ Issues for {changes.survey_name} ({changes.survey_id}){Colors.RESET}"
+                    )
+                    for dim, info in changes.dimensions.items():
+                        if info.error_detail:
+                            print(f"  • {dim}: {info.error_detail}")
+                        elif info.warning_detail:
+                            print(f"  • {dim}: {info.warning_detail}")
+                    continue
+
+                # Sync operation — select and break out to sync phase
+                selected = matched
+                break
+
+        if not selected:
+            _clear_inventory_cache()
+            return True
     else:
         # Non-interactive or --yes: sync all
+        _display_focal_status()
         selected = surveys_to_process
 
     # Sync selected surveys and collect summaries

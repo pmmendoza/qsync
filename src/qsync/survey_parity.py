@@ -39,7 +39,10 @@ class ParityReport:
 
     @property
     def block_memberships_match(self) -> bool:
-        return not self.block_memberships_only_in_a and not self.block_memberships_only_in_b
+        return (
+            not self.block_memberships_only_in_a
+            and not self.block_memberships_only_in_b
+        )
 
     @property
     def ok(self) -> bool:
@@ -66,14 +69,18 @@ def _find_element(qsf: Mapping[str, Any], element_type: str) -> dict[str, Any] |
     return None
 
 
-def _iter_question_payloads(qsf: Mapping[str, Any]) -> Iterable[tuple[str, dict[str, Any]]]:
+def _iter_question_payloads(
+    qsf: Mapping[str, Any],
+) -> Iterable[tuple[str, dict[str, Any]]]:
     for elem in _qsf_elements(qsf):
         if str(elem.get("Element") or "").strip().upper() != "SQ":
             continue
         qid = str(elem.get("PrimaryAttribute") or "").strip()
         payload = elem.get("Payload")
         if not qid and isinstance(payload, dict):
-            qid = str(payload.get("QuestionID") or payload.get("QuestionId") or "").strip()
+            qid = str(
+                payload.get("QuestionID") or payload.get("QuestionId") or ""
+            ).strip()
         if qid and isinstance(payload, dict):
             yield qid, payload
 
@@ -157,7 +164,9 @@ def _collect_flow_signature(
     return (types, qids, warnings)
 
 
-def _collect_block_memberships(block_qids: Mapping[str, list[str]]) -> Counter[tuple[str, ...]]:
+def _collect_block_memberships(
+    block_qids: Mapping[str, list[str]],
+) -> Counter[tuple[str, ...]]:
     counter: Counter[tuple[str, ...]] = Counter()
     for qids in block_qids.values():
         if not qids:
@@ -176,7 +185,9 @@ def _counter_diff(
     return diff
 
 
-def compare_qsf_parity(qsf_a: Mapping[str, Any], qsf_b: Mapping[str, Any]) -> ParityReport:
+def compare_qsf_parity(
+    qsf_a: Mapping[str, Any], qsf_b: Mapping[str, Any]
+) -> ParityReport:
     qids_a = {qid for qid, _ in _iter_question_payloads(qsf_a)}
     qids_b = {qid for qid, _ in _iter_question_payloads(qsf_b)}
 

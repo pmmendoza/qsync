@@ -215,11 +215,17 @@ def test_slice_qsf_target_equals_base_keep_de_keeps_language_blocks() -> None:
 def test_resolve_keep_languages_modes() -> None:
     enabled = ["EN", "DE", "FR"]
     assert resolve_keep_languages(
-        enabled, target_language="DE", base_language="EN", keep_languages_raw="target-only"
+        enabled,
+        target_language="DE",
+        base_language="EN",
+        keep_languages_raw="target-only",
     ) == ["DE"]
-    assert resolve_keep_languages(
-        enabled, target_language="DE", base_language="EN", keep_languages_raw="all"
-    )[0] == "DE"
+    assert (
+        resolve_keep_languages(
+            enabled, target_language="DE", base_language="EN", keep_languages_raw="all"
+        )[0]
+        == "DE"
+    )
     keep = resolve_keep_languages(
         enabled, target_language="DE", base_language="EN", keep_languages_raw="FR"
     )
@@ -305,16 +311,12 @@ def test_compute_slice_coverage_ignores_trash_block_qids() -> None:
                     "0": {
                         "ID": "BL_MAIN",
                         "Type": "Default",
-                        "BlockElements": [
-                            {"Type": "Question", "QuestionID": "QID1"}
-                        ],
+                        "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
                     },
                     "1": {
                         "ID": "BL_TRASH",
                         "Type": "Trash",
-                        "BlockElements": [
-                            {"Type": "Question", "QuestionID": "QID2"}
-                        ],
+                        "BlockElements": [{"Type": "Question", "QuestionID": "QID2"}],
                     },
                 },
             },

@@ -153,14 +153,16 @@ class QsyncCliOutputTests(unittest.TestCase):
     def test_resolve_installer_defaults_to_active_env(self) -> None:
         from qsync import cli
 
-        with patch("qsync.cli._looks_like_pipx_env", return_value=False), patch(
-            "qsync.cli._pipx_has_qsync", return_value=True
+        with (
+            patch("qsync.cli._looks_like_pipx_env", return_value=False),
+            patch("qsync.cli._pipx_has_qsync", return_value=True),
         ):
             self.assertEqual(
                 cli._resolve_installer(force_pip=False, force_pipx=False), "pip"
             )
-        with patch("qsync.cli._looks_like_pipx_env", return_value=True), patch(
-            "qsync.cli._pipx_has_qsync", return_value=False
+        with (
+            patch("qsync.cli._looks_like_pipx_env", return_value=True),
+            patch("qsync.cli._pipx_has_qsync", return_value=False),
         ):
             self.assertEqual(
                 cli._resolve_installer(force_pip=False, force_pipx=False), "pipx"

@@ -65,7 +65,9 @@ def _build_pending_payload_from_workbook(
         annotate_dirty=False,
         self_heal_system_columns=False,
     )
-    non_embedded = [c for c in changes if c.kind != "embedded"] if include_non_embedded else []
+    non_embedded = (
+        [c for c in changes if c.kind != "embedded"] if include_non_embedded else []
+    )
     pending_changes: list[dict[str, object]] = []
     qids: set[str] = set()
     for change in non_embedded:

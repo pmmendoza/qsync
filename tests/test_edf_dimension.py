@@ -35,7 +35,7 @@ def _payload_with_embedded() -> dict:
                                 "AnalyzeText": False,
                             }
                         ],
-                    }
+                    },
                 ]
             },
             "Questions": {
@@ -192,7 +192,9 @@ def test_repair_workbook_repairs_missing_rows_and_preserves_question_cells(
     assert report.backup_path.exists()
 
 
-def test_repair_workbook_dry_run_does_not_modify_file(tmp_path: Path, monkeypatch) -> None:
+def test_repair_workbook_dry_run_does_not_modify_file(
+    tmp_path: Path, monkeypatch
+) -> None:
     payload = _payload_with_embedded()
     survey_id = "SV_DRYRUN"
     _write_cached_survey(tmp_path, survey_id, payload)
@@ -251,8 +253,13 @@ def test_repair_workbook_write_failure_reports_clean_error(
     monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
     with (
         patch("qsync.qualtrics_client._workspace_root", return_value=tmp_path),
-        patch("qsync.dimensions.edf._create_workbook_backup", return_value=tmp_path / "noop.bak.xlsx"),
-        patch("qsync.dimensions.edf.shutil.copy2", side_effect=PermissionError("locked")),
+        patch(
+            "qsync.dimensions.edf._create_workbook_backup",
+            return_value=tmp_path / "noop.bak.xlsx",
+        ),
+        patch(
+            "qsync.dimensions.edf.shutil.copy2", side_effect=PermissionError("locked")
+        ),
     ):
         with pytest.raises(RuntimeError, match="Unable to write repaired workbook"):
             edf_dimension.repair_workbook(

@@ -43,9 +43,7 @@ def _payload_with_question_and_embedded() -> dict:
                     "Type": "Standard",
                     "ID": "BL_1",
                     "Description": "Block 1",
-                    "BlockElements": [
-                        {"Type": "Question", "QuestionID": "QID1"}
-                    ],
+                    "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
                 }
             },
             "Questions": {
@@ -145,8 +143,9 @@ def test_stage_builds_payload_when_skip_embedded() -> None:
         _remove_embedded_row(xlsx_path, "DEBUG")
         _update_question_text(xlsx_path, "QID1", "Updated text")
 
-        with patch("qsync.qualtrics_client._workspace_root", return_value=root), patch(
-            "qsync.dimensions.items.enforce_no_drift", lambda *a, **k: None
+        with (
+            patch("qsync.qualtrics_client._workspace_root", return_value=root),
+            patch("qsync.dimensions.items.enforce_no_drift", lambda *a, **k: None),
         ):
             payload = items_dimension._build_pending_payload_from_workbook(
                 survey_id,
@@ -176,8 +175,9 @@ def test_detect_changes_warns_but_not_items_changes_on_edf_only() -> None:
 
         _remove_embedded_row(xlsx_path, "DEBUG")
 
-        with patch("qsync.qualtrics_client._workspace_root", return_value=root), patch(
-            "qsync.workbook_resolver.resolve_root", lambda required=False: root
+        with (
+            patch("qsync.qualtrics_client._workspace_root", return_value=root),
+            patch("qsync.workbook_resolver.resolve_root", lambda required=False: root),
         ):
             result = items_dimension.detect_changes(survey_id)
             edf_result = edf_dimension.detect_changes(survey_id)

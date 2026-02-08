@@ -569,7 +569,9 @@ def load_focal_snapshot() -> Dict[str, bool]:
     if inventory_path.exists():
         try:
             inventory_mtime = inventory_path.stat().st_mtime
-            snapshot_mtime = FOCAL_SNAPSHOT.stat().st_mtime if FOCAL_SNAPSHOT.exists() else 0
+            snapshot_mtime = (
+                FOCAL_SNAPSHOT.stat().st_mtime if FOCAL_SNAPSHOT.exists() else 0
+            )
         except OSError:
             inventory_mtime = 0
             snapshot_mtime = 0

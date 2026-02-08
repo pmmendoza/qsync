@@ -190,9 +190,7 @@ def _compute_schema_version() -> str:
         if mapping_path.exists():
             source_text = mapping_path.read_text(encoding="utf-8")
         else:
-            packaged = resources.files("qsync").joinpath(
-                "resources/field_mapping.json"
-            )
+            packaged = resources.files("qsync").joinpath("resources/field_mapping.json")
             source_text = packaged.read_text(encoding="utf-8")
         source_hash = hashlib.md5(source_text.encode("utf-8")).hexdigest()[:8]
     except Exception:
@@ -455,9 +453,8 @@ def capture_pre_apply_snapshot(
         rollback_changes.append(
             {
                 "field": field_name,
-                "endpoint": change.get("endpoint") or (
-                    _derive_endpoint(field_info) if field_info else "unknown"
-                ),
+                "endpoint": change.get("endpoint")
+                or (_derive_endpoint(field_info) if field_info else "unknown"),
                 "is_dangerous": bool(change.get("is_dangerous", False)),
                 "pre_apply_value": _scalar_to_string(pre_apply_value),
                 "target_value": _scalar_to_string(change.get("new_value")),
@@ -1200,9 +1197,7 @@ def pull_master(
 
     snapshots_created = 0
     fetch_errors: list[str] = []
-    show_progress = (
-        not verbose and len(survey_ids) > 1 and should_use_rich()
-    )
+    show_progress = not verbose and len(survey_ids) > 1 and should_use_rich()
 
     def _pull_single(survey_id: str) -> None:
         try:

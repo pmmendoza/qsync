@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .push_policy import PushContext
     from .sync_core import PreviewChange
 
+
 def _extract_global_path_flags(
     argv: list[str],
 ) -> tuple[Path | None, Path | None, str | None, list[str]]:
@@ -4246,7 +4247,9 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     getattr(args, "survey_id", None),
                     allow_all_surveys=False,
                 )
-                xlsx_path = Path(getattr(args, "xlsx", None) or _default_xlsx_path(survey_id))
+                xlsx_path = Path(
+                    getattr(args, "xlsx", None) or _default_xlsx_path(survey_id)
+                )
 
                 if not xlsx_path.exists():
                     raise SystemExit(
@@ -4256,9 +4259,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
                 retain_backups = int(getattr(args, "retain_backups", 5) or 0)
                 if retain_backups < 0:
-                    raise SystemExit("[qsync:items:repair-edf] --retain-backups must be >= 0")
+                    raise SystemExit(
+                        "[qsync:items:repair-edf] --retain-backups must be >= 0"
+                    )
 
-                def _print_report(report: edf_dimension.EdfRepairReport, *, prefix: str) -> None:
+                def _print_report(
+                    report: edf_dimension.EdfRepairReport, *, prefix: str
+                ) -> None:
                     before_issues = (
                         len(report.before_health.missing_fields)
                         + len(report.before_health.extra_fields)
@@ -4312,11 +4319,17 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 _print_report(planned, prefix="[qsync:items:repair-edf]")
 
                 if getattr(args, "dry_run", False):
-                    dim("[qsync:items:repair-edf]", "Dry run complete; no workbook changes written.")
+                    dim(
+                        "[qsync:items:repair-edf]",
+                        "Dry run complete; no workbook changes written.",
+                    )
                     return
 
                 if not planned.changed:
-                    success("[qsync:items:repair-edf]", "Embedded_Data is already aligned; no changes applied.")
+                    success(
+                        "[qsync:items:repair-edf]",
+                        "Embedded_Data is already aligned; no changes applied.",
+                    )
                     return
 
                 if not bool(getattr(args, "yes", False)):
