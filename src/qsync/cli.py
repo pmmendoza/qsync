@@ -1552,8 +1552,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_push.add_argument(
         "--survey-id",
-        required=True,
-        help="Target Qualtrics Survey ID (e.g. SV_5AsKyAO5QqswBcq)",
+        help="Target Qualtrics Survey ID (omit to select interactively)",
     )
     p_push.add_argument(
         "--yes",
@@ -4748,11 +4747,15 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         if args.command == "push":
             from .terminal_output import error, info, success, warn
 
-            record = load_pending(args.survey_id, "items")
+            survey_id = _prompt_for_survey_id_if_needed(
+                args.survey_id, allow_all_surveys=False
+            )
+            args.survey_id = survey_id
+            record = load_pending(survey_id, "items")
             if record is None or not isinstance(record.payload, ItemsPendingPayload):
                 info(
                     "[qsync:push]",
-                    f"No staged changes found for {args.survey_id}. Run 'qsync apply' first.",
+                    f"No staged changes found for {survey_id}. Run 'qsync apply' first.",
                 )
                 return
 
@@ -4769,7 +4772,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         )
 
                         rebuilt = _build_pending_payload_from_workbook(
-                            args.survey_id,
+                            survey_id,
                             wb_path,
                             scope_expr=None,
                             ignore_embedded=False,
@@ -4785,7 +4788,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                             embedded_fields = list(rebuilt.embedded_fields or [])
             if not qids and not embedded_fields:
                 warn("[qsync:push]", "Pending record is empty; clearing.")
-                clear_pending(args.survey_id, "items")
+                clear_pending(survey_id, "items")
                 return
 
             change_count = len(qids)
@@ -4819,7 +4822,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     from .interactive_menu import confirm
 
                     if not confirm(
-                        f"Push {prompt_suffix} to Qualtrics for {args.survey_id}?",
+                        f"Push {prompt_suffix} to Qualtrics for {survey_id}?",
                         default=True,
                     ):
                         warn("[qsync:push]", "Aborted.")
@@ -4827,7 +4830,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 except Exception:
                     resp = (
                         input(
-                            f"Push {prompt_suffix} to Qualtrics for {args.survey_id}? [Y/n] "
+                            f"Push {prompt_suffix} to Qualtrics for {survey_id}? [Y/n] "
                         )
                         .strip()
                         .lower()
@@ -4839,7 +4842,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             # Safeguards are now handled inside push_staged_changes
             try:
                 push_staged_changes(
-                    survey_id=args.survey_id,
+                    survey_id=survey_id,
                     qids=qids,
                     embedded_fields=embedded_fields,
                     pending_changes=list(
@@ -4856,11 +4859,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 )
                 from .qualtrics_client import refresh_survey_cache
 
-                refresh_survey_cache(args.survey_id)
+                refresh_survey_cache(survey_id)
             except Exception:
                 error("[qsync:push]", "Wording push failed; pending changes preserved.")
                 raise
-            clear_pending(args.survey_id, "items")
+            clear_pending(survey_id, "items")
             if change_count and embedded_count:
                 success(
                     "[qsync:push]",

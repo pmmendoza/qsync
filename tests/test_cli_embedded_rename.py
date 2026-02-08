@@ -70,6 +70,7 @@ class CliRenameEmbeddedFieldTests(unittest.TestCase):
 
         out = buf.getvalue()
         self.assertIn("Staged rename", out)
+        self.assertIn("qsync push --survey-id SV_TEST", out)
         mock_stage_rename.assert_called_once()
         mock_merge_pending.assert_called_once_with(
             "SV_TEST",

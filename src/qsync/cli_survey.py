@@ -2723,7 +2723,8 @@ def handle_rename_embedded_field(args: argparse.Namespace) -> None:
     suffix = f" FlowID(s)={flow_list}." if flow_list else ""
     print(
         f"[rename-embedded-field] Staged rename '{old_field}' -> '{new_field}' "
-        f"in {len(renamed)} node(s).{suffix} Run 'qsync push' to upload SurveyFlow."
+        f"in {len(renamed)} node(s).{suffix} "
+        f"Run 'qsync push --survey-id {survey_id}' (or 'qsync push') to upload SurveyFlow."
     )
 
 

@@ -350,6 +350,26 @@ class QsyncCliOutputTests(unittest.TestCase):
         mock_publish.assert_not_called()
         self.assertIn("DRY-RUN", buf.getvalue())
 
+    @patch("qsync.pending_stage.load_pending", return_value=None)
+    @patch("qsync.cli._prompt_for_survey_id_if_needed", return_value="SV_TEST")
+    def test_push_without_survey_id_prompts_for_selection(
+        self, mock_prompt, _mock_load_pending
+    ) -> None:
+        from qsync.cli import main
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ensure_qsync_workspace(root)
+            _touch_env(root)
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                main(["--root", str(root), "push", "--yes"])
+
+        out = buf.getvalue()
+        mock_prompt.assert_called_once_with(None, allow_all_surveys=False)
+        self.assertIn("No staged changes found for SV_TEST", out)
+
 
 if __name__ == "__main__":
     unittest.main()
