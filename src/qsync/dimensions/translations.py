@@ -50,7 +50,17 @@ def detect_unstaged_changes(
             survey.payload,
             workbook_path,
             explicit_languages=None,
+            allow_empty=True,
         )
+        if not languages:
+            return DimensionChanges(
+                dimension="translations",
+                has_changes=False,
+                change_summary="No translations (monolingual)",
+                affected_qids=set(),
+                status_kind="none",
+                edit_count=0,
+            )
         question_rows = excel_io.load_questions_from_workbook(workbook_path)
         changes = diff_workbook_vs_cache(
             survey.payload,

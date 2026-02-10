@@ -97,6 +97,13 @@ def _remove_embedded_row(xlsx_path: Path, field: str) -> None:
     wb.save(xlsx_path)
 
 
+def _find_base_col(headers, prefix):
+    for h in headers:
+        if str(h).startswith(f"{prefix}_") and str(h).endswith("_MD"):
+            return headers.index(h)
+    return headers.index(f"{prefix}_en_MD")
+
+
 def _update_question_text(
     xlsx_path: Path, qid: str, text_en: str, text_fr: str
 ) -> None:
@@ -105,7 +112,7 @@ def _update_question_text(
     headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
     idx = {name: i for i, name in enumerate(headers)}
     qid_idx = idx["QID"]
-    en_idx = idx["Text_en_MD"]
+    en_idx = _find_base_col(headers, "Text")
     fr_idx = idx["Text_fr_MD"]
     for row in ws.iter_rows(min_row=2, values_only=False):
         if str(row[qid_idx].value or "").strip() == qid:

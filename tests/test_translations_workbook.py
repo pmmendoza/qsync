@@ -421,7 +421,11 @@ def test_subitems_field_backfill_for_labels(tmp_path: Path) -> None:
     qid_idx = headers.index("QID") + 1
     answer_idx = headers.index("AnswerId") + 1
     field_idx = headers.index("Field") + 1
-    label_en_idx = headers.index("Label_en_MD") + 1
+    label_en_idx = next(
+        headers.index(h) + 1
+        for h in headers
+        if str(h).startswith("Label_") and str(h).endswith("_MD")
+    )
     label_fr_idx = headers.index("Label_fr_MD") + 1
 
     label_rows = {}
@@ -537,7 +541,11 @@ def test_init_preserves_non_empty_cells(tmp_path: Path) -> None:
     wb = load_workbook(workbook_path)
     q_ws = wb[QUESTION_SHEET]
     q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
-    en_idx = q_headers.index("Text_en_MD") + 1
+    en_idx = next(
+        q_headers.index(h) + 1
+        for h in q_headers
+        if str(h).startswith("Text_") and str(h).endswith("_MD")
+    )
     fr_idx = q_headers.index("Text_fr_MD") + 1
     q_ws.cell(row=2, column=en_idx).value = "Custom EN"
     q_ws.cell(row=2, column=fr_idx).value = "Custom FR"

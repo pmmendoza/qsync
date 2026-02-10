@@ -840,7 +840,6 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
     for change in changes:
         if change.kind == "question" and ws_q is not None and dirty_col_q > 0:
             qid_idx = idx_q.get("QID")
-            text_idx = idx_q.get("Text_en_MD")
             for row in ws_q.iter_rows(min_row=2, values_only=False):
                 if qid_idx is not None and row[qid_idx].value == change.qid:
                     row[dirty_col_q - 1].value = "Y"
@@ -876,12 +875,20 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
                 break
 
     # After marking, (re)attach conditional formatting for Dirty flags
-    if ws_q is not None and idx_q and dirty_col_q > 0 and "Text_en_MD" in idx_q:
+    if ws_q is not None and idx_q and dirty_col_q > 0:
         headers, _ = excel_io._iter_sheet_rows(ws_q)
+        text_col_name = next(
+            (
+                h
+                for h in headers
+                if str(h).startswith("Text_") and str(h).endswith("_MD")
+            ),
+            None,
+        )
         max_row_q = ws_q.max_row
-        if "Dirty" in headers and "Text_en_MD" in headers and max_row_q >= 2:
+        if "Dirty" in headers and text_col_name and max_row_q >= 2:
             dirty_idx = headers.index("Dirty") + 1
-            text_idx = headers.index("Text_en_MD") + 1
+            text_idx = headers.index(text_col_name) + 1
             dirty_col_letter = get_column_letter(dirty_idx)
             text_col_letter = get_column_letter(text_idx)
             formula = f'=${dirty_col_letter}2="Y"'
@@ -892,12 +899,20 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
                 f"{text_col_letter}2:{text_col_letter}{max_row_q}", rule
             )
 
-    if ws_o is not None and idx_o and dirty_col_o > 0 and "Label_en_MD" in idx_o:
+    if ws_o is not None and idx_o and dirty_col_o > 0:
         headers_o, _ = excel_io._iter_sheet_rows(ws_o)
+        label_col_name = next(
+            (
+                h
+                for h in headers_o
+                if str(h).startswith("Label_") and str(h).endswith("_MD")
+            ),
+            None,
+        )
         max_row_o = ws_o.max_row
-        if "Dirty" in headers_o and "Label_en_MD" in headers_o and max_row_o >= 2:
+        if "Dirty" in headers_o and label_col_name and max_row_o >= 2:
             dirty_idx = headers_o.index("Dirty") + 1
-            text_idx = headers_o.index("Label_en_MD") + 1
+            text_idx = headers_o.index(label_col_name) + 1
             dirty_col_letter = get_column_letter(dirty_idx)
             text_col_letter = get_column_letter(text_idx)
             formula = f'=${dirty_col_letter}2="Y"'

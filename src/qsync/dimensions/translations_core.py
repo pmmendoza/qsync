@@ -274,6 +274,8 @@ def _resolve_stage_languages(
     survey_payload: dict,
     workbook_path: Path,
     explicit_languages: Sequence[str] | None,
+    *,
+    allow_empty: bool = False,
 ) -> list[str]:
     base_language = get_base_language_from_options(survey_payload)
     if explicit_languages:
@@ -306,6 +308,8 @@ def _resolve_stage_languages(
         )
         langs = [lang for lang in langs if lang != base_language]
     if not langs:
+        if allow_empty:
+            return []
         raise QsyncValidationError(
             error_id="QSYNC-TRANSLATIONS-LANG-004",
             problem="No non-base translation languages resolved.",

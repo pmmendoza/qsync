@@ -113,18 +113,35 @@ def _normalize_language_list(languages: Sequence[str] | None) -> List[str]:
     return cleaned
 
 
-def _ordered_languages(languages: Sequence[str] | None) -> List[str]:
+def _ordered_languages(
+    languages: Sequence[str] | None,
+    *,
+    base_language: str | None = None,
+) -> List[str]:
     ordered = _normalize_language_list(languages)
-    if "EN" in ordered:
-        ordered = ["EN"] + [lang for lang in ordered if lang != "EN"]
+    if base_language:
+        base = _normalize_language_code(base_language)
+        if base in ordered:
+            ordered = [base] + [lang for lang in ordered if lang != base]
+        else:
+            ordered = [base] + ordered
     else:
-        ordered = ["EN"] + ordered
+        # Legacy fallback: inject EN at front
+        if "EN" in ordered:
+            ordered = ["EN"] + [lang for lang in ordered if lang != "EN"]
+        else:
+            ordered = ["EN"] + ordered
     return ordered
 
 
-def _translation_columns(prefix: str, languages: Sequence[str] | None) -> List[str]:
+def _translation_columns(
+    prefix: str,
+    languages: Sequence[str] | None,
+    *,
+    base_language: str | None = None,
+) -> List[str]:
     columns: List[str] = []
-    for lang in _ordered_languages(languages):
+    for lang in _ordered_languages(languages, base_language=base_language):
         suffix = _language_suffix(lang)
         if not suffix:
             continue
@@ -141,146 +158,187 @@ def _metadata_columns(keys: Sequence[str] | None = None) -> List[str]:
     return columns
 
 
-# (Sheet name) -> List of (column, ownership, description) tuples.
-COLUMN_GUIDE = {
-    QUESTION_SHEET: [
-        ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
-        ("QID", "System", "Qualtrics Question ID. Read-only."),
-        ("BlockName", "System", "Qualtrics block name. Read-only."),
-        ("QuestionType", "System", "Qualtrics question type (MC, TE, etc.)."),
-        ("DataExportTag", "System", "Qualtrics DataExportTag / variable name."),
-        (
-            "QuestionKey",
-            "Editable",
-            "Optional human-friendly key for internal tracking.",
-        ),
-        ("Text_en_MD", "Editable", "English wording in restricted Markdown."),
-        (
-            "Text_en_IsHTML",
-            "Flag",
-            "TRUE when Text_en_MD should be treated as raw HTML.",
-        ),
-        ("OptionsPreview", "System", "Read-only preview of answer options."),
-        ("SubitemsPreview", "System", "Read-only preview of subitems / statements."),
-        ("InPre", "Flag", "TRUE if included in the pre-treatment survey."),
-        ("InPost", "Flag", "TRUE if included in the post-treatment survey."),
-        (
-            "Dirty",
-            "System",
-            "Auto-flag set by qsync preview/apply when a row has pending pushes.",
-        ),
-    ],
-    OPTIONS_SHEET: [
-        ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
-        ("QID", "System", "Qualtrics Question ID. Read-only."),
-        ("ChoiceId", "System", "Qualtrics choice ID for this option."),
-        ("QuestionType", "System", "Qualtrics question type (MC, Matrix, etc.)."),
-        ("Code", "System", "Choice code or recode value."),
-        ("Label_en_MD", "Editable", "English option label in restricted Markdown."),
-        (
-            "Label_en_IsHTML",
-            "Flag",
-            "TRUE when Label_en_MD should be treated as raw HTML.",
-        ),
-        (
-            "MetaComment",
-            "Note",
-            "Auto-generated or manual notes (e.g., externally managed scripts).",
-        ),
-        (
-            "Dirty",
-            "System",
-            "Auto-flag set by qsync preview/apply when a row has pending pushes.",
-        ),
-    ],
-    SUBITEMS_SHEET: [
-        ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
-        ("QID", "System", "Qualtrics Question ID. Read-only."),
-        ("AnswerId", "System", "Qualtrics sub-item / statement ID."),
-        ("Field", "System", "Disambiguator for subitem meaning (Answer | Label)."),
-        ("QuestionType", "System", "Qualtrics question type."),
-        ("Label_en_MD", "Editable", "Sub-item text in restricted Markdown."),
-        (
-            "Label_en_IsHTML",
-            "Flag",
-            "TRUE when Label_en_MD should be treated as raw HTML.",
-        ),
-    ],
-    EMBEDDED_DATA_SHEET: [
-        ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
-        ("FlowID", "System", "SurveyFlow node ID (disambiguates duplicate fields)."),
-        ("FlowOrder", "System", "Survey flow order (0 for JS-only fields)."),
-        ("Field", "System", "Embedded data field name. Read-only."),
-        ("Value", "Editable", "Default value (--- for fields without defaults)."),
-        ("Type", "System", "Embedded data type (Custom, Recipient, JS-only)."),
-        ("WrittenByQIDs", "System", "Comma-separated QIDs that set this field."),
-        (
-            "Dirty",
-            "System",
-            "Auto-flag set by qsync preview/apply when a row has pending pushes.",
-        ),
-    ],
-    SYSTEM_SHEET: [
-        ("SurveyID", "System", "Qualtrics Survey ID for Timing/meta items."),
-        ("QID", "System", "Timing question ID."),
-        ("QuestionType", "System", "Qualtrics question type."),
-        ("DataExportTag", "System", "DataExportTag for the Timing item."),
-        ("ChoiceId", "System", "Choice ID inside the Timing question."),
-        ("Display", "System", "HTML returned by Qualtrics for the Timing display."),
-    ],
-    SURVEY_METADATA_SHEET: [
-        ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
-        ("Language", "System", "Language code for this metadata row."),
-        ("SurveyTitle_MD", "Editable", "Survey title in restricted Markdown."),
-        (
-            "SurveyTitle_IsHTML",
-            "Flag",
-            "TRUE when SurveyTitle_MD should be treated as raw HTML.",
-        ),
-        (
-            "SurveyDescription_MD",
-            "Editable",
-            "Survey description in restricted Markdown.",
-        ),
-        (
-            "SurveyDescription_IsHTML",
-            "Flag",
-            "TRUE when SurveyDescription_MD should be treated as raw HTML.",
-        ),
-        (
-            "SurveyMetaDescription_MD",
-            "Editable",
-            "Survey meta description in restricted Markdown.",
-        ),
-        (
-            "SurveyMetaDescription_IsHTML",
-            "Flag",
-            "TRUE when SurveyMetaDescription_MD should be treated as raw HTML.",
-        ),
-    ],
-}
+def _column_guide(base_language: str = "EN") -> dict:
+    """Build the column guide dict, using *base_language* for the base text columns."""
+    base_suffix = _language_suffix(base_language) or "en"
+    base_upper = _normalize_language_code(base_language) or "EN"
+    text_md = f"Text_{base_suffix}_MD"
+    text_html = f"Text_{base_suffix}_IsHTML"
+    label_md = f"Label_{base_suffix}_MD"
+    label_html = f"Label_{base_suffix}_IsHTML"
+    return {
+        QUESTION_SHEET: [
+            ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
+            ("QID", "System", "Qualtrics Question ID. Read-only."),
+            ("BlockName", "System", "Qualtrics block name. Read-only."),
+            ("QuestionType", "System", "Qualtrics question type (MC, TE, etc.)."),
+            ("DataExportTag", "System", "Qualtrics DataExportTag / variable name."),
+            (
+                "QuestionKey",
+                "Editable",
+                "Optional human-friendly key for internal tracking.",
+            ),
+            (text_md, "Editable", f"{base_upper} wording in restricted Markdown."),
+            (
+                text_html,
+                "Flag",
+                f"TRUE when {text_md} should be treated as raw HTML.",
+            ),
+            ("OptionsPreview", "System", "Read-only preview of answer options."),
+            (
+                "SubitemsPreview",
+                "System",
+                "Read-only preview of subitems / statements.",
+            ),
+            ("InPre", "Flag", "TRUE if included in the pre-treatment survey."),
+            ("InPost", "Flag", "TRUE if included in the post-treatment survey."),
+            (
+                "Dirty",
+                "System",
+                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
+            ),
+        ],
+        OPTIONS_SHEET: [
+            ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
+            ("QID", "System", "Qualtrics Question ID. Read-only."),
+            ("ChoiceId", "System", "Qualtrics choice ID for this option."),
+            ("QuestionType", "System", "Qualtrics question type (MC, Matrix, etc.)."),
+            ("Code", "System", "Choice code or recode value."),
+            (
+                label_md,
+                "Editable",
+                f"{base_upper} option label in restricted Markdown.",
+            ),
+            (
+                label_html,
+                "Flag",
+                f"TRUE when {label_md} should be treated as raw HTML.",
+            ),
+            (
+                "MetaComment",
+                "Note",
+                "Auto-generated or manual notes (e.g., externally managed scripts).",
+            ),
+            (
+                "Dirty",
+                "System",
+                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
+            ),
+        ],
+        SUBITEMS_SHEET: [
+            ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
+            ("QID", "System", "Qualtrics Question ID. Read-only."),
+            ("AnswerId", "System", "Qualtrics sub-item / statement ID."),
+            (
+                "Field",
+                "System",
+                "Disambiguator for subitem meaning (Answer | Label).",
+            ),
+            ("QuestionType", "System", "Qualtrics question type."),
+            (
+                label_md,
+                "Editable",
+                f"{base_upper} sub-item text in restricted Markdown.",
+            ),
+            (
+                label_html,
+                "Flag",
+                f"TRUE when {label_md} should be treated as raw HTML.",
+            ),
+        ],
+        EMBEDDED_DATA_SHEET: [
+            ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
+            (
+                "FlowID",
+                "System",
+                "SurveyFlow node ID (disambiguates duplicate fields).",
+            ),
+            ("FlowOrder", "System", "Survey flow order (0 for JS-only fields)."),
+            ("Field", "System", "Embedded data field name. Read-only."),
+            ("Value", "Editable", "Default value (--- for fields without defaults)."),
+            ("Type", "System", "Embedded data type (Custom, Recipient, JS-only)."),
+            ("WrittenByQIDs", "System", "Comma-separated QIDs that set this field."),
+            (
+                "Dirty",
+                "System",
+                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
+            ),
+        ],
+        SYSTEM_SHEET: [
+            ("SurveyID", "System", "Qualtrics Survey ID for Timing/meta items."),
+            ("QID", "System", "Timing question ID."),
+            ("QuestionType", "System", "Qualtrics question type."),
+            ("DataExportTag", "System", "DataExportTag for the Timing item."),
+            ("ChoiceId", "System", "Choice ID inside the Timing question."),
+            (
+                "Display",
+                "System",
+                "HTML returned by Qualtrics for the Timing display.",
+            ),
+        ],
+        SURVEY_METADATA_SHEET: [
+            ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
+            ("Language", "System", "Language code for this metadata row."),
+            ("SurveyTitle_MD", "Editable", "Survey title in restricted Markdown."),
+            (
+                "SurveyTitle_IsHTML",
+                "Flag",
+                "TRUE when SurveyTitle_MD should be treated as raw HTML.",
+            ),
+            (
+                "SurveyDescription_MD",
+                "Editable",
+                "Survey description in restricted Markdown.",
+            ),
+            (
+                "SurveyDescription_IsHTML",
+                "Flag",
+                "TRUE when SurveyDescription_IsHTML should be treated as raw HTML.",
+            ),
+            (
+                "SurveyMetaDescription_MD",
+                "Editable",
+                "Survey meta description in restricted Markdown.",
+            ),
+            (
+                "SurveyMetaDescription_IsHTML",
+                "Flag",
+                "TRUE when SurveyMetaDescription_MD should be treated as raw HTML.",
+            ),
+        ],
+    }
 
 
-def _make_options_preview_formula(cell_ref: str) -> ArrayFormula:
+# Backward-compatible alias — default EN base.
+COLUMN_GUIDE = _column_guide()
+
+
+def _make_options_preview_formula(
+    cell_ref: str, *, base_language: str = "EN"
+) -> ArrayFormula:
     """Generate array formula for dynamic option preview from OptionsTable."""
+    label_col = f"Label_{_language_suffix(base_language) or 'en'}_MD"
     formula = (
         "=_xlfn.LET(_xlpm.q,QuestionsTable[[#This Row],[QID]],\n"
         "     IFERROR(_xlfn.TEXTJOIN(CHAR(10), TRUE,\n"
         '         "[" & _xlfn._xlws.FILTER(OptionsTable[ChoiceId], OptionsTable[QID]=_xlpm.q) & "] " &\n'
-        "         _xlfn._xlws.FILTER(OptionsTable[Label_en_MD], OptionsTable[QID]=_xlpm.q)\n"
+        f"         _xlfn._xlws.FILTER(OptionsTable[{label_col}], OptionsTable[QID]=_xlpm.q)\n"
         '     ), "")\n'
         ")"
     )
     return ArrayFormula(ref=cell_ref, text=formula)
 
 
-def _make_subitems_preview_formula(cell_ref: str) -> ArrayFormula:
+def _make_subitems_preview_formula(
+    cell_ref: str, *, base_language: str = "EN"
+) -> ArrayFormula:
     """Generate array formula for dynamic subitem preview from SubitemsTable."""
+    label_col = f"Label_{_language_suffix(base_language) or 'en'}_MD"
     formula = (
         "=_xlfn.LET(_xlpm.q,QuestionsTable[[#This Row],[QID]],\n"
         "     IFERROR(_xlfn.TEXTJOIN(CHAR(10), TRUE,\n"
         '         "[" & _xlfn._xlws.FILTER(SubitemsTable[AnswerId], SubitemsTable[QID]=_xlpm.q) & "] " &\n'
-        "         _xlfn._xlws.FILTER(SubitemsTable[Label_en_MD], SubitemsTable[QID]=_xlpm.q)\n"
+        f"         _xlfn._xlws.FILTER(SubitemsTable[{label_col}], SubitemsTable[QID]=_xlpm.q)\n"
         '     ), "")\n'
         ")"
     )
@@ -288,7 +346,10 @@ def _make_subitems_preview_formula(cell_ref: str) -> ArrayFormula:
 
 
 def _update_instructions_sheet(
-    wb: Workbook, languages: Sequence[str] | None = None
+    wb: Workbook,
+    languages: Sequence[str] | None = None,
+    *,
+    base_language: str | None = None,
 ) -> None:
     """Build the Instructions sheet with column ownership + descriptions."""
 
@@ -298,11 +359,17 @@ def _update_instructions_sheet(
     ws = wb.create_sheet(title=INSTRUCTIONS_SHEET)
     ws.append(["Sheet", "Column", "Ownership", "Description"])
 
-    for sheet_name, columns in COLUMN_GUIDE.items():
+    base = _normalize_language_code(base_language or "") or "EN"
+    guide = _column_guide(base)
+    for sheet_name, columns in guide.items():
         for column_name, ownership, description in columns:
             ws.append([sheet_name, column_name, ownership, description])
 
-    extra_langs = [lang for lang in _ordered_languages(languages) if lang != "EN"]
+    extra_langs = [
+        lang
+        for lang in _ordered_languages(languages, base_language=base_language)
+        if lang != base
+    ]
     for lang in extra_langs:
         suffix = _language_suffix(lang)
         if not suffix:
@@ -1346,6 +1413,16 @@ def build_subitem_rows(
     return rows
 
 
+def _extract_base_language(survey_payload: dict) -> str:
+    """Extract the base survey language from the payload, defaulting to EN."""
+    result = survey_payload.get("result", {})
+    if not isinstance(result, dict):
+        result = survey_payload
+    options = result.get("SurveyOptions") or {}
+    lang = _normalize_language_code(options.get("SurveyLanguage") or "")
+    return lang or "EN"
+
+
 def init_workbook_from_survey(
     survey_id: str,
     survey_payload: dict,
@@ -1389,6 +1466,8 @@ def init_workbook_from_survey(
     # Ensure no lingering Excel comments survive from older exports.
     _strip_all_comments(wb)
 
+    base_language = _extract_base_language(survey_payload)
+
     questions_map = build_question_rows(survey_id, survey_payload)
     options_map = build_option_rows(survey_id, survey_payload)
     subitems_map = build_subitem_rows(survey_id, survey_payload)
@@ -1403,9 +1482,22 @@ def init_workbook_from_survey(
         subitem_previews,
         survey_payload,
         languages=languages,
+        base_language=base_language,
     )
-    _init_options_sheet(wb, options_map, survey_payload, languages=languages)
-    _init_subitems_sheet(wb, subitems_map, survey_payload, languages=languages)
+    _init_options_sheet(
+        wb,
+        options_map,
+        survey_payload,
+        languages=languages,
+        base_language=base_language,
+    )
+    _init_subitems_sheet(
+        wb,
+        subitems_map,
+        survey_payload,
+        languages=languages,
+        base_language=base_language,
+    )
     _init_survey_metadata_sheet(wb, survey_payload, languages=languages)
     _init_embedded_data_sheet(wb, embedded_rows)
 
@@ -1428,7 +1520,7 @@ def init_workbook_from_survey(
 
     # Document the workbook layout so we no longer rely on Excel comments.
     _update_translation_key_map(wb, questions_map, options_map, subitems_map)
-    _update_instructions_sheet(wb, languages=languages)
+    _update_instructions_sheet(wb, languages=languages, base_language=base_language)
 
     xlsx_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(xlsx_path)
@@ -1442,10 +1534,15 @@ def _init_questions_sheet(
     survey_payload: dict,
     *,
     languages: Sequence[str] | None = None,
+    base_language: str = "EN",
 ) -> None:
     ws = _get_or_create_sheet(wb, QUESTION_SHEET)
 
-    text_columns = _translation_columns("Text", languages)
+    base_suffix = _language_suffix(base_language) or "en"
+    base_text_col = f"Text_{base_suffix}_MD"
+    base_html_col = f"Text_{base_suffix}_IsHTML"
+
+    text_columns = _translation_columns("Text", languages, base_language=base_language)
     required_cols = [
         "SurveyID",
         "QID",
@@ -1512,8 +1609,8 @@ def _init_questions_sheet(
                 value=row_data.data_export_tag,
             )
 
-            text_cell = ws.cell(row=row_idx, column=col_index["Text_en_MD"] + 1)
-            is_html_cell = ws.cell(row=row_idx, column=col_index["Text_en_IsHTML"] + 1)
+            text_cell = ws.cell(row=row_idx, column=col_index[base_text_col] + 1)
+            is_html_cell = ws.cell(row=row_idx, column=col_index[base_html_col] + 1)
             if (
                 text_cell.value is None or str(text_cell.value).strip() == ""
             ) and row_data.text_en_md:
@@ -1521,7 +1618,7 @@ def _init_questions_sheet(
             is_html_cell.value = bool(row_data.text_en_is_html)
 
             for lang_code, (md_col, html_col) in text_lang_columns.items():
-                if lang_code == "EN":
+                if lang_code == _normalize_language_code(base_language):
                     continue
                 lang_block = _lookup_language_block(language_blocks, lang_code)
                 if not lang_block:
@@ -1546,7 +1643,9 @@ def _init_questions_sheet(
                 ws.cell(
                     row=row_idx,
                     column=col_index["OptionsPreview"] + 1,
-                    value=_make_options_preview_formula(cell_ref),
+                    value=_make_options_preview_formula(
+                        cell_ref, base_language=base_language
+                    ),
                 )
             if "SubitemsPreview" in col_index:
                 col_letter = get_column_letter(col_index["SubitemsPreview"] + 1)
@@ -1554,7 +1653,9 @@ def _init_questions_sheet(
                 ws.cell(
                     row=row_idx,
                     column=col_index["SubitemsPreview"] + 1,
-                    value=_make_subitems_preview_formula(cell_ref),
+                    value=_make_subitems_preview_formula(
+                        cell_ref, base_language=base_language
+                    ),
                 )
         else:
             # Append new row
@@ -1584,17 +1685,17 @@ def _init_questions_sheet(
 
             text_cell = ws.cell(
                 row=new_row_idx,
-                column=col_index["Text_en_MD"] + 1,
+                column=col_index[base_text_col] + 1,
                 value=row_data.text_en_md,
             )
             is_html_cell = ws.cell(
                 row=new_row_idx,
-                column=col_index["Text_en_IsHTML"] + 1,
+                column=col_index[base_html_col] + 1,
                 value=bool(row_data.text_en_is_html),
             )
 
             for lang_code, (md_col, html_col) in text_lang_columns.items():
-                if lang_code == "EN":
+                if lang_code == _normalize_language_code(base_language):
                     continue
                 lang_block = _lookup_language_block(language_blocks, lang_code)
                 if not lang_block:
@@ -1621,7 +1722,9 @@ def _init_questions_sheet(
                 ws.cell(
                     row=new_row_idx,
                     column=col_index["OptionsPreview"] + 1,
-                    value=_make_options_preview_formula(cell_ref),
+                    value=_make_options_preview_formula(
+                        cell_ref, base_language=base_language
+                    ),
                 )
             if "SubitemsPreview" in col_index:
                 col_letter = get_column_letter(col_index["SubitemsPreview"] + 1)
@@ -1629,7 +1732,9 @@ def _init_questions_sheet(
                 ws.cell(
                     row=new_row_idx,
                     column=col_index["SubitemsPreview"] + 1,
-                    value=_make_subitems_preview_formula(cell_ref),
+                    value=_make_subitems_preview_formula(
+                        cell_ref, base_language=base_language
+                    ),
                 )
 
 
@@ -1639,9 +1744,15 @@ def _init_options_sheet(
     survey_payload: dict,
     *,
     languages: Sequence[str] | None = None,
+    base_language: str = "EN",
 ) -> None:
     ws = _get_or_create_sheet(wb, OPTIONS_SHEET)
-    label_columns = _translation_columns("Label", languages)
+    base_suffix = _language_suffix(base_language) or "en"
+    base_label_col = f"Label_{base_suffix}_MD"
+    base_label_html_col = f"Label_{base_suffix}_IsHTML"
+    label_columns = _translation_columns(
+        "Label", languages, base_language=base_language
+    )
     required_cols = [
         "SurveyID",
         "QID",
@@ -1717,8 +1828,10 @@ def _init_options_sheet(
             if row_data.code is not None:
                 ws.cell(row=row_idx, column=col_index["Code"] + 1, value=row_data.code)
 
-            label_cell = ws.cell(row=row_idx, column=col_index["Label_en_MD"] + 1)
-            is_html_cell = ws.cell(row=row_idx, column=col_index["Label_en_IsHTML"] + 1)
+            label_cell = ws.cell(row=row_idx, column=col_index[base_label_col] + 1)
+            is_html_cell = ws.cell(
+                row=row_idx, column=col_index[base_label_html_col] + 1
+            )
             if (
                 label_cell.value is None or str(label_cell.value).strip() == ""
             ) and row_data.label_en_md:
@@ -1764,12 +1877,12 @@ def _init_options_sheet(
 
             label_cell = ws.cell(
                 row=new_row_idx,
-                column=col_index["Label_en_MD"] + 1,
+                column=col_index[base_label_col] + 1,
                 value=row_data.label_en_md,
             )
             is_html_cell = ws.cell(
                 row=new_row_idx,
-                column=col_index["Label_en_IsHTML"] + 1,
+                column=col_index[base_label_html_col] + 1,
                 value=bool(row_data.label_en_is_html),
             )
             meta_cell = ws.cell(row=new_row_idx, column=col_index["MetaComment"] + 1)
@@ -1787,7 +1900,7 @@ def _init_options_sheet(
             section = "Answers"
 
         for lang_code, (md_col, html_col) in label_lang_columns.items():
-            if lang_code == "EN":
+            if lang_code == _normalize_language_code(base_language):
                 continue
             lang_block = _lookup_language_block(language_blocks, lang_code)
             if not lang_block:
@@ -1820,10 +1933,16 @@ def _init_subitems_sheet(
     survey_payload: dict,
     *,
     languages: Sequence[str] | None = None,
+    base_language: str = "EN",
 ) -> None:
     ws = _get_or_create_sheet(wb, SUBITEMS_SHEET)
     survey_id = str((survey_payload.get("result") or {}).get("SurveyID") or "").strip()
-    label_columns = _translation_columns("Label", languages)
+    base_suffix = _language_suffix(base_language) or "en"
+    base_label_col = f"Label_{base_suffix}_MD"
+    base_label_html_col = f"Label_{base_suffix}_IsHTML"
+    label_columns = _translation_columns(
+        "Label", languages, base_language=base_language
+    )
     required_cols = [
         "SurveyID",
         "QID",
@@ -1892,8 +2011,10 @@ def _init_subitems_sheet(
                 column=col_index["ExportTag"] + 1,
                 value=row_data.export_tag,
             )
-            label_cell = ws.cell(row=row_idx, column=col_index["Label_en_MD"] + 1)
-            is_html_cell = ws.cell(row=row_idx, column=col_index["Label_en_IsHTML"] + 1)
+            label_cell = ws.cell(row=row_idx, column=col_index[base_label_col] + 1)
+            is_html_cell = ws.cell(
+                row=row_idx, column=col_index[base_label_html_col] + 1
+            )
             if (
                 label_cell.value is None or str(label_cell.value).strip() == ""
             ) and row_data.label_en_md:
@@ -1930,12 +2051,12 @@ def _init_subitems_sheet(
             )
             ws.cell(
                 row=new_row_idx,
-                column=col_index["Label_en_MD"] + 1,
+                column=col_index[base_label_col] + 1,
                 value=row_data.label_en_md,
             )
             ws.cell(
                 row=new_row_idx,
-                column=col_index["Label_en_IsHTML"] + 1,
+                column=col_index[base_label_html_col] + 1,
                 value=bool(row_data.label_en_is_html),
             )
 
@@ -1950,7 +2071,7 @@ def _init_subitems_sheet(
             section = "Choices"
 
         for lang_code, (md_col, html_col) in label_lang_columns.items():
-            if lang_code == "EN":
+            if lang_code == _normalize_language_code(base_language):
                 continue
             lang_block = _lookup_language_block(language_blocks, lang_code)
             if not lang_block:
@@ -2029,9 +2150,9 @@ def _init_subitems_sheet(
                 else:
                     base_md, base_is_html = html_to_md(base_text), False
 
-                base_cell = ws.cell(row=row_idx, column=col_index["Label_en_MD"] + 1)
+                base_cell = ws.cell(row=row_idx, column=col_index[base_label_col] + 1)
                 base_html_cell = ws.cell(
-                    row=row_idx, column=col_index["Label_en_IsHTML"] + 1
+                    row=row_idx, column=col_index[base_label_html_col] + 1
                 )
                 if base_cell.value is None or str(base_cell.value).strip() == "":
                     base_cell.value = base_md
@@ -2039,7 +2160,7 @@ def _init_subitems_sheet(
 
             # Non-base languages: fill only when columns exist + cell empty
             for lang_code, (md_col, html_col) in label_lang_columns.items():
-                if lang_code == "EN":
+                if lang_code == _normalize_language_code(base_language):
                     continue
                 lang_block = _lookup_language_block(language_blocks, lang_code)
                 if not lang_block:
@@ -2557,8 +2678,6 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         "QuestionType": 14.5,
         "DataExportTag": 19.0,
         "QuestionKey": 14.0,
-        "Text_en_MD": 76.0,
-        "Text_en_IsHTML": 16.0,
         "OptionsPreview": 60.0,
         "SubitemsPreview": 60.0,
         "InPre": 8.0,
@@ -2681,8 +2800,6 @@ def _format_options_sheet(ws: Worksheet) -> None:
         "QuestionType": 14.0,
         "ExportTag": 19.0,
         "Code": 6.0,
-        "Label_en_MD": 40.0,
-        "Label_en_IsHTML": 17.0,
         "MetaComment": 42.0,
     }
     for idx, name in enumerate(headers, start=1):
@@ -2767,8 +2884,6 @@ def _format_subitems_sheet(ws: Worksheet) -> None:
         "Field": 9.0,
         "QuestionType": 14.0,
         "ExportTag": 19.0,
-        "Label_en_MD": 40.0,
-        "Label_en_IsHTML": 17.0,
     }
     for idx, name in enumerate(headers, start=1):
         key = str(name or "")
@@ -2998,6 +3113,21 @@ def _populate_system_sheet(wb: Workbook, survey_id: str, survey_payload: dict) -
         ws.add_table(table)
 
 
+def _find_base_text_col(headers: List[str], prefix: str) -> tuple[str, str]:
+    """Find the first ``{prefix}_*_MD`` column and its ``_IsHTML`` companion.
+
+    Returns ``(md_col, html_col)`` — e.g. ``("Text_cs_MD", "Text_cs_IsHTML")``.
+    Falls back to ``{prefix}_en_MD`` when no match is found.
+    """
+    fallback_md = f"{prefix}_en_MD"
+    fallback_html = f"{prefix}_en_IsHTML"
+    for h in headers:
+        if h.startswith(f"{prefix}_") and h.endswith("_MD"):
+            suffix = h[len(prefix) + 1 : -len("_MD")]
+            return h, f"{prefix}_{suffix}_IsHTML"
+    return fallback_md, fallback_html
+
+
 def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
     """Read QuestionRow objects from an existing workbook.
 
@@ -3038,6 +3168,8 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
     headers, data_rows = _iter_sheet_rows(ws)
     idx = {name: i for i, name in enumerate(headers)}
 
+    text_md_col, text_html_col = _find_base_text_col(headers, "Text")
+
     def _get(row, name, default=None):
         col = idx.get(name)
         if col is None or col >= len(row):
@@ -3060,8 +3192,8 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
             question_type=str(_get(row, "QuestionType") or "").strip(),
             data_export_tag=str(_get(row, "DataExportTag") or "").strip(),
             question_key=str(_get(row, "QuestionKey") or "").strip() or None,
-            text_en_md=str(_get(row, "Text_en_MD") or ""),
-            text_en_is_html=bool(_get(row, "Text_en_IsHTML") or False),
+            text_en_md=str(_get(row, text_md_col) or ""),
+            text_en_is_html=bool(_get(row, text_html_col) or False),
             in_pre=bool(_get(row, "InPre") or False),
             in_post=bool(_get(row, "InPost") or False),
             # Question wording is always editable via Excel; only options/subitems
@@ -3112,6 +3244,8 @@ def load_options_from_workbook(xlsx_path: Path) -> Dict[Tuple[str, str], OptionR
     headers, data_rows = _iter_sheet_rows(ws)
     idx = {name: i for i, name in enumerate(headers)}
 
+    label_md_col, label_html_col = _find_base_text_col(headers, "Label")
+
     def _get(row, name, default=None):
         col = idx.get(name)
         if col is None or col >= len(row):
@@ -3137,8 +3271,8 @@ def load_options_from_workbook(xlsx_path: Path) -> Dict[Tuple[str, str], OptionR
             question_type=str(_get(row, "QuestionType") or "").strip(),
             export_tag=export_tag,
             code=str(_get(row, "Code") or "").strip() or None,
-            label_en_md=str(_get(row, "Label_en_MD") or ""),
-            label_en_is_html=bool(_get(row, "Label_en_IsHTML") or False),
+            label_en_md=str(_get(row, label_md_col) or ""),
+            label_en_is_html=bool(_get(row, label_html_col) or False),
             externally_managed_by=_is_externally_managed_question(export_tag),
         )
     return result
@@ -3183,6 +3317,8 @@ def load_subitems_from_workbook(xlsx_path: Path) -> Dict[Tuple[str, str], Subite
     headers, data_rows = _iter_sheet_rows(ws)
     idx = {name: i for i, name in enumerate(headers)}
 
+    label_md_col, label_html_col = _find_base_text_col(headers, "Label")
+
     def _get(row, name, default=None):
         col = idx.get(name)
         if col is None or col >= len(row):
@@ -3211,8 +3347,8 @@ def load_subitems_from_workbook(xlsx_path: Path) -> Dict[Tuple[str, str], Subite
             field=field,
             question_type=str(_get(row, "QuestionType") or "").strip(),
             export_tag=str(_get(row, "ExportTag") or "").strip(),
-            label_en_md=str(_get(row, "Label_en_MD") or ""),
-            label_en_is_html=bool(_get(row, "Label_en_IsHTML") or False),
+            label_en_md=str(_get(row, label_md_col) or ""),
+            label_en_is_html=bool(_get(row, label_html_col) or False),
         )
     return result
 
