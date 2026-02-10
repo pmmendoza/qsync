@@ -365,6 +365,37 @@ def determine_changed_records(
     return changed
 
 
+def _should_refresh_flow_payload(
+    summary: Dict[str, Any],
+    previous_records: Dict[str, dict],
+) -> bool:
+    """Return True when we should fetch SurveyFlow for this survey.
+
+    Optimization: if `lastModified` is unchanged and we already have `cntry`
+    cached, re-use the cached value and skip the extra API call.
+    """
+    survey_id = str(summary.get("id") or "").strip()
+    if not survey_id:
+        return False
+
+    previous = previous_records.get(survey_id)
+    if not previous:
+        return True
+
+    current_last_modified = str(summary.get("lastModified") or "").strip()
+    previous_last_modified = str(previous.get("lastModified") or "").strip()
+    if not current_last_modified or not previous_last_modified:
+        return True
+    if current_last_modified != previous_last_modified:
+        return True
+
+    cached_cntry = str(previous.get("cntry") or "").strip()
+    if not cached_cntry:
+        return True
+
+    return False
+
+
 def build_inventory_record(
     summary: dict,
     detail: dict,
@@ -736,22 +767,26 @@ def refresh_inventory(
             summaries = fetch_surveys(base_url, headers)
         inventory = []
         payload_cache: Dict[str, dict] = {}
+        reused_cached_flow_count = 0
         for summary in _track(summaries, description="Refreshing inventory"):
             survey_id = summary.get("id")
             if not survey_id:
                 continue
             payload = None
             flow_payload = None
-            try:
-                flow_payload = fetch_survey_flow_payload(base_url, headers, survey_id)
-            except requests.HTTPError as exc:
-                msg = (
-                    f"[inventory] WARNING: Failed to fetch SurveyFlow for {survey_id}: {exc}. "
-                    "Next: verify permissions for the survey and retry."
-                )
-                warnings.append(msg)
-                if not quiet:
-                    print(msg)
+            if _should_refresh_flow_payload(summary, previous_records):
+                try:
+                    flow_payload = fetch_survey_flow_payload(base_url, headers, survey_id)
+                except requests.HTTPError as exc:
+                    msg = (
+                        f"[inventory] WARNING: Failed to fetch SurveyFlow for {survey_id}: {exc}. "
+                        "Next: verify permissions for the survey and retry."
+                    )
+                    warnings.append(msg)
+                    if not quiet:
+                        print(msg)
+            else:
+                reused_cached_flow_count += 1
             record = compose_inventory_record(
                 summary,
                 {},
@@ -763,6 +798,10 @@ def refresh_inventory(
                 flow_routing_warnings=flow_routing_warnings,
             )
             inventory.append(record)
+        if reused_cached_flow_count and not quiet:
+            print(
+                f"[inventory] Reused cached country routing for {reused_cached_flow_count} unchanged survey(s)."
+            )
         if counts_scope in {"focal", "full"}:
             inventory_map = {
                 record.get("id"): record for record in inventory if record.get("id")
