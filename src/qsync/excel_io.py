@@ -860,6 +860,36 @@ def _reorder_columns(ws: Worksheet, ordered_headers: List[str]) -> None:
         ws.append(row_values)
 
 
+def _drop_stale_translation_columns(
+    ws: Worksheet,
+    required_cols: List[str],
+    prefixes: Sequence[str] = ("Text", "Label"),
+) -> None:
+    """Remove translation columns (``{prefix}_*_MD``, ``{prefix}_*_IsHTML``)
+    that are NOT in *required_cols*.
+
+    This cleans up columns left behind by a previous workbook init that used a
+    different base language (e.g. ``Text_en_MD`` when the survey base is now FR).
+    """
+    headers, _ = _iter_sheet_rows(ws)
+    if not headers:
+        return
+    required_set = set(required_cols)
+    stale_indices: list[int] = []
+    for idx, name in enumerate(headers):
+        header = str(name or "")
+        for prefix in prefixes:
+            if header.startswith(f"{prefix}_") and (
+                header.endswith("_MD") or header.endswith("_IsHTML")
+            ):
+                if header not in required_set:
+                    stale_indices.append(idx)
+                break
+    # Delete rightmost first so indices stay valid.
+    for col_idx in sorted(stale_indices, reverse=True):
+        ws.delete_cols(col_idx + 1)
+
+
 def _ensure_columns(ws: Worksheet, required: List[str]) -> Dict[str, int]:
     """Ensure required columns exist in order; return mapping name -> 0-based index."""
 
@@ -1556,6 +1586,7 @@ def _init_questions_sheet(
         "InPre",
         "InPost",
     ]
+    _drop_stale_translation_columns(ws, required_cols, prefixes=["Text"])
     col_index = _ensure_columns(ws, required_cols)
 
     # Build index of existing rows by QID
@@ -1769,6 +1800,7 @@ def _init_options_sheet(
         disp_idx = headers.index("DisplayPreview") + 1
         ws.delete_cols(disp_idx)
 
+    _drop_stale_translation_columns(ws, required_cols, prefixes=["Label"])
     col_index = _ensure_columns(ws, required_cols)
 
     headers, data_rows = _iter_sheet_rows(ws)
@@ -1952,6 +1984,7 @@ def _init_subitems_sheet(
         "ExportTag",
         *label_columns,
     ]
+    _drop_stale_translation_columns(ws, required_cols, prefixes=["Label"])
     col_index = _ensure_columns(ws, required_cols)
 
     headers, data_rows = _iter_sheet_rows(ws)
