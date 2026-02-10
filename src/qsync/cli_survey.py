@@ -1234,7 +1234,11 @@ def handle_slice_language(args: argparse.Namespace) -> None:
                 f'{new_id} --description "slice-language {source_id} -> {target_lang}"'
             ),
         )
-        info(None, f"  qsync translations pull --survey-id {new_id}")
+        info(None, f"  qsync items pull --survey-id {new_id}")
+        info(
+            None,
+            f"  qsync translations pull --survey-id {new_id}  # cache refresh only",
+        )
 
         if verify_parity:
             from .survey_parity import compare_qsf_parity

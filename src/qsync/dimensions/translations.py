@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Sequence
 
 
 from .types import DimensionChanges
@@ -15,9 +15,41 @@ from .translations_core import (
     push_translations,
     _resolve_stage_languages,
 )
-from .translations_workbook_extract import diff_workbook_vs_cache
+from .translations_workbook_extract import (
+    diff_workbook_vs_cache,
+    resolve_languages_from_workbook,
+)
+from .translations_language_blocks import (
+    get_base_language as get_base_language_from_options,
+    list_enabled_languages as list_enabled_languages_from_options,
+)
+from openpyxl import load_workbook
 
 logger = logging.getLogger(__name__)
+
+
+def _non_base_enabled_languages(survey_payload: dict) -> list[str]:
+    base_language = get_base_language_from_options(survey_payload)
+    enabled = list_enabled_languages_from_options(survey_payload)
+    return [
+        lang
+        for lang in enabled
+        if not base_language or str(lang).strip().upper() != base_language
+    ]
+
+
+def _stale_workbook_languages(
+    *,
+    workbook_languages: Sequence[str],
+    enabled_non_base: Sequence[str],
+) -> list[str]:
+    enabled_set = {str(lang).strip().upper() for lang in enabled_non_base if lang}
+    stale: list[str] = []
+    for lang in workbook_languages:
+        code = str(lang).strip().upper()
+        if code and code not in enabled_set and code not in stale:
+            stale.append(code)
+    return stale
 
 
 def detect_unstaged_changes(
@@ -32,14 +64,14 @@ def detect_unstaged_changes(
         return DimensionChanges(
             dimension="translations",
             has_changes=False,
-            change_summary="✗ Error",
+            change_summary="No changes",
             affected_qids=set(),
-            error_detail=(
+            warning_detail=(
                 f"Workbook not found at {workbook_path}. "
                 f"Run: qsync items pull --survey-id {survey_id}"
             ),
             safe_to_autofix=True,
-            status_kind="error",
+            status_kind="none",
             edit_count=0,
         )
 
@@ -51,13 +83,43 @@ def detect_unstaged_changes(
             workbook_path,
             explicit_languages=None,
             allow_empty=True,
+            emit_warnings=False,
         )
+        workbook_languages: list[str] = []
+        warning_detail: str | None = None
+        try:
+            wb = load_workbook(workbook_path, data_only=True)
+            workbook_languages = resolve_languages_from_workbook(wb)
+        except Exception as exc:
+            logger.debug(
+                "[sync:translations] Could not read workbook languages for %s: %s",
+                survey_id,
+                exc,
+            )
+        base_language = get_base_language_from_options(survey.payload)
+        workbook_non_base = [
+            lang
+            for lang in workbook_languages
+            if not base_language or str(lang).strip().upper() != base_language
+        ]
+        enabled_non_base = _non_base_enabled_languages(survey.payload)
+        stale_languages = _stale_workbook_languages(
+            workbook_languages=workbook_non_base,
+            enabled_non_base=enabled_non_base,
+        )
+        if stale_languages:
+            warning_detail = (
+                "Workbook contains translation columns for languages not enabled online: "
+                + ", ".join(stale_languages)
+                + f". Run: qsync items pull --survey-id {survey_id}"
+            )
         if not languages:
             return DimensionChanges(
                 dimension="translations",
                 has_changes=False,
                 change_summary="No translations (monolingual)",
                 affected_qids=set(),
+                warning_detail=warning_detail,
                 status_kind="none",
                 edit_count=0,
             )
@@ -88,6 +150,7 @@ def detect_unstaged_changes(
             has_changes=True,
             change_summary=f"⚡ Unstaged: {len(changes)} change(s)",
             affected_qids=affected_qids,
+            warning_detail=warning_detail,
             status_kind="unstaged",
             edit_count=len(changes),
         )
@@ -97,6 +160,7 @@ def detect_unstaged_changes(
         has_changes=False,
         change_summary="No changes",
         affected_qids=set(),
+        warning_detail=warning_detail,
         status_kind="none",
         edit_count=0,
     )

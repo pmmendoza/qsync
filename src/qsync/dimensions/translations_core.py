@@ -276,31 +276,47 @@ def _resolve_stage_languages(
     explicit_languages: Sequence[str] | None,
     *,
     allow_empty: bool = False,
+    emit_warnings: bool = True,
 ) -> list[str]:
     base_language = get_base_language_from_options(survey_payload)
     if explicit_languages:
         langs = normalize_language_list(explicit_languages)
     else:
-        workbook_langs: list[str] = []
+        enabled = list_enabled_languages_from_options(survey_payload)
+        enabled_non_base = [
+            lang
+            for lang in normalize_language_list(enabled)
+            if not base_language or lang != base_language
+        ]
+        langs = list(enabled_non_base)
         try:
             wb = load_workbook(workbook_path, data_only=True)
             workbook_langs = resolve_languages_from_workbook(wb)
-        except Exception as exc:
-            warn("[qsync:translations]", f"Could not read workbook languages: {exc}")
-        workbook_langs = [
-            lang
-            for lang in normalize_language_list(workbook_langs)
-            if not base_language or lang != base_language
-        ]
-        if workbook_langs:
-            langs = workbook_langs
-        else:
-            enabled = list_enabled_languages_from_options(survey_payload)
-            langs = [
+            workbook_non_base = [
                 lang
-                for lang in normalize_language_list(enabled)
+                for lang in normalize_language_list(workbook_langs)
                 if not base_language or lang != base_language
             ]
+            if workbook_non_base:
+                stale = [lang for lang in workbook_non_base if lang not in set(langs)]
+                if stale and emit_warnings:
+                    warn(
+                        "[qsync:translations]",
+                        "Ignoring workbook-only translation columns not enabled online: "
+                        + ", ".join(stale),
+                    )
+                missing = [lang for lang in langs if lang not in set(workbook_non_base)]
+                if missing and emit_warnings:
+                    warn(
+                        "[qsync:translations]",
+                        "Workbook is missing columns for enabled translation languages: "
+                        + ", ".join(missing)
+                        + ". Run `qsync items pull --survey-id "
+                        + survey_id
+                        + "` to refresh.",
+                    )
+        except Exception as exc:
+            warn("[qsync:translations]", f"Could not read workbook languages: {exc}")
     if base_language and base_language in langs:
         warn(
             "[qsync:translations]",

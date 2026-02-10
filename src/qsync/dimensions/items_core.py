@@ -679,7 +679,8 @@ def init_survey_to_excel(
             "Next: re-run `qsync init --survey-id ...` and re-check diffs before editing/pushing."
         )
 
-    # Auto-detect enabled languages if not explicitly specified
+    # Auto-detect enabled languages only when caller did not specify languages.
+    # Passing an explicit empty list means "base language only".
     if languages is None:
         from ..translations import list_enabled_languages
 
@@ -695,7 +696,7 @@ def init_survey_to_excel(
         survey_id,
         survey.payload,
         Path(xlsx_path),
-        languages=list(languages) if languages else None,
+        languages=list(languages) if languages is not None else None,
     )
     print(f"[qsync:init] Updated workbook at {xlsx_path}")
 

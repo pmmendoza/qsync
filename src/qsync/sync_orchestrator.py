@@ -164,7 +164,7 @@ def _run_autofix(dimension: str, survey_id: str) -> str:
             for lang in list_enabled_languages_from_options(cache.payload)
             if not base_lang or lang != base_lang
         ]
-        init_survey_to_excel(survey_id, xlsx_path, languages=languages or None)
+        init_survey_to_excel(survey_id, xlsx_path, languages=languages)
         return f"Refreshed translation columns in {xlsx_path}"
     if dimension == "eos":
         from .eos_messages import pull_eos_messages
