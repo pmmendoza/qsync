@@ -101,8 +101,8 @@ For a detailed “how to read” guide (question metadata format, logic highligh
 
 Each workbook ships with an `Instructions` sheet regenerated at every `qsync items pull` (or legacy `qsync init`). Highlights:
 
-- **Questions sheet** – 1 row per question; edit `Text_en_MD` or toggle `Text_en_IsHTML`. Use flag columns like `InPre`, `InPost`, `InFollowUp` for custom filtering.
-- **Options sheet** – 1 row per choice/scale point; edit `Label_en_MD` (Markdown) or mark `Label_en_IsHTML`. `MetaComment` conveys ownership (e.g. “Externally managed by recognition script”).
+- **Questions sheet** – 1 row per question; edit `Text_{base}_MD` (e.g. `Text_en_MD` for English‑base surveys) or toggle `Text_{base}_IsHTML`. Use flag columns like `InPre`, `InPost`, `InFollowUp` for custom filtering.
+- **Options sheet** – 1 row per choice/scale point; edit `Label_{base}_MD` (Markdown) or mark `Label_{base}_IsHTML`. `MetaComment` conveys ownership (e.g. "Externally managed by recognition script").
 - **Subitems sheet** – 1 row per matrix row/sub-statement; same Markdown/HTML toggles as Options.
 - **Embedded_Data sheet** – 1 row per embedded field; edit `Value` for defaults. Fields without defaults show `---` and require `qsync apply --allow-dangerous` to stage. `WrittenByQIDs` lists JS writers (map via `survey_js/survey_qid_js_map.csv`).
 - **Embedded field renames** – use CLI staging for field-name changes:

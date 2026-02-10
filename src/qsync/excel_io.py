@@ -3179,7 +3179,7 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
         - `question_type`: Question type (MC, TE, Matrix, etc.).
         - `data_export_tag`: The DataExportTag / variable name.
         - `question_key`: Optional human-friendly key.
-        - `text_en_md`: English wording in Markdown or raw HTML.
+        - `text_en_md`: Base-language wording in Markdown or raw HTML.
         - `text_en_is_html`: True if `text_en_md` is raw HTML.
         - `in_pre`: True if included in pre-treatment survey.
         - `in_post`: True if included in post-treatment survey.
@@ -3255,7 +3255,7 @@ def load_options_from_workbook(xlsx_path: Path) -> Dict[Tuple[str, str], OptionR
         - `choice_id`: The choice/answer ID within the question.
         - `question_type`: Question type (MC, Matrix, etc.).
         - `code`: The recode value (if set).
-        - `label_en_md`: English label in Markdown or raw HTML.
+        - `label_en_md`: Base-language label in Markdown or raw HTML.
         - `label_en_is_html`: True if `label_en_md` is raw HTML.
         - `externally_managed_by`: Script path if managed externally (e.g., recognition).
 
@@ -3328,7 +3328,7 @@ def load_subitems_from_workbook(xlsx_path: Path) -> Dict[Tuple[str, str], Subite
         - `qid`: The question ID.
         - `answer_id`: The subitem/statement ID within the question.
         - `question_type`: Question type (Matrix, Slider, etc.).
-        - `label_en_md`: English label in Markdown or raw HTML.
+        - `label_en_md`: Base-language label in Markdown or raw HTML.
         - `label_en_is_html`: True if `label_en_md` is raw HTML.
         - `field`: Field disambiguator (Answer | Label). Label rows are ignored here.
 

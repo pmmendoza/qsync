@@ -32,9 +32,11 @@ Columns where you are expected to edit text:
 
 - Questions sheet:
   - `QuestionKey`
-  - `Text_en_MD`
+  - `Text_{base}_MD` (e.g. `Text_en_MD` for English‑base surveys, `Text_fr_MD` for French‑base)
 - Options sheet:
-  - `Label_en_MD`
+  - `Label_{base}_MD` (same naming convention)
+
+The base‑language suffix is determined by the survey's `SurveyLanguage` setting in Qualtrics.
 
 Formatting:
 
@@ -46,8 +48,8 @@ Formatting:
 
 Columns representing booleans or runtime flags:
 
-- `Text_en_IsHTML`
-- `Label_en_IsHTML`
+- `Text_{base}_IsHTML` (e.g. `Text_en_IsHTML`)
+- `Label_{base}_IsHTML` (e.g. `Label_en_IsHTML`)
 - `InPre`
 - `InPost`
 
@@ -55,7 +57,7 @@ Formatting:
 
 - Default background.
 - Data validation as a drop‑down list: `TRUE` / `FALSE` (blank allowed).
-- Users can additionally apply “checkbox” cell formatting in Excel; `qsync` stores these as boolean‑interpretable values.
+- Users can additionally apply "checkbox" cell formatting in Excel; `qsync` stores these as boolean‑interpretable values.
 - Header comments describing what the flag controls.
 
 ---
@@ -64,12 +66,12 @@ Formatting:
 
 Cells where the content is treated as raw HTML instead of Markdown should be visually distinct.
 
-- When `Text_en_IsHTML` is `TRUE`:
-  - The corresponding `Text_en_MD` cell is filled with a light highlight colour (e.g. pale yellow/orange).
+- When `Text_{base}_IsHTML` is `TRUE`:
+  - The corresponding `Text_{base}_MD` cell is filled with a light highlight colour (e.g. pale yellow/orange).
   - Header comment explains that no Markdown conversion is applied for these cells.
 
-- When `Label_en_IsHTML` is `TRUE`:
-  - The corresponding `Label_en_MD` cell is highlighted the same way.
+- When `Label_{base}_IsHTML` is `TRUE`:
+  - The corresponding `Label_{base}_MD` cell is highlighted the same way.
 
 This makes it obvious which cells contain fragile HTML snippets (e.g. links, spans, IDs) where users must be careful not to break attributes or JS hooks.
 
@@ -89,13 +91,13 @@ Identification:
 Formatting for externally managed options:
 
 - Option rows in the `Options` sheet:
-  - Label cell (`Label_en_MD`) has a grey background, matching other system‑owned cells.
-  - A cell comment is attached: “Externally managed – edit via `<script>.py`, not in Excel.”
+  - Label cell (`Label_{base}_MD`) has a grey background, matching other system‑owned cells.
+  - A cell comment is attached: "Externally managed – edit via `<script>.py`, not in Excel."
 - These options are skipped by `qsync apply`; scripts such as `update_newsmem_recognition.py` and `update_salience_items.py` remain responsible for their content.
 
 Question rows for these items:
 
-- Question text (`Text_en_MD`) remains editable and is not marked as externally managed.
+- Question text (`Text_{base}_MD`) remains editable and is not marked as externally managed.
 
 ---
 
@@ -108,11 +110,11 @@ To help locate items that differ between Excel and the last synced survey JSON, 
   - `Options` sheet.
 - When `preview` detects a difference:
   - For questions:
-    - The row’s `Dirty` cell is set to `Y`.
-    - The `Text_en_MD` cell is filled with a “dirty” highlight colour (distinct from the HTML colour).
+    - The row's `Dirty` cell is set to `Y`.
+    - The `Text_{base}_MD` cell is filled with a "dirty" highlight colour (distinct from the HTML colour).
   - For options:
-    - The row’s `Dirty` cell is set to `Y`.
-    - The `Label_en_MD` cell is highlighted similarly.
+    - The row's `Dirty` cell is set to `Y`.
+    - The `Label_{base}_MD` cell is highlighted similarly.
 
 Behaviour:
 
@@ -170,7 +172,7 @@ To keep things readable:
 
 - For all columns **except** the main text:
   - Column width is auto‑sized based on the longest cell (capped at a reasonable maximum).
-- For `Text_en_MD` and `Label_en_MD`:
+- For `Text_{base}_MD` and `Label_{base}_MD`:
   - Width remains at a moderate default, with wrapping enabled, so long texts are visible without making the sheet horizontally unwieldy.
 
 ---
@@ -179,12 +181,14 @@ To keep things readable:
 
 - **Editable by user:**
   - `QuestionKey`
-  - `Text_en_MD` (subject to `Text_en_IsHTML`)
-  - `Label_en_MD` (subject to `Label_en_IsHTML`, except externally managed options)
+  - `Text_{base}_MD` (subject to `Text_{base}_IsHTML`)
+  - `Label_{base}_MD` (subject to `Label_{base}_IsHTML`, except externally managed options)
   - `InPre`, `InPost`
 
 - **Editable, but advanced:**
-  - `Text_en_IsHTML`, `Label_en_IsHTML` (only when you intentionally need raw HTML).
+  - `Text_{base}_IsHTML`, `Label_{base}_IsHTML` (only when you intentionally need raw HTML).
+
+> **Note on `{base}`:** The `{base}` placeholder above refers to the survey's base language code (e.g. `en`, `fr`, `cs`, `nl`). For an English‑base survey the columns are `Text_en_MD`, `Label_en_MD`, etc. For a French‑base survey they become `Text_fr_MD`, `Label_fr_MD`, etc. The base language is determined by the `SurveyLanguage` setting in Qualtrics.
 
 - **Read‑only (should not be edited):**
   - `SurveyID`, `QID`, `BlockName`, `QuestionType`, `DataExportTag`

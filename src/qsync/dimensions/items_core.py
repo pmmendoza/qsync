@@ -777,7 +777,7 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
     """Mark dirty rows/cells in the Excel workbook based on preview changes.
 
     - Adds/updates a `Dirty` column on Questions/Options sheets.
-    - Highlights the edited field (Text_en_MD or Label_en_MD).
+    - Highlights the edited field (Text_*_MD or Label_*_MD).
     """
 
     if not changes:
