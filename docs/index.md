@@ -13,8 +13,10 @@ Most files here were migrated from this monorepo’s `appendices/` directory so 
 
 - Items (Excel wording): `workflows/items.md`
 - JavaScript (Question JS): `workflows/js.md`
+- EOS (End-of-Survey library messages): `workflows/eos.md`
 - Flow (Survey routing/branching): `workflows/flow.md`
 - Translations (workbook-based): `workflows/translations.md`
+- Translation consistency (single vs split surveys): `workflows/translation-consistency.md`
 - Survey Master (bulk metadata/options/status): `workflows/survey-master.md`
 - Cross-account copy: `workflows/copy-cross-account.md`
 

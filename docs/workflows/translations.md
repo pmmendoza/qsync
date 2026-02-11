@@ -4,6 +4,9 @@ _Migrated from `appendices/qsync_translations_workflow.md` (monorepo) so the sta
 
 This document describes the canonical workflow for Qualtrics survey translations managed by `qsync`.
 
+For **split/sliced survey families** (one SurveyID per language/country), see:
+`translation-consistency.md` (explains how translations become base-language “items” after slicing).
+
 ## Migration notes
 
 - **2026-01-23:** Stage 1 introduces the workbook → cached survey definition → question push flow for

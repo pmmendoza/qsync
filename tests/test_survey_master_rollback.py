@@ -61,25 +61,18 @@ class SurveyMasterRollbackTests(SurveyMasterTestBase):
         def _mock_fetch_endpoint(
             _base_url: str, _headers: dict, _survey_id: str, endpoint: str
         ) -> tuple[dict, str]:
-            if endpoint == "status":
-                return {"isActive": True}, "ts"
             if endpoint == "metadata":
                 return {"SurveyName": "Old Survey Name"}, "ts"
-            if endpoint == "options":
-                return {}, "ts"
-            if endpoint == "versions":
-                return {"versionID": "SV_V1"}, "ts"
             raise AssertionError(endpoint)
 
-        with patch("qsync.survey_master._fetch_survey_name", return_value="Survey"):
+        with patch(
+            "qsync.survey_master._fetch_endpoint", side_effect=_mock_fetch_endpoint
+        ):
             with patch(
-                "qsync.survey_master._fetch_endpoint", side_effect=_mock_fetch_endpoint
+                "qsync.survey_master.get_client_config",
+                return_value=("example.qualtrics.com", {"X-API-TOKEN": "test"}),
             ):
-                with patch(
-                    "qsync.survey_master.get_client_config",
-                    return_value=("example.qualtrics.com", {"X-API-TOKEN": "test"}),
-                ):
-                    snapshot_path = capture_pre_apply_snapshot("SV_001", changes)
+                snapshot_path = capture_pre_apply_snapshot("SV_001", changes)
 
         self.assertTrue(snapshot_path.exists())
         data = json.loads(snapshot_path.read_text(encoding="utf-8"))

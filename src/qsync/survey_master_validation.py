@@ -33,7 +33,7 @@ def _validate_boolean(value: str, field_info: dict) -> Tuple[bool, Optional[str]
     if not value:
         return (True, None)  # Empty is OK
 
-    if value.lower() in ("true", "false", "yes", "no"):
+    if value.lower() in ("true", "false", "yes", "no", "1", "0", "on", "off", "t", "f"):
         return (True, None)
 
     return (False, f"Expected 'true' or 'false', got '{value}'")
@@ -48,8 +48,14 @@ def _validate_string(value: str, field_info: dict) -> Tuple[bool, Optional[str]]
     allowed_values = field_info.get("allowed_values", "").strip()
     if allowed_values:
         allowed_list = [v.strip() for v in allowed_values.split(";")]
-        if value not in allowed_list:
-            return (False, f"Must be one of: {', '.join(allowed_list)}")
+        # Special-case boolean-ish enums, since spreadsheets often coerce to TRUE/FALSE.
+        allowed_lower = {v.lower() for v in allowed_list if v}
+        if allowed_lower == {"true", "false"}:
+            if value.strip().lower() not in allowed_lower:
+                return (False, "Must be one of: true, false")
+        else:
+            if value not in allowed_list:
+                return (False, f"Must be one of: {', '.join(allowed_list)}")
 
     # Check max length if specified (can be inferred from format_notes)
     format_notes = field_info.get("format_notes", "").lower()

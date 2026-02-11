@@ -119,8 +119,8 @@ class SurveyMasterParsingTests(unittest.TestCase):
 
             # Both should be equal (same file hash)
             self.assertEqual(version1, version2)
-            # Should contain date and hash
-            self.assertRegex(version1, r"^\d{8}-[0-9a-f]{8}$")
+            # Stable hash only (no date prefix)
+            self.assertRegex(version1, r"^[0-9a-f]{8}$")
 
     def test_compute_schema_version_missing_csv_uses_packaged_json(self) -> None:
         """Falls through to packaged JSON when workspace CSV is missing."""
@@ -136,7 +136,7 @@ class SurveyMasterParsingTests(unittest.TestCase):
                 version = _compute_schema_version()
 
             # Should return a valid hash from packaged JSON, not "unknown"
-            self.assertRegex(version, r"^\d{8}-[0-9a-f]{8}$")
+            self.assertRegex(version, r"^[0-9a-f]{8}$")
 
     def test_parse_mapping_falls_through_to_packaged_json(self) -> None:
         """Uses packaged JSON when no workspace CSV exists."""

@@ -65,6 +65,39 @@ class SurveyMasterValidationTests(unittest.TestCase):
 
         self.assertEqual(len(errors), 0)
 
+    def test_validate_csv_accepts_uppercase_boolean_enums(self) -> None:
+        """Spreadsheet-style TRUE/FALSE should be accepted for true/false enum fields."""
+        from qsync.survey_master import validate_master_csv
+
+        headers = ["SurveyID", "BackButton", "SaveAndContinue"]
+        rows = [
+            {"SurveyID": "SV_001", "BackButton": "FALSE", "SaveAndContinue": "TRUE"},
+        ]
+
+        mapping = {
+            "SurveyID": {"field_name": "SurveyID"},
+            "BackButton": {
+                "field_name": "BackButton",
+                "survey_master": "write",
+                "data_type": "string",
+                "allowed_values": "true; false",
+            },
+            "SaveAndContinue": {
+                "field_name": "SaveAndContinue",
+                "survey_master": "write",
+                "data_type": "string",
+                "allowed_values": "true; false",
+            },
+        }
+
+        with patch("qsync.survey_master._parse_mapping_csv", return_value=mapping):
+            errors = validate_master_csv(headers, rows)
+
+        self.assertEqual(errors, [])
+        # validate_master_csv normalizes these in-place to prevent spurious diffs.
+        self.assertEqual(rows[0]["BackButton"], "false")
+        self.assertEqual(rows[0]["SaveAndContinue"], "true")
+
     def test_compute_diff_no_changes(self) -> None:
         """Identical CSV/snapshot → no changes."""
         from qsync.survey_master import compute_diff
@@ -118,6 +151,46 @@ class SurveyMasterValidationTests(unittest.TestCase):
 
         # Should have empty changes
         self.assertEqual(len(diff.get("changes", [])), 0)
+
+    def test_compute_diff_ignores_boolean_casing_after_validation(self) -> None:
+        """If user CSV has TRUE/FALSE, validation normalizes and diff should not show a change."""
+        from qsync.survey_master import validate_master_csv, compute_diff
+
+        headers = ["SurveyID", "BackButton"]
+        rows = [{"SurveyID": "SV_001", "BackButton": "FALSE"}]
+
+        snapshot = {
+            "sections": {
+                "options": {"data": {"BackButton": "false"}},
+            }
+        }
+
+        mapping = {
+            "SurveyID": {"field_name": "SurveyID"},
+            "BackButton": {
+                "field_name": "BackButton",
+                "domain": "survey_options",
+                "survey_master": "write",
+                "data_type": "string",
+                "allowed_values": "true; false",
+            },
+        }
+
+        with patch("qsync.survey_master._parse_mapping_csv", return_value=mapping):
+            errors = validate_master_csv(headers, rows)
+            self.assertEqual(errors, [])
+
+            with patch("qsync.survey_master.load_snapshot", return_value=snapshot):
+                with patch(
+                    "qsync.survey_master._derive_endpoint", return_value="options"
+                ):
+                    with patch(
+                        "qsync.survey_master._extract_value_from_snapshot",
+                        return_value="false",
+                    ):
+                        diff = compute_diff("SV_001", rows[0])
+
+        self.assertEqual(diff.get("changes", []), [])
 
     def test_compute_diff_metadata_change(self) -> None:
         """Changed metadata field detected."""

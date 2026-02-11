@@ -444,7 +444,7 @@ Audit logs are written as JSONL under the workspace root:
 ## Documentation
 
 - [Docs index](docs/index.md)
-- Workflows: [Items](docs/workflows/items.md), [JavaScript](docs/workflows/js.md), [Translations](docs/workflows/translations.md), [Survey Master](docs/workflows/survey-master.md)
+- Workflows: [Items](docs/workflows/items.md), [JavaScript](docs/workflows/js.md), [EOS](docs/workflows/eos.md), [Translations](docs/workflows/translations.md), [Translation consistency](docs/workflows/translation-consistency.md), [Survey Master](docs/workflows/survey-master.md)
 - References: [Excel format](docs/reference/excel-format.md), [Push safeguards](docs/reference/push-safeguards.md), [Publishing mechanics](docs/reference/publishing-mechanics.md)
 - [Translation export](docs/features/translation-export.md)
 - [Troubleshooting](docs/troubleshooting.md)
