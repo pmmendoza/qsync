@@ -2,25 +2,25 @@
 
 _Migrated from `appendices/survey_master_workflow.md` (monorepo) so the standalone `qsync` repo can be self-contained._
 
-> **Status:** MVP Stage 5 implementation guide
-> **Updated:** 2026-01-10
+> **Status:** Grammar-aligned implementation guide
+> **Updated:** 2026-02-11
 > **Related:** [Survey Master Field Reference](../reference/survey-master-fields.md)
 
 ## Overview
 
 The **Survey Master** system allows you to bulk-edit survey metadata, options, and status across multiple focal surveys using a CSV-based workflow. It combines safety guardrails with flexibility for power users.
 
-### The Four-Stage Workflow
+### The Standard Workflow
 
 ```
-PULL → EDIT CSV → PREVIEW → APPLY → PUBLISH
+PULL → EDIT CSV → PREVIEW → STAGE → PUSH
 ```
 
-1. **PULL**: Download survey definitions into CSV + snapshots
+1. **PULL**: Download survey definitions into CSV + snapshots (non-destructive merge preserves edits)
 2. **EDIT**: Modify field values in the CSV file
-3. **PREVIEW**: See what would change before applying
-4. **APPLY**: Write changes back to Qualtrics
-5. **PUBLISH**: Automatically creates new survey versions (when needed)
+3. **PREVIEW**: See what would change before staging
+4. **STAGE**: Validate and write changes to pending (no API writes)
+5. **PUSH**: Apply staged changes to Qualtrics API + publish (with safeguards)
 
 ---
 
@@ -53,6 +53,21 @@ qsync survey master pull --survey-id SV_abc123 --survey-id SV_def456
 - Pull only specific surveys instead of all focal surveys
 - Useful for testing or when only certain surveys have changed
 - Can be repeated multiple times
+
+#### `--force-overwrite` (optional)
+```bash
+qsync survey master pull --force-overwrite
+```
+- **Default behavior**: Pull preserves user edits by merging overrides from existing CSV
+- With `--force-overwrite`: Discard existing CSV and generate fresh from snapshots
+- Backup of existing CSV is written to `surveys/qualtrics_master.csv.bak` before merge
+
+**Non-Destructive Merge Logic:**
+1. Computes overrides: existing CSV - existing snapshots = user edits
+2. Generates fresh CSV from newly fetched snapshots
+3. Reapplies user edits onto fresh CSV
+4. Writes backup of old CSV before merging
+5. Result: Baseline refreshed, user edits preserved
 
 ### Output
 ```
@@ -216,105 +231,186 @@ See `../reference/inventory-schema.md` for the inventory/tag schema.
 
 ---
 
-## Stage 4: Apply Changes to Qualtrics
+## Stage 4: Stage Changes (Validate + Write Pending)
 
-### Command (Basic)
+### Command
 ```bash
-qsync survey master apply
+qsync survey master stage
+```
+
+### What It Does
+1. Validates CSV schema
+2. Computes diffs for each survey (CSV vs snapshots)
+3. Creates pending records at `surveys/pending/master/{survey_id}.json`
+4. Computes snapshot hash for drift detection
+5. **NO API writes** - staging is purely local
+
+### Why Stage?
+- **Safety**: Validate before writing to API
+- **Review**: Inspect pending records before push
+- **Workflow alignment**: Matches items/translations/js dimensions
+- **Drift detection**: Snapshot hash enables detection of baseline changes
+
+### Stage-Specific Flags
+
+#### `--survey-id` (optional)
+```bash
+qsync survey master stage --survey-id SV_abc123
+```
+Stage only this survey.
+
+#### `--tag` (optional, repeatable)
+```bash
+qsync survey master stage --tag component=pre --tag stage=prod
+```
+Filter surveys by tag before staging.
+
+### Output
+```
+[qsync:master-stage] Validating 5 surveys...
+[qsync:master-stage] Computing diffs for 5 surveys...
+[qsync:master-stage]   SV_abc123: 3 change(s)
+[qsync:master-stage] Saving pending records for 2 survey(s)...
+[qsync:master-stage]   Staged: surveys/pending/master/SV_abc123.json
+[qsync:master-stage] ✅ Staged 2 survey(s) with 5 change(s)
+
+💡 Next: Run 'qsync survey master push'
+```
+
+---
+
+## Stage 5: Push Changes (API Write + Publish)
+
+### Command
+```bash
+qsync survey master push
 ```
 
 ### What It Does (In Order)
-1. Validates CSV schema
-2. For each survey with changes:
+1. Loads pending records from `surveys/pending/master/`
+2. For each survey with staged changes:
+   - Validates snapshot hash (drift detection) → **REFUSE** if changed
    - Checks for dangerous field changes → **REFUSE** unless `--allow-dangerous`
-   - Detects drift (values changed since last pull) → **REFUSE** unless `--force` or `--skip-drift`
-   - Captures a pre-apply rollback snapshot under `surveys/qualtrics_master_rollback/<survey_id>/`
+   - Enforces safeguards (locked surveys, response counts) → **BLOCK** unless override flags
+   - Ensures backup via `ensure_backup()`
+   - Captures pre-apply rollback snapshot
    - Groups changes by endpoint (metadata, options, status)
-   - Applies in order: metadata → options → status
-   - Writes audit log entry (JSONL)
-   - Does not publish (publishing is a separate `master push` step)
-3. Returns summary of applied/failed surveys
+   - Writes to API in order: metadata → options → status
+   - Publishes (unless `--no-publish`)
+   - Clears pending on success
+3. Returns summary of pushed/published/failed surveys
 
 ### Publishing vs Activation (Reminder)
 - **Publishing** makes definition changes live (metadata/options). It does **not** toggle whether the survey is active.
 - **Activation** is controlled by `isActive` (status endpoint). Changing `isActive` is a separate, explicit action and is treated as a dangerous field.
 
-### Apply-Specific Flags
+### Push-Specific Flags
+
+#### `--no-publish` (API write only, skip publish)
+```bash
+qsync survey master push --no-publish
+```
+Writes changes to API but skips the publish step.
+
+**Use cases:**
+- Testing changes before making them live
+- Writing changes to inactive surveys
+- When you want to review changes in Qualtrics UI before publishing
 
 #### `--allow-dangerous` (Required for dangerous fields)
 ```bash
-qsync survey master apply --allow-dangerous
+qsync survey master push --allow-dangerous
 ```
-Allows changes to the 6 dangerous fields.
+Allows changes to the 6 dangerous fields:
+- `isActive` (activation status)
+- `EOSRedirectURL` (end-of-survey redirect)
+- `BallotBoxStuffingPreventionURL`
+- `RefererURL` (referrer URL)
+- `PasswordProtection` (password toggle)
+- `SurveyStatus` (Active/Inactive)
 
 **Warning:** Use with caution! Setting `isActive=true` on multiple surveys can have major operational impact.
 
-#### `--force` (Override drift detection)
+#### `--force-live` (Override live response check)
 ```bash
-qsync survey master apply --force
+qsync survey master push --force-live
 ```
-Skips drift detection and applies even if live values have changed.
-
-**When to use:**
-- You manually verified the changes in the live system and want to proceed
-- The drift warning is a false positive (e.g., formatting differences)
-
-**Cost:** No extra API calls.
-
-#### `--skip-drift` (Disable drift detection entirely)
-```bash
-qsync survey master apply --skip-drift
-```
-Skips drift detection without even checking. Fastest mode.
-
-**⚠️ Risk:** If someone else changed a field since your last pull, you will **overwrite their changes**.
-
-**When to use:**
-- You're in a dedicated testing environment
-- You've verified no one else is editing these surveys
-- Speed is critical and you're willing to accept the risk
-
-**Cost:** Saves 3 API calls per survey (one per endpoint).
-
-Example output with `--skip-drift`:
-```
-[qsync:master-apply] ⚠️  Drift detection is DISABLED (--skip-drift)
-```
-
-#### `--survey-id` (Test with one survey first)
-```bash
-qsync survey master apply --survey-id SV_abc123
-```
-Applies changes to only one survey.
-
-**Recommended workflow:**
-1. Make edits in CSV
-2. Preview all: `qsync survey master preview`
-3. **Test on one survey:** `qsync survey master apply --survey-id SV_abc123 --dry-run`
-4. **Actually apply to one:** `qsync survey master apply --survey-id SV_abc123`
-5. Verify changes in Qualtrics UI
-6. **Apply to all:** `qsync survey master apply`
-
-#### `--dry-run` (Preview without writing)
-```bash
-qsync survey master apply --dry-run
-```
-Shows what would be applied **without actually writing changes**. Perfect for verification before the real apply.
+Allows push even when surveys have live responses (auditable responses > 0).
 
 **Behavior:**
-- All safety checks run (dangerous field check, drift detection, schema validation)
-- Write operations are skipped
-- Audit log is not written
-- Publishing is not done
-- Output shows `[DRY RUN]` markers
+- Prompts for confirmation (unless `--yes`)
+- Blocked by default as protection against accidentally modifying live data collection
 
-**Example output:**
+**When to use:**
+- Making non-breaking metadata changes (e.g., updating description)
+- Emergency fixes to live surveys
+- You've verified the changes won't affect data collection
+
+#### `--force-preview` (Skip preview response warnings)
+```bash
+qsync survey master push --force-preview
 ```
-[qsync:master-apply] DRY RUN: Processing 2 surveys...
-[qsync:master-apply] Checking SV_abc123...
-[qsync:master-apply]   Writing metadata...
-[qsync:master-apply]     [DRY RUN] Metadata written
-[qsync:master-apply]     [DRY RUN] Would publish new version...
+Skips warnings about preview/test responses (preview-only responses > 0).
+
+#### `--yes` / `-y` (Skip confirmation prompts)
+```bash
+qsync survey master push --yes
+```
+Skips all interactive confirmation prompts. Use for automation/CI.
+
+#### `--allow-locked` (Override survey lock)
+```bash
+qsync survey master push --allow-locked
+```
+Allows push to surveys marked as locked in inventory CSV.
+
+**Warning:** Locks exist for a reason - only override if you're certain.
+
+#### `--survey-id` (Push specific survey)
+```bash
+qsync survey master push --survey-id SV_abc123
+```
+Pushes only this survey (must have staged changes).
+
+**Recommended workflow:**
+1. Edit CSV and stage: `qsync survey master stage`
+2. **Test on one survey:** `qsync survey master push --survey-id SV_abc123`
+3. Verify changes in Qualtrics UI
+4. **Push all:** `qsync survey master push`
+
+### Safeguards (Auto-Enforced)
+
+**Survey Locks:**
+- Surveys with `locked=TRUE` in inventory are blocked
+- Override: `--allow-locked` (use with caution)
+
+**Response Counts:**
+- Live responses (> 0): **BLOCK** unless `--force-live` + confirmation
+- Preview responses (> 0): **WARN** unless `--force-preview`
+- Unknown counts: **BLOCK** (run `qsync survey inventory` first)
+
+**Drift Detection:**
+- Snapshot hash mismatch: **BLOCK** (baseline changed since staging)
+- Resolution: Re-run `qsync survey master pull` and `qsync survey master stage`
+
+### Output Example
+```
+[qsync:master-push] Pushing 2 survey(s) with staged changes...
+[qsync:master-push]   SV_abc123: Rollback snapshot saved
+[qsync:master-push]   SV_abc123: Writing metadata...
+[qsync:master-push]   SV_abc123: ✓ API write successful (3 change(s))
+[qsync:master-push]   SV_abc123: Publishing...
+[qsync:master-push]   SV_abc123: ✓ Published
+[qsync:master-push]   SV_abc123: ✓ Complete
+[qsync:master-push] Summary: 2/2 pushed, 2 published, 0 failed
+
+Push Summary:
+  Total surveys: 2
+  Surveys pushed (API write): 2
+  Surveys published: 2
+  Surveys failed: 0
+
+✓ Push complete: 2 survey(s) pushed, 2 published
 
 ✓ Dry run complete: 1 survey/surveys would be updated
 Run without --dry-run to apply changes

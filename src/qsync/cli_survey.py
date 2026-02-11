@@ -5419,7 +5419,7 @@ def handle_translations_push(args: argparse.Namespace) -> None:
 
 
 def handle_master_pull(args: argparse.Namespace) -> None:
-    """Pull survey master snapshots and generate master CSV."""
+    """Pull survey master snapshots and generate/merge master CSV."""
     from .survey_master import pull_master
 
     mapping_csv = getattr(args, "mapping_csv", None)
@@ -5430,12 +5430,18 @@ def handle_master_pull(args: argparse.Namespace) -> None:
         args.survey_ids if hasattr(args, "survey_ids") and args.survey_ids else None
     )
     verbose = bool(getattr(args, "verbose", False))
+    force_overwrite = bool(getattr(args, "force_overwrite", False))
 
     try:
         snapshots_created, csv_path = pull_master(
-            survey_ids=survey_ids, verbose=verbose
+            survey_ids=survey_ids,
+            verbose=verbose,
+            force_overwrite=force_overwrite,
         )
         print(f"\n✓ Pull complete: {snapshots_created} snapshots, CSV at {csv_path}")
+        if not force_overwrite:
+            print("  (User edits preserved via merge)")
+        print("\n💡 Next: Edit CSV, then run 'qsync survey master stage'")
     except Exception as e:
         print(f"[qsync:master-pull] ERROR: {e}", file=sys.stderr)
         sys.exit(1)
@@ -5507,7 +5513,7 @@ def handle_master_preview(args: argparse.Namespace) -> None:
         result = preview_master(
             csv_headers=csv_headers,
             csv_rows=csv_rows,
-            verbose=output_format == "text",
+            verbose=bool(getattr(args, "verbose", False)) and output_format == "text",
             survey_id=survey_id,
         )
 
@@ -5683,6 +5689,81 @@ def handle_master_preview(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def handle_master_stage(args: argparse.Namespace) -> None:
+    """Stage changes from master CSV to pending."""
+    from .survey_master import stage_master, load_master_csv
+    from .terminal_colors import use_color_output, colored, Colors
+
+    use_color = use_color_output()
+    survey_id = getattr(args, "survey_id", None)
+    verbose = bool(getattr(args, "verbose", False))
+
+    try:
+        csv_headers, csv_rows = load_master_csv()
+
+        # Apply tag filtering if provided
+        tags_str = getattr(args, "tags", None)
+        if tags_str:
+            from .survey_inventory import parse_tag_filters, filter_surveys_by_tags
+            tag_filters = parse_tag_filters(tags_str)
+            csv_rows = filter_surveys_by_tags(csv_headers, csv_rows, tag_filters)
+
+        result = stage_master(
+            csv_headers=csv_headers,
+            csv_rows=csv_rows,
+            verbose=verbose,
+            survey_id=survey_id,
+        )
+
+        if result["validation_errors"]:
+            error_header = "[qsync:master-stage] Validation failed:"
+            if use_color:
+                error_header = colored(error_header, Colors.RED)
+            print(error_header)
+            for err in result["validation_errors"]:
+                error_line = f"  - {err}"
+                if use_color:
+                    error_line = colored(error_line, Colors.RED)
+                print(error_line)
+            sys.exit(1)
+
+        # Display summary
+        summary_header = "\nStage Summary:"
+        if use_color:
+            summary_header = colored(summary_header, Colors.CYAN, bold=True)
+        print(summary_header)
+
+        info_lines = [
+            f"  Surveys staged: {result['staged_surveys']}",
+            f"  Total changes: {result['total_changes']}",
+        ]
+        for line in info_lines:
+            if use_color:
+                line = colored(line, Colors.WHITE)
+            print(line)
+
+        if result["staged_surveys"] > 0:
+            success_msg = f"\n✓ Staged {result['staged_surveys']} survey(s)"
+            next_step = "\n💡 Next: Run 'qsync survey master push'"
+            if use_color:
+                success_msg = colored(success_msg, Colors.GREEN, bold=True)
+                next_step = colored(next_step, Colors.GREEN)
+            print(success_msg)
+            print(next_step)
+        else:
+            info_msg = "\nNo changes to stage"
+            if use_color:
+                info_msg = colored(info_msg, Colors.YELLOW)
+            print(info_msg)
+
+    except Exception as e:
+        error_msg = f"[qsync:master-stage] ERROR: {e}"
+        if use_color:
+            error_msg = colored(error_msg, Colors.RED)
+        print(error_msg, file=sys.stderr)
+        sys.exit(1)
+
+
 def handle_master_apply(args: argparse.Namespace) -> None:
     """Apply changes from master CSV to Qualtrics."""
     from .survey_master import apply_master, load_master_csv
@@ -5741,7 +5822,7 @@ def handle_master_apply(args: argparse.Namespace) -> None:
         result = apply_master(
             allow_dangerous=allow_dangerous,
             force=force,
-            verbose=True,
+            verbose=bool(getattr(args, "verbose", False)),
             survey_id=survey_id,
             skip_drift=skip_drift,
             dry_run=dry_run,
@@ -5762,15 +5843,31 @@ def handle_master_apply(args: argparse.Namespace) -> None:
         info(None, f"Surveys applied: {result['surveys_applied']}")
         info(None, f"Surveys failed: {result['surveys_failed']}")
 
-        # Print details
+        # Print details (by default, only show applied and failures; suppress no-op noise)
         if result["details"]:
-            header(None, "Details:")
-            for detail in result["details"]:
-                status = "✓" if detail["applied"] else "✗"
-                if detail["applied"]:
-                    success(None, f"{status} {detail['survey_id']}: {detail['reason']}")
+            show_all = bool(getattr(args, "verbose", False))
+            filtered = []
+            for d in result["details"]:
+                if d.get("applied"):
+                    filtered.append(d)
+                    continue
+                reason = str(d.get("reason") or "")
+                if show_all:
+                    filtered.append(d)
                 else:
-                    warn(None, f"{status} {detail['survey_id']}: {detail['reason']}")
+                    if reason and reason != "No changes":
+                        filtered.append(d)
+
+            if filtered:
+                header(None, "Details:")
+                for detail in filtered:
+                    status = "✓" if detail["applied"] else "✗"
+                    if detail["applied"]:
+                        success(
+                            None, f"{status} {detail['survey_id']}: {detail['reason']}"
+                        )
+                    else:
+                        warn(None, f"{status} {detail['survey_id']}: {detail['reason']}")
 
         if result["surveys_applied"] > 0:
             if result.get("dry_run", False):
@@ -5797,13 +5894,19 @@ def handle_master_apply(args: argparse.Namespace) -> None:
 
 
 def handle_master_push(args: argparse.Namespace) -> None:
-    """Handle 'qsync survey master push' command."""
+    """Handle 'qsync survey master push' command (NEW: applies staged changes)."""
 
     from .survey_master import push_master
     from .terminal_output import error, header, info, success, warn
 
     description = getattr(args, "description", None)
     survey_id = getattr(args, "survey_id", None)
+    no_publish = bool(getattr(args, "no_publish", False))
+    force_live = bool(getattr(args, "force_live", False))
+    force_preview = bool(getattr(args, "force_preview", False))
+    auto_yes = bool(getattr(args, "yes", False))
+    allow_dangerous = bool(getattr(args, "allow_dangerous", False))
+    allow_locked = bool(getattr(args, "allow_locked", False))
 
     try:
         mapping_csv = getattr(args, "mapping_csv", None)
@@ -5814,8 +5917,14 @@ def handle_master_push(args: argparse.Namespace) -> None:
 
         result = push_master(
             description=description,
-            verbose=True,
+            verbose=bool(getattr(args, "verbose", False)),
             survey_id=survey_id,
+            no_publish=no_publish,
+            force_live=force_live,
+            force_preview=force_preview,
+            auto_yes=auto_yes,
+            allow_dangerous=allow_dangerous,
+            allow_locked=allow_locked,
         )
 
         # Check for errors
@@ -5828,26 +5937,39 @@ def handle_master_push(args: argparse.Namespace) -> None:
         # Print summary
         header(None, "Push Summary:")
         info(None, f"Total surveys: {result['total_surveys']}")
+        info(None, f"Surveys pushed (API write): {result['surveys_pushed']}")
         info(None, f"Surveys published: {result['surveys_published']}")
         info(None, f"Surveys failed: {result['surveys_failed']}")
 
-        # Print details
+        # Print details (default: only show failures; use --verbose for all)
         if result["details"]:
-            header(None, "Details:")
-            for detail in result["details"]:
-                status = "✓" if detail["published"] else "✗"
-                if detail["published"]:
-                    success(None, f"{status} {detail['survey_id']}: {detail['reason']}")
-                else:
-                    warn(None, f"{status} {detail['survey_id']}: {detail['reason']}")
+            show_all = bool(getattr(args, "verbose", False))
+            filtered = [
+                d
+                for d in result["details"]
+                if show_all or not bool(d.get("pushed"))
+            ]
+            if filtered:
+                header(None, "Details:")
+                for detail in filtered:
+                    pushed = detail.get("pushed", False)
+                    published = detail.get("published", False)
+                    status = "✓" if pushed else "✗"
+                    if pushed:
+                        success(
+                            None,
+                            f"{status} {detail['survey_id']}: {detail['reason']}",
+                        )
+                    else:
+                        warn(None, f"{status} {detail['survey_id']}: {detail['reason']}")
 
-        if result["surveys_published"] > 0:
+        if result["surveys_pushed"] > 0:
             success(
                 "[qsync:master-push]",
-                f"Push complete: {result['surveys_published']} survey/surveys published",
+                f"Push complete: {result['surveys_pushed']} survey(s) pushed, {result['surveys_published']} published",
             )
         else:
-            info("[qsync:master-push]", "No surveys were published")
+            info("[qsync:master-push]", "No surveys were pushed")
 
         if result["surveys_failed"] > 0:
             sys.exit(1)
@@ -6942,6 +7064,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Pull focal survey snapshots and generate master CSV",
     )
     p_master_pull.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-survey status lines (disables progress bar)",
+    )
+    p_master_pull.add_argument(
         "--mapping-csv",
         type=Path,
         dest="mapping_csv",
@@ -6953,12 +7080,22 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         dest="survey_ids",
         help="Limit to specific survey ID(s) (repeatable); default: all focal surveys",
     )
+    p_master_pull.add_argument(
+        "--force-overwrite",
+        action="store_true",
+        help="Discard existing CSV and generate fresh (default: merge to preserve user edits)",
+    )
     p_master_pull.set_defaults(func=handle_master_pull)
 
     # master preview
     p_master_preview = master_subs.add_parser(
         "preview",
         help="Preview changes that would be applied by master apply",
+    )
+    p_master_preview.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-survey status lines (disables progress bar)",
     )
     p_master_preview.add_argument(
         "--mapping-csv",
@@ -6989,10 +7126,37 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_master_preview.set_defaults(func=handle_master_preview)
 
+    # master stage
+    p_master_stage = master_subs.add_parser(
+        "stage",
+        help="Stage changes from master CSV to pending (no API writes)",
+    )
+    p_master_stage.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-survey status lines",
+    )
+    p_master_stage.add_argument(
+        "--survey-id",
+        help="Stage only this specific survey (by SurveyID)",
+    )
+    p_master_stage.add_argument(
+        "--tag",
+        action="append",
+        dest="tags",
+        help="Filter surveys by tag (e.g., --tag component=pre --tag stage=prod)",
+    )
+    p_master_stage.set_defaults(func=handle_master_stage)
+
     # master apply
     p_master_apply = master_subs.add_parser(
         "apply",
         help="Apply changes from master CSV to Qualtrics",
+    )
+    p_master_apply.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-survey status lines (disables progress bar)",
     )
     p_master_apply.add_argument(
         "--mapping-csv",
@@ -7038,6 +7202,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Publish surveys after applying changes",
     )
     p_master_push.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-survey status lines (disables progress bar)",
+    )
+    p_master_push.add_argument(
         "--mapping-csv",
         type=Path,
         dest="mapping_csv",
@@ -7049,7 +7218,38 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_master_push.add_argument(
         "--survey-id",
-        help="Publish only this specific survey (by SurveyID)",
+        help="Push only this specific survey (by SurveyID)",
+    )
+    p_master_push.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip publish step (API write only)",
+    )
+    p_master_push.add_argument(
+        "--force-live",
+        action="store_true",
+        help="Allow push even with live responses (requires confirmation)",
+    )
+    p_master_push.add_argument(
+        "--force-preview",
+        action="store_true",
+        help="Skip preview response warnings",
+    )
+    p_master_push.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompts",
+    )
+    p_master_push.add_argument(
+        "--allow-dangerous",
+        action="store_true",
+        help="Allow changes to dangerous fields (isActive, EOSRedirectURL, etc.)",
+    )
+    p_master_push.add_argument(
+        "--allow-locked",
+        action="store_true",
+        help="Allow push to locked surveys",
     )
     p_master_push.set_defaults(func=handle_master_push)
 

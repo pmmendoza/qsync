@@ -184,6 +184,10 @@ def _compute_schema_version() -> str:
     """Compute schema version hash from the active mapping source.
 
     Uses the workspace CSV if present, otherwise the packaged JSON.
+
+    NOTE: This must be stable across days. Older snapshots included a date prefix
+    (YYYYMMDD-<hash>); we intentionally no longer do that because it caused
+    constant daily mismatches even when the mapping was unchanged.
     """
     try:
         mapping_path = _mapping_csv_path()
@@ -196,8 +200,28 @@ def _compute_schema_version() -> str:
     except Exception:
         return "unknown"
 
-    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    return f"{date_str}-{source_hash}"
+    return source_hash
+
+
+def _schema_version_hash(schema_version: str) -> str:
+    """Extract the stable hash portion from a schema version string.
+
+    Supports both:
+    - new format: "<hash>"
+    - legacy format: "YYYYMMDD-<hash>"
+    """
+    raw = (schema_version or "").strip()
+    if not raw:
+        return ""
+    if raw == "unknown":
+        return raw
+    if len(raw) == 8 and all(c in "0123456789abcdef" for c in raw.lower()):
+        return raw.lower()
+    if len(raw) >= 9 and raw[8] == "-":
+        suffix = raw.split("-", 1)[-1].strip().lower()
+        if len(suffix) == 8 and all(c in "0123456789abcdef" for c in suffix):
+            return suffix
+    return raw.lower()
 
 
 def _fetch_endpoint(
@@ -425,11 +449,38 @@ def capture_pre_apply_snapshot(
     base_url, headers = get_client_config()
     captured_at = datetime.now(timezone.utc).isoformat() + "Z"
 
-    survey_name = _fetch_survey_name(base_url, headers, survey_id)
-    status_data, _ = _fetch_endpoint(base_url, headers, survey_id, "status")
-    metadata_data, _ = _fetch_endpoint(base_url, headers, survey_id, "metadata")
-    options_data, _ = _fetch_endpoint(base_url, headers, survey_id, "options")
-    versions_data, _ = _fetch_endpoint(base_url, headers, survey_id, "versions")
+    mapping = _parse_mapping_csv()
+
+    # Only fetch endpoints needed to compute pre-apply values for the fields we're writing.
+    endpoints_needed: set[str] = set()
+    for change in changes:
+        field_name = str(change.get("field") or "").strip()
+        if not field_name:
+            continue
+        field_info = mapping.get(field_name)
+        endpoint = (
+            str(change.get("endpoint") or "").strip()
+            or (_derive_endpoint(field_info) if field_info else None)
+        )
+        if endpoint in {"metadata", "options", "status"}:
+            endpoints_needed.add(endpoint)
+
+    # Prefer local snapshot survey_name to avoid an extra API call.
+    snap = load_snapshot(survey_id) or {}
+    survey_name = str(snap.get("survey_name") or "").strip() or survey_id
+
+    status_data: dict = {}
+    metadata_data: dict = {}
+    options_data: dict = {}
+    versions_data: dict = {}
+
+    if "status" in endpoints_needed:
+        status_data, _ = _fetch_endpoint(base_url, headers, survey_id, "status")
+        survey_name = str(status_data.get("name") or survey_name)
+    if "metadata" in endpoints_needed:
+        metadata_data, _ = _fetch_endpoint(base_url, headers, survey_id, "metadata")
+    if "options" in endpoints_needed:
+        options_data, _ = _fetch_endpoint(base_url, headers, survey_id, "options")
 
     snapshot = create_snapshot(
         survey_id=survey_id,
@@ -440,7 +491,6 @@ def capture_pre_apply_snapshot(
         versions_data=versions_data,
     )
 
-    mapping = _parse_mapping_csv()
     rollback_changes: List[Dict[str, Any]] = []
     for change in changes:
         field_name = str(change.get("field") or "").strip()
@@ -842,9 +892,64 @@ def validate_master_csv(
 
     Returns list of error messages (empty if valid).
     """
+    def _try_parse_boolish(raw: object) -> Optional[bool]:
+        """Best-effort parse for boolean-ish values commonly produced by spreadsheets.
+
+        We only use this for fields that are explicitly boolean in the mapping
+        (data_type=bool) or have allowed_values of true/false.
+        """
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            return raw
+        if not isinstance(raw, str):
+            raw = str(raw)
+
+        s = raw.strip().lower()
+        if s == "":
+            return None
+
+        if s in ("true", "t", "yes", "y", "1", "on"):
+            return True
+        if s in ("false", "f", "no", "n", "0", "off"):
+            return False
+        return None
+
+    def _is_booleanish_field(field_name: str, field_info: dict) -> bool:
+        if field_name.startswith("_"):
+            return False
+        if field_name == "SurveyID":
+            return False
+
+        data_type = str(field_info.get("data_type") or "").strip().lower()
+        if data_type == "bool":
+            return True
+
+        allowed_values = str(field_info.get("allowed_values") or "").strip()
+        if not allowed_values:
+            return False
+
+        allowed = [v.strip().lower() for v in allowed_values.split(";") if v.strip()]
+        return set(allowed) == {"true", "false"}
+
     errors: List[str] = []
     mapping = _parse_mapping_csv()
     valid_field_names = set(mapping.keys())
+
+    # Normalize boolean-ish cells in-place so case differences like TRUE/FALSE
+    # don't create spurious diffs and so validation isn't tripped by spreadsheets
+    # that rewrite booleans in uppercase.
+    for row in csv_rows:
+        for field_name, field_value in list(row.items()):
+            field_info = mapping.get(field_name)
+            if not field_info:
+                continue
+            if not _is_booleanish_field(field_name, field_info):
+                continue
+            parsed = _try_parse_boolish(field_value)
+            if parsed is None:
+                continue
+            row[field_name] = "true" if parsed else "false"
 
     # Check for unknown columns
     for header in csv_headers:
@@ -1120,31 +1225,67 @@ def preview_master(
     requires_publish = False
     has_dangerous = False
 
-    for row in csv_rows:
-        survey_id_from_row = row.get("SurveyID", "").strip()
-        if not survey_id_from_row:
-            continue
+    show_progress = not verbose and len(csv_rows) > 1 and should_use_rich()
+    if show_progress:
+        total = len(csv_rows)
+        with progress_context("Previewing Survey Master changes", total=total) as prog:
+            for idx, row in enumerate(csv_rows, start=1):
+                if prog:
+                    progress, task_id = prog
+                    progress.update(
+                        task_id,
+                        description=f"Previewing Survey Master changes ({idx}/{total})",
+                    )
 
-        diff = compute_diff(survey_id_from_row, row)
-        survey_diffs.append(diff)
+                survey_id_from_row = row.get("SurveyID", "").strip()
+                if not survey_id_from_row:
+                    if prog:
+                        progress, task_id = prog
+                        progress.advance(task_id)
+                    continue
 
-        if diff.get("error"):
-            if verbose:
-                print(
-                    f"[qsync:master-preview]   {survey_id_from_row}: ERROR - {diff['error']}"
-                )
-        elif diff["changes"]:
-            surveys_with_changes += 1
-            total_changes += len(diff["changes"])
-            if diff["publish_required"]:
-                requires_publish = True
-            if diff["has_dangerous_changes"]:
-                has_dangerous = True
+                diff = compute_diff(survey_id_from_row, row)
+                survey_diffs.append(diff)
 
-            if verbose:
-                print(
-                    f"[qsync:master-preview]   {survey_id_from_row}: {len(diff['changes'])} change(s)"
-                )
+                if diff.get("error"):
+                    pass
+                elif diff["changes"]:
+                    surveys_with_changes += 1
+                    total_changes += len(diff["changes"])
+                    if diff["publish_required"]:
+                        requires_publish = True
+                    if diff["has_dangerous_changes"]:
+                        has_dangerous = True
+
+                if prog:
+                    progress, task_id = prog
+                    progress.advance(task_id)
+    else:
+        for row in csv_rows:
+            survey_id_from_row = row.get("SurveyID", "").strip()
+            if not survey_id_from_row:
+                continue
+
+            diff = compute_diff(survey_id_from_row, row)
+            survey_diffs.append(diff)
+
+            if diff.get("error"):
+                if verbose:
+                    print(
+                        f"[qsync:master-preview]   {survey_id_from_row}: ERROR - {diff['error']}"
+                    )
+            elif diff["changes"]:
+                surveys_with_changes += 1
+                total_changes += len(diff["changes"])
+                if diff["publish_required"]:
+                    requires_publish = True
+                if diff["has_dangerous_changes"]:
+                    has_dangerous = True
+
+                if verbose:
+                    print(
+                        f"[qsync:master-preview]   {survey_id_from_row}: {len(diff['changes'])} change(s)"
+                    )
 
     summary = {
         "total_surveys": len([d for d in survey_diffs if not d.get("error")]),
@@ -1173,14 +1314,180 @@ def preview_master(
     }
 
 
+def _compute_snapshot_hash(survey_ids: List[str]) -> str:
+    """Compute SHA256 hash of snapshots for drift detection.
+
+    Args:
+        survey_ids: List of survey IDs to include in hash
+
+    Returns:
+        SHA256 hex digest of snapshot content
+    """
+    import hashlib
+    import json
+
+    snapshot_data = []
+    for sid in sorted(survey_ids):
+        snapshot = load_snapshot(sid)
+        if snapshot:
+            sections = snapshot.get("sections", {})
+            snapshot_data.append({
+                "survey_id": sid,
+                "metadata": sections.get("metadata", {}),
+                "options": sections.get("options", {}),
+                "status": sections.get("status", {}),
+            })
+
+    json_str = json.dumps(snapshot_data, sort_keys=True)
+    return hashlib.sha256(json_str.encode()).hexdigest()
+
+
+def stage_master(
+    csv_headers: Optional[List[str]] = None,
+    csv_rows: Optional[List[Dict[str, str]]] = None,
+    verbose: bool = False,
+    survey_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Stage changes from CSV to pending (no API writes).
+
+    Args:
+        csv_headers: CSV header row (optional)
+        csv_rows: CSV data rows (optional)
+        verbose: If True, print status messages
+        survey_id: If provided, only stage this survey
+
+    Returns dict with:
+        - staged_surveys: int
+        - total_changes: int
+        - validation_errors: list
+        - survey_diffs: list
+    """
+    from .pending_stage import (
+        PendingStagedChanges,
+        MasterPendingPayload,
+        save_pending,
+        clear_pending,
+    )
+
+    # Load CSV if not provided
+    if csv_headers is None or csv_rows is None:
+        csv_headers, csv_rows = load_master_csv()
+
+    # Filter to specific survey if requested
+    if survey_id:
+        csv_rows = [r for r in csv_rows if r.get("SurveyID", "").strip() == survey_id]
+
+    if verbose:
+        print(f"[qsync:master-stage] Validating {len(csv_rows)} surveys...")
+
+    # Validate CSV
+    validation_errors = validate_master_csv(csv_headers, csv_rows)
+    if validation_errors:
+        if verbose:
+            for err in validation_errors:
+                print(f"[qsync:master-stage] VALIDATION ERROR: {err}")
+        return {
+            "staged_surveys": 0,
+            "total_changes": 0,
+            "validation_errors": validation_errors,
+            "survey_diffs": [],
+        }
+
+    if verbose:
+        print(f"[qsync:master-stage] Computing diffs for {len(csv_rows)} surveys...")
+
+    # Compute diffs for each survey
+    survey_diffs = []
+    surveys_with_changes = []
+    total_changes = 0
+
+    for row in csv_rows:
+        sid = row.get("SurveyID", "").strip()
+        if not sid:
+            continue
+
+        diff = compute_diff(sid, row)
+
+        # Skip surveys with errors or no changes
+        if diff.get("error") or not diff.get("changes"):
+            if verbose and diff.get("error"):
+                print(f"[qsync:master-stage]   {sid}: ERROR - {diff['error']}")
+            continue
+
+        survey_diffs.append(diff)
+        surveys_with_changes.append(sid)
+        total_changes += len(diff["changes"])
+
+        if verbose:
+            print(f"[qsync:master-stage]   {sid}: {len(diff['changes'])} change(s)")
+
+    # No changes: clear stale pending
+    if not survey_diffs:
+        for row in csv_rows:
+            sid = row.get("SurveyID", "").strip()
+            if sid:
+                clear_pending(sid, "master")
+
+        if verbose:
+            print("[qsync:master-stage] No changes to stage")
+
+        return {
+            "staged_surveys": 0,
+            "total_changes": 0,
+            "validation_errors": [],
+            "survey_diffs": [],
+        }
+
+    # Compute snapshot hash for drift detection
+    snapshot_hash = _compute_snapshot_hash(surveys_with_changes)
+
+    if verbose:
+        print(f"[qsync:master-stage] Saving pending records for {len(surveys_with_changes)} survey(s)...")
+
+    # Save pending (one per survey)
+    for diff in survey_diffs:
+        sid = diff["survey_id"]
+        payload = MasterPendingPayload(
+            survey_ids=[sid],
+            snapshot_hash=snapshot_hash,
+            changes=[diff],
+        )
+        record = PendingStagedChanges(
+            survey_id=sid,
+            dimension="master",
+            payload=payload,
+            schema_version=1,
+        )
+        save_pending(record)
+
+        if verbose:
+            print(f"[qsync:master-stage]   Staged: surveys/pending/master/{sid}.json")
+
+    if verbose:
+        print(f"[qsync:master-stage] ✅ Staged {len(surveys_with_changes)} survey(s) with {total_changes} change(s)")
+
+    return {
+        "staged_surveys": len(surveys_with_changes),
+        "total_changes": total_changes,
+        "validation_errors": [],
+        "survey_diffs": survey_diffs,
+    }
+
+
 def pull_master(
-    survey_ids: Optional[List[str]] = None, verbose: bool = False
-) -> Tuple[int, int]:
-    """Pull survey master snapshots and generate master CSV.
+    survey_ids: Optional[List[str]] = None,
+    verbose: bool = False,
+    force_overwrite: bool = False,
+) -> Tuple[int, Path]:
+    """Pull survey master snapshots and generate/merge master CSV.
+
+    By default, preserves user edits by merging overrides from existing CSV.
+    Use --force-overwrite to discard local edits and generate fresh CSV.
 
     Args:
         survey_ids: Specific survey IDs to pull. If None, pulls all focal surveys.
         verbose: If True, print status messages.
+        force_overwrite: If True, skip merge logic and overwrite existing CSV.
 
     Returns:
         (snapshots_created, csv_path) tuple
@@ -1267,13 +1574,92 @@ def pull_master(
             f"[qsync:master-pull] Generating master CSV from {snapshots_created} snapshots..."
         )
 
-    rows = generate_master_csv_from_snapshots(survey_ids)
-    csv_path = write_master_csv(rows)
+    fresh_rows = generate_master_csv_from_snapshots(survey_ids)
+    csv_path = _master_csv_path()
+    existing_csv_exists = csv_path.exists()
+
+    # MERGE LOGIC: Preserve user overrides by default
+    if existing_csv_exists and not force_overwrite:
+        try:
+            if verbose:
+                print("[qsync:master-pull] Merging with existing CSV to preserve user edits...")
+
+            # Load existing CSV
+            existing_headers, existing_rows = load_master_csv()
+            existing_by_id = {row.get("SurveyID"): row for row in existing_rows if row.get("SurveyID")}
+
+            # Index fresh CSV by SurveyID
+            fresh_by_id = {}
+            if fresh_rows and len(fresh_rows) > 1:
+                fresh_headers = fresh_rows[0]
+                for fresh_row_list in fresh_rows[1:]:
+                    fresh_row = dict(zip(fresh_headers, fresh_row_list))
+                    sid = fresh_row.get("SurveyID")
+                    if sid:
+                        fresh_by_id[sid] = fresh_row
+
+            # Compute user overrides (fields that differ from baseline)
+            user_overrides = {}
+            for sid, existing_row in existing_by_id.items():
+                if sid not in fresh_by_id:
+                    continue
+
+                fresh_row = fresh_by_id[sid]
+                overrides = {}
+
+                for field, existing_value in existing_row.items():
+                    if field.startswith("_"):
+                        # Skip read-only fields
+                        continue
+
+                    fresh_value = fresh_row.get(field, "")
+                    if existing_value != fresh_value:
+                        overrides[field] = existing_value
+
+                if overrides:
+                    user_overrides[sid] = overrides
+
+            if user_overrides:
+                if verbose:
+                    print(f"[qsync:master-pull] Found overrides for {len(user_overrides)} survey(s)")
+
+                # Apply overrides to fresh CSV
+                merged_rows = [fresh_rows[0]]  # Headers
+                for fresh_row_list in fresh_rows[1:]:
+                    fresh_row = dict(zip(fresh_rows[0], fresh_row_list))
+                    sid = fresh_row.get("SurveyID")
+
+                    if sid in user_overrides:
+                        for field, override_value in user_overrides[sid].items():
+                            fresh_row[field] = override_value
+
+                    merged_row_list = [fresh_row.get(col, "") for col in fresh_rows[0]]
+                    merged_rows.append(merged_row_list)
+
+                fresh_rows = merged_rows
+
+            # Backup existing CSV before writing
+            import shutil
+            backup_path = csv_path.with_suffix(".csv.bak")
+            shutil.copy2(csv_path, backup_path)
+            if verbose:
+                print(f"[qsync:master-pull] Backed up existing CSV to {backup_path}")
+
+        except Exception as exc:
+            if verbose:
+                print(f"[qsync:master-pull] ⚠️  Merge failed: {exc}. Using fresh CSV.")
+            # On merge failure, fall through to write fresh CSV
+    elif existing_csv_exists and force_overwrite:
+        if verbose:
+            print("[qsync:master-pull] --force-overwrite: Discarding existing CSV")
+
+    # Write final CSV
+    csv_path = write_master_csv(fresh_rows)
 
     if verbose:
         print(f"[qsync:master-pull] ✓ Master CSV written to {csv_path}")
         print(
-            f"[qsync:master-pull] Complete: {snapshots_created} snapshots, 1 CSV ({len(rows)-1} rows)"
+            f"[qsync:master-pull] Complete: {snapshots_created} snapshots, 1 CSV ({len(fresh_rows)-1} rows)"
         )
 
     return snapshots_created, csv_path
@@ -1315,76 +1701,77 @@ def detect_drift(survey_id: str, csv_row: Dict[str, str]) -> Dict[str, Any]:
             "schema_mismatch_warning": f"No snapshot found for {survey_id}; cannot detect drift",
         }
 
-    # Check schema version
+    # Check schema version (compare stable hash portion; legacy snapshots had a date prefix)
     current_schema = _compute_schema_version()
-    snapshot_schema = snapshot.get("schema_version", "")
-    schema_matches = current_schema == snapshot_schema
+    snapshot_schema = snapshot.get("schema_version", "") or ""
+    schema_matches = _schema_version_hash(current_schema) == _schema_version_hash(
+        snapshot_schema
+    )
 
     mapping = _parse_mapping_csv()
     base_url, headers = get_client_config()
-    drifted_fields = []
+    drifted_fields: list[dict] = []
 
-    # Find all fields that differ between CSV and snapshot
+    # Determine which fields we intend to change (csv != snapshot baseline),
+    # grouped by endpoint, so we fetch each endpoint at most once.
+    fields_by_endpoint: Dict[str, List[Tuple[str, str]]] = {}
+
     for field_name in csv_row.keys():
         csv_value = csv_row.get(field_name, "")
-
-        if field_name not in mapping:
+        field_info = mapping.get(field_name)
+        if not field_info:
             continue
 
-        field_info = mapping[field_name]
         survey_master = field_info.get("survey_master", "").strip().lower()
-
-        # Only check writable fields
         if survey_master != "write":
             continue
 
-        endpoint = _derive_endpoint(field_info)
+        endpoint = _derive_endpoint(field_info) or "unknown"
         baseline = _extract_value_from_snapshot(snapshot, field_info)
+        baseline_str = _scalar_to_string(baseline)
 
-        # Normalize baseline for comparison
-        if baseline is None:
-            baseline_str = ""
-        elif isinstance(baseline, bool):
-            baseline_str = "true" if baseline else "false"
-        else:
-            baseline_str = str(baseline)
-
-        # If CSV value differs from baseline, fetch current live value
         if csv_value != baseline_str:
-            try:
-                current_data, _ = _fetch_endpoint(
-                    base_url, headers, survey_id, endpoint or "unknown"
-                )
-                current = _extract_value_from_live(
-                    current_data, field_info, endpoint=endpoint or "unknown"
-                )
+            fields_by_endpoint.setdefault(endpoint, []).append((field_name, baseline_str))
 
-                # Normalize current for comparison
-                if current is None:
-                    current_str = ""
-                elif isinstance(current, bool):
-                    current_str = "true" if current else "false"
-                else:
-                    current_str = str(current)
+    # Fetch each endpoint once and evaluate drift for all relevant fields.
+    live_payload_by_endpoint: Dict[str, Optional[dict]] = {}
+    for endpoint in sorted(fields_by_endpoint.keys()):
+        if endpoint not in {"metadata", "options", "status"}:
+            live_payload_by_endpoint[endpoint] = None
+            continue
+        try:
+            payload, _ = _fetch_endpoint(base_url, headers, survey_id, endpoint)
+            live_payload_by_endpoint[endpoint] = payload
+        except Exception:
+            live_payload_by_endpoint[endpoint] = None
 
-                # Check if drifted (baseline != current)
-                if baseline_str != current_str:
-                    drifted_fields.append(
-                        {
-                            "field": field_name,
-                            "baseline": baseline_str,
-                            "current": current_str,
-                            "endpoint": endpoint or "unknown",
-                        }
-                    )
-            except Exception:
-                # If we can't fetch, assume drift and report it conservatively
+    for endpoint, items in fields_by_endpoint.items():
+        payload = live_payload_by_endpoint.get(endpoint)
+        for field_name, baseline_str in items:
+            field_info = mapping.get(field_name)
+            if not field_info:
+                continue
+
+            if payload is None:
                 drifted_fields.append(
                     {
                         "field": field_name,
                         "baseline": baseline_str,
                         "current": "UNKNOWN",
-                        "endpoint": endpoint or "unknown",
+                        "endpoint": endpoint,
+                    }
+                )
+                continue
+
+            current = _extract_value_from_live(payload, field_info, endpoint=endpoint)
+            current_str = _scalar_to_string(current)
+            if baseline_str != current_str:
+                drifted_fields.append(
+                    {
+                        "field": field_name,
+                        "baseline": baseline_str,
+                        "current": current_str,
+                        "endpoint": endpoint,
                     }
                 )
 
@@ -1952,11 +2339,13 @@ def apply_master(
     details = []
     surveys_applied = 0
     surveys_failed = 0
+    show_progress = not verbose and len(csv_rows) > 1 and should_use_rich()
 
-    for row in csv_rows:
+    def _process_row(row: Dict[str, str]) -> None:
+        nonlocal surveys_applied, surveys_failed, base_url, headers
         survey_id = row.get("SurveyID", "").strip()
         if not survey_id:
-            continue
+            return
         from .survey_ref import format_survey_ref
 
         survey_ref = format_survey_ref(
@@ -1964,33 +2353,23 @@ def apply_master(
             str(row.get("SurveyName") or row.get("name") or "").strip() or None,
         )
 
-        if verbose:
-            print(f"[qsync:master-apply] Checking {survey_ref}...")
-
         # Compute diffs
         diff = compute_diff(survey_id, row)
         if diff.get("error") or not diff.get("changes"):
-            if verbose:
-                msg = diff.get("error", "No changes")
-                print(f"[qsync:master-apply]   {survey_ref}: {msg}")
             details.append(
                 {
                     "survey_id": survey_id,
                     "applied": False,
-                    "reason": diff.get("error", "No changes"),
+                    "reason": diff.get("error") or "No changes",
                 }
             )
-            continue
+            return
 
         # Check dangerous fields
         changes = diff.get("changes", [])
         has_dangerous = any(c.get("is_dangerous") for c in changes)
 
         if has_dangerous and not allow_dangerous:
-            if verbose:
-                print(
-                    f"[qsync:master-apply]   {survey_ref}: Dangerous changes detected; use --allow-dangerous to proceed"
-                )
             details.append(
                 {
                     "survey_id": survey_id,
@@ -1998,7 +2377,7 @@ def apply_master(
                     "reason": "Dangerous changes require --allow-dangerous flag",
                 }
             )
-            continue
+            return
 
         # Check for drift (unless skipped)
         drift_info = None
@@ -2008,10 +2387,6 @@ def apply_master(
                 drifted = ", ".join(
                     f["field"] for f in drift_info.get("drifted_fields", [])
                 )
-                if verbose:
-                    print(
-                        f"[qsync:master-apply]   {survey_ref}: Drift detected ({drifted}); use --force to override"
-                    )
                 details.append(
                     {
                         "survey_id": survey_id,
@@ -2019,16 +2394,13 @@ def apply_master(
                         "reason": f"Drift detected in fields: {drifted}",
                     }
                 )
-                continue
+                return
 
             # Warn about schema mismatch
             if not drift_info.get("schema_version_matches") and verbose:
                 warning = drift_info.get("schema_mismatch_warning")
                 if warning:
                     print(f"[qsync:master-apply]   ⚠️  {warning}")
-        else:
-            if verbose:
-                print("[qsync:master-apply]   (drift detection skipped)")
 
         rollback_snapshot_path = None
         if not dry_run:
@@ -2051,7 +2423,7 @@ def apply_master(
                     print(
                         f"[qsync:master-apply]   ✗ {survey_ref} rollback snapshot failed: {exc}"
                     )
-                continue
+                return
 
         # Group changes by endpoint
         changes_by_endpoint = {}
@@ -2152,11 +2524,6 @@ def apply_master(
                         "reason": f"{len(applied_changes)} changes applied",
                     }
                 )
-                if verbose:
-                    status = "[DRY RUN]" if dry_run else "✓"
-                    print(
-                        f"[qsync:master-apply]   {status} {survey_ref} applied successfully"
-                    )
             else:
                 surveys_failed += 1
                 details.append(
@@ -2181,6 +2548,24 @@ def apply_master(
             if verbose:
                 print(f"[qsync:master-apply]   ✗ {survey_ref} error: {e}")
 
+    if show_progress:
+        total = len(csv_rows)
+        with progress_context("Applying Survey Master changes", total=total) as prog:
+            for idx, row in enumerate(csv_rows, start=1):
+                if prog:
+                    progress, task_id = prog
+                    progress.update(
+                        task_id,
+                        description=f"Applying Survey Master changes ({idx}/{total})",
+                    )
+                _process_row(row)
+                if prog:
+                    progress, task_id = prog
+                    progress.advance(task_id)
+    else:
+        for row in csv_rows:
+            _process_row(row)
+
     return {
         "total_surveys": len(csv_rows),
         "surveys_applied": surveys_applied,
@@ -2195,83 +2580,298 @@ def push_master(
     description: Optional[str] = None,
     verbose: bool = False,
     survey_id: Optional[str] = None,
+    no_publish: bool = False,
+    force_live: bool = False,
+    force_preview: bool = False,
+    auto_yes: bool = False,
+    allow_dangerous: bool = False,
+    allow_locked: bool = False,
 ) -> Dict[str, Any]:
-    """Publish surveys after applying changes from master CSV.
+    """Push staged master changes to API (NEW BEHAVIOR).
 
-    This is the final step in the workflow after apply. It publishes new versions
-    of surveys that have been modified.
+    Flow: load pending → enforce safeguards → write API → publish → clear pending
 
     Args:
         description: Description for the published version (default: "qsync master push")
         verbose: Print status messages
-        survey_id: If provided, only publish this survey (None = all focal surveys)
+        survey_id: If provided, only push this survey (None = all with pending)
+        no_publish: If True, skip publish step (API write only)
+        force_live: Allow push even with live responses
+        force_preview: Skip preview response warnings
+        auto_yes: Skip confirmation prompts
+        allow_dangerous: Allow changes to dangerous fields
+        allow_locked: Allow push to locked surveys
 
     Returns dict with:
     - total_surveys: number of surveys processed
-    - surveys_published: number of surveys successfully published
-    - surveys_failed: number of surveys that failed to publish
-    - details: list of {survey_id, published, reason}
+    - surveys_pushed: number of surveys with API writes applied
+    - surveys_published: number of surveys published
+    - surveys_failed: number of surveys that failed
+    - details: list of {survey_id, pushed, published, reason}
     - errors: list of error messages
     """
-    from .qualtrics_client import publish_survey_definition
+    from .pending_stage import load_pending, clear_pending, MasterPendingPayload
+    from .push_safeguards import enforce_push_safeguards, SafeguardConfig
+    from .qualtrics_client import publish_survey_definition, ensure_backup
     from .survey_inventory import load_focal_snapshot
 
     if description is None:
         description = "qsync master push"
 
-    # Determine which surveys to publish
+    # Find surveys with staged changes
     if survey_id:
-        survey_ids = [survey_id]
+        survey_ids_to_check = [survey_id]
     else:
-        # Publish all focal surveys
         focal_snapshot = load_focal_snapshot()
-        survey_ids = [sid for sid, is_focal in focal_snapshot.items() if is_focal]
+        survey_ids_to_check = [sid for sid, is_focal in focal_snapshot.items() if is_focal]
+
+    # Filter to only surveys with pending records
+    survey_ids = []
+    for sid in survey_ids_to_check:
+        pending = load_pending(sid, "master")
+        if pending and isinstance(pending.payload, MasterPendingPayload):
+            survey_ids.append(sid)
+
+    if not survey_ids:
+        return {
+            "total_surveys": 0,
+            "surveys_pushed": 0,
+            "surveys_published": 0,
+            "surveys_failed": 0,
+            "details": [],
+            "errors": ["No staged master changes found. Run 'qsync survey master stage' first."],
+        }
 
     if verbose:
-        print(f"[qsync:master-push] Publishing {len(survey_ids)} survey(s)...")
+        print(f"[qsync:master-push] Pushing {len(survey_ids)} survey(s) with staged changes...")
 
     details = []
+    surveys_pushed = 0
     surveys_published = 0
     surveys_failed = 0
+    base_url = None
+    headers = None
 
     for sid in survey_ids:
+        from .survey_ref import format_survey_ref
+
+        # Load pending
+        pending = load_pending(sid, "master")
+        if not pending or not isinstance(pending.payload, MasterPendingPayload):
+            details.append({
+                "survey_id": sid,
+                "pushed": False,
+                "published": False,
+                "reason": "No staged changes",
+            })
+            continue
+
+        # Extract diff
+        survey_diffs = pending.payload.changes
+        if not survey_diffs or len(survey_diffs) != 1:
+            details.append({
+                "survey_id": sid,
+                "pushed": False,
+                "published": False,
+                "reason": "Invalid pending payload",
+            })
+            continue
+
+        diff = survey_diffs[0]
+        changes = diff.get("changes", [])
+
+        if not changes:
+            clear_pending(sid, "master")
+            continue
+
+        # Check dangerous fields
+        has_dangerous = any(c.get("is_dangerous") for c in changes)
+        if has_dangerous and not allow_dangerous:
+            if verbose:
+                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Dangerous changes require --allow-dangerous")
+            details.append({
+                "survey_id": sid,
+                "pushed": False,
+                "published": False,
+                "reason": "Dangerous changes require --allow-dangerous",
+            })
+            surveys_failed += 1
+            continue
+
+        # Detect drift (snapshot hash mismatch)
+        current_hash = _compute_snapshot_hash([sid])
+        if current_hash != pending.payload.snapshot_hash:
+            if verbose:
+                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Drift detected (snapshots changed since staging)")
+            details.append({
+                "survey_id": sid,
+                "pushed": False,
+                "published": False,
+                "reason": "Drift detected: snapshots changed since staging. Re-run 'qsync survey master pull' and 'qsync survey master stage'.",
+            })
+            surveys_failed += 1
+            continue
+
+        # Enforce safeguards
         try:
-            if verbose:
-                from .survey_ref import format_survey_ref
-
-                print(f"[qsync:master-push]   Publishing {format_survey_ref(sid)}...")
-
-            publish_survey_definition(sid, description=description)
-            surveys_published += 1
-            details.append(
-                {
-                    "survey_id": sid,
-                    "published": True,
-                    "reason": "Published successfully",
-                }
+            config = SafeguardConfig(
+                survey_id=sid,
+                dimension="master",
+                force_live=force_live,
+                force_preview=force_preview,
+                allow_locked=allow_locked,
+                auto_yes=auto_yes,
             )
+            enforce_push_safeguards(config)
+        except SystemExit as e:
+            if verbose:
+                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Blocked by safeguards")
+            details.append({
+                "survey_id": sid,
+                "pushed": False,
+                "published": False,
+                "reason": f"Blocked by safeguards: {e}",
+            })
+            surveys_failed += 1
+            continue
+
+        # Ensure backup
+        try:
+            ensure_backup(sid)
+        except Exception as e:
+            if verbose:
+                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Backup failed: {e}")
+            details.append({
+                "survey_id": sid,
+                "pushed": False,
+                "published": False,
+                "reason": f"Backup failed: {e}",
+            })
+            surveys_failed += 1
+            continue
+
+        # Capture rollback snapshot
+        try:
+            rollback_path = capture_pre_apply_snapshot(sid, changes)
+            if verbose:
+                print(f"[qsync:master-push]   {format_survey_ref(sid)}: Rollback snapshot saved")
+        except Exception as e:
+            if verbose:
+                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Rollback snapshot failed: {e}")
+            details.append({
+                "survey_id": sid,
+                "pushed": False,
+                "published": False,
+                "reason": f"Rollback snapshot failed: {e}",
+            })
+            surveys_failed += 1
+            continue
+
+        # Group changes by endpoint
+        changes_by_endpoint: Dict[str, Dict[str, str]] = {}
+        for change in changes:
+            endpoint = change.get("endpoint")
+            field = change.get("field")
+            new_value = change.get("new_value")
+            if endpoint not in changes_by_endpoint:
+                changes_by_endpoint[endpoint] = {}
+            changes_by_endpoint[endpoint][field] = new_value
+
+        # Write to API
+        try:
+            if base_url is None or headers is None:
+                base_url, headers = get_client_config()
+
+            write_success = True
+
+            if "metadata" in changes_by_endpoint:
+                if verbose:
+                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: Writing metadata...")
+                if not _write_metadata(base_url, headers, sid, changes_by_endpoint["metadata"]):
+                    write_success = False
+
+            if "options" in changes_by_endpoint and write_success:
+                if verbose:
+                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: Writing options...")
+                if not _write_options(base_url, headers, sid, changes_by_endpoint["options"]):
+                    write_success = False
+
+            if "status" in changes_by_endpoint and write_success:
+                if verbose:
+                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: Writing status...")
+                if not _write_status(base_url, headers, sid, changes_by_endpoint["status"]):
+                    write_success = False
+
+            if not write_success:
+                if verbose:
+                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ API write failed")
+                details.append({
+                    "survey_id": sid,
+                    "pushed": False,
+                    "published": False,
+                    "reason": "API write failed",
+                })
+                surveys_failed += 1
+                continue
+
+            surveys_pushed += 1
 
             if verbose:
-                from .survey_ref import format_survey_ref
-
-                print(f"[qsync:master-push]     ✓ {format_survey_ref(sid)} published")
+                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✓ API write successful ({len(changes)} change(s))")
 
         except Exception as e:
-            surveys_failed += 1
-            details.append(
-                {
-                    "survey_id": sid,
-                    "published": False,
-                    "reason": str(e),
-                }
-            )
             if verbose:
-                from .survey_ref import format_survey_ref
+                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ API write error: {e}")
+            details.append({
+                "survey_id": sid,
+                "pushed": False,
+                "published": False,
+                "reason": f"API write error: {e}",
+            })
+            surveys_failed += 1
+            continue
 
-                print(f"[qsync:master-push]     ✗ {format_survey_ref(sid)} failed: {e}")
+        # Publish if requested
+        published = False
+        if not no_publish and diff.get("publish_required"):
+            try:
+                if verbose:
+                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: Publishing...")
+                publish_survey_definition(sid, description=description)
+                surveys_published += 1
+                published = True
+                if verbose:
+                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✓ Published")
+            except Exception as e:
+                if verbose:
+                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Publish failed: {e}")
+                details.append({
+                    "survey_id": sid,
+                    "pushed": True,
+                    "published": False,
+                    "reason": f"Pushed successfully but publish failed: {e}",
+                })
+                continue
+
+        # Clear pending on success
+        clear_pending(sid, "master")
+
+        details.append({
+            "survey_id": sid,
+            "pushed": True,
+            "published": published,
+            "reason": f"Pushed {len(changes)} change(s)" + (" and published" if published else ""),
+        })
+
+        if verbose:
+            print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✓ Complete")
+
+    if verbose:
+        print(f"[qsync:master-push] Summary: {surveys_pushed}/{len(survey_ids)} pushed, {surveys_published} published, {surveys_failed} failed")
 
     return {
         "total_surveys": len(survey_ids),
+        "surveys_pushed": surveys_pushed,
         "surveys_published": surveys_published,
         "surveys_failed": surveys_failed,
         "details": details,

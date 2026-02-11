@@ -28,6 +28,7 @@ from .dimensions import eos as eos_dimension
 from .dimensions import flow as flow_dimension
 from .dimensions import items as items_dimension
 from .dimensions import js as js_dimension
+from .dimensions import master_detect
 from .dimensions import translations as translations_dimension
 from .dimensions.types import DimensionChanges
 from .scope_filter import ScopeFilter
@@ -113,6 +114,8 @@ def _autofix_command(dimension: str, survey_id: str) -> Optional[str]:
         return f"qsync eos pull --survey-id {survey_id}"
     if dimension == "flow":
         return f"qsync flow pull --survey-id {survey_id}"
+    if dimension == "master":
+        return f"qsync survey master pull --survey-id {survey_id}"
     return None
 
 
@@ -174,6 +177,11 @@ def _run_autofix(dimension: str, survey_id: str) -> str:
     if dimension == "flow":
         flow_dimension.pull(survey_id, force=True)
         return f"Pulled flow to surveys/flow/{survey_id}/flow.yaml"
+    if dimension == "master":
+        from .survey_master import pull_master
+
+        pull_master(survey_ids=[survey_id], verbose=False)
+        return f"Pulled master snapshots for {survey_id}"
     raise ValueError(f"Unknown auto-fix dimension: {dimension}")
 
 
@@ -342,6 +350,8 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
             return eos_dimension.detect_changes(survey_id)
         if dimension == "flow":
             return flow_dimension.detect_changes(survey_id)
+        if dimension == "master":
+            return master_detect.detect_changes(survey_id)
 
         return DimensionChanges(
             dimension=dimension,
@@ -437,6 +447,52 @@ def detect_conflicts(changes: SurveyChanges) -> List[Conflict]:
             )
 
     return conflicts
+
+
+def detect_master_conflicts(changes: SurveyChanges) -> List[str]:
+    """Detect potential conflicts involving master dimension.
+
+    Master dimension doesn't track QIDs, so conflicts are detected based on:
+    - Both master and translations having staged changes (metadata overlap)
+    - Master having changes when other dimensions have unstaged changes
+
+    Args:
+        changes: Detected changes for a survey
+
+    Returns:
+        List of warning messages
+    """
+    warnings = []
+    master_changes = changes.dimensions.get("master")
+
+    if not master_changes or not master_changes.has_changes:
+        return warnings
+
+    # Check if master + translations both have staged changes
+    translations_changes = changes.dimensions.get("translations")
+    if translations_changes and translations_changes.has_changes:
+        if master_changes.status_kind == "staged" and translations_changes.status_kind == "staged":
+            warnings.append(
+                "⚠ Both master and translations have staged changes. "
+                "Consider pushing translations first to avoid metadata conflicts."
+            )
+
+    # Check if master has changes and other dimensions have unstaged changes
+    has_unstaged_other = False
+    for dim_name, dim_changes in changes.dimensions.items():
+        if dim_name == "master":
+            continue
+        if dim_changes.has_changes and dim_changes.status_kind == "unstaged":
+            has_unstaged_other = True
+            break
+
+    if master_changes.status_kind == "staged" and has_unstaged_other:
+        warnings.append(
+            "⚠ Master has staged changes while other dimensions have unstaged changes. "
+            "Review changes carefully to avoid conflicts."
+        )
+
+    return warnings
 
 
 def resolve_conflict_interactive(conflict: Conflict) -> List[str]:
@@ -2753,8 +2809,16 @@ def _sync_dimensions_once(
                 "[sync:conflict] Using safe merge order: items → edf → js → translations → eos → flow"
             )
 
+        # Detect master-specific conflicts and warnings
+        master_warnings = detect_master_conflicts(changes)
+        if master_warnings:
+            print()
+            for warning in master_warnings:
+                print(f"[sync:conflict] {warning}")
+
     # Sort dimensions in safe merge order
-    safe_order = ["items", "edf", "js", "translations", "eos", "flow"]
+    # Note: master is intentionally last to avoid overwriting dimension-specific changes
+    safe_order = ["items", "edf", "js", "translations", "eos", "flow", "master"]
     dimensions_sorted = [d for d in safe_order if d in dimensions]
 
     edf_info = changes.dimensions.get("edf")
