@@ -226,7 +226,7 @@ See `../reference/inventory-schema.md` for the inventory/tag schema.
   ⚠️  Publishing required: YES (definition changes detected)
   ⚠️  Dangerous changes: NO
 
-💡 Next: Run 'qsync survey master apply' to apply changes
+💡 Next: Run 'qsync survey master stage' then 'qsync survey master push'
 ```
 
 ---
@@ -416,6 +416,11 @@ Push Summary:
 Run without --dry-run to apply changes
 ```
 
+### Legacy: Direct Apply Path (Optional)
+
+`qsync survey master apply` is kept for compatibility, but it bypasses pending-first workflow.
+Prefer `preview -> stage -> push` for regular operations.
+
 #### `--tag` (Filter surveys by tag)
 ```bash
 qsync survey master apply --tag component=pre --tag stage=prod
@@ -558,9 +563,9 @@ Consider running 'qsync survey master pull' to refresh snapshots.
 **What to do:**
 1. Run `qsync survey master pull` to refresh snapshots
 2. Re-edit your CSV if needed
-3. Re-run preview and apply
+3. Re-run preview, then stage and push
 
-The mismatch doesn't block apply (with `--force`), but it's safer to re-pull.
+The mismatch doesn't block legacy `apply` (with `--force`), but it's safer to re-pull.
 
 ---
 
@@ -574,7 +579,7 @@ Publishing is a separate explicit step:
 qsync survey master push
 ```
 
-Use `master push` after `master apply` when you are ready to publish definition changes.
+Use `master push` after `master stage` when you are ready to write and publish definition changes.
 
 Status-only changes (for example `isActive`) still do not require publishing.
 
@@ -588,7 +593,7 @@ This version becomes the new "published" version for the survey.
 
 ### Rollback
 
-Use rollback snapshots captured during `master apply`:
+Use rollback snapshots captured during `master push` (and legacy `master apply`):
 
 ```bash
 qsync survey master rollback --list [--survey-id SV_xxx]
@@ -709,6 +714,93 @@ qsync survey master apply --allow-dangerous
 1. Check column spelling
 2. Ensure it matches `qualtrics_api_key_mapping.csv` exactly
 3. Delete the invalid column from your CSV
+
+---
+
+## Cross-Dimension Conflicts
+
+When using Survey Master alongside other qsync dimensions (items, translations, flow, etc.), certain fields may overlap causing potential conflicts. Understanding and resolving these conflicts ensures safe multi-dimension workflows.
+
+### Conflict Detection
+
+The `qsync sync` orchestrator automatically detects potential conflicts between master and other dimensions:
+
+```bash
+qsync sync status
+```
+
+**Common conflict scenarios:**
+
+1. **Master + Translations** (both staged):
+   - **Fields**: `SurveyName`, `SurveyDescription`
+   - **Warning**: "Both master and translations have staged changes. Consider pushing translations first to avoid metadata conflicts."
+   - **Resolution**: Push translations dimension first, then master
+
+2. **Master + Items** (overlapping survey metadata):
+   - **Fields**: `BrandID`, survey options that affect display
+   - **Warning**: "Master has staged changes while other dimensions have unstaged changes."
+   - **Resolution**: Review changes carefully, ensure no field overwriting
+
+### Conflict Resolution Policy
+
+**Field precedence (when conflicts occur):**
+
+| Field Type | Master | Translations | Items | Winner |
+|------------|--------|--------------|-------|---------|
+| `SurveyName`, `SurveyDescription` | ✓ | ✓ | - | Translations (if both staged, push translations first) |
+| Survey options (branding, styling) | ✓ | - | Can affect | Master |
+| Question text, choices | - | ✓ | ✓ | Items/Translations (master doesn't touch questions) |
+
+**Safe merge order** (enforced by `qsync sync`):
+1. Items (questions, choices, embedded data)
+2. EDF (embedded data schema)
+3. JS (question logic)
+4. Translations (multi-language text)
+5. EOS (end-of-survey messages)
+6. Flow (survey flow structure)
+7. **Master** (survey-level metadata and options) ← Applied last to avoid overwrites
+
+### Best Practices
+
+**When editing metadata:**
+- ✅ Use **translations dimension** for `SurveyName` and `SurveyDescription` in multi-language surveys
+- ✅ Use **master dimension** for survey-level options, branding, dates, and status
+- ✅ Check `qsync sync status` before pushing to detect conflicts
+- ⚠️ Avoid editing same fields in both dimensions simultaneously
+
+**When using `qsync sync`:**
+- The orchestrator applies master changes last to prevent overwriting dimension-specific metadata
+- Conflict warnings are displayed before push
+- You can abort and re-stage in the correct order
+
+**Example workflow with conflicts:**
+```bash
+# 1. Check for conflicts
+qsync sync status
+
+# Output shows:
+#   ⚠ Both master and translations have staged changes
+
+# 2. Resolve by pushing translations first
+qsync translations push --survey-id SV_abc123
+
+# 3. Then push master
+qsync survey master push --survey-id SV_abc123
+
+# OR use qsync sync to handle safe order automatically
+qsync sync --survey-id SV_abc123
+```
+
+### Non-Interactive Safety Gates
+
+When using `qsync sync` with `--yes` (non-interactive mode), additional safety gates apply to master pushes:
+
+- **Locked surveys**: Block push (override with `--allow-locked`)
+- **Active responses**: Block push (override with `--force-live`)
+- **Dangerous fields**: Block push (override with `--allow-dangerous`)
+- **Drift detection**: Blocks if snapshot hash mismatches (override with `--allow-drift`)
+
+These gates prevent silent master pushes that could affect production surveys without review.
 
 ---
 

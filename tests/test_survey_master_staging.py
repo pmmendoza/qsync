@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 class SurveyMasterStagingTests(unittest.TestCase):
@@ -180,6 +180,87 @@ class SurveyMasterStagingTests(unittest.TestCase):
             with patch("qsync.pending_stage.resolve_root", return_value=root):
                 pending = load_pending("SV_TEST", "master")
             self.assertIsNone(pending)
+
+    def test_stage_master_uses_per_survey_snapshot_hash(self) -> None:
+        """Stage should store snapshot hash per survey, not one combined hash."""
+        from qsync.pending_stage import load_pending, MasterPendingPayload
+        from qsync.survey_master import stage_master, _compute_snapshot_hash
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "surveys" / "qualtrics_master_snapshots").mkdir(parents=True)
+            (root / "surveys" / "pending" / "master").mkdir(parents=True)
+
+            snapshot_a = {
+                "survey_id": "SV_A",
+                "survey_name": "Survey A",
+                "schema_version": "test",
+                "pulled_at": "2026-01-01T00:00:00Z",
+                "sections": {
+                    "metadata": {"data": {"SurveyName": "Old A"}},
+                    "options": {"data": {}},
+                    "status": {"data": {}},
+                },
+            }
+            snapshot_b = {
+                "survey_id": "SV_B",
+                "survey_name": "Survey B",
+                "schema_version": "test",
+                "pulled_at": "2026-01-01T00:00:00Z",
+                "sections": {
+                    "metadata": {"data": {"SurveyName": "Old B"}},
+                    "options": {"data": {}},
+                    "status": {"data": {}},
+                },
+            }
+            (root / "surveys" / "qualtrics_master_snapshots" / "SV_A.json").write_text(
+                json.dumps(snapshot_a), encoding="utf-8"
+            )
+            (root / "surveys" / "qualtrics_master_snapshots" / "SV_B.json").write_text(
+                json.dumps(snapshot_b), encoding="utf-8"
+            )
+
+            headers = ["SurveyID", "SurveyName"]
+            rows = [
+                {"SurveyID": "SV_A", "SurveyName": "New A"},
+                {"SurveyID": "SV_B", "SurveyName": "New B"},
+            ]
+
+            with patch("qsync.survey_master.resolve_root", return_value=root):
+                with patch("qsync.pending_stage.resolve_root", return_value=root):
+                    with patch("qsync.survey_master._parse_mapping_csv") as mock_mapping:
+                        mock_mapping.return_value = {
+                            "SurveyID": {
+                                "field_name": "SurveyID",
+                                "domain": "survey_metadata",
+                                "survey_master": "read",
+                                "object_path": "survey_id",
+                            },
+                            "SurveyName": {
+                                "field_name": "SurveyName",
+                                "domain": "survey_metadata",
+                                "survey_master": "write",
+                                "object_path": "SurveyName",
+                            },
+                        }
+                        result = stage_master(
+                            csv_headers=headers, csv_rows=rows, verbose=False
+                        )
+
+                        self.assertEqual(result["staged_surveys"], 2)
+
+                        pending_a = load_pending("SV_A", "master")
+                        pending_b = load_pending("SV_B", "master")
+
+                        self.assertIsNotNone(pending_a)
+                        self.assertIsNotNone(pending_b)
+                        self.assertIsInstance(pending_a.payload, MasterPendingPayload)
+                        self.assertIsInstance(pending_b.payload, MasterPendingPayload)
+
+                        expected_a = _compute_snapshot_hash(["SV_A"])
+                        expected_b = _compute_snapshot_hash(["SV_B"])
+                        self.assertEqual(pending_a.payload.snapshot_hash, expected_a)
+                        self.assertEqual(pending_b.payload.snapshot_hash, expected_b)
 
 
 if __name__ == "__main__":

@@ -3981,7 +3981,15 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             dimensions = None
             if getattr(args, "dimensions", None):
                 dimensions = [d.strip() for d in args.dimensions.split(",")]
-                valid_dims = {"items", "edf", "js", "translations", "eos", "flow"}
+                valid_dims = {
+                    "items",
+                    "edf",
+                    "js",
+                    "translations",
+                    "eos",
+                    "flow",
+                    "master",
+                }
                 invalid = [d for d in dimensions if d not in valid_dims]
                 if invalid:
                     error("[qsync:sync]", f"Invalid dimensions: {', '.join(invalid)}")

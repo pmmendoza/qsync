@@ -1301,7 +1301,7 @@ def preview_master(
         )
         print(f"[qsync:master-preview] Total changes: {total_changes}")
         if requires_publish:
-            print("[qsync:master-preview] ⚠️  Publishing required after apply")
+            print("[qsync:master-preview] ⚠️  Publishing required after push")
         if has_dangerous:
             print(
                 "[qsync:master-preview] ⚠️  Some changes involve dangerous fields (requires --allow-dangerous)"
@@ -1438,8 +1438,11 @@ def stage_master(
             "survey_diffs": [],
         }
 
-    # Compute snapshot hash for drift detection
-    snapshot_hash = _compute_snapshot_hash(surveys_with_changes)
+    # Compute per-survey snapshot hashes for drift detection.
+    # Each pending record is survey-scoped, so hash must also be survey-scoped.
+    snapshot_hashes = {
+        sid: _compute_snapshot_hash([sid]) for sid in sorted(set(surveys_with_changes))
+    }
 
     if verbose:
         print(f"[qsync:master-stage] Saving pending records for {len(surveys_with_changes)} survey(s)...")
@@ -1449,7 +1452,7 @@ def stage_master(
         sid = diff["survey_id"]
         payload = MasterPendingPayload(
             survey_ids=[sid],
-            snapshot_hash=snapshot_hash,
+            snapshot_hash=snapshot_hashes.get(sid, ""),
             changes=[diff],
         )
         record = PendingStagedChanges(
@@ -2651,68 +2654,77 @@ def push_master(
     surveys_failed = 0
     base_url = None
     headers = None
+    show_progress = not verbose and len(survey_ids) > 1 and should_use_rich()
 
-    for sid in survey_ids:
+    def _push_single(sid: str) -> None:
+        nonlocal surveys_pushed, surveys_published, surveys_failed, base_url, headers
         from .survey_ref import format_survey_ref
 
-        # Load pending
         pending = load_pending(sid, "master")
         if not pending or not isinstance(pending.payload, MasterPendingPayload):
-            details.append({
-                "survey_id": sid,
-                "pushed": False,
-                "published": False,
-                "reason": "No staged changes",
-            })
-            continue
+            details.append(
+                {
+                    "survey_id": sid,
+                    "pushed": False,
+                    "published": False,
+                    "reason": "No staged changes",
+                }
+            )
+            return
 
-        # Extract diff
         survey_diffs = pending.payload.changes
         if not survey_diffs or len(survey_diffs) != 1:
-            details.append({
-                "survey_id": sid,
-                "pushed": False,
-                "published": False,
-                "reason": "Invalid pending payload",
-            })
-            continue
+            details.append(
+                {
+                    "survey_id": sid,
+                    "pushed": False,
+                    "published": False,
+                    "reason": "Invalid pending payload",
+                }
+            )
+            surveys_failed += 1
+            return
 
         diff = survey_diffs[0]
-        changes = diff.get("changes", [])
-
+        changes = list(diff.get("changes") or [])
         if not changes:
             clear_pending(sid, "master")
-            continue
+            return
 
-        # Check dangerous fields
         has_dangerous = any(c.get("is_dangerous") for c in changes)
         if has_dangerous and not allow_dangerous:
             if verbose:
-                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Dangerous changes require --allow-dangerous")
-            details.append({
-                "survey_id": sid,
-                "pushed": False,
-                "published": False,
-                "reason": "Dangerous changes require --allow-dangerous",
-            })
+                print(
+                    f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Dangerous changes require --allow-dangerous"
+                )
+            details.append(
+                {
+                    "survey_id": sid,
+                    "pushed": False,
+                    "published": False,
+                    "reason": "Dangerous changes require --allow-dangerous",
+                }
+            )
             surveys_failed += 1
-            continue
+            return
 
-        # Detect drift (snapshot hash mismatch)
         current_hash = _compute_snapshot_hash([sid])
         if current_hash != pending.payload.snapshot_hash:
             if verbose:
-                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Drift detected (snapshots changed since staging)")
-            details.append({
-                "survey_id": sid,
-                "pushed": False,
-                "published": False,
-                "reason": "Drift detected: snapshots changed since staging. Re-run 'qsync survey master pull' and 'qsync survey master stage'.",
-            })
+                print(
+                    f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Drift detected (snapshots changed since staging)"
+                )
+            details.append(
+                {
+                    "survey_id": sid,
+                    "pushed": False,
+                    "published": False,
+                    "reason": "Drift detected: snapshots changed since staging. Re-run 'qsync survey master pull' and 'qsync survey master stage'.",
+                }
+            )
             surveys_failed += 1
-            continue
+            return
 
-        # Enforce safeguards
         try:
             config = SafeguardConfig(
                 survey_id=sid,
@@ -2725,49 +2737,58 @@ def push_master(
             enforce_push_safeguards(config)
         except SystemExit as e:
             if verbose:
-                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Blocked by safeguards")
-            details.append({
-                "survey_id": sid,
-                "pushed": False,
-                "published": False,
-                "reason": f"Blocked by safeguards: {e}",
-            })
+                print(
+                    f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Blocked by safeguards"
+                )
+            details.append(
+                {
+                    "survey_id": sid,
+                    "pushed": False,
+                    "published": False,
+                    "reason": f"Blocked by safeguards: {e}",
+                }
+            )
             surveys_failed += 1
-            continue
+            return
 
-        # Ensure backup
         try:
             ensure_backup(sid)
         except Exception as e:
             if verbose:
                 print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Backup failed: {e}")
-            details.append({
-                "survey_id": sid,
-                "pushed": False,
-                "published": False,
-                "reason": f"Backup failed: {e}",
-            })
+            details.append(
+                {
+                    "survey_id": sid,
+                    "pushed": False,
+                    "published": False,
+                    "reason": f"Backup failed: {e}",
+                }
+            )
             surveys_failed += 1
-            continue
+            return
 
-        # Capture rollback snapshot
         try:
-            rollback_path = capture_pre_apply_snapshot(sid, changes)
+            capture_pre_apply_snapshot(sid, changes)
             if verbose:
-                print(f"[qsync:master-push]   {format_survey_ref(sid)}: Rollback snapshot saved")
+                print(
+                    f"[qsync:master-push]   {format_survey_ref(sid)}: Rollback snapshot saved"
+                )
         except Exception as e:
             if verbose:
-                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Rollback snapshot failed: {e}")
-            details.append({
-                "survey_id": sid,
-                "pushed": False,
-                "published": False,
-                "reason": f"Rollback snapshot failed: {e}",
-            })
+                print(
+                    f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Rollback snapshot failed: {e}"
+                )
+            details.append(
+                {
+                    "survey_id": sid,
+                    "pushed": False,
+                    "published": False,
+                    "reason": f"Rollback snapshot failed: {e}",
+                }
+            )
             surveys_failed += 1
-            continue
+            return
 
-        # Group changes by endpoint
         changes_by_endpoint: Dict[str, Dict[str, str]] = {}
         for change in changes:
             endpoint = change.get("endpoint")
@@ -2777,61 +2798,78 @@ def push_master(
                 changes_by_endpoint[endpoint] = {}
             changes_by_endpoint[endpoint][field] = new_value
 
-        # Write to API
         try:
             if base_url is None or headers is None:
                 base_url, headers = get_client_config()
 
             write_success = True
-
             if "metadata" in changes_by_endpoint:
                 if verbose:
-                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: Writing metadata...")
-                if not _write_metadata(base_url, headers, sid, changes_by_endpoint["metadata"]):
+                    print(
+                        f"[qsync:master-push]   {format_survey_ref(sid)}: Writing metadata..."
+                    )
+                if not _write_metadata(
+                    base_url, headers, sid, changes_by_endpoint["metadata"]
+                ):
                     write_success = False
 
             if "options" in changes_by_endpoint and write_success:
                 if verbose:
-                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: Writing options...")
-                if not _write_options(base_url, headers, sid, changes_by_endpoint["options"]):
+                    print(
+                        f"[qsync:master-push]   {format_survey_ref(sid)}: Writing options..."
+                    )
+                if not _write_options(
+                    base_url, headers, sid, changes_by_endpoint["options"]
+                ):
                     write_success = False
 
             if "status" in changes_by_endpoint and write_success:
                 if verbose:
-                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: Writing status...")
-                if not _write_status(base_url, headers, sid, changes_by_endpoint["status"]):
+                    print(
+                        f"[qsync:master-push]   {format_survey_ref(sid)}: Writing status..."
+                    )
+                if not _write_status(
+                    base_url, headers, sid, changes_by_endpoint["status"]
+                ):
                     write_success = False
 
             if not write_success:
                 if verbose:
-                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ API write failed")
-                details.append({
+                    print(
+                        f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ API write failed"
+                    )
+                details.append(
+                    {
+                        "survey_id": sid,
+                        "pushed": False,
+                        "published": False,
+                        "reason": "API write failed",
+                    }
+                )
+                surveys_failed += 1
+                return
+
+            surveys_pushed += 1
+            if verbose:
+                print(
+                    f"[qsync:master-push]   {format_survey_ref(sid)}: ✓ API write successful ({len(changes)} change(s))"
+                )
+        except Exception as e:
+            if verbose:
+                print(
+                    f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ API write error: {e}"
+                )
+            details.append(
+                {
                     "survey_id": sid,
                     "pushed": False,
                     "published": False,
-                    "reason": "API write failed",
-                })
-                surveys_failed += 1
-                continue
-
-            surveys_pushed += 1
-
-            if verbose:
-                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✓ API write successful ({len(changes)} change(s))")
-
-        except Exception as e:
-            if verbose:
-                print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ API write error: {e}")
-            details.append({
-                "survey_id": sid,
-                "pushed": False,
-                "published": False,
-                "reason": f"API write error: {e}",
-            })
+                    "reason": f"API write error: {e}",
+                }
+            )
             surveys_failed += 1
-            continue
+            return
 
-        # Publish if requested
         published = False
         if not no_publish and diff.get("publish_required"):
             try:
@@ -2844,27 +2882,50 @@ def push_master(
                     print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✓ Published")
             except Exception as e:
                 if verbose:
-                    print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Publish failed: {e}")
-                details.append({
-                    "survey_id": sid,
-                    "pushed": True,
-                    "published": False,
-                    "reason": f"Pushed successfully but publish failed: {e}",
-                })
-                continue
+                    print(
+                        f"[qsync:master-push]   {format_survey_ref(sid)}: ✗ Publish failed: {e}"
+                    )
+                details.append(
+                    {
+                        "survey_id": sid,
+                        "pushed": True,
+                        "published": False,
+                        "reason": f"Pushed successfully but publish failed: {e}",
+                    }
+                )
+                surveys_failed += 1
+                return
 
-        # Clear pending on success
         clear_pending(sid, "master")
-
-        details.append({
-            "survey_id": sid,
-            "pushed": True,
-            "published": published,
-            "reason": f"Pushed {len(changes)} change(s)" + (" and published" if published else ""),
-        })
-
+        details.append(
+            {
+                "survey_id": sid,
+                "pushed": True,
+                "published": published,
+                "reason": f"Pushed {len(changes)} change(s)"
+                + (" and published" if published else ""),
+            }
+        )
         if verbose:
             print(f"[qsync:master-push]   {format_survey_ref(sid)}: ✓ Complete")
+
+    if show_progress:
+        total = len(survey_ids)
+        with progress_context("Pushing Survey Master changes", total=total) as prog:
+            for idx, sid in enumerate(survey_ids, start=1):
+                if prog:
+                    progress, task_id = prog
+                    progress.update(
+                        task_id,
+                        description=f"Pushing Survey Master changes ({idx}/{total})",
+                    )
+                _push_single(sid)
+                if prog:
+                    progress, task_id = prog
+                    progress.advance(task_id)
+    else:
+        for sid in survey_ids:
+            _push_single(sid)
 
     if verbose:
         print(f"[qsync:master-push] Summary: {surveys_pushed}/{len(survey_ids)} pushed, {surveys_published} published, {surveys_failed} failed")

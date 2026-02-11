@@ -222,6 +222,77 @@ class SyncMasterIntegrationTests(unittest.TestCase):
         self.assertEqual(result.dimension, "master")
         self.assertFalse(result.has_changes)
 
+    def test_stage_dimension_master(self) -> None:
+        """Stage orchestration should dispatch master staging."""
+        from qsync.sync_orchestrator import stage_dimension
+
+        with patch(
+            "qsync.survey_master.stage_master",
+            return_value={"validation_errors": [], "staged_surveys": 1},
+        ) as mock_stage:
+            ok = stage_dimension("SV_TEST", "master", interactive=False)
+
+        self.assertTrue(ok)
+        mock_stage.assert_called_once()
+
+    def test_sync_dimension_master(self) -> None:
+        """Sync orchestration should dispatch master push with no-publish orchestration."""
+        from qsync.pending_stage import PendingStagedChanges, MasterPendingPayload
+        from qsync.sync_orchestrator import sync_dimension
+
+        pending_record = PendingStagedChanges(
+            survey_id="SV_TEST",
+            dimension="master",
+            payload=MasterPendingPayload(
+                survey_ids=["SV_TEST"],
+                snapshot_hash="hash",
+                changes=[
+                    {
+                        "survey_id": "SV_TEST",
+                        "changes": [{"field": "SurveyName"}],
+                    }
+                ],
+            ),
+        )
+
+        with patch("qsync.sync_orchestrator._get_inventory_cached", return_value={}):
+            with patch(
+                "qsync.pending_stage.load_pending", return_value=pending_record
+            ):
+                with patch(
+                    "qsync.survey_master.push_master",
+                    return_value={
+                        "errors": [],
+                        "total_surveys": 1,
+                        "details": [
+                            {
+                                "survey_id": "SV_TEST",
+                                "pushed": True,
+                                "published": False,
+                                "reason": "ok",
+                            }
+                        ],
+                    },
+                ) as mock_push:
+                    result = sync_dimension(
+                        survey_id="SV_TEST",
+                        dimension="master",
+                        interactive=False,
+                        force_live=False,
+                        force_preview=False,
+                        auto_yes=True,
+                        allow_drift=False,
+                        skip_publish=True,
+                        scope=None,
+                    )
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.applied_changes)
+        self.assertIsNone(result.error_message)
+        _, kwargs = mock_push.call_args
+        self.assertEqual(kwargs["survey_id"], "SV_TEST")
+        self.assertTrue(kwargs["no_publish"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5676,7 +5676,7 @@ def handle_master_preview(args: argparse.Namespace) -> None:
 
                     print(f"       {old_fmt} → {new_fmt}")
 
-        next_line = "💡 Next: Run 'qsync survey master apply' to write changes (then 'push' to publish)"
+        next_line = "💡 Next: Run 'qsync survey master stage' to stage changes, then 'qsync survey master push'"
         if use_color:
             next_line = colored(next_line, Colors.GREEN)
         print(f"\n{next_line}")
@@ -5776,6 +5776,10 @@ def handle_master_apply(args: argparse.Namespace) -> None:
     skip_drift = getattr(args, "skip_drift", False)
     dry_run = getattr(args, "dry_run", False)
     tag_specs = getattr(args, "tags", None)
+    warn(
+        "[qsync:master-apply]",
+        "Legacy command: prefer 'qsync survey master stage' then 'qsync survey master push'.",
+    )
 
     try:
         mapping_csv = getattr(args, "mapping_csv", None)
@@ -5953,7 +5957,6 @@ def handle_master_push(args: argparse.Namespace) -> None:
                 header(None, "Details:")
                 for detail in filtered:
                     pushed = detail.get("pushed", False)
-                    published = detail.get("published", False)
                     status = "✓" if pushed else "✗"
                     if pushed:
                         success(
@@ -7090,7 +7093,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     # master preview
     p_master_preview = master_subs.add_parser(
         "preview",
-        help="Preview changes that would be applied by master apply",
+        help="Preview changes that would be staged and pushed",
     )
     p_master_preview.add_argument(
         "--verbose",
@@ -7151,7 +7154,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     # master apply
     p_master_apply = master_subs.add_parser(
         "apply",
-        help="Apply changes from master CSV to Qualtrics",
+        help="Legacy: apply changes directly from master CSV to Qualtrics (bypasses pending)",
     )
     p_master_apply.add_argument(
         "--verbose",
@@ -7199,7 +7202,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     # master push
     p_master_push = master_subs.add_parser(
         "push",
-        help="Publish surveys after applying changes",
+        help="Push staged changes to Qualtrics (publishes by default)",
     )
     p_master_push.add_argument(
         "--verbose",
