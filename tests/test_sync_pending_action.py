@@ -453,6 +453,51 @@ class TestSyncPendingAction(unittest.TestCase):
         mock_sync_dimension.assert_called_once()
         self.assertEqual(mock_sync_dimension.call_args.kwargs["ignore_embedded"], True)
 
+    def test_sync_dimensions_once_skips_stage_prompt_when_no_selected_changes(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        changes = SimpleNamespace(
+            survey_name="Test Survey",
+            dimensions=self._empty_unstaged(),
+        )
+        buf = io.StringIO()
+
+        with (
+            redirect_stdout(buf),
+            patch.object(orchestrator, "detect_survey_changes", return_value=changes),
+            patch.object(orchestrator, "detect_conflicts", return_value=[]),
+            patch.object(orchestrator, "detect_master_conflicts", return_value=[]),
+            patch.object(orchestrator, "display_unified_preview", return_value=True),
+            patch.object(
+                orchestrator, "_detect_unstaged_changes", return_value=self._empty_unstaged()
+            ),
+            patch.object(orchestrator, "_is_dimension_staged", return_value=False),
+            patch("qsync.interactive_menu.confirm") as mock_confirm,
+            patch("qsync.interactive_menu.select_from_list") as mock_select,
+            patch.object(orchestrator, "sync_dimension") as mock_sync_dimension,
+        ):
+            summary = orchestrator._sync_dimensions_once(
+                survey_id="SV_TEST",
+                dimensions=["master"],
+                interactive=True,
+                force_live=False,
+                force_preview=False,
+                auto_yes=False,
+                allow_drift=False,
+                skip_publish=True,
+                scope=None,
+                per_dimension=False,
+            )
+
+        self.assertIsNone(summary)
+        mock_confirm.assert_not_called()
+        mock_select.assert_not_called()
+        mock_sync_dimension.assert_not_called()
+        self.assertIn(
+            "No staged or unstaged changes detected for selected dimensions.",
+            buf.getvalue(),
+        )
+
     def test_fixable_detail_uses_warning_for_autofixable_warnings(self):
         import qsync.sync_orchestrator as orchestrator
 

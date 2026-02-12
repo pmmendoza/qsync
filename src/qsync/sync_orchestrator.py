@@ -3115,6 +3115,13 @@ def _sync_dimensions_once(
         if not preview_success:
             print(f"{Colors.YELLOW}⚠ Warning:{Colors.RESET} Some previews failed")
 
+        # Re-detect unstaged state so explicit dimension selections do not
+        # force staging when no source-vs-cache diffs actually exist.
+        selected_unstaged = _detect_unstaged_changes(survey_id, scope=scope)
+        selected_staged_dims = [
+            dim for dim in dimensions_sorted if _is_dimension_staged(survey_id, dim)
+        ]
+
         # For unstaged dimensions, prompt to stage
         js_stale_pending = False
         if "js" in dimensions_sorted and _is_dimension_staged(survey_id, "js"):
@@ -3125,12 +3132,25 @@ def _sync_dimensions_once(
                     "Re-stage to refresh the cache (or clear staged changes)."
                 )
 
-        unstaged_dims = [
-            dim
-            for dim in dimensions_sorted
-            if not _is_dimension_staged(survey_id, dim)
-            or (dim == "js" and js_stale_pending)
-        ]
+        unstaged_dims: List[str] = []
+        for dim in dimensions_sorted:
+            dim_info = selected_unstaged.get(dim)
+            has_unstaged = bool(
+                dim_info
+                and dim_info.has_changes
+                and dim_info.status_kind == "unstaged"
+            )
+            if has_unstaged:
+                unstaged_dims.append(dim)
+
+        if js_stale_pending and "js" in dimensions_sorted and "js" not in unstaged_dims:
+            unstaged_dims.append("js")
+
+        if not unstaged_dims and not selected_staged_dims:
+            print(
+                f"{Colors.DIM}No staged or unstaged changes detected for selected dimensions.{Colors.RESET}"
+            )
+            return None
 
         if unstaged_dims:
             from .interactive_menu import confirm
