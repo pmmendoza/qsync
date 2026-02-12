@@ -141,6 +141,52 @@ class SyncMasterIntegrationTests(unittest.TestCase):
         self.assertFalse(result.has_changes)
         self.assertEqual(result.status_kind, "none")
 
+    def test_detect_master_changes_ignores_boolean_case_only(self) -> None:
+        """Boolean case-only edits (TRUE/FALSE vs true/false) should not count as diffs."""
+        from qsync.dimensions.master_detect import detect_changes
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "surveys" / "qualtrics_master_snapshots").mkdir(parents=True)
+            csv_path = root / "surveys" / "qualtrics_master.csv"
+
+            snapshot = {
+                "survey_id": "SV_TEST",
+                "survey_name": "Test",
+                "sections": {
+                    "metadata": {"data": {}},
+                    "options": {"data": {"BackButton": False}},
+                    "status": {"data": {}},
+                },
+            }
+            snapshot_path = root / "surveys" / "qualtrics_master_snapshots" / "SV_TEST.json"
+            snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+            csv_content = "SurveyID,BackButton\nSV_TEST,FALSE\n"
+            csv_path.write_text(csv_content, encoding="utf-8")
+
+            with patch("qsync.survey_master.resolve_root", return_value=root):
+                with patch("qsync.survey_master._parse_mapping_csv") as mock_mapping:
+                    mock_mapping.return_value = {
+                        "SurveyID": {
+                            "field_name": "SurveyID",
+                            "domain": "survey_metadata",
+                            "survey_master": "read",
+                            "object_path": "survey_id",
+                        },
+                        "BackButton": {
+                            "field_name": "BackButton",
+                            "domain": "survey_options",
+                            "survey_master": "write",
+                            "object_path": "result.BackButton",
+                            "data_type": "bool",
+                        },
+                    }
+                    result = detect_changes("SV_TEST")
+
+        self.assertFalse(result.has_changes)
+        self.assertEqual(result.status_kind, "none")
+
     def test_detect_master_conflicts(self) -> None:
         """Test master conflict detection with translations."""
         from qsync.sync_orchestrator import detect_master_conflicts, SurveyChanges

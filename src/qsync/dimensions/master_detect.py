@@ -3,7 +3,12 @@
 from typing import Set
 
 from ..pending_stage import load_pending, MasterPendingPayload
-from ..survey_master import load_master_csv, load_snapshot, compute_diff
+from ..survey_master import (
+    load_master_csv,
+    load_snapshot,
+    compute_diff,
+    validate_master_csv,
+)
 from .types import DimensionChanges
 
 
@@ -75,8 +80,20 @@ def detect_changes(survey_id: str) -> DimensionChanges:
         )
 
     # Compute diff
+    row_for_diff = dict(csv_row)
+    validation_errors = validate_master_csv(headers, [row_for_diff])
+    if validation_errors:
+        return DimensionChanges(
+            dimension="master",
+            has_changes=False,
+            change_summary="✗ Error",
+            affected_qids=set(),
+            error_detail="; ".join(validation_errors),
+            status_kind="error",
+        )
+
     try:
-        diff = compute_diff(survey_id, csv_row)
+        diff = compute_diff(survey_id, row_for_diff)
     except Exception as e:
         return DimensionChanges(
             dimension="master",
