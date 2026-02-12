@@ -41,6 +41,18 @@ class TestSyncPendingAction(unittest.TestCase):
             },
         )
 
+    @staticmethod
+    def _empty_unstaged() -> dict[str, DimensionChanges]:
+        return {
+            "items": DimensionChanges("items", False, "No changes", set()),
+            "edf": DimensionChanges("edf", False, "No changes", set()),
+            "js": DimensionChanges("js", False, "No changes", set()),
+            "translations": DimensionChanges("translations", False, "No changes", set()),
+            "eos": DimensionChanges("eos", False, "No changes", set()),
+            "flow": DimensionChanges("flow", False, "No changes", set()),
+            "master": DimensionChanges("master", False, "No changes", set()),
+        }
+
     def test_pending_action_push_calls_sync_with_prefer_pending(self):
         import qsync.sync_orchestrator as orchestrator
 
@@ -411,6 +423,189 @@ class TestSyncPendingAction(unittest.TestCase):
         )
 
         self.assertEqual(orchestrator._fixable_detail(info), "repair suggested")
+
+    def test_sync_survey_scopes_fixable_issues_to_selected_dimensions(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        changes = SimpleNamespace(
+            survey_name="Test Survey",
+            dimensions={
+                "items": DimensionChanges("items", False, "No changes", set()),
+                "edf": DimensionChanges("edf", False, "No changes", set()),
+                "js": DimensionChanges("js", False, "No changes", set()),
+                "translations": DimensionChanges(
+                    "translations",
+                    False,
+                    "No changes",
+                    set(),
+                    warning_detail="Workbook not found. Run: qsync items pull --survey-id SV_TEST",
+                    safe_to_autofix=True,
+                ),
+                "eos": DimensionChanges("eos", False, "No changes", set()),
+                "flow": DimensionChanges("flow", False, "No changes", set()),
+                "master": DimensionChanges(
+                    "master",
+                    True,
+                    "⚡ Unstaged: 1 field(s)",
+                    set(),
+                    status_kind="unstaged",
+                ),
+            },
+        )
+        summary = orchestrator.SurveySyncSummary(
+            survey_id="SV_TEST",
+            survey_name="Test Survey",
+            dimension_results={
+                "master": orchestrator.DimensionSyncResult(
+                    dimension="master",
+                    success=True,
+                    applied_changes=True,
+                )
+            },
+        )
+
+        with (
+            patch.object(orchestrator, "detect_survey_changes", return_value=changes),
+            patch.object(orchestrator, "list_pending", return_value={}),
+            patch.object(
+                orchestrator, "_detect_unstaged_changes", return_value=self._empty_unstaged()
+            ),
+            patch.object(orchestrator, "_display_survey_overview"),
+            patch.object(orchestrator, "_get_inventory_cached", return_value={}),
+            patch.object(
+                orchestrator, "_sync_dimensions_once", return_value=summary
+            ) as mock_sync_once,
+            patch("qsync.interactive_menu.confirm") as mock_confirm,
+        ):
+            result = orchestrator.sync_survey(
+                survey_id="SV_TEST",
+                dimensions=["master"],
+                interactive=True,
+                auto_yes=False,
+            )
+
+        self.assertIsNotNone(result)
+        self.assertFalse(mock_confirm.called)
+        mock_sync_once.assert_called_once()
+        self.assertEqual(mock_sync_once.call_args.args[1], ["master"])
+
+    def test_sync_survey_declining_fix_prompt_continues_with_selected_dimensions(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        changes = SimpleNamespace(
+            survey_name="Test Survey",
+            dimensions={
+                "items": DimensionChanges("items", False, "No changes", set()),
+                "edf": DimensionChanges(
+                    "edf",
+                    False,
+                    "No changes",
+                    set(),
+                    warning_detail="Embedded_Data worksheet is inconsistent.",
+                    safe_to_autofix=True,
+                ),
+                "js": DimensionChanges("js", False, "No changes", set()),
+                "translations": DimensionChanges(
+                    "translations", False, "No changes", set()
+                ),
+                "eos": DimensionChanges("eos", False, "No changes", set()),
+                "flow": DimensionChanges("flow", False, "No changes", set()),
+                "master": DimensionChanges("master", False, "No changes", set()),
+            },
+        )
+        summary = orchestrator.SurveySyncSummary(
+            survey_id="SV_TEST",
+            survey_name="Test Survey",
+            dimension_results={
+                "edf": orchestrator.DimensionSyncResult(
+                    dimension="edf",
+                    success=True,
+                    applied_changes=True,
+                )
+            },
+        )
+
+        with (
+            patch.object(orchestrator, "detect_survey_changes", return_value=changes),
+            patch.object(orchestrator, "list_pending", return_value={}),
+            patch.object(
+                orchestrator, "_detect_unstaged_changes", return_value=self._empty_unstaged()
+            ),
+            patch.object(orchestrator, "_display_survey_overview"),
+            patch.object(orchestrator, "_get_inventory_cached", return_value={}),
+            patch.object(
+                orchestrator, "_sync_dimensions_once", return_value=summary
+            ) as mock_sync_once,
+            patch("qsync.interactive_menu.confirm", return_value=False) as mock_confirm,
+        ):
+            result = orchestrator.sync_survey(
+                survey_id="SV_TEST",
+                dimensions=["edf"],
+                interactive=True,
+                auto_yes=False,
+            )
+
+        self.assertIsNotNone(result)
+        mock_confirm.assert_called_once()
+        mock_sync_once.assert_called_once()
+        self.assertEqual(mock_sync_once.call_args.args[1], ["edf"])
+
+    def test_sync_survey_declining_fix_prompt_continues_to_menu_without_dimensions(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        changes = SimpleNamespace(
+            survey_name="Test Survey",
+            dimensions={
+                "items": DimensionChanges("items", True, "⚡ Unstaged: 1 change", {"Q1"}),
+                "edf": DimensionChanges(
+                    "edf",
+                    False,
+                    "No changes",
+                    set(),
+                    warning_detail="Embedded_Data worksheet is inconsistent.",
+                    safe_to_autofix=True,
+                ),
+                "js": DimensionChanges("js", False, "No changes", set()),
+                "translations": DimensionChanges(
+                    "translations", False, "No changes", set()
+                ),
+                "eos": DimensionChanges("eos", False, "No changes", set()),
+                "flow": DimensionChanges("flow", False, "No changes", set()),
+                "master": DimensionChanges("master", False, "No changes", set()),
+            },
+        )
+        unstaged = self._empty_unstaged()
+        unstaged["items"] = DimensionChanges(
+            "items", True, "⚡ Unstaged: 1 change", {"Q1"}, status_kind="unstaged"
+        )
+
+        with (
+            patch.object(orchestrator, "detect_survey_changes", return_value=changes),
+            patch.object(orchestrator, "list_pending", return_value={}),
+            patch.object(orchestrator, "_detect_unstaged_changes", return_value=unstaged),
+            patch.object(orchestrator, "_display_survey_overview"),
+            patch.object(orchestrator, "_get_inventory_cached", return_value={}),
+            patch(
+                "qsync.interactive_menu.confirm",
+                return_value=False,
+            ) as mock_confirm,
+            patch(
+                "qsync.interactive_menu.select_from_list",
+                return_value="↩ Exit sync",
+            ) as mock_select,
+            patch.object(orchestrator, "_sync_dimensions_once") as mock_sync_once,
+        ):
+            result = orchestrator.sync_survey(
+                survey_id="SV_TEST",
+                dimensions=None,
+                interactive=True,
+                auto_yes=False,
+            )
+
+        self.assertIsNone(result)
+        mock_confirm.assert_called_once()
+        mock_select.assert_called_once()
+        self.assertFalse(mock_sync_once.called)
 
 
 if __name__ == "__main__":

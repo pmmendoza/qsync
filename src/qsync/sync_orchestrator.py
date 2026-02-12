@@ -3346,12 +3346,16 @@ def sync_survey(
         changes = detect_survey_changes(survey_id)
     survey_ref = format_survey_ref(survey_id, getattr(changes, "survey_name", None))
 
-    # Check for fixable errors in interactive single-survey mode
+    # Check for fixable errors in interactive single-survey mode.
+    # This is advisory only: users can continue syncing selected dimensions
+    # without running auto-fixes first.
     if interactive and not auto_yes:
+        selected_dims = set(dimensions or [])
         fixable_errors = [
             (dim, info)
             for dim, info in changes.dimensions.items()
             if _fixable_detail(info)
+            and (not selected_dims or dim in selected_dims)
         ]
 
         if fixable_errors:
@@ -3369,38 +3373,50 @@ def sync_survey(
             ]
             fix_cmds = [(dim, cmd) for dim, cmd in fix_cmds if cmd]
 
-            print(
-                f"\n{Colors.DIM}These issues can be fixed automatically by running:{Colors.RESET}"
-            )
-            for dim, cmd in fix_cmds:
-                print(f"  • {dim}: {Colors.CYAN}{cmd}{Colors.RESET}")
-
-            should_fix = confirm(message="Fix these issues now?", default=True)
-
-            if should_fix:
-                for dim, cmd in fix_cmds:
-                    print(f"\n[sync:fix] Running {cmd} for {survey_ref}...")
-                    try:
-                        result = _run_autofix(dim, survey_id)
-                        print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
-                    except Exception as e:
-                        print(f"{Colors.RED}✗ Failed to fix {dim}: {e}{Colors.RESET}")
-                        return None
-
-                print("\n[sync] Re-detecting changes after fix...")
-                with rich_status("Re-detecting staged changes..."):
-                    changes = detect_survey_changes(survey_id)
-                survey_ref = format_survey_ref(
-                    survey_id, getattr(changes, "survey_name", None)
+            if not fix_cmds:
+                print(
+                    f"{Colors.DIM}No auto-fix command available for selected issues; continuing sync.{Colors.RESET}"
                 )
             else:
-                if fix_cmds:
+                print(
+                    f"\n{Colors.DIM}These issues can be fixed automatically by running:{Colors.RESET}"
+                )
+                for dim, cmd in fix_cmds:
+                    print(f"  • {dim}: {Colors.CYAN}{cmd}{Colors.RESET}")
+
+                should_fix = confirm(message="Fix these issues now?", default=True)
+
+                if should_fix:
+                    autofix_failed = False
+                    for dim, cmd in fix_cmds:
+                        print(f"\n[sync:fix] Running {cmd} for {survey_ref}...")
+                        try:
+                            result = _run_autofix(dim, survey_id)
+                            print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
+                        except Exception as e:
+                            print(f"{Colors.RED}✗ Failed to fix {dim}: {e}{Colors.RESET}")
+                            autofix_failed = True
+                            break
+
+                    print("\n[sync] Re-detecting changes after fix...")
+                    with rich_status("Re-detecting staged changes..."):
+                        changes = detect_survey_changes(survey_id)
+                    survey_ref = format_survey_ref(
+                        survey_id, getattr(changes, "survey_name", None)
+                    )
+                    if autofix_failed:
+                        print(
+                            f"{Colors.DIM}Continuing sync without applying remaining auto-fixes.{Colors.RESET}"
+                        )
+                else:
                     print(
-                        f"{Colors.DIM}Fix cancelled. Please run manually:{Colors.RESET}"
+                        f"{Colors.DIM}Fix cancelled. You can run manually:{Colors.RESET}"
                     )
                     for _, cmd in fix_cmds:
                         print(f"  {Colors.CYAN}{cmd}{Colors.RESET}")
-                return None
+                    print(
+                        f"{Colors.DIM}Continuing sync without auto-fix.{Colors.RESET}"
+                    )
 
     pending = list_pending(survey_id)
     if auto_yes and pending:
