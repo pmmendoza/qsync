@@ -42,6 +42,7 @@ _inventory_cache: Optional[Dict[str, dict]] = None
 
 BASE_DIMENSION_ORDER = ["items", "edf", "js", "translations", "eos", "flow"]
 MASTER_DIMENSION_ORDER = BASE_DIMENSION_ORDER + ["master"]
+ISSUE_DETAIL_MENU_THRESHOLD = 10
 
 _EMBEDDED_FIELD_TOKEN_RE = re.compile(r"\$\{e://Field/([^}]+)\}")
 _ISSUE_KEYS_SEEN: set[str] = set()
@@ -659,13 +660,19 @@ def render_cell(status: DimensionChanges) -> str:
 
 
 def display_change_detection_table(
-    all_changes: List[SurveyChanges], show_all: bool = False
+    all_changes: List[SurveyChanges],
+    show_all: bool = False,
+    *,
+    interactive: bool = False,
+    issue_detail_threshold: int = ISSUE_DETAIL_MENU_THRESHOLD,
 ):
     """Display survey × dimension change detection table.
 
     Args:
         all_changes: List of detected changes for all surveys
         show_all: If True, show all surveys including those with no changes
+        interactive: Enable issue-detail selection menus for long issue lists
+        issue_detail_threshold: Hide issue details behind a menu when list length exceeds this threshold
     """
 
     # Filter to surveys with changes unless show_all is True
@@ -778,54 +785,82 @@ def display_change_detection_table(
     errors = _filter_new_issue_lines(errors)
     warnings = _filter_new_issue_lines(warnings)
 
-    if errors:
-        print(f"\n{Colors.YELLOW}⚠️  Errors detected:{Colors.RESET}")
-        for survey_name, dimension, detail in errors:
-            # Highlight commands in error messages
-            if "Run:" in detail or "Add" in detail:
-                parts = (
-                    detail.split("Run:") if "Run:" in detail else detail.split("Add")
-                )
-                if len(parts) == 2:
-                    prefix = parts[0].strip()
-                    cmd = parts[1].strip()
-                    separator = "Run:" if "Run:" in detail else "Add"
-                    print(
-                        f"  {Colors.DIM}•{Colors.RESET} {survey_name} ({dimension}): {prefix} {separator} {Colors.CYAN}{cmd}{Colors.RESET}"
-                    )
-                else:
-                    print(
-                        f"  {Colors.DIM}•{Colors.RESET} {survey_name} ({dimension}): {detail}"
-                    )
-            else:
-                print(
-                    f"  {Colors.DIM}•{Colors.RESET} {survey_name} ({dimension}): {detail}"
-                )
+    def _render_issue_detail(detail: str, separators: tuple[str, ...]) -> str:
+        for separator in separators:
+            if separator not in detail:
+                continue
+            parts = detail.split(separator, 1)
+            if len(parts) != 2:
+                continue
+            prefix = parts[0].strip()
+            cmd = parts[1].strip()
+            return f"{prefix} {separator} {Colors.CYAN}{cmd}{Colors.RESET}"
+        return detail
 
-    if warnings:
-        print(f"\n{Colors.YELLOW}⚠️  Warnings:{Colors.RESET}")
-        for survey_name, dimension, detail in warnings:
-            if "Run:" in detail or "Repair:" in detail:
-                parts = (
-                    detail.split("Run:")
-                    if "Run:" in detail
-                    else detail.split("Repair:")
-                )
-                if len(parts) == 2:
-                    prefix = parts[0].strip()
-                    cmd = parts[1].strip()
-                    separator = "Run:" if "Run:" in detail else "Repair:"
-                    print(
-                        f"  {Colors.DIM}•{Colors.RESET} {survey_name} ({dimension}): {prefix} {separator} {Colors.CYAN}{cmd}{Colors.RESET}"
-                    )
-                else:
-                    print(
-                        f"  {Colors.DIM}•{Colors.RESET} {survey_name} ({dimension}): {detail}"
-                    )
-            else:
-                print(
-                    f"  {Colors.DIM}•{Colors.RESET} {survey_name} ({dimension}): {detail}"
-                )
+    def _select_issue_rows(
+        issue_type: str,
+        rows: list[tuple[str, str, str]],
+    ) -> list[tuple[str, str, str]]:
+        if not interactive or len(rows) <= issue_detail_threshold:
+            return rows
+
+        from .interactive_menu import select_from_list
+
+        choices = [
+            f"Show first {issue_detail_threshold} {issue_type}",
+            f"Show all {len(rows)} {issue_type}",
+            f"Continue without {issue_type}",
+        ]
+        selection = select_from_list(
+            message=(
+                f"{len(rows)} {issue_type} detected. "
+                f"Show details?"
+            ),
+            choices=choices,
+        )
+        if selection is None or selection == choices[2]:
+            print(
+                f"{Colors.DIM}{len(rows)} {issue_type} hidden. Continue to survey selection.{Colors.RESET}"
+            )
+            return []
+        if selection == choices[1]:
+            return rows
+        return rows[:issue_detail_threshold]
+
+    def _print_issue_rows(
+        title: str,
+        issue_type: str,
+        rows: list[tuple[str, str, str]],
+        *,
+        separators: tuple[str, ...],
+    ) -> None:
+        if not rows:
+            return
+        print(f"\n{Colors.YELLOW}{title}{Colors.RESET}")
+        selected_rows = _select_issue_rows(issue_type, rows)
+        for survey_name, dimension, detail in selected_rows:
+            rendered = _render_issue_detail(detail, separators)
+            print(
+                f"  {Colors.DIM}•{Colors.RESET} {survey_name} ({dimension}): {rendered}"
+            )
+        hidden_count = len(rows) - len(selected_rows)
+        if hidden_count > 0 and selected_rows:
+            print(
+                f"  {Colors.DIM}… {hidden_count} more {issue_type} hidden{Colors.RESET}"
+            )
+
+    _print_issue_rows(
+        title="⚠️  Errors detected:",
+        issue_type="errors",
+        rows=errors,
+        separators=("Run:", "Add"),
+    )
+    _print_issue_rows(
+        title="⚠️  Warnings:",
+        issue_type="warnings",
+        rows=warnings,
+        separators=("Run:", "Repair:"),
+    )
 
 
 def display_sync_summary_table(summaries: List[SurveySyncSummary]):
@@ -4070,7 +4105,11 @@ def sync_focal_surveys(
 
     if not surveys_to_process:
         # Show table of all surveys with no changes
-        display_change_detection_table(all_changes, show_all=True)
+        display_change_detection_table(
+            all_changes,
+            show_all=True,
+            interactive=interactive and not auto_yes,
+        )
         print(
             f"\n{Colors.GREEN}✓{Colors.RESET} No changes detected in any focal survey"
         )
@@ -4082,7 +4121,11 @@ def sync_focal_surveys(
 
     def _display_focal_status() -> None:
         """Display change detection table and status summary."""
-        display_change_detection_table(all_changes, show_all=True)
+        display_change_detection_table(
+            all_changes,
+            show_all=True,
+            interactive=interactive and not auto_yes,
+        )
         change_count = len(surveys_with_changes)
         fixable_count = len(surveys_with_fixable_errors)
         issues_count = len(surveys_with_issues)
