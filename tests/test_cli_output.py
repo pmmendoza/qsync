@@ -120,6 +120,7 @@ class QsyncCliOutputTests(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn("Dry run", output)
         self.assertIn("pip install --upgrade", output)
+        self.assertIn("--force-reinstall", output)
         self.assertIn(
             "qsync[langcheck,pdf] @ git+https://github.com/pmmendoza/qsync.git@main",
             output,
@@ -148,6 +149,7 @@ class QsyncCliOutputTests(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn("Installer: pip", output)
         self.assertIn("pip install --upgrade", output)
+        self.assertIn("--force-reinstall", output)
         self.assertNotIn("pipx install --force", output)
 
     def test_resolve_installer_defaults_to_active_env(self) -> None:

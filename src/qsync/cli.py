@@ -749,7 +749,17 @@ def _handle_self_update(args: argparse.Namespace) -> None:
         # pipx reinstall does not accept --spec; use install --force with VCS spec.
         cmd = ["pipx", "install", "--force", spec]
     else:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", spec]
+        # VCS specs can resolve to new commits without version bumps.
+        # Force reinstall so `qsync self-update` always applies the resolved ref.
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--force-reinstall",
+            spec,
+        ]
 
     info("[qsync:self-update]", f"Installer: {installer}")
     info("[qsync:self-update]", f"Target: {spec}")
