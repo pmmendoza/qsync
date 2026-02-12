@@ -2599,6 +2599,8 @@ def _resolve_staged_changes_interactive(
     auto_yes: bool,
     allow_drift: bool,
     skip_publish: bool,
+    scope: Optional[ScopeFilter] = None,
+    per_dimension: bool = False,
 ) -> bool:
     from .interactive_menu import confirm, select_from_list
     from .qualtrics_client import refresh_survey_cache
@@ -2608,6 +2610,7 @@ def _resolve_staged_changes_interactive(
     while True:
         choices = [
             "👀 Preview drift (live vs cache) / staged (pending vs cache)",
+            "📝 Preview unstaged changes (source vs cache)",
             "🚀 Push staged changes now",
             "🧹 Discard staged changes (clear pending + refresh cache)",
             "↩ Exit sync",
@@ -2623,6 +2626,29 @@ def _resolve_staged_changes_interactive(
 
         if selection.startswith("👀"):
             _preview_staged_changes(survey_id, pending, interactive=True)
+            continue
+
+        if selection.startswith("📝"):
+            unstaged = _detect_unstaged_changes(survey_id, scope=scope)
+            unstaged_dims = [
+                dim
+                for dim in safe_order
+                if dim in unstaged and bool(unstaged[dim].has_changes)
+            ]
+            if not unstaged_dims:
+                print(f"{Colors.DIM}No unstaged changes detected.{Colors.RESET}")
+                continue
+
+            display_unified_preview(
+                survey_id=survey_id,
+                dimensions=unstaged_dims,
+                per_dimension=per_dimension,
+                detailed=True,
+                scope=scope,
+                allow_drift=allow_drift,
+                interactive=True,
+                skip_embedded=True,
+            )
             continue
 
         if selection.startswith("🧹"):
@@ -3530,6 +3556,8 @@ def sync_survey(
                 auto_yes=auto_yes,
                 allow_drift=allow_drift,
                 skip_publish=skip_publish,
+                scope=scope,
+                per_dimension=per_dimension,
             )
             if not resolved:
                 break

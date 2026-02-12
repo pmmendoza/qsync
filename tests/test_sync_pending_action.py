@@ -338,6 +338,49 @@ class TestSyncPendingAction(unittest.TestCase):
         )
         mock_confirm.assert_called_once()
 
+    def test_resolve_staged_changes_can_preview_unstaged_master(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        unstaged = self._empty_unstaged()
+        unstaged["master"] = DimensionChanges(
+            "master",
+            True,
+            "⚡ Unstaged: 2 field(s) changed",
+            set(),
+            status_kind="unstaged",
+        )
+
+        with (
+            patch(
+                "qsync.interactive_menu.select_from_list",
+                side_effect=[
+                    "📝 Preview unstaged changes (source vs cache)",
+                    "↩ Exit sync",
+                ],
+            ) as mock_select,
+            patch.object(
+                orchestrator, "_detect_unstaged_changes", return_value=unstaged
+            ),
+            patch.object(
+                orchestrator, "display_unified_preview", return_value=True
+            ) as mock_preview,
+        ):
+            resolved = orchestrator._resolve_staged_changes_interactive(
+                "SV_TEST",
+                pending={"items": object()},
+                dimension_results={},
+                force_live=False,
+                force_preview=False,
+                auto_yes=False,
+                allow_drift=False,
+                skip_publish=False,
+            )
+
+        self.assertFalse(resolved)
+        self.assertEqual(mock_select.call_count, 2)
+        mock_preview.assert_called_once()
+        self.assertEqual(mock_preview.call_args.kwargs["dimensions"], ["master"])
+
     def test_sync_dimensions_once_blocks_noninteractive_items_without_allow_skip_embedded(
         self,
     ):
