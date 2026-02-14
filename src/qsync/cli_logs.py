@@ -7,6 +7,7 @@ import sys
 from typing import Any
 
 from . import log_reader
+from .argparse_support import reorder_subparser_choices
 from .terminal_colors import dim, error, header, success, warn
 
 
@@ -14,11 +15,15 @@ def register_logs_commands(subparsers: Any) -> None:
     """Register `qsync logs` subcommand and its children."""
     logs_parser = subparsers.add_parser(
         "logs",
-        help="View and analyze operation logs",
+        help="View and analyze operation logs (group)",
         description="View and analyze qsync operation logs (logs/qualtrics_push.log)",
     )
 
-    logs_subparsers = logs_parser.add_subparsers(dest="logs_command", required=True)
+    logs_subparsers = logs_parser.add_subparsers(
+        dest="logs_command",
+        required=True,
+        metavar="COMMAND",
+    )
 
     # qsync logs recent
     recent_parser = logs_subparsers.add_parser(
@@ -114,6 +119,18 @@ def register_logs_commands(subparsers: Any) -> None:
         help="Maximum number of operations to show (default: all)",
     )
     since_parser.set_defaults(func=handle_since)
+
+    reorder_subparser_choices(
+        logs_subparsers,
+        [
+            "recent",
+            "errors",
+            "since",
+            "survey",
+            "action",
+            "stats",
+        ],
+    )
 
 
 def handle_recent(args: argparse.Namespace) -> None:
