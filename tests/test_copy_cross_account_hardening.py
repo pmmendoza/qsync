@@ -14,8 +14,10 @@ def _ns(**kwargs: Any) -> argparse.Namespace:
         new_name="New Survey",
         target_api_key=None,
         target_base_url=None,
+        target_account=None,
         source_api_key=None,
         source_base_url=None,
+        source_account=None,
         activate=False,
         publish=False,
         publish_description=None,
@@ -158,6 +160,162 @@ def test_copy_cross_account_uses_target_env_defaults(
     assert "source.qualtrics.test" in used_bases
     assert "target.qualtrics.test" in used_bases
     assert captured_upload["base_url"] == "target.qualtrics.test"
+
+
+def test_copy_cross_account_uses_target_account_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync import cli_survey
+    import qsync.config
+
+    (tmp_path / ".env.damian").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=target.qualtrics.test",
+                "X-API-TOKEN=target-token",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("TARGET_QUALTRICS_BASE_URL", raising=False)
+    monkeypatch.delenv("TARGET_X-API-TOKEN", raising=False)
+    monkeypatch.delenv("TARGET_QUALTRICS_API_KEY", raising=False)
+
+    monkeypatch.setattr(cli_survey, "resolve_root", lambda required=False: tmp_path)
+    monkeypatch.setattr(qsync.config, "resolve_env_path", lambda root=None: None)
+
+    # Source env is the default account.
+    monkeypatch.setattr(
+        qsync.config,
+        "load_env",
+        lambda *args, **kwargs: {
+            "QUALTRICS_BASE_URL": "source.qualtrics.test",
+            "X-API-TOKEN": "source-token",
+        },
+    )
+
+    used_bases: list[str] = []
+
+    def fake_get_client_config(env=None):
+        base = (env or {}).get("QUALTRICS_BASE_URL") or "missing"
+        token = (env or {}).get("X-API-TOKEN") or (env or {}).get("QUALTRICS_API_KEY")
+        used_bases.append(base)
+        return base, {"Accept": "application/json", "X-API-TOKEN": token}
+
+    monkeypatch.setattr(cli_survey, "get_client_config", fake_get_client_config)
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda base, headers, survey_id, fmt="qsf": {
+            "SurveyEntry": {"SurveyName": "SourceSurvey"},
+            "SurveyElements": [],
+        },
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "resolve_target_name_with_conflict",
+        lambda *_args, **_kwargs: ("New Survey", None),
+    )
+    monkeypatch.setattr(cli_survey, "prepare_qsf_for_import", lambda *a, **k: None)
+
+    captured_upload: dict[str, Any] = {}
+
+    def fake_upload(qsf, new_name, base_url, headers, **kwargs):
+        captured_upload["base_url"] = base_url
+        return "SV_NEW"
+
+    monkeypatch.setattr(cli_survey, "upload_qsf_to_account", fake_upload)
+
+    def fake_send_api_request(**kwargs):
+        # Only used for whoami in this test.
+        if kwargs.get("path") == "whoami":
+            return _resp({"result": {"userId": "UR_TEST", "brandId": "test"}})
+        raise AssertionError(f"Unexpected API call: {kwargs}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", fake_send_api_request)
+
+    cli_survey.handle_copy_cross_account(_ns(target_account="damian"))
+
+    assert "source.qualtrics.test" in used_bases
+    assert "target.qualtrics.test" in used_bases
+    assert captured_upload["base_url"] == "target.qualtrics.test"
+
+
+def test_copy_cross_account_uses_source_account_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync import cli_survey
+    import qsync.config
+
+    (tmp_path / ".env.damian").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=source2.qualtrics.test",
+                "X-API-TOKEN=source2-token",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(cli_survey, "resolve_root", lambda required=False: tmp_path)
+    monkeypatch.setattr(qsync.config, "resolve_env_path", lambda root=None: None)
+
+    # Default source env should not be used when --source-account is provided.
+    monkeypatch.setattr(
+        qsync.config,
+        "load_env",
+        lambda *args, **kwargs: {
+            "QUALTRICS_BASE_URL": "source.qualtrics.test",
+            "X-API-TOKEN": "source-token",
+        },
+    )
+
+    used_bases: list[str] = []
+
+    def fake_get_client_config(env=None):
+        base = (env or {}).get("QUALTRICS_BASE_URL") or "missing"
+        token = (env or {}).get("X-API-TOKEN") or (env or {}).get("QUALTRICS_API_KEY")
+        used_bases.append(base)
+        return base, {"Accept": "application/json", "X-API-TOKEN": token}
+
+    monkeypatch.setattr(cli_survey, "get_client_config", fake_get_client_config)
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda base, headers, survey_id, fmt="qsf": {
+            "SurveyEntry": {"SurveyName": "SourceSurvey"},
+            "SurveyElements": [],
+        },
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "resolve_target_name_with_conflict",
+        lambda *_args, **_kwargs: ("New Survey", None),
+    )
+    monkeypatch.setattr(cli_survey, "prepare_qsf_for_import", lambda *a, **k: None)
+    monkeypatch.setattr(cli_survey, "upload_qsf_to_account", lambda *a, **k: "SV_NEW")
+
+    def fake_send_api_request(**kwargs):
+        # Only used for whoami in this test.
+        if kwargs.get("path") == "whoami":
+            return _resp({"result": {"userId": "UR_TEST", "brandId": "test"}})
+        raise AssertionError(f"Unexpected API call: {kwargs}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", fake_send_api_request)
+
+    cli_survey.handle_copy_cross_account(
+        _ns(
+            source_account="damian",
+            target_base_url="target.qualtrics.test",
+            target_api_key="target-token",
+        )
+    )
+
+    assert "source2.qualtrics.test" in used_bases
+    assert "target.qualtrics.test" in used_bases
 
 
 def test_copy_cross_account_force_overwrite_delete_is_lock_gated(

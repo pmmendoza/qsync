@@ -1457,6 +1457,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         action="store_true",
         help="Call GET /whoami to validate credentials and detect datacenter mismatch (requires network).",
     )
+    p_doctor.add_argument(
+        "--account",
+        help=(
+            "Use credentials from `.env.<account>` under the workspace root "
+            "(affects credential checks and --check-api)."
+        ),
+    )
 
     # onboard
     p_onboard = subparsers.add_parser(
@@ -2966,8 +2973,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             from .config import (
                 ENV_PATH,
                 ROOT,
+                load_account_env,
                 load_env,
                 load_env_file,
+                resolve_account_env_path,
                 resolve_env_path,
                 resolve_root,
             )
@@ -2975,7 +2984,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             from .interactive_menu import QUESTIONARY_AVAILABLE, should_use_questionary
 
             root = resolve_root(required=False) or ROOT
-            env_path = resolve_env_path(root=root) or ENV_PATH
+            account = (getattr(args, "account", None) or "").strip() or None
+            if account:
+                env_path = resolve_account_env_path(account, root=root)
+            else:
+                env_path = resolve_env_path(root=root) or ENV_PATH
             warnings: list[str] = []
             ok = True
             surveys_dir = root / "surveys"
@@ -3039,8 +3052,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 )
 
             # Credentials / config checks (local-only by default).
-            file_env = load_env_file(env_path) if env_path else {}
-            env = load_env(env_path)
+            if account:
+                # Deterministic: account selection uses `.env.<account>` values (no env override).
+                env = load_account_env(account, root=root)
+                file_env = env
+            else:
+                file_env = load_env_file(env_path) if env_path else {}
+                env = load_env(env_path)
             base_url = (env.get("QUALTRICS_BASE_URL") or "").strip()
             api_token = (
                 env.get("X-API-TOKEN") or env.get("QUALTRICS_API_KEY") or ""
@@ -3048,16 +3066,19 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             base_url_ok = bool(base_url)
             token_ok = bool(api_token)
             token_source = "missing"
-            if (os.environ.get("X-API-TOKEN") or "").strip() or (
-                os.environ.get("QUALTRICS_API_KEY") or ""
-            ).strip():
-                token_source = "env"
-            elif (file_env.get("X-API-TOKEN") or "").strip() or (
-                file_env.get("QUALTRICS_API_KEY") or ""
-            ).strip():
-                token_source = "dotenv"
-            elif token_ok:
-                token_source = "keyring"
+            if account:
+                token_source = "dotenv" if token_ok else "missing"
+            else:
+                if (os.environ.get("X-API-TOKEN") or "").strip() or (
+                    os.environ.get("QUALTRICS_API_KEY") or ""
+                ).strip():
+                    token_source = "env"
+                elif (file_env.get("X-API-TOKEN") or "").strip() or (
+                    file_env.get("QUALTRICS_API_KEY") or ""
+                ).strip():
+                    token_source = "dotenv"
+                elif token_ok:
+                    token_source = "keyring"
 
             if not base_url_ok:
                 ok = False
@@ -3125,6 +3146,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     "ok": ok,
                     "cwd": str(cwd) if cwd else None,
                     "root": str(root),
+                    "account": account,
                     "env_path": str(env_path) if env_path else None,
                     "env_exists": bool(env_path and env_path.exists()),
                     "surveys_dir": str(surveys_dir),
@@ -3165,6 +3187,8 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 print("[qsync:doctor]")
                 print(f"  cwd:      {cwd if cwd else '(not available)'}")
                 print(f"  root:     {root}")
+                if account:
+                    print(f"  account:  {account}")
                 print(f"  env_path: {env_path if env_path else '(not resolved)'}")
                 if env_path:
                     print(f"  env_exists: {env_path.exists()}")

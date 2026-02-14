@@ -16,7 +16,7 @@ from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from .config import get_client_config, resolve_root
+from .config import get_client_config, load_account_env, resolve_root
 from .api_push import send_api_request
 from .survey_registry import ensure_unique_survey_name
 from .survey_inventory import refresh_inventory, SURVEY_CACHE
@@ -666,10 +666,17 @@ def activate_survey(
 def handle_list(args: argparse.Namespace) -> None:
     """List surveys visible to the configured Qualtrics account."""
 
-    base, headers = get_client_config()
+    account = (getattr(args, "account", None) or "").strip() or None
+    if account:
+        env = load_account_env(account, root=_workspace_root())
+        base, headers = get_client_config(env)
+    else:
+        base, headers = get_client_config()
 
     print(f"Fetching surveys from {base}...")
-    surveys = _order_surveys_like_inventory(list_surveys(base, headers))
+    surveys = list_surveys(base, headers)
+    if not account:
+        surveys = _order_surveys_like_inventory(surveys)
 
     pattern_raw = (getattr(args, "name_pattern", "") or "").strip()
     matcher: re.Pattern[str] | None = None
@@ -1786,6 +1793,10 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     new_name = args.new_name
     target_api_key = (args.target_api_key or "").strip()
     target_base_url = (args.target_base_url or "").strip()
+    target_account = (getattr(args, "target_account", None) or "").strip() or None
+    source_api_key = (getattr(args, "source_api_key", None) or "").strip()
+    source_base_url = (getattr(args, "source_base_url", None) or "").strip()
+    source_account = (getattr(args, "source_account", None) or "").strip() or None
     copy_translations = not bool(getattr(args, "no_translations", False))
     verify = bool(getattr(args, "verify", False))
 
@@ -1801,15 +1812,28 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         return str(file_env.get(key) or "").strip()
 
     # Resolve target credentials (do not silently fall back to the primary account).
+    if target_account and (not target_base_url or not target_api_key):
+        target_file_env = load_account_env(target_account, root=root)
+        if not target_base_url:
+            target_base_url = str(target_file_env.get("QUALTRICS_BASE_URL") or "").strip()
+        if not target_api_key:
+            target_api_key = (
+                str(target_file_env.get("X-API-TOKEN") or "").strip()
+                or str(target_file_env.get("QUALTRICS_API_KEY") or "").strip()
+            )
+
     if not target_base_url:
-        target_base_url = _env_or_dotenv("TARGET_QUALTRICS_BASE_URL")
+        if not target_account:
+            target_base_url = _env_or_dotenv("TARGET_QUALTRICS_BASE_URL")
     if not target_api_key:
-        target_api_key = _env_or_dotenv("TARGET_X-API-TOKEN") or _env_or_dotenv(
-            "TARGET_QUALTRICS_API_KEY"
-        )
+        if not target_account:
+            target_api_key = _env_or_dotenv("TARGET_X-API-TOKEN") or _env_or_dotenv(
+                "TARGET_QUALTRICS_API_KEY"
+            )
     if not target_base_url or not target_api_key:
         print(
             "ERROR: Target credentials missing. Provide --target-base-url/--target-api-key, "
+            "or use --target-account <name> (.env.<name>), "
             "or set TARGET_QUALTRICS_BASE_URL and TARGET_X-API-TOKEN in your environment/.env."
         )
         sys.exit(1)
@@ -2149,11 +2173,14 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
                 dim("[copy-cross-account]", "  No non-base languages copied.")
 
     # Get source credentials (default account, unless overridden)
-    source_env = load_env()
-    if getattr(args, "source_base_url", None):
-        source_env["QUALTRICS_BASE_URL"] = args.source_base_url
-    if getattr(args, "source_api_key", None):
-        source_env["X-API-TOKEN"] = args.source_api_key
+    if source_account and (not source_base_url or not source_api_key):
+        source_env = load_account_env(source_account, root=root)
+    else:
+        source_env = load_env()
+    if source_base_url:
+        source_env["QUALTRICS_BASE_URL"] = source_base_url
+    if source_api_key:
+        source_env["X-API-TOKEN"] = source_api_key
     try:
         source_base, source_headers = get_client_config(source_env)
     except Exception as e:
@@ -6438,6 +6465,13 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         nargs="?",
         help="Optional regex to match survey names (case-insensitive)",
     )
+    p_list.add_argument(
+        "--account",
+        help=(
+            "Use credentials from `.env.<account>` under the workspace root "
+            "(API-only; skips inventory-based ordering)."
+        ),
+    )
     p_list.set_defaults(func=handle_list)
 
     # copy
@@ -6569,12 +6603,26 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Base URL for target Qualtrics account (e.g., iad1.qualtrics.com)",
     )
     p_copy_xacct.add_argument(
+        "--target-account",
+        help=(
+            "Load target credentials from `.env.<account>` under the workspace root "
+            "(overrides TARGET_* defaults; explicit --target-* flags still win)."
+        ),
+    )
+    p_copy_xacct.add_argument(
         "--source-api-key",
         help="API key for source account (optional; defaults to .env)",
     )
     p_copy_xacct.add_argument(
         "--source-base-url",
         help="Base URL for source account (optional; defaults to .env)",
+    )
+    p_copy_xacct.add_argument(
+        "--source-account",
+        help=(
+            "Load source credentials from `.env.<account>` under the workspace root "
+            "(explicit --source-* flags still win)."
+        ),
     )
     p_copy_xacct.add_argument(
         "--activate", action="store_true", help="Activate the survey after copying"

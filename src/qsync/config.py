@@ -6,12 +6,14 @@ Handles .env loading and API header generation.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Dict, Tuple
 
-from .errors import QsyncConfigError
+from .errors import QsyncConfigError, QsyncValidationError
 
 _ROOT_ENV_KEYS = ("QSYNC_ROOT", "QSYNC_DATA_DIR")
+_ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 try:
     from newsflows_workspace.paths import iter_parents as _iter_parents
@@ -176,6 +178,113 @@ def load_env(path: Path | None = None) -> Dict[str, str]:
             # Best-effort only; treat keyring as an optional enhancement.
             pass
     return merged
+
+
+def validate_account_name(account: str) -> str:
+    """Validate and normalize an account selector used for `.env.<account>` lookup."""
+
+    name = (account or "").strip()
+    if not name:
+        raise QsyncValidationError(
+            error_id="QSYNC-VALIDATION-ACCOUNT-001",
+            problem="Account name is required.",
+            why="`--account` selects credentials from a workspace-local dotenv file named `.env.<account>`.",
+            impact="qsync cannot determine which credentials to use.",
+            action="Provide an account name like `damian` (allowed: letters, numbers, `_`, `-`).",
+            exit_code=2,
+        )
+    if not _ACCOUNT_NAME_RE.fullmatch(name):
+        raise QsyncValidationError(
+            error_id="QSYNC-VALIDATION-ACCOUNT-002",
+            problem=f"Invalid account name: {name!r}.",
+            why="Account names are mapped directly to `.env.<account>` filenames under the workspace root.",
+            impact="qsync rejected the value to prevent path traversal or ambiguous file resolution.",
+            action="Use a simple name like `damian` or `partner_2` (allowed: letters, numbers, `_`, `-`).",
+            context={"account": name},
+            exit_code=2,
+        )
+    return name
+
+
+def resolve_account_env_path(
+    account: str,
+    *,
+    root: Path | None = None,
+) -> Path:
+    """Return the filesystem path to `.env.<account>` under the workspace root."""
+
+    name = validate_account_name(account)
+    root_path = root or resolve_root(required=False) or Path.cwd()
+    return (root_path / f".env.{name}").resolve()
+
+
+def load_account_env(
+    account: str,
+    *,
+    root: Path | None = None,
+) -> Dict[str, str]:
+    """Load credentials/settings from `.env.<account>` under the workspace root.
+
+    This is intentionally strict: it does not merge credentials from the process
+    environment, so selecting an account is deterministic and doesn't get
+    accidentally overridden by exported `QUALTRICS_BASE_URL` / `X-API-TOKEN`.
+    """
+
+    env_path = resolve_account_env_path(account, root=root)
+    if not env_path.exists():
+        raise QsyncConfigError(
+            error_id="QSYNC-CONFIG-ACCOUNTENV-001",
+            problem=f"Account env file not found: {env_path.name}",
+            why="`--account` requires a workspace-local dotenv file named `.env.<account>`.",
+            impact="The command cannot run against the selected account.",
+            action=(
+                f"Create `{env_path}` with at least:\n"
+                "  QUALTRICS_BASE_URL=iad1.qualtrics.com\n"
+                "  X-API-TOKEN=<token>\n"
+                "(or use QUALTRICS_API_KEY instead of X-API-TOKEN)."
+            ),
+            context={"env_path": str(env_path), "account": validate_account_name(account)},
+            exit_code=1,
+        )
+
+    file_env = load_env_file(env_path)
+    base_url = (file_env.get("QUALTRICS_BASE_URL") or "").strip()
+    api_token = (file_env.get("X-API-TOKEN") or file_env.get("QUALTRICS_API_KEY") or "").strip()
+
+    missing: list[str] = []
+    if not base_url:
+        missing.append("QUALTRICS_BASE_URL")
+    if not api_token:
+        missing.append("X-API-TOKEN (or QUALTRICS_API_KEY)")
+
+    if missing:
+        raise QsyncConfigError(
+            error_id="QSYNC-CONFIG-ACCOUNTENV-002",
+            problem=f"Missing required key(s) in {env_path.name}.",
+            why="Account selection needs both a Qualtrics datacenter host and an API token.",
+            impact="Any command that talks to the Qualtrics API will fail for this account.",
+            action=(
+                f"Edit `{env_path}` and add:\n"
+                "  QUALTRICS_BASE_URL=iad1.qualtrics.com\n"
+                "  X-API-TOKEN=<token>"
+            ),
+            context={"env_path": str(env_path), "missing": ", ".join(missing), "account": validate_account_name(account)},
+            exit_code=1,
+        )
+
+    if base_url.startswith("http://") or base_url.startswith("https://"):
+        raise QsyncConfigError(
+            error_id="QSYNC-CONFIG-ACCOUNTENV-003",
+            problem="QUALTRICS_BASE_URL must be host-only (no scheme).",
+            why="qsync constructs API URLs as `https://<QUALTRICS_BASE_URL>/API/v3/...`.",
+            impact="A value like `https://iad1.qualtrics.com` would produce an invalid URL.",
+            action=f"Edit `{env_path}` and set `QUALTRICS_BASE_URL` to host-only (e.g. `iad1.qualtrics.com`).",
+            context={"env_path": str(env_path), "account": validate_account_name(account)},
+            exit_code=1,
+        )
+
+    # Return the file env as-is; callers can pass it directly to get_client_config().
+    return file_env
 
 
 def build_headers(env: Dict[str, str]) -> Dict[str, str]:
