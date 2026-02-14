@@ -1609,18 +1609,88 @@ def _emit_parity_report(*, result, survey_a: str, survey_b: str, prefix: str) ->
 
 
 def handle_parity_check(args: argparse.Namespace) -> None:
-    """Compare two surveys for parity using QSF definitions."""
+    """Compare two surveys for parity (QSF-lite by default; deep via --deep)."""
 
-    from .terminal_output import header, info, error
-    from .survey_parity import compare_qsf_parity
+    from .terminal_output import header, info, error, success, warn, dim
 
     base, headers = get_client_config()
 
     survey_a = getattr(args, "a", None) or ""
     survey_b = getattr(args, "b", None) or ""
+    deep = bool(getattr(args, "deep", False))
     if not survey_a or not survey_b:
         error("[qsync:parity-check]", "ERROR: --a and --b are required.")
         sys.exit(1)
+
+    if deep:
+        from .survey_deep_parity import compare_survey_definition_deep_parity
+        from .dimensions.flow_diff import format_diff_for_display, format_diff_summary
+
+        header("[qsync:parity-check]", "Fetching survey definitions (JSON)...")
+        try:
+            def_a = fetch_survey_definition(base, headers, survey_a, fmt="json")
+            def_b = fetch_survey_definition(base, headers, survey_b, fmt="json")
+        except Exception as exc:
+            error("[qsync:parity-check]", f"ERROR: Failed to fetch definitions: {exc}")
+            sys.exit(1)
+
+        info("[qsync:parity-check]", f"Deep comparing {survey_a} vs {survey_b}...")
+        report = compare_survey_definition_deep_parity(
+            def_a,
+            def_b,
+            survey_a=survey_a,
+            survey_b=survey_b,
+            write_artifacts_on_mismatch=True,
+        )
+        if report.ok:
+            success(
+                "[qsync:parity-check]",
+                f"Deep parity OK (hash={report.hash_a[:12]}).",
+            )
+            return
+
+        warn(
+            "[qsync:parity-check]",
+            "Deep parity FAILED (normalized hashes differ).",
+        )
+        if report.section_counts:
+            parts = [
+                f"{k}={v}"
+                for k, v in sorted(report.section_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                if v
+            ]
+            if parts:
+                warn("[qsync:parity-check]", f"Diff sections: {', '.join(parts)}")
+        warn("[qsync:parity-check]", f"Diff count: {report.diff_count}")
+        if report.diff_paths:
+            warn("[qsync:parity-check]", "Diff paths (sample):")
+            for p in report.diff_paths[:50]:
+                warn("[qsync:parity-check]", f"  - {p}")
+
+        if report.flow_changes:
+            warn(
+                "[qsync:parity-check]",
+                f"SurveyFlow: {format_diff_summary(report.flow_changes)}",
+            )
+            for line in format_diff_for_display(report.flow_changes, verbose=False)[:25]:
+                dim("[qsync:parity-check]", line)
+            if len(report.flow_changes) > 25:
+                dim(
+                    "[qsync:parity-check]",
+                    f"(flow diffs truncated; showing 25 of {len(report.flow_changes)})",
+                )
+
+        if report.artifacts:
+            dim(
+                "[qsync:parity-check]",
+                f"Artifacts: a={report.artifacts.get('a')} b={report.artifacts.get('b')}",
+            )
+            if report.artifacts.get("diff"):
+                dim("[qsync:parity-check]", f"Unified diff: {report.artifacts.get('diff')}")
+
+        sys.exit(2)
+
+    from .survey_parity import compare_qsf_parity
 
     header("[qsync:parity-check]", "Fetching survey definitions (QSF)...")
     try:
@@ -1799,6 +1869,7 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     source_account = (getattr(args, "source_account", None) or "").strip() or None
     copy_translations = not bool(getattr(args, "no_translations", False))
     verify = bool(getattr(args, "verify", False))
+    verify_deep = bool(getattr(args, "verify_deep", False))
 
     # Read `.env` (if present) so this command can support TARGET_* defaults.
     root = resolve_root(required=False) or Path.cwd()
@@ -2289,6 +2360,11 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     else:
         dim("    ✗", "Verify parity + translations (use --verify to enable)")
 
+    if verify_deep:
+        success("    ✓", "Verify deep parity (survey-definitions) after copy")
+    else:
+        dim("    ✗", "Verify deep parity (use --verify-deep to enable)")
+
     if args.activate:
         success("    ✓", "Activate survey after import")
     else:
@@ -2527,6 +2603,87 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
             dim(
                 "[copy-cross-account]",
                 "Translation verification skipped (--no-translations).",
+            )
+
+    if verify_deep:
+        from .survey_deep_parity import compare_survey_definition_deep_parity
+        from .dimensions.flow_diff import format_diff_for_display, format_diff_summary
+
+        info("[copy-cross-account]", "Running deep parity check (survey-definitions)...")
+        try:
+            source_def_deep = fetch_survey_definition(
+                source_base, source_headers, source_id, fmt="json"
+            )
+            target_def_deep = fetch_survey_definition(
+                target_base, target_headers, new_id, fmt="json"
+            )
+        except Exception as exc:
+            raise SystemExit(
+                f"[copy-cross-account] Deep parity failed: unable to fetch definitions: {exc}"
+            ) from exc
+
+        report = compare_survey_definition_deep_parity(
+            source_def_deep,
+            target_def_deep,
+            survey_a=source_id,
+            survey_b=new_id,
+            write_artifacts_on_mismatch=True,
+        )
+        if report.ok:
+            success(
+                "[copy-cross-account]",
+                f"Deep parity OK (hash={report.hash_a[:12]}).",
+            )
+        else:
+            warn(
+                "[copy-cross-account]",
+                "Deep parity FAILED (normalized hashes differ).",
+            )
+            if report.section_counts:
+                parts = [
+                    f"{k}={v}"
+                    for k, v in sorted(
+                        report.section_counts.items(),
+                        key=lambda kv: (-kv[1], kv[0]),
+                    )
+                    if v
+                ]
+                if parts:
+                    warn("[copy-cross-account]", f"Diff sections: {', '.join(parts)}")
+            warn("[copy-cross-account]", f"Diff count: {report.diff_count}")
+            if report.diff_paths:
+                warn("[copy-cross-account]", "Diff paths (sample):")
+                for p in report.diff_paths[:50]:
+                    warn("[copy-cross-account]", f"  - {p}")
+
+            if report.flow_changes:
+                warn(
+                    "[copy-cross-account]",
+                    f"SurveyFlow: {format_diff_summary(report.flow_changes)}",
+                )
+                for line in format_diff_for_display(
+                    report.flow_changes, verbose=False
+                )[:25]:
+                    dim("[copy-cross-account]", line)
+                if len(report.flow_changes) > 25:
+                    dim(
+                        "[copy-cross-account]",
+                        f"(flow diffs truncated; showing 25 of {len(report.flow_changes)})",
+                    )
+
+            if report.artifacts:
+                dim(
+                    "[copy-cross-account]",
+                    f"Artifacts: a={report.artifacts.get('a')} b={report.artifacts.get('b')}",
+                )
+                if report.artifacts.get("diff"):
+                    dim(
+                        "[copy-cross-account]",
+                        f"Unified diff: {report.artifacts.get('diff')}",
+                    )
+
+            raise SystemExit(
+                "[copy-cross-account] Deep parity check failed; see diffs above."
             )
 
     # Optionally activate
@@ -6581,10 +6738,15 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     # parity-check
     p_parity = survey_subs.add_parser(
         "parity-check",
-        help="Compare two surveys for flow/QID/DataExportTag parity",
+        help="Compare two surveys for parity (flow/QID/tag-lite; optional deep)",
     )
     p_parity.add_argument("--a", required=True, help="Survey ID A")
     p_parity.add_argument("--b", required=True, help="Survey ID B")
+    p_parity.add_argument(
+        "--deep",
+        action="store_true",
+        help="Run deep parity against survey-definitions JSON (strict; ignores only cross-account volatile fields).",
+    )
     p_parity.set_defaults(func=handle_parity_check)
 
     # copy-cross-account
@@ -6656,6 +6818,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--verify",
         action="store_true",
         help="After copy, verify parity (QIDs/flow/tags) and translations (best-effort); exits non-zero on mismatch.",
+    )
+    p_copy_xacct.add_argument(
+        "--verify-deep",
+        action="store_true",
+        help="After copy, verify deep parity against survey-definitions JSON (strict; ignores only cross-account volatile fields); exits non-zero on mismatch.",
     )
     p_copy_xacct.set_defaults(func=handle_copy_cross_account)
 

@@ -25,6 +25,7 @@ def _ns(**kwargs: Any) -> argparse.Namespace:
         yes=True,
         no_translations=True,
         verify=False,
+        verify_deep=False,
     )
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
@@ -445,6 +446,80 @@ def test_copy_cross_account_verify_fails_on_parity_mismatch(
                 target_base_url="target.qualtrics.test",
                 target_api_key="target-token",
                 verify=True,
+                no_translations=True,
+            )
+        )
+
+
+def test_copy_cross_account_verify_deep_fails_on_parity_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync import cli_survey
+    import qsync.config
+    import qsync.survey_deep_parity
+
+    monkeypatch.setattr(cli_survey, "resolve_root", lambda required=False: Path("/tmp"))
+    monkeypatch.setattr(qsync.config, "resolve_env_path", lambda root=None: None)
+    monkeypatch.setattr(qsync.config, "load_env_file", lambda path=None: {})
+    monkeypatch.setattr(
+        qsync.config,
+        "load_env",
+        lambda *args, **kwargs: {
+            "QUALTRICS_BASE_URL": "source.qualtrics.test",
+            "X-API-TOKEN": "source-token",
+        },
+    )
+
+    def fake_get_client_config(env=None):
+        base = (env or {}).get("QUALTRICS_BASE_URL") or "missing"
+        token = (env or {}).get("X-API-TOKEN") or (env or {}).get("QUALTRICS_API_KEY")
+        return base, {"Accept": "application/json", "X-API-TOKEN": token}
+
+    monkeypatch.setattr(cli_survey, "get_client_config", fake_get_client_config)
+
+    def fake_fetch_survey_definition(base, headers, survey_id, fmt="qsf"):
+        if fmt == "qsf":
+            return {"SurveyEntry": {"SurveyName": "Survey"}, "SurveyElements": []}
+        return {"SurveyOptions": {}, "Questions": {}, "Blocks": {}, "SurveyFlow": {"Flow": []}}
+
+    monkeypatch.setattr(cli_survey, "fetch_survey_definition", fake_fetch_survey_definition)
+    monkeypatch.setattr(
+        cli_survey,
+        "resolve_target_name_with_conflict",
+        lambda *_args, **_kwargs: ("New Survey", None),
+    )
+    monkeypatch.setattr(cli_survey, "prepare_qsf_for_import", lambda *a, **k: None)
+    monkeypatch.setattr(cli_survey, "upload_qsf_to_account", lambda *a, **k: "SV_NEW")
+
+    def fake_send_api_request(**kwargs):
+        if kwargs.get("path") == "whoami":
+            return _resp({"result": {"userId": "UR_TEST", "brandId": "test"}})
+        return _resp({"result": {}})
+
+    monkeypatch.setattr(cli_survey, "send_api_request", fake_send_api_request)
+
+    monkeypatch.setattr(
+        qsync.survey_deep_parity,
+        "compare_survey_definition_deep_parity",
+        lambda *a, **k: qsync.survey_deep_parity.DeepParityReport(
+            ok=False,
+            hash_a="a" * 64,
+            hash_b="b" * 64,
+            diff_count=1,
+            diff_paths=["SurveyOptions.Skin (value_mismatch)"],
+            section_counts={"SurveyOptions": 1},
+            flow_changes=[],
+            artifacts=None,
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        cli_survey.handle_copy_cross_account(
+            _ns(
+                target_base_url="target.qualtrics.test",
+                target_api_key="target-token",
+                verify=False,
+                verify_deep=True,
                 no_translations=True,
             )
         )

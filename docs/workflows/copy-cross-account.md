@@ -72,6 +72,15 @@ qsync survey copy-cross-account SV_SOURCE "New Survey Name" \
   --verify
 ```
 
+3b) If you want to verify *deep parity* (strict, compares `survey-definitions` JSON after normalization):
+
+```bash
+qsync survey copy-cross-account SV_SOURCE "New Survey Name" \
+  --target-base-url iad1.qualtrics.com \
+  --target-api-key "$TARGET_API_TOKEN" \
+  --verify-deep
+```
+
 4) If you want qsync to publish and activate after copy:
 
 ```bash

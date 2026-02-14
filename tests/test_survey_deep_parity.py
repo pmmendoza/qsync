@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+from qsync.survey_deep_parity import compare_survey_definition_deep_parity
+
+
+def _base_def() -> dict:
+    return {
+        # Volatile identity/account metadata
+        "SurveyID": "SV_SOURCE",
+        "SurveyName": "Source Survey",
+        "SurveyStatus": "Active",
+        "BrandID": "BRAND_A",
+        "BrandBaseURL": "https://example.qualtrics.com",
+        "CreatorID": "UR_1",
+        "OwnerID": "UR_2",
+        "DivisionID": "DV_1",
+        "ProjectInfo": {"ProjectID": "PRJ_1"},
+        "LastModified": "2026-02-14T00:00:00Z",
+        "LastAccessed": "2026-02-14T00:00:00Z",
+        "LastActivated": "2026-02-14T00:00:00Z",
+        # Response set volatility
+        "ResponseSets": {"RS_123": "Default Response Set"},
+        "SurveyOptions": {
+            "ActiveResponseSet": "RS_123",
+            "Skin": "skin_1",
+            "SkinLibrary": "lib_1",
+        },
+        "Questions": {
+            "QID1": {
+                "QuestionID": "QID1",
+                "DataExportTag": "tag_1",
+                "QuestionText": "Hello",
+                "QuestionText_Unsafe": "Hello",
+            }
+        },
+        "Blocks": {
+            "BL_1": {
+                "Type": "Default",
+                "ID": "BL_1",
+                "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+            }
+        },
+        "SurveyFlow": {
+            "Flow": [{"Type": "Block", "ID": "BL_1"}],
+        },
+    }
+
+
+def test_deep_parity_ignores_cross_account_volatile_fields() -> None:
+    a = _base_def()
+    b = _base_def()
+
+    # By-definition drift across accounts
+    b["SurveyID"] = "SV_TARGET"
+    b["SurveyName"] = "Target Survey"
+    b["SurveyStatus"] = "Inactive"
+    b["BrandID"] = "BRAND_B"
+    b["LastModified"] = "2026-02-15T00:00:00Z"
+
+    # ResponseSet IDs regenerate; names should still compare equal.
+    b["ResponseSets"] = {"RS_999": "Default Response Set"}
+    b["SurveyOptions"]["ActiveResponseSet"] = "RS_999"
+
+    report = compare_survey_definition_deep_parity(a, b)
+    assert report.ok
+
+
+def test_deep_parity_fails_on_theme_drift() -> None:
+    a = _base_def()
+    b = _base_def()
+    b["SurveyOptions"]["Skin"] = "skin_2"
+
+    report = compare_survey_definition_deep_parity(a, b)
+    assert not report.ok
+    assert report.section_counts.get("SurveyOptions", 0) > 0
+
+
+def test_deep_parity_fails_when_unsafe_differs_from_safe() -> None:
+    a = _base_def()
+    b = _base_def()
+    b["Questions"]["QID1"]["QuestionText_Unsafe"] = "Hello (unsafe)"
+
+    report = compare_survey_definition_deep_parity(a, b)
+    assert not report.ok
+    assert report.section_counts.get("Questions", 0) > 0
+
+
+def test_deep_parity_flow_changes_are_reported() -> None:
+    a = _base_def()
+    b = _base_def()
+    b["SurveyFlow"]["Flow"].append({"Type": "Block", "ID": "BL_2"})
+
+    report = compare_survey_definition_deep_parity(a, b)
+    assert not report.ok
+    assert report.flow_changes, "Expected semantic flow changes on mismatch"
+
