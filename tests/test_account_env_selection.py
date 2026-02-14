@@ -145,6 +145,56 @@ def test_survey_list_account_uses_account_env_and_skips_inventory_ordering(
     assert captured["token"] == "secret"
 
 
+def test_survey_delete_account_uses_account_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.cli import main
+    from qsync import cli_survey
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+
+    (tmp_path / ".env.damian").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=syd1.qualtrics.com",
+                "X-API-TOKEN=secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    calls: list[dict] = []
+
+    class _Resp:
+        ok = True
+
+    def _fake_send_api_request(**kwargs):
+        calls.append(dict(kwargs))
+        return _Resp()
+
+    monkeypatch.setattr(cli_survey, "send_api_request", _fake_send_api_request)
+
+    main(
+        [
+            "--root",
+            str(tmp_path),
+            "survey",
+            "delete",
+            "--account",
+            "damian",
+            "SV_1",
+        ]
+    )
+
+    assert calls, "Expected DELETE call"
+    assert calls[0]["base_url"] == "syd1.qualtrics.com"
+    assert calls[0]["headers"].get("X-API-TOKEN") == "secret"
+    assert calls[0]["method"] == "DELETE"
+    assert calls[0]["path"] == "surveys/SV_1"
+
+
 def test_doctor_check_api_account_uses_account_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

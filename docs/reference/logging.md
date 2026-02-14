@@ -28,7 +28,7 @@ _Migrated from `appendices/logging_guide.md` (monorepo) so the standalone `qsync
 
 ```bash
 # Disable logging for a single command
-QSYNC_LOG_DISABLED=1 qsync survey delete --survey-id SV_xxx
+QSYNC_LOG_DISABLED=1 qsync survey delete SV_xxx
 
 # Use custom log directory
 export QSYNC_LOG_DIR=~/my-logs

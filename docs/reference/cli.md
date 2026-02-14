@@ -671,13 +671,15 @@ options:
 ## `qsync survey delete`
 
 ```text
-usage: qsync survey delete [-h] survey_ids [survey_ids ...]
+usage: qsync survey delete [-h] [--account ACCOUNT] survey_ids [survey_ids ...]
 
 positional arguments:
   survey_ids  One or more Survey IDs to delete
 
 options:
   -h, --help  show this help message and exit
+  --account ACCOUNT
+              Use credentials from `.env.<account>` under the workspace root.
 ```
 
 ## `qsync survey publish`

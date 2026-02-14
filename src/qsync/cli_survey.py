@@ -2745,7 +2745,12 @@ def handle_delete(args: argparse.Namespace) -> None:
     """Delete one or more surveys by SurveyID."""
     from .survey_ref import format_survey_ref
 
-    base, headers = get_client_config()
+    account = (getattr(args, "account", None) or "").strip() or None
+    if account:
+        env = load_account_env(account, root=_workspace_root())
+        base, headers = get_client_config(env)
+    else:
+        base, headers = get_client_config()
 
     for survey_id in args.survey_ids:
         print(f"Deleting survey {format_survey_ref(survey_id)}...")
@@ -6850,6 +6855,10 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
 
     # delete
     p_delete = survey_subs.add_parser("delete", help="Delete survey(s)")
+    p_delete.add_argument(
+        "--account",
+        help="Use credentials from `.env.<account>` under the workspace root.",
+    )
     p_delete.add_argument(
         "survey_ids", nargs="+", help="One or more Survey IDs to delete"
     )
