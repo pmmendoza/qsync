@@ -5453,6 +5453,7 @@ def handle_master_preview(args: argparse.Namespace) -> None:
     import json
     from .survey_master import preview_master, load_master_csv
     from .survey_tags import parse_tag_filters, filter_surveys_by_tags
+    from .survey_inventory import load_focal_snapshot
     from .terminal_colors import (
         colored,
         Colors,
@@ -5464,6 +5465,7 @@ def handle_master_preview(args: argparse.Namespace) -> None:
     survey_id = getattr(args, "survey_id", None)
     output_format = getattr(args, "format", "text")
     tag_specs = getattr(args, "tags", None)
+    all_surveys = bool(getattr(args, "all_surveys", False))
     use_color = colors_enabled()
 
     def _needs_unified_diff(value: str) -> bool:
@@ -5509,6 +5511,22 @@ def handle_master_preview(args: argparse.Namespace) -> None:
             except ValueError as e:
                 print(f"❌ Tag filter error: {e}", file=sys.stderr)
                 sys.exit(1)
+
+        # Default: focal-only (inventory-driven). Use --all to include non-focal.
+        if not survey_id and not all_surveys:
+            focal_snapshot = load_focal_snapshot()
+            focal_ids = {sid for sid, is_focal in focal_snapshot.items() if is_focal}
+            if focal_ids:
+                before = len(csv_rows)
+                csv_rows = [
+                    row
+                    for row in csv_rows
+                    if row.get("SurveyID", "").strip() in focal_ids
+                ]
+                if output_format == "text" and before != len(csv_rows):
+                    print(
+                        f"[qsync:master-preview] Filtered to {len(csv_rows)}/{before} focal survey row(s) (use --all to include non-focal)"
+                    )
 
         result = preview_master(
             csv_headers=csv_headers,
@@ -5692,11 +5710,13 @@ def handle_master_preview(args: argparse.Namespace) -> None:
 def handle_master_stage(args: argparse.Namespace) -> None:
     """Stage changes from master CSV to pending."""
     from .survey_master import stage_master, load_master_csv
+    from .survey_inventory import load_focal_snapshot
     from .terminal_colors import colors_enabled, colored, Colors
 
     use_color = colors_enabled()
     survey_id = getattr(args, "survey_id", None)
     verbose = bool(getattr(args, "verbose", False))
+    all_surveys = bool(getattr(args, "all_surveys", False))
 
     try:
         csv_headers, csv_rows = load_master_csv()
@@ -5704,9 +5724,46 @@ def handle_master_stage(args: argparse.Namespace) -> None:
         # Apply tag filtering if provided
         tags_str = getattr(args, "tags", None)
         if tags_str:
-            from .survey_inventory import parse_tag_filters, filter_surveys_by_tags
-            tag_filters = parse_tag_filters(tags_str)
-            csv_rows = filter_surveys_by_tags(csv_headers, csv_rows, tag_filters)
+            try:
+                from .survey_tags import parse_tag_filters, filter_surveys_by_tags
+
+                tag_filters = parse_tag_filters(tags_str)
+                survey_ids_in_csv = [
+                    row.get("SurveyID", "").strip()
+                    for row in csv_rows
+                    if row.get("SurveyID", "").strip()
+                ]
+                filtered_ids = filter_surveys_by_tags(survey_ids_in_csv, tag_filters)
+                filtered_ids_set = set(filtered_ids)
+                csv_rows = [
+                    row
+                    for row in csv_rows
+                    if row.get("SurveyID", "").strip() in filtered_ids_set
+                ]
+
+                if not survey_id:
+                    print(
+                        f"[qsync:master-stage] Filtered to {len(csv_rows)} surveys matching tags: {', '.join(tags_str)}"
+                    )
+            except ValueError as e:
+                print(f"❌ Tag filter error: {e}", file=sys.stderr)
+                sys.exit(1)
+
+        # Default: focal-only (inventory-driven). Use --all to include non-focal.
+        if not survey_id and not all_surveys:
+            focal_snapshot = load_focal_snapshot()
+            focal_ids = {sid for sid, is_focal in focal_snapshot.items() if is_focal}
+            if focal_ids:
+                before = len(csv_rows)
+                csv_rows = [
+                    row
+                    for row in csv_rows
+                    if row.get("SurveyID", "").strip() in focal_ids
+                ]
+                if before != len(csv_rows):
+                    print(
+                        f"[qsync:master-stage] Filtered to {len(csv_rows)}/{before} focal survey row(s) (use --all to include non-focal)"
+                    )
 
         result = stage_master(
             csv_headers=csv_headers,
@@ -5767,6 +5824,7 @@ def handle_master_stage(args: argparse.Namespace) -> None:
 def handle_master_apply(args: argparse.Namespace) -> None:
     """Apply changes from master CSV to Qualtrics."""
     from .survey_master import apply_master, load_master_csv
+    from .survey_inventory import load_focal_snapshot
     from .survey_tags import parse_tag_filters, filter_surveys_by_tags
     from .terminal_output import error, header, info, success, warn
 
@@ -5776,6 +5834,7 @@ def handle_master_apply(args: argparse.Namespace) -> None:
     skip_drift = getattr(args, "skip_drift", False)
     dry_run = getattr(args, "dry_run", False)
     tag_specs = getattr(args, "tags", None)
+    all_surveys = bool(getattr(args, "all_surveys", False))
     warn(
         "[qsync:master-apply]",
         "Legacy command: prefer 'qsync survey master stage' then 'qsync survey master push'.",
@@ -5822,6 +5881,23 @@ def handle_master_apply(args: argparse.Namespace) -> None:
             except ValueError as e:
                 error("[qsync:master-apply]", f"Tag filter error: {e}")
                 sys.exit(1)
+
+        # Default: focal-only (inventory-driven). Use --all to include non-focal.
+        if not survey_id and not all_surveys:
+            focal_snapshot = load_focal_snapshot()
+            focal_ids = {sid for sid, is_focal in focal_snapshot.items() if is_focal}
+            if focal_ids:
+                before = len(filtered_csv_rows)
+                filtered_csv_rows = [
+                    row
+                    for row in filtered_csv_rows
+                    if row.get("SurveyID", "").strip() in focal_ids
+                ]
+                if before != len(filtered_csv_rows):
+                    info(
+                        "[qsync:master-apply]",
+                        f"Filtered to {len(filtered_csv_rows)}/{before} focal survey row(s) (use --all to include non-focal)",
+                    )
 
         result = apply_master(
             allow_dangerous=allow_dangerous,
@@ -5905,6 +5981,7 @@ def handle_master_push(args: argparse.Namespace) -> None:
 
     description = getattr(args, "description", None)
     survey_id = getattr(args, "survey_id", None)
+    all_surveys = bool(getattr(args, "all_surveys", False))
     no_publish = bool(getattr(args, "no_publish", False))
     force_live = bool(getattr(args, "force_live", False))
     force_preview = bool(getattr(args, "force_preview", False))
@@ -5923,6 +6000,7 @@ def handle_master_push(args: argparse.Namespace) -> None:
             description=description,
             verbose=bool(getattr(args, "verbose", False)),
             survey_id=survey_id,
+            all_surveys=all_surveys,
             no_publish=no_publish,
             force_live=force_live,
             force_preview=force_preview,
@@ -7127,6 +7205,12 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         dest="tags",
         help="Filter surveys by tag (e.g., --tag component=pre --tag stage=prod)",
     )
+    p_master_preview.add_argument(
+        "--all",
+        dest="all_surveys",
+        action="store_true",
+        help="Include non-focal surveys from qualtrics_master.csv (default: focal-only)",
+    )
     p_master_preview.set_defaults(func=handle_master_preview)
 
     # master stage
@@ -7148,6 +7232,12 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         action="append",
         dest="tags",
         help="Filter surveys by tag (e.g., --tag component=pre --tag stage=prod)",
+    )
+    p_master_stage.add_argument(
+        "--all",
+        dest="all_surveys",
+        action="store_true",
+        help="Include non-focal surveys from qualtrics_master.csv (default: focal-only)",
     )
     p_master_stage.set_defaults(func=handle_master_stage)
 
@@ -7197,6 +7287,12 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         dest="tags",
         help="Filter surveys by tag (e.g., --tag component=pre --tag stage=prod)",
     )
+    p_master_apply.add_argument(
+        "--all",
+        dest="all_surveys",
+        action="store_true",
+        help="Include non-focal surveys from qualtrics_master.csv (default: focal-only)",
+    )
     p_master_apply.set_defaults(func=handle_master_apply)
 
     # master push
@@ -7222,6 +7318,12 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     p_master_push.add_argument(
         "--survey-id",
         help="Push only this specific survey (by SurveyID)",
+    )
+    p_master_push.add_argument(
+        "--all",
+        dest="all_surveys",
+        action="store_true",
+        help="Push staged changes for all surveys with pending records (including non-focal)",
     )
     p_master_push.add_argument(
         "--no-publish",

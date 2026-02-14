@@ -2614,6 +2614,7 @@ def push_master(
     description: Optional[str] = None,
     verbose: bool = False,
     survey_id: Optional[str] = None,
+    all_surveys: bool = False,
     no_publish: bool = False,
     force_live: bool = False,
     force_preview: bool = False,
@@ -2629,6 +2630,8 @@ def push_master(
         description: Description for the published version (default: "qsync master push")
         verbose: Print status messages
         survey_id: If provided, only push this survey (None = all with pending)
+        all_surveys: If True and survey_id is not provided, scan all pending master records
+                     (including non-focal). Default is focal-only.
         no_publish: If True, skip publish step (API write only)
         force_live: Allow push even with live responses
         force_preview: Skip preview response warnings
@@ -2655,6 +2658,17 @@ def push_master(
     # Find surveys with staged changes
     if survey_id:
         survey_ids_to_check = [survey_id]
+    elif all_surveys:
+        from .config import resolve_root
+
+        root = resolve_root(required=False) or Path.cwd()
+        pending_dir = root / "surveys" / "pending" / "master"
+        if pending_dir.exists():
+            survey_ids_to_check = sorted(
+                {p.stem for p in pending_dir.glob("*.json") if p.is_file()}
+            )
+        else:
+            survey_ids_to_check = []
     else:
         focal_snapshot = load_focal_snapshot()
         survey_ids_to_check = [sid for sid, is_focal in focal_snapshot.items() if is_focal]
