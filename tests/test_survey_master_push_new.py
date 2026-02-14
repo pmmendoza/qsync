@@ -69,7 +69,18 @@ class SurveyMasterPushNewTests(unittest.TestCase):
                                         with patch("qsync.survey_master.get_client_config", return_value=("http://test", {})):
                                             with patch("qsync.survey_master._write_metadata", return_value=True):
                                                 with patch("qsync.qualtrics_client.publish_survey_definition"):
-                                                    result = push_master()
+                                                    with patch(
+                                                        "qsync.qualtrics_client.refresh_survey_cache",
+                                                        return_value=(MagicMock(), True),
+                                                    ):
+                                                        with patch(
+                                                            "qsync.survey_master.refresh_snapshot_from_live",
+                                                            return_value=root
+                                                            / "surveys"
+                                                            / "qualtrics_master_snapshots"
+                                                            / "SV_TEST.json",
+                                                        ):
+                                                            result = push_master()
 
             # Should have pushed 1 survey
             self.assertEqual(result["surveys_pushed"], 1)
@@ -182,7 +193,18 @@ class SurveyMasterPushNewTests(unittest.TestCase):
                                         with patch("qsync.survey_master.get_client_config", return_value=("http://test", {})):
                                             with patch("qsync.survey_master._write_metadata", return_value=True):
                                                 with patch("qsync.qualtrics_client.publish_survey_definition", publish_mock):
-                                                    result = push_master(no_publish=True)
+                                                    with patch(
+                                                        "qsync.qualtrics_client.refresh_survey_cache",
+                                                        return_value=(MagicMock(), True),
+                                                    ):
+                                                        with patch(
+                                                            "qsync.survey_master.refresh_snapshot_from_live",
+                                                            return_value=root
+                                                            / "surveys"
+                                                            / "qualtrics_master_snapshots"
+                                                            / "SV_TEST.json",
+                                                        ):
+                                                            result = push_master(no_publish=True)
 
             # Should have pushed but not published
             self.assertEqual(result["surveys_pushed"], 1)
@@ -231,7 +253,18 @@ class SurveyMasterPushNewTests(unittest.TestCase):
                                     with patch("qsync.survey_master.capture_pre_apply_snapshot"):
                                         with patch("qsync.survey_master.get_client_config", return_value=("http://test", {})):
                                             with patch("qsync.survey_master._write_metadata", return_value=True):
-                                                push_master()
+                                                with patch(
+                                                    "qsync.qualtrics_client.refresh_survey_cache",
+                                                    return_value=(MagicMock(), True),
+                                                ):
+                                                    with patch(
+                                                        "qsync.survey_master.refresh_snapshot_from_live",
+                                                        return_value=root
+                                                        / "surveys"
+                                                        / "qualtrics_master_snapshots"
+                                                        / "SV_TEST.json",
+                                                    ):
+                                                        push_master()
 
             # Pending should be cleared
             with patch("qsync.pending_stage.resolve_root", return_value=root):
@@ -307,7 +340,18 @@ class SurveyMasterPushNewTests(unittest.TestCase):
                                                 "qsync.survey_master._write_metadata",
                                                 return_value=True,
                                             ):
-                                                result = push_master(no_publish=True)
+                                                with patch(
+                                                    "qsync.qualtrics_client.refresh_survey_cache",
+                                                    return_value=(MagicMock(), True),
+                                                ):
+                                                    with patch(
+                                                        "qsync.survey_master.refresh_snapshot_from_live",
+                                                        return_value=root
+                                                        / "surveys"
+                                                        / "qualtrics_master_snapshots"
+                                                        / "SV_A.json",
+                                                    ):
+                                                        result = push_master(no_publish=True)
 
             self.assertEqual(result["surveys_pushed"], 2)
             self.assertEqual(result["surveys_failed"], 0)

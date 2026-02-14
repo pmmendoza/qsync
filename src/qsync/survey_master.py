@@ -416,6 +416,37 @@ def load_snapshot(survey_id: str) -> Optional[dict]:
         return None
 
 
+def refresh_snapshot_from_live(
+    survey_id: str,
+    *,
+    base_url: str | None = None,
+    headers: Dict[str, str] | None = None,
+) -> Path:
+    """Refresh the on-disk master snapshot for `survey_id` from live Qualtrics.
+
+    This updates only the read-only baseline under `surveys/qualtrics_master_snapshots/`
+    and must not touch any editing surfaces (e.g. the master CSV).
+    """
+    if base_url is None or headers is None:
+        base_url, headers = get_client_config()
+
+    status_data, _ = _fetch_endpoint(base_url, headers, survey_id, "status")
+    survey_name = str(status_data.get("name") or survey_id)
+    metadata_data, _ = _fetch_endpoint(base_url, headers, survey_id, "metadata")
+    options_data, _ = _fetch_endpoint(base_url, headers, survey_id, "options")
+    versions_data, _ = _fetch_endpoint(base_url, headers, survey_id, "versions")
+
+    snapshot = create_snapshot(
+        survey_id=survey_id,
+        survey_name=survey_name,
+        status_data=status_data,
+        metadata_data=metadata_data,
+        options_data=options_data,
+        versions_data=versions_data,
+    )
+    return save_snapshot(survey_id, snapshot)
+
+
 def _scalar_to_string(value: Any) -> str:
     """Normalize values to the same string form used by master CSV comparisons."""
     if value is None:
@@ -2895,6 +2926,27 @@ def push_master(
                 )
                 surveys_failed += 1
                 return
+        # Postcondition for qsync sync: refresh read-only caches from live Qualtrics.
+        # This prevents cache drift (and repeated diffs) after a successful push.
+        try:
+            from .qualtrics_client import refresh_survey_cache
+
+            # Refresh the generic survey cache used by other dimensions.
+            refresh_survey_cache(sid)
+            # Refresh the master snapshot baseline used for master diffs.
+            refresh_snapshot_from_live(sid, base_url=base_url, headers=headers)
+        except Exception as e:
+            # Keep pending so the user can retry and we don't silently accept drift.
+            details.append(
+                {
+                    "survey_id": sid,
+                    "pushed": True,
+                    "published": published,
+                    "reason": f"Pushed successfully but cache refresh failed: {e}",
+                }
+            )
+            surveys_failed += 1
+            return
 
         clear_pending(sid, "master")
         details.append(
