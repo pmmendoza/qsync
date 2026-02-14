@@ -74,6 +74,26 @@ def test_load_account_env_rejects_scheme_in_base_url(tmp_path: Path) -> None:
     assert excinfo.value.exit_code == 1
 
 
+def test_load_account_env_accepts_target_token_keys(tmp_path: Path) -> None:
+    from qsync.config import load_account_env
+
+    env_path = tmp_path / ".env.damian"
+    env_path.write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=iad1.qualtrics.com",
+                "TARGET_X-API-TOKEN=secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    env = load_account_env("damian", root=tmp_path)
+    assert env["QUALTRICS_BASE_URL"] == "iad1.qualtrics.com"
+    assert env["X-API-TOKEN"] == "secret"
+
+
 def test_survey_list_account_uses_account_env_and_skips_inventory_ordering(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

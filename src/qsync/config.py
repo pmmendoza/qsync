@@ -248,14 +248,26 @@ def load_account_env(
         )
 
     file_env = load_env_file(env_path)
-    base_url = (file_env.get("QUALTRICS_BASE_URL") or "").strip()
-    api_token = (file_env.get("X-API-TOKEN") or file_env.get("QUALTRICS_API_KEY") or "").strip()
+    # Accept canonical keys and common TARGET_* variants so existing dotenv
+    # setups can be reused as `.env.<account>` with minimal churn.
+    base_url = (
+        (file_env.get("QUALTRICS_BASE_URL") or "").strip()
+        or (file_env.get("TARGET_QUALTRICS_BASE_URL") or "").strip()
+    )
+    api_token = (
+        (file_env.get("X-API-TOKEN") or "").strip()
+        or (file_env.get("QUALTRICS_API_KEY") or "").strip()
+        or (file_env.get("TARGET_X-API-TOKEN") or "").strip()
+        or (file_env.get("TARGET_QUALTRICS_API_KEY") or "").strip()
+    )
 
     missing: list[str] = []
     if not base_url:
         missing.append("QUALTRICS_BASE_URL")
     if not api_token:
-        missing.append("X-API-TOKEN (or QUALTRICS_API_KEY)")
+        missing.append(
+            "X-API-TOKEN (or QUALTRICS_API_KEY; also accepts TARGET_X-API-TOKEN / TARGET_QUALTRICS_API_KEY)"
+        )
 
     if missing:
         raise QsyncConfigError(
@@ -283,8 +295,13 @@ def load_account_env(
             exit_code=1,
         )
 
-    # Return the file env as-is; callers can pass it directly to get_client_config().
-    return file_env
+    env = dict(file_env)
+    env["QUALTRICS_BASE_URL"] = base_url
+    if not (env.get("X-API-TOKEN") or env.get("QUALTRICS_API_KEY")):
+        env["X-API-TOKEN"] = api_token
+
+    # Return an env dict suitable for get_client_config().
+    return env
 
 
 def build_headers(env: Dict[str, str]) -> Dict[str, str]:
