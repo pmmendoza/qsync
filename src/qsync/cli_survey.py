@@ -14,7 +14,7 @@ import time
 import zipfile
 from difflib import unified_diff
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Mapping
 
 from .config import get_client_config, load_account_env, resolve_root
 from .api_push import send_api_request
@@ -1855,7 +1855,11 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         _check_placeholders,
         _check_value_length_limit,
     )
-    from .translation_export import build_translation_map_from_cache
+    from .translation_export import (
+        build_translation_map_from_cache,
+        active_qids_in_flow,
+        expected_translation_keys_for_qids,
+    )
     from .translations_utils import normalize_language_code, normalize_language_list
 
     # Parse arguments
@@ -2070,14 +2074,44 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
             target_base, target_headers, target_survey_id, source_langs
         )
 
+        active_qids = active_qids_in_flow(source_payload)
+        expected_keys: list[str] | None = None
+        if active_qids:
+            expected_keys = expected_translation_keys_for_qids(
+                source_payload, qids=active_qids
+            )
+
         base_map = build_translation_map_from_cache(
             source_payload,
             language=source_base_lang,
             base_language=source_base_lang,
         )
+
+        base_map_scoped: Mapping[str, Any] = base_map
+        if expected_keys:
+            # Always include metadata keys that are present in the base map.
+            meta_keys = [k for k in base_map.keys() if "_" not in str(k)]
+            expected = sorted(set(expected_keys).union(meta_keys), key=str)
+            expected_keys = expected
+            base_map_scoped = {k: base_map.get(k, "") for k in expected_keys}
+
+            source_questions = (
+                (source_payload.get("result") or {}).get("Questions") or {}
+            )
+            if isinstance(source_questions, dict):
+                excluded = max(0, len(source_questions) - len(active_qids))
+                if excluded > 0:
+                    dim(
+                        "[copy-cross-account]",
+                        (
+                            "Translation validation scope: "
+                            f"{len(active_qids)} in-flow QID(s); skipped {excluded} out-of-flow/Trash QID(s)."
+                        ),
+                    )
+
         allowed_empty_keys = {
             str(k)
-            for k, v in base_map.items()
+            for k, v in base_map_scoped.items()
             if not isinstance(v, str) or not v.strip()
         }
 
@@ -2095,11 +2129,16 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
                 continue
 
             info("[copy-cross-account]", f"Processing language: {lang}")
-            normalized = build_translation_map_from_cache(
+            normalized_full = build_translation_map_from_cache(
                 source_payload,
                 language=lang,
                 base_language=source_base_lang,
             )
+            normalized: dict[str, str]
+            if expected_keys:
+                normalized = {k: normalized_full.get(k, "") for k in expected_keys}
+            else:
+                normalized = normalized_full
 
             # Calculate statistics
             total_keys = len(normalized)
@@ -2130,7 +2169,9 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
 
             errors.extend(_check_html_hazards(normalized, lang))
             errors.extend(_check_value_length_limit(normalized, lang))
-            ph_errors, ph_warnings = _check_placeholders(base_map, normalized, lang)
+            ph_errors, ph_warnings = _check_placeholders(
+                base_map_scoped, normalized, lang
+            )
             errors.extend(ph_errors)
             warnings.extend(ph_warnings)
 
