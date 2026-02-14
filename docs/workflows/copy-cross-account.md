@@ -25,6 +25,7 @@ Target account configuration:
   - `QUALTRICS_BASE_URL`
   - `X-API-TOKEN` (or `QUALTRICS_API_KEY`)
   Then use `--target-account <account>`.
+  - Note: `.env.<account>` also accepts `TARGET_QUALTRICS_BASE_URL` and `TARGET_X-API-TOKEN` for backward compatibility, but the canonical keys above are recommended.
 - Recommended: set these in `.env` (or environment variables) and omit `--target-*` flags:
   - `TARGET_QUALTRICS_BASE_URL`
   - `TARGET_X-API-TOKEN` (or `TARGET_QUALTRICS_API_KEY`)
