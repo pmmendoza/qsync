@@ -82,11 +82,31 @@ class WorkbookResolver:
         # Old format (for backward compatibility)
         old_format_path = self.root / "excel" / f"{survey_id}-{slug}.xlsx"
 
-        # If old format exists, use it for backward compatibility
+        # If exact old format exists, use it for backward compatibility.
         if old_format_path.exists():
             return old_format_path
 
-        # Otherwise use new format (for new files)
+        # If exact new format exists, use it.
+        if new_format_path.exists():
+            return new_format_path
+
+        # If any workbook already exists for this survey ID (even with a stale/renamed
+        # slug), prefer it to avoid creating duplicates.
+        excel_dir = (self.root / "excel").resolve()
+        if excel_dir.exists():
+            for pattern in (f"{survey_id}-*.xlsx", f"*-{survey_id}.xlsx"):
+                candidates = []
+                for path in excel_dir.glob(pattern):
+                    if path.name.startswith("~$"):
+                        continue
+                    if path.is_file():
+                        candidates.append(path)
+                if candidates:
+                    # Deterministic-ish preference: newest mtime first.
+                    candidates.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+                    return candidates[0]
+
+        # Otherwise use new format (for new files).
         return new_format_path
 
     def _derive_slug(self, survey_id: str) -> str:

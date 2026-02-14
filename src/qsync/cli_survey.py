@@ -6903,7 +6903,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--surfaces",
         help=(
             "Comma-separated surfaces to hydrate (default: all). "
-            "Choices: inventory,items,translations,eos,js"
+            "Choices: inventory,items,workbook,translations,eos,js"
         ),
     )
     p_prepare.add_argument(

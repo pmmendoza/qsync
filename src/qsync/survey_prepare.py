@@ -478,7 +478,10 @@ def prepare_workspace(
     root = resolve_root(required=True) or Path.cwd()
     ensure_workspace_dirs(root)
 
-    allowed_surfaces = {"inventory", "items", "translations", "eos", "js"}
+    # NOTE: "workbook" is intentionally separate from "items". "items" hydration
+    # includes cache + workbook, while "workbook" is a lightweight "ensure the
+    # Excel workbook exists" operation (create missing only; no overwrite).
+    allowed_surfaces = {"inventory", "items", "workbook", "translations", "eos", "js"}
     if surfaces is None:
         selected = set(allowed_surfaces)
     else:
@@ -520,7 +523,9 @@ def prepare_workspace(
 
         # Translations (languages drive workbook columns).
         langs_for_workbook: list[str] = []
-        if "translations" in selected or ("items" in selected and languages):
+        if "translations" in selected or (
+            ("items" in selected or "workbook" in selected) and languages
+        ):
             try:
                 if languages:
                     langs = list(languages)
@@ -568,7 +573,7 @@ def prepare_workspace(
                 r.translations.errors.append(str(exc))
 
         # Excel workbook (create if missing; do not overwrite).
-        if "items" in selected or "translations" in selected:
+        if "items" in selected or "translations" in selected or "workbook" in selected:
             try:
                 resolver = WorkbookResolver(root=root)
                 xlsx_path = resolver.default_path(survey_id)
@@ -581,6 +586,10 @@ def prepare_workspace(
                         survey_id,
                         xlsx_path,
                         languages=langs_for_workbook or None,
+                        # We're about to refresh the cache from the API anyway.
+                        # Skip the extra "cache vs live" drift check to avoid an
+                        # additional full survey-definition fetch per survey.
+                        check_drift=False,
                     )
                     r.workbook.created += 1
             except Exception as exc:
