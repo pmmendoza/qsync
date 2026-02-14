@@ -68,7 +68,7 @@ Notes / limitations:
 ## EOS (`qsync eos ...`)
 
 Current state:
-- `qsync eos preview` accepts `--scope`, but EOS stage/push are message-level operations and `--scope` is not yet implemented for filtering (it will operate on all referenced EOS messages).
+- `qsync eos ...` accepts `--scope` for CLI parity, but it is currently ignored (preview/stage/push operate on all referenced EOS messages).
 
 If you need smoke-safe EOS end-to-end testing:
 - Prefer `qsync eos clone-shared --survey-id ... --yes` first, so the smoke survey references survey-specific EOS library messages.
@@ -78,5 +78,5 @@ If you need smoke-safe EOS end-to-end testing:
 ## Sync orchestrator (`qsync sync`)
 
 - `qsync sync --scope ...` passes scope to per-dimension preview/stage/push where supported.
+- When `qsync sync --yes --pending-action abort --json` is blocked by pending staged changes, the emitted `next_commands` preserve the original `--scope` so you can re-run the same slice later.
 - In interactive **QID-mode**, “Search by ExportTag (autocomplete)” filters by workbook `DataExportTag` and only offers QIDs with detected edits.
-

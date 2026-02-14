@@ -266,7 +266,9 @@ options:
   --language LANGUAGE   Add translation columns
   --languages LANGUAGES
                         Comma-separated language codes
-  --scope SCOPE         Scope filter expression
+  --scope SCOPE         Scope filter expression (qid:<QID>,
+                        tag:<DataExportTag>; supports AND/OR/()). See
+                        docs/reference/scope-semantics.md.
 ```
 
 ## `qsync items preview`
@@ -299,7 +301,9 @@ options:
                         repeated).
   --detailed            Full diffs
   --embedded-data-only
-  --scope SCOPE         Scope filter expression
+  --scope SCOPE         Scope filter expression (qid:<QID>,
+                        tag:<DataExportTag>; supports AND/OR/()). See
+                        docs/reference/scope-semantics.md.
   --allow-drift         Allow preview against a drifted cache without
                         prompting
 ```
@@ -335,7 +339,9 @@ options:
   --yes
   --embedded-data-only
   --allow-dangerous
-  --scope SCOPE         Scope filter expression
+  --scope SCOPE         Scope filter expression (qid:<QID>,
+                        tag:<DataExportTag>; supports AND/OR/()). See
+                        docs/reference/scope-semantics.md.
   --allow-drift         Proceed even if cached survey differs from the live
                         API
 ```
@@ -356,7 +362,9 @@ options:
   --force-preview
   --no-publish
   --dry-run
-  --scope SCOPE         Scope filter expression
+  --scope SCOPE         Scope filter expression (qid:<QID>,
+                        tag:<DataExportTag>; supports AND/OR/()). See
+                        docs/reference/scope-semantics.md.
   --allow-drift         Proceed even if cached survey differs from the live
                         API
 ```
@@ -379,7 +387,9 @@ options:
   --dimensions DIMENSIONS
                         Comma-separated dimensions to sync (default: auto-
                         detect)
-  --scope SCOPE         Scope filter expression
+  --scope SCOPE         Scope filter expression passed to per-dimension
+                        workflows where supported (items/js/translations). See
+                        docs/reference/scope-semantics.md.
   --per-dimension       Preview and approve each dimension separately
                         (default: batch per-survey)
   --yes                 Skip all confirmation prompts (non-interactive)
@@ -409,6 +419,7 @@ JSON to stdout and exit non-zero. The payload includes:
 - `pending_dims`
 - `pending_summary`
 - `next_commands` (includes `interactive_review`, `push_all`, `discard_all`, `pending_inspect`, `push_by_dimension`)
+- `next_commands` preserve `--scope ...` when the original run included `--scope`
 
 ## `qsync survey`
 
@@ -948,8 +959,9 @@ options:
                         Limit JS operations to specific core filenames.
   --show-equal          Include matches with no differences
   --detailed            Print unified diffs for each pair
-  --scope SCOPE         Scope filter expression (e.g., 'qid:QID123 OR
-                        js:filename.js')
+  --scope SCOPE         Scope filter expression (qid:<QID>,
+                        tag:<DataExportTag>, js:<file>; supports AND/OR/()).
+                        See docs/reference/scope-semantics.md.
   --allow-drift         Allow preview against a drifted cache without
                         prompting
 ```
@@ -983,7 +995,9 @@ options:
   --no-include-match    Skip staging when cached JS already matches
   --allow-drift         Allow staging against a drifted cache without
                         prompting
-  --scope SCOPE         Scope filter expression
+  --scope SCOPE         Scope filter expression (qid:<QID>,
+                        tag:<DataExportTag>, js:<file>; supports AND/OR/()).
+                        See docs/reference/scope-semantics.md.
 ```
 
 ## `qsync js push`
@@ -1019,7 +1033,9 @@ options:
   --yes                 Skip confirmation prompts for JS pushes
   --no-publish          Skip publishing the survey after pushing QuestionJS
                         updates
-  --scope SCOPE         Scope filter expression
+  --scope SCOPE         Scope filter expression (qid:<QID>,
+                        tag:<DataExportTag>, js:<file>; supports AND/OR/()).
+                        See docs/reference/scope-semantics.md.
   --allow-drift         Proceed even if cached survey differs from the live
                         API
 ```
@@ -1096,7 +1112,9 @@ options:
   --detailed            Include unified diffs for changed keys
   --allow-drift         Allow preview against a drifted cache without
                         prompting
-  --scope SCOPE         Scope filter expression
+  --scope SCOPE         Scope filter expression (accepted but currently
+                        ignored for EOS). See
+                        docs/reference/scope-semantics.md.
 ```
 
 ## `qsync eos stage`
@@ -1119,7 +1137,9 @@ options:
   --yes                 Skip interactive confirmations (required for push).
   --allow-destructive   Allow destructive key deletions (missing message keys)
                         for push.
-  --scope SCOPE         Scope filter expression
+  --scope SCOPE         Scope filter expression (accepted but currently
+                        ignored for EOS). See
+                        docs/reference/scope-semantics.md.
 ```
 
 ## `qsync eos push`
@@ -1148,7 +1168,9 @@ options:
   --allow-drift         Proceed even if cached EOS messages differ from the
                         live API
   --no-publish          Skip publishing the survey after pushing EOS updates
-  --scope SCOPE         Scope filter expression
+  --scope SCOPE         Scope filter expression (accepted but currently
+                        ignored for EOS). See
+                        docs/reference/scope-semantics.md.
 ```
 
 ## `qsync eos clone-shared`
@@ -1333,5 +1355,7 @@ options:
   --no-publish          Skip publishing the survey after push
   --use-pending         If staged changes exist and Excel differs, push staged
                         changes instead of re-staging from Excel
-  --scope SCOPE         Scope filter expression (e.g., qid:QID1)
+  --scope SCOPE         Scope filter expression (qid:<QID>,
+                        tag:<DataExportTag>; supports AND/OR/()). See
+                        docs/reference/scope-semantics.md.
 ```

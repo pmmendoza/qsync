@@ -9,6 +9,7 @@ Features:
 - Per-dimension workflow (pull, preview, stage, push)
 - Cross-dimension conflict detection and resolution
 - Non-interactive automation with --yes
+- Optional scope filtering via --scope (qid/tag/js boolean DSL)
 
 Created: 2026-01-22 for QSYNC-HARM-022 (Stage 3: Orchestration)
 """
@@ -3403,7 +3404,7 @@ def sync_survey(
         force_preview: Suppress preview-only response warnings
         auto_yes: Skip all confirmation prompts
         pending_action: If pending staged changes exist and auto_yes is True, what to do: push/discard/abort
-        scope: Optional scope filter
+        scope: Optional scope filter (qid/tag/js boolean DSL) passed to items/js/translations where supported. See docs/reference/scope-semantics.md.
         per_dimension: Preview and approve each dimension separately
         skip_publish: Skip auto-publish step
         refresh_workbooks: Refresh Excel workbooks after successful sync
@@ -3958,7 +3959,7 @@ def sync_focal_surveys(
         force_preview: Suppress preview-only response warnings
         auto_yes: Skip all confirmation prompts
         pending_action: If pending staged changes exist and auto_yes is True, what to do: push/discard/abort
-        scope: Optional scope filter
+        scope: Optional scope filter (qid/tag/js boolean DSL) passed to items/js/translations where supported. See docs/reference/scope-semantics.md.
         process_all: Process all focal surveys without prompting
         per_dimension: Preview and approve each dimension separately
         skip_publish: Skip auto-publish step

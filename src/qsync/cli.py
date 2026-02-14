@@ -19,6 +19,26 @@ from .argparse_support import QsyncArgumentParser
 SURVEYS_DIR = Path("surveys")
 DEFAULT_MAPPING_PATH = Path("survey_js") / "survey_qid_js_map.csv"
 
+# Scope help text is shared across many commands; keep it consistent so users
+# don't have to guess what the expression language supports.
+_SCOPE_HELP_ITEMS = (
+    "Scope filter expression (qid:<QID>, tag:<DataExportTag>; supports AND/OR/()). "
+    "See docs/reference/scope-semantics.md."
+)
+_SCOPE_HELP_TRANSLATIONS = _SCOPE_HELP_ITEMS
+_SCOPE_HELP_JS = (
+    "Scope filter expression (qid:<QID>, tag:<DataExportTag>, js:<file>; supports AND/OR/()). "
+    "See docs/reference/scope-semantics.md."
+)
+_SCOPE_HELP_SYNC = (
+    "Scope filter expression passed to per-dimension workflows where supported (items/js/translations). "
+    "See docs/reference/scope-semantics.md."
+)
+_SCOPE_HELP_EOS = (
+    "Scope filter expression (accepted but currently ignored for EOS). "
+    "See docs/reference/scope-semantics.md."
+)
+
 if TYPE_CHECKING:
     from .push_policy import PushContext
     from .sync_core import PreviewChange
@@ -1608,13 +1628,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--language", action="append", dest="language", help="Add translation columns"
     )
     p_items_pull.add_argument("--languages", help="Comma-separated language codes")
-    p_items_pull.add_argument("--scope", help="Scope filter expression")
+    p_items_pull.add_argument("--scope", help=_SCOPE_HELP_ITEMS)
 
     p_items_preview = items_subparsers.add_parser("preview", help="Show workbook diffs")
     _add_common_args(p_items_preview, include_xlsx=True)
     p_items_preview.add_argument("--detailed", action="store_true", help="Full diffs")
     p_items_preview.add_argument("--embedded-data-only", action="store_true")
-    p_items_preview.add_argument("--scope", help="Scope filter expression")
+    p_items_preview.add_argument("--scope", help=_SCOPE_HELP_ITEMS)
     p_items_preview.add_argument(
         "--allow-drift",
         action="store_true",
@@ -1628,7 +1648,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_items_stage.add_argument("--yes", action="store_true")
     p_items_stage.add_argument("--embedded-data-only", action="store_true")
     p_items_stage.add_argument("--allow-dangerous", action="store_true")
-    p_items_stage.add_argument("--scope", help="Scope filter expression")
+    p_items_stage.add_argument("--scope", help=_SCOPE_HELP_ITEMS)
     p_items_stage.add_argument(
         "--allow-drift",
         action="store_true",
@@ -1761,7 +1781,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Allow destructive structural deletes if staged (enforced at push time)",
     )
     p_items_push.add_argument("--dry-run", action="store_true")
-    p_items_push.add_argument("--scope", help="Scope filter expression")
+    p_items_push.add_argument("--scope", help=_SCOPE_HELP_ITEMS)
     p_items_push.add_argument(
         "--allow-drift",
         action="store_true",
@@ -1794,7 +1814,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_sync.add_argument(
         "--scope",
-        help="Scope filter expression",
+        help=_SCOPE_HELP_SYNC,
     )
     p_sync.add_argument(
         "--per-dimension",
@@ -1915,7 +1935,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_js_preview.add_argument(
         "--scope",
-        help="Scope filter expression (e.g., 'qid:QID123 OR js:filename.js')",
+        help=_SCOPE_HELP_JS,
     )
     p_js_preview.add_argument(
         "--allow-drift",
@@ -1956,7 +1976,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_js_stage.add_argument(
         "--scope",
-        help="Scope filter expression",
+        help=_SCOPE_HELP_JS,
     )
 
     # js apply (legacy alias for backward compatibility)
@@ -2034,7 +2054,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_js_push.add_argument(
         "--scope",
-        help="Scope filter expression",
+        help=_SCOPE_HELP_JS,
     )
     p_js_push.add_argument(
         "--allow-drift",
@@ -2096,7 +2116,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_eos_preview.add_argument(
         "--scope",
-        help="Scope filter expression",
+        help=_SCOPE_HELP_EOS,
     )
 
     # eos repair
@@ -2119,7 +2139,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_eos_stage.add_argument(
         "--scope",
-        help="Scope filter expression",
+        help=_SCOPE_HELP_EOS,
     )
 
     # eos apply (legacy alias for backward compatibility)
@@ -2167,7 +2187,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_eos_push.add_argument(
         "--scope",
-        help="Scope filter expression",
+        help=_SCOPE_HELP_EOS,
     )
 
     # eos references (local scan)
@@ -2412,7 +2432,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_trans_preview.add_argument(
         "--scope",
-        help="Scope filter expression (e.g., qid:QID1)",
+        help=_SCOPE_HELP_TRANSLATIONS,
     )
 
     # translations pull (cache refresh alias)
@@ -2468,7 +2488,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_trans_apply.add_argument(
         "--scope",
-        help="Scope filter expression (e.g., qid:QID1)",
+        help=_SCOPE_HELP_TRANSLATIONS,
     )
 
     # translations stage (preferred)
@@ -2503,7 +2523,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_trans_stage.add_argument(
         "--scope",
-        help="Scope filter expression (e.g., qid:QID1)",
+        help=_SCOPE_HELP_TRANSLATIONS,
     )
 
     # translations doctor
@@ -2675,7 +2695,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_trans_push.add_argument(
         "--scope",
-        help="Scope filter expression (e.g., qid:QID1)",
+        help=_SCOPE_HELP_TRANSLATIONS,
     )
 
     # translations check-language

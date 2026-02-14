@@ -726,7 +726,7 @@ When using Survey Master alongside other qsync dimensions (items, translations, 
 The `qsync sync` orchestrator automatically detects potential conflicts between master and other dimensions:
 
 ```bash
-qsync sync status
+qsync sync --survey-id SV_...
 ```
 
 **Common conflict scenarios:**
@@ -765,7 +765,7 @@ qsync sync status
 **When editing metadata:**
 - ✅ Use **translations dimension** for `SurveyName` and `SurveyDescription` in multi-language surveys
 - ✅ Use **master dimension** for survey-level options, branding, dates, and status
-- ✅ Check `qsync sync status` before pushing to detect conflicts
+- ✅ Check `qsync sync --survey-id SV_...` before pushing to detect conflicts
 - ⚠️ Avoid editing same fields in both dimensions simultaneously
 
 **When using `qsync sync`:**
@@ -776,7 +776,7 @@ qsync sync status
 **Example workflow with conflicts:**
 ```bash
 # 1. Check for conflicts
-qsync sync status
+qsync sync --survey-id SV_abc123
 
 # Output shows:
 #   ⚠ Both master and translations have staged changes
