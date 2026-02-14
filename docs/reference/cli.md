@@ -428,11 +428,11 @@ JSON to stdout and exit non-zero. The payload includes:
 
 ```text
 usage: qsync survey [-h]
-                    {label,focal,list,copy,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,rename-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
+                    {label,focal,list,copy,parity-check,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,rename-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
                     ...
 
 positional arguments:
-  {label,focal,list,copy,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,rename-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
+  {label,focal,list,copy,parity-check,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,rename-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
     label               Print '<SurveyID> - <Name>' using
                         surveys/inventory.csv (legacy:
                         surveys/qualtrics_surveys.csv)
@@ -440,6 +440,7 @@ positional arguments:
                         (legacy: surveys/qualtrics_surveys.csv)
     list                List all surveys
     copy                Copy a survey
+    parity-check        Compare two surveys for parity (flow/QID/tag-lite; optional deep)
     copy-cross-account  Copy a survey from one Qualtrics account to another
     rename              Rename a survey
     delete              Delete survey(s)
@@ -583,6 +584,18 @@ options:
   --generate-qsf        Generate QSF locally only
 ```
 
+## `qsync survey parity-check`
+
+```text
+usage: qsync survey parity-check [-h] --a A --b B [--deep]
+
+options:
+  -h, --help  show this help message and exit
+  --a A       Survey ID A
+  --b B       Survey ID B
+  --deep      Run deep parity against survey-definitions JSON (strict; ignores only cross-account volatile fields).
+```
+
 ## `qsync survey copy-cross-account`
 
 ```text
@@ -596,7 +609,7 @@ usage: qsync survey copy-cross-account [-h] [--target-api-key TARGET_API_KEY]
                                        [--publish-description PUBLISH_DESCRIPTION]
                                        [--force-overwrite] [--yes]
                                        [--no-translations]
-                                       [--verify]
+                                       [--verify] [--verify-deep]
                                        source_survey_id new_name
 
 positional arguments:
@@ -639,6 +652,7 @@ options:
                         (default: copy translations).
   --verify              After copy, verify parity (QIDs/flow/tags) and
                         translations (best-effort); exits non-zero on mismatch.
+  --verify-deep         After copy, verify deep parity against survey-definitions JSON (strict; ignores only cross-account volatile fields); exits non-zero on mismatch.
 ```
 
 ## `qsync survey rename`
