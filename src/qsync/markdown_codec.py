@@ -61,25 +61,65 @@ class _HTMLToMarkdown(HTMLParser):
         super().__init__()
         self.parts: list[str] = []
         self.in_li = False
+        # Track emphasis markers so we can drop empty tags like `<strong> </strong>`
+        # (which otherwise produce phantom `****` diffs).
+        self._emphasis_stack: list[dict[str, object]] = []
+        # Used to avoid emitting an extra newline for `<br>` immediately after `</ul>`
+        # because our `</li>` handler already ends the list with a newline.
+        self._just_closed_list = False
+
+    def _push_emphasis(self, marker: str) -> None:
+        self.parts.append(marker)
+        self._emphasis_stack.append(
+            {
+                "marker": marker,
+                "open_idx": len(self.parts) - 1,
+                "had_content": False,
+            }
+        )
+
+    def _close_emphasis(self, marker: str) -> None:
+        close_idx = len(self.parts)
+        self.parts.append(marker)
+        if not self._emphasis_stack:
+            return
+        entry = self._emphasis_stack.pop()
+        if entry.get("marker") != marker:
+            # Malformed markup; keep output rather than trying to repair.
+            return
+        if not bool(entry.get("had_content")):
+            open_idx = entry.get("open_idx")
+            if isinstance(open_idx, int) and 0 <= open_idx < len(self.parts):
+                self.parts[open_idx] = ""
+            if 0 <= close_idx < len(self.parts):
+                self.parts[close_idx] = ""
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
         if tag == "br":
-            self.parts.append("\n")
+            # Avoid turning `</ul><br>` into a blank line: our list items already end
+            # with a newline from `</li>`.
+            if not (self._just_closed_list and self.parts and self.parts[-1].endswith("\n")):
+                self.parts.append("\n")
+            self._just_closed_list = False
         elif tag in {"p", "div"}:
+            self._just_closed_list = False
             # Paragraphs become blank-line separated
             if self.parts and not self.parts[-1].endswith("\n\n"):
                 self.parts.append("\n\n")
         elif tag == "li":
+            self._just_closed_list = False
             self.in_li = True
             # Ensure list items start on a new line
             if self.parts and not self.parts[-1].endswith("\n"):
                 self.parts.append("\n")
             self.parts.append("- ")
         elif tag in {"strong", "b"}:
-            self.parts.append("**")
+            self._just_closed_list = False
+            self._push_emphasis("**")
         elif tag in {"em", "i"}:
-            self.parts.append("_")
+            self._just_closed_list = False
+            self._push_emphasis("_")
 
     def handle_endtag(self, tag):
         tag = tag.lower()
@@ -88,10 +128,14 @@ class _HTMLToMarkdown(HTMLParser):
             if not self.parts or not self.parts[-1].endswith("\n"):
                 self.parts.append("\n")
         elif tag in {"strong", "b"}:
-            self.parts.append("**")
+            self._close_emphasis("**")
         elif tag in {"em", "i"}:
-            self.parts.append("_")
+            self._close_emphasis("_")
+        elif tag in {"ul", "ol"}:
+            # Allow a following `<br>` to be ignored (see handle_starttag).
+            self._just_closed_list = True
         elif tag in {"p", "div"}:
+            self._just_closed_list = False
             if not self.parts or not self.parts[-1].endswith("\n\n"):
                 self.parts.append("\n\n")
 
@@ -102,6 +146,8 @@ class _HTMLToMarkdown(HTMLParser):
         # Ignore pure whitespace between tags to avoid spurious blank lines.
         if not text.strip():
             return
+        for entry in self._emphasis_stack:
+            entry["had_content"] = True
         self.parts.append(text)
 
     def handle_startendtag(self, tag, attrs):
@@ -146,7 +192,9 @@ def html_to_md_canonical(html_str: str) -> str:
 
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _ITALIC_RE = re.compile(r"(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)", re.DOTALL)
-_ITALIC_STAR_RE = re.compile(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", re.DOTALL)
+# Disallow `**` immediately after an opening `*` so sequences like `****` don't
+# get mis-parsed into `<em>**</em>`.
+_ITALIC_STAR_RE = re.compile(r"(?<!\*)\*(?![\s*])(.+?)(?<!\s)\*(?!\*)", re.DOTALL)
 
 
 _EXTRA_BLANK_LINES_RE = re.compile(r"\n{3,}")
@@ -161,7 +209,18 @@ def normalize_markdown_for_compare(value: str) -> str:
     """
 
     text = normalize_text(value or "")
-    return _EXTRA_BLANK_LINES_RE.sub("\n\n", text)
+    text = _EXTRA_BLANK_LINES_RE.sub("\n\n", text)
+
+    # Legacy HTML->MD conversion could emit empty bold markers for empty tags like
+    # `<strong> </strong>`. Drop these so qsync-generated workbooks don't create
+    # phantom diffs against canonicalized upstream HTML.
+    text = text.replace("****", "")
+
+    # HTML like `</ul><br>` historically round-tripped to Markdown with a blank line
+    # between the list and following text (due to `</li>` + `<br>` both emitting `\n`).
+    # Treat that as equivalent to a single newline for comparisons.
+    text = re.sub(r"(?m)(^\s*- [^\n]*\n)\n(?!\s*- )", r"\1", text)
+    return text
 
 
 def md_to_html(md_str: str) -> str:
