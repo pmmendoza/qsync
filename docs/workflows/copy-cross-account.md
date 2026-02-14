@@ -20,6 +20,12 @@ Important limitations:
 
 By default, the source account is your configured account (from `.env` / `--env-path` / environment variables). Use `--source-api-key` and `--source-base-url` to override the source explicitly.
 
+Target account configuration:
+- Recommended: set these in `.env` (or environment variables) and omit `--target-*` flags:
+  - `TARGET_QUALTRICS_BASE_URL`
+  - `TARGET_X-API-TOKEN` (or `TARGET_QUALTRICS_API_KEY`)
+- Alternatively: pass `--target-base-url` and `--target-api-key` on the command line.
+
 ## Recommended runbook
 
 1) Run in preview mode first (do not use `--yes`):
@@ -28,6 +34,12 @@ By default, the source account is your configured account (from `.env` / `--env-
 qsync survey copy-cross-account SV_SOURCE "New Survey Name" \
   --target-base-url iad1.qualtrics.com \
   --target-api-key "$TARGET_API_TOKEN"
+```
+
+If you have `TARGET_QUALTRICS_BASE_URL` and `TARGET_X-API-TOKEN` configured in `.env`, you can omit the `--target-*` flags:
+
+```bash
+qsync survey copy-cross-account SV_SOURCE "New Survey Name"
 ```
 
 2) If you do not want translations copied:
@@ -39,7 +51,16 @@ qsync survey copy-cross-account SV_SOURCE "New Survey Name" \
   --no-translations
 ```
 
-3) If you want qsync to publish and activate after copy:
+3) If you want to verify parity (recommended for smoke runs / automation):
+
+```bash
+qsync survey copy-cross-account SV_SOURCE "New Survey Name" \
+  --target-base-url iad1.qualtrics.com \
+  --target-api-key "$TARGET_API_TOKEN" \
+  --verify
+```
+
+4) If you want qsync to publish and activate after copy:
 
 ```bash
 qsync survey copy-cross-account SV_SOURCE "New Survey Name" \
@@ -50,7 +71,7 @@ qsync survey copy-cross-account SV_SOURCE "New Survey Name" \
   --activate
 ```
 
-4) Overwrite mode (dangerous):
+5) Overwrite mode (dangerous):
 
 ```bash
 qsync survey copy-cross-account SV_SOURCE "Existing Target Survey Name" \

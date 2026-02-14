@@ -397,19 +397,43 @@ def handle_inspect_question(args: argparse.Namespace) -> None:
 
 
 def list_surveys(base: str, headers: Dict[str, str]) -> List[Dict[str, Any]]:
-    """Fetch list of all surveys."""
-    params = {"limit": 100}
-    resp = send_api_request(
-        action="qsync.survey.list",
-        method="GET",
-        base_url=base,
-        headers=headers,
-        path="surveys",
-        log_event=False,
-        params=params,
-        timeout=60,
-    )
-    return resp.json().get("result", {}).get("elements", [])
+    """Fetch list of all surveys (follows pagination until exhausted)."""
+
+    url: str | None = f"https://{base}/API/v3/surveys"
+    surveys: list[dict[str, Any]] = []
+    first_page = True
+    seen_urls: set[str] = set()
+
+    while url:
+        if url in seen_urls:
+            # Avoid infinite loops on unexpected pagination responses.
+            break
+        seen_urls.add(url)
+
+        # Qualtrics survey listing pagination uses `nextPage` URLs and
+        # `pageSize` on the first request (observed in inventory fetch).
+        params = {"pageSize": 100} if first_page else None
+        resp = send_api_request(
+            action="qsync.survey.list",
+            method="GET",
+            base_url=base,
+            headers=headers,
+            path=url,
+            log_event=False,
+            params=params,
+            timeout=60,
+        )
+        payload = resp.json()
+        result = payload.get("result") or {}
+        elements = result.get("elements") or []
+        if isinstance(elements, list):
+            surveys.extend([e for e in elements if isinstance(e, dict)])
+
+        next_url = result.get("nextPage")
+        url = str(next_url).strip() if next_url else None
+        first_page = False
+
+    return surveys
 
 
 def _order_surveys_like_inventory(
@@ -1251,7 +1275,7 @@ def handle_slice_language(args: argparse.Namespace) -> None:
                 target_qsf = fetch_survey_definition(base, headers, new_id, fmt="qsf")
                 parity = compare_qsf_parity(source_qsf, target_qsf)
                 ok = _emit_parity_report(
-                    parity,
+                    result=parity,
                     survey_a=source_id,
                     survey_b=new_id,
                     prefix="[qsync:slice-language:parity]",
@@ -1432,7 +1456,7 @@ def handle_export_side_by_side(args: argparse.Namespace) -> None:
             qsf_b = fetch_survey_definition(base, headers, survey_b, fmt="qsf")
             parity = compare_qsf_parity(qsf_a, qsf_b)
             ok = _emit_parity_report(
-                parity,
+                result=parity,
                 survey_a=survey_a,
                 survey_b=survey_b,
                 prefix="[qsync:export-side-by-side:parity]",
@@ -1748,37 +1772,47 @@ def resolve_target_name_with_conflict(
 def handle_copy_cross_account(args: argparse.Namespace) -> None:
     """Copy a survey from one Qualtrics account to another."""
     from .terminal_output import header, info, success, warn, dim
-    from .qualtrics_client import publish_survey_definition
-    from .config import load_env
+    from .config import load_env, load_env_file, resolve_env_path
     from .translations import (
         _check_html_hazards,
         _check_placeholders,
         _check_value_length_limit,
     )
     from .translation_export import build_translation_map_from_cache
+    from .translations_utils import normalize_language_code, normalize_language_list
 
     # Parse arguments
     source_id = args.source_survey_id
     new_name = args.new_name
-    target_api_key = args.target_api_key
-    target_base_url = args.target_base_url
+    target_api_key = (args.target_api_key or "").strip()
+    target_base_url = (args.target_base_url or "").strip()
     copy_translations = not bool(getattr(args, "no_translations", False))
+    verify = bool(getattr(args, "verify", False))
 
-    def _normalize_language_list(raw: list[str] | None) -> list[str]:
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for item in raw or []:
-            code = str(item or "").strip()
-            if not code:
-                continue
-            code = "-".join(
-                part.strip().upper() for part in code.split("-") if part.strip()
-            )
-            if not code or code in seen:
-                continue
-            seen.add(code)
-            cleaned.append(code)
-        return cleaned
+    # Read `.env` (if present) so this command can support TARGET_* defaults.
+    root = resolve_root(required=False) or Path.cwd()
+    env_path = resolve_env_path(root=root)
+    file_env = load_env_file(env_path) if env_path else {}
+
+    def _env_or_dotenv(key: str) -> str:
+        raw = (os.environ.get(key) or "").strip()
+        if raw:
+            return raw
+        return str(file_env.get(key) or "").strip()
+
+    # Resolve target credentials (do not silently fall back to the primary account).
+    if not target_base_url:
+        target_base_url = _env_or_dotenv("TARGET_QUALTRICS_BASE_URL")
+    if not target_api_key:
+        target_api_key = _env_or_dotenv("TARGET_X-API-TOKEN") or _env_or_dotenv(
+            "TARGET_QUALTRICS_API_KEY"
+        )
+    if not target_base_url or not target_api_key:
+        print(
+            "ERROR: Target credentials missing. Provide --target-base-url/--target-api-key, "
+            "or set TARGET_QUALTRICS_BASE_URL and TARGET_X-API-TOKEN in your environment/.env."
+        )
+        sys.exit(1)
 
     def _fetch_base_language(base_url: str, headers: dict, survey_id: str) -> str:
         resp = send_api_request(
@@ -1795,9 +1829,10 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         lang = str(result.get("SurveyLanguage") or "").strip()
         if not lang:
             raise RuntimeError(f"SurveyLanguage missing for {survey_id}")
-        return "-".join(
-            part.strip().upper() for part in lang.split("-") if part.strip()
-        )
+        normalized = normalize_language_code(lang)
+        if not normalized:
+            raise ValueError(f"Invalid SurveyLanguage for {survey_id}: {lang!r}")
+        return normalized
 
     def _list_enabled_languages(
         base_url: str, headers: dict, survey_id: str
@@ -1814,13 +1849,19 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         )
         result = resp.json().get("result") or {}
         langs = result.get("AvailableLanguages") or result.get("languages") or []
-        return _normalize_language_list(list(langs) if isinstance(langs, list) else [])
+        if isinstance(langs, dict):
+            # Qualtrics commonly uses `{ "EN": true, "FR": true }`.
+            enabled = [k for k, v in langs.items() if bool(v)]
+            return normalize_language_list(enabled)
+        if isinstance(langs, (list, tuple, set)):
+            return normalize_language_list(langs)
+        return []
 
     def _ensure_languages_enabled(
         base_url: str, headers: dict, survey_id: str, languages: list[str]
     ) -> list[str]:
         current = set(_list_enabled_languages(base_url, headers, survey_id))
-        desired = _normalize_language_list(list(current.union(languages)))
+        desired = normalize_language_list(list(current.union(languages)))
         send_api_request(
             action="qsync.translations.languages.ensure",
             method="PUT",
@@ -2119,17 +2160,30 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         print(f"ERROR: Invalid source credentials: {e}")
         sys.exit(1)
 
-    # Build target credentials (default account, unless overridden)
+    # Build target credentials (explicit flags or TARGET_*; no fallback).
     try:
-        target_env = load_env()
-        if target_base_url:
-            target_env["QUALTRICS_BASE_URL"] = target_base_url
-        if target_api_key:
-            target_env["X-API-TOKEN"] = target_api_key
-        target_base, target_headers = get_client_config(target_env)
+        target_base, target_headers = get_client_config(
+            {"QUALTRICS_BASE_URL": target_base_url, "X-API-TOKEN": target_api_key}
+        )
     except Exception as e:
         print(f"ERROR: Invalid target credentials: {e}")
         sys.exit(1)
+
+    def _whoami(base_url: str, headers: dict) -> dict[str, Any] | None:
+        try:
+            resp = send_api_request(
+                action="qsync.copy-cross-account.whoami",
+                method="GET",
+                base_url=base_url,
+                headers=headers,
+                path="whoami",
+                log_event=False,
+                timeout=15,
+            )
+            result = resp.json().get("result") or {}
+            return result if isinstance(result, dict) else {}
+        except Exception:
+            return None
 
     # Fetch source survey
     print(f"Fetching source survey {source_id} from {source_base}...")
@@ -2141,6 +2195,18 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     except Exception as e:
         print(f"ERROR: Failed to fetch source survey: {e}")
         sys.exit(1)
+
+    # Keep an untouched copy for post-copy verification.
+    import copy as _copy
+
+    source_qsf_for_verify = _copy.deepcopy(qsf_content)
+
+    source_identity = _whoami(source_base, source_headers) or {}
+    target_identity = _whoami(target_base, target_headers) or {}
+    source_user_id = str(source_identity.get("userId") or "").strip() or None
+    target_user_id = str(target_identity.get("userId") or "").strip() or None
+    source_brand = str(source_identity.get("brandId") or "").strip() or None
+    target_brand = str(target_identity.get("brandId") or "").strip() or None
 
     # Check name conflicts in target account
     print("Checking for name conflicts in target account...")
@@ -2161,10 +2227,24 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     info("    Name:", source_name)
     info("    ID:", source_id)
     info("    Account:", source_base)
+    if source_user_id:
+        dim("    userId:", source_user_id)
+    if source_brand:
+        dim("    brandId:", source_brand)
     print()
     info("  Target Survey:", "")
     info("    Name:", final_name)
     info("    Account:", target_base)
+    if target_user_id:
+        dim("    userId:", target_user_id)
+    if target_brand:
+        dim("    brandId:", target_brand)
+    if source_base == target_base and source_user_id and target_user_id:
+        if source_user_id == target_user_id:
+            warn(
+                "    ⚠",
+                "Source and target appear to be the same Qualtrics userId; if you expected cross-account copy, check TARGET_* credentials.",
+            )
     if conflict_msg:
         dim("    Conflict resolution:", conflict_msg)
     print()
@@ -2176,6 +2256,11 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         success("    ✓", "Copy translations (Language blocks + metadata)")
     else:
         dim("    ✗", "Copy translations (use default; disable via --no-translations)")
+
+    if verify:
+        success("    ✓", "Verify parity + translations after copy")
+    else:
+        dim("    ✗", "Verify parity + translations (use --verify to enable)")
 
     if args.activate:
         success("    ✓", "Activate survey after import")
@@ -2254,6 +2339,7 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
                 base_url=target_base,
                 headers=target_headers,
                 path=f"surveys/{existing_id}",
+                survey_id=existing_id,
                 timeout=30,
             )
         except Exception as e:
@@ -2313,6 +2399,108 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
             )
             warn("[copy-cross-account]", "=" * 60)
             sys.exit(1)
+
+    if verify:
+        from .survey_parity import compare_qsf_parity
+
+        info("[copy-cross-account]", "Running parity check (best-effort)...")
+        target_qsf = fetch_survey_definition(target_base, target_headers, new_id, fmt="qsf")
+        parity = compare_qsf_parity(source_qsf_for_verify, target_qsf)
+        ok = _emit_parity_report(
+            result=parity,
+            survey_a=source_id,
+            survey_b=new_id,
+            prefix="[copy-cross-account:parity]",
+        )
+        if not ok:
+            raise SystemExit(
+                "[copy-cross-account] Parity check failed; see details above."
+            )
+
+        if copy_translations:
+            info("[copy-cross-account]", "Verifying translations (best-effort)...")
+            source_langs = _list_enabled_languages(
+                source_base, source_headers, source_id
+            )
+            target_langs = _list_enabled_languages(
+                target_base, target_headers, new_id
+            )
+            if set(source_langs) != set(target_langs):
+                warn(
+                    "[copy-cross-account]",
+                    "Enabled languages differ between source and target.",
+                )
+                warn("[copy-cross-account]", f"Source: {', '.join(source_langs)}")
+                warn("[copy-cross-account]", f"Target: {', '.join(target_langs)}")
+                raise SystemExit(
+                    "[copy-cross-account] Translation verification failed: enabled languages mismatch."
+                )
+
+            base_lang = _fetch_base_language(source_base, source_headers, source_id)
+            target_base_lang = _fetch_base_language(
+                target_base, target_headers, new_id
+            )
+            if base_lang != target_base_lang:
+                raise SystemExit(
+                    "[copy-cross-account] Translation verification failed: base language mismatch "
+                    f"({base_lang} vs {target_base_lang})."
+                )
+
+            source_def = _fetch_survey_definition(source_base, source_headers, source_id)
+            target_def = _fetch_survey_definition(target_base, target_headers, new_id)
+
+            diffs: list[str] = []
+            for lang in source_langs:
+                if lang == base_lang:
+                    continue
+                src_map = build_translation_map_from_cache(
+                    source_def,
+                    language=lang,
+                    base_language=base_lang,
+                )
+                tgt_map = build_translation_map_from_cache(
+                    target_def,
+                    language=lang,
+                    base_language=base_lang,
+                )
+                src_keys = set(src_map.keys())
+                tgt_keys = set(tgt_map.keys())
+                if src_keys != tgt_keys:
+                    missing = sorted(src_keys - tgt_keys)[:10]
+                    extra = sorted(tgt_keys - src_keys)[:10]
+                    diffs.append(
+                        f"[{lang}] key mismatch: -{len(src_keys - tgt_keys)} +{len(tgt_keys - src_keys)} "
+                        f"(missing sample={missing} extra sample={extra})"
+                    )
+                    continue
+                changed = [
+                    k
+                    for k in sorted(src_keys)
+                    if (src_map.get(k) or "") != (tgt_map.get(k) or "")
+                ]
+                if changed:
+                    diffs.append(
+                        f"[{lang}] value mismatch: {len(changed)} changed (sample={changed[:10]})"
+                    )
+
+            if diffs:
+                warn("[copy-cross-account]", "Translation diffs detected:")
+                for line in diffs[:20]:
+                    warn("[copy-cross-account]", f"  {line}")
+                if len(diffs) > 20:
+                    warn(
+                        "[copy-cross-account]",
+                        f"  (diffs truncated; showing 20 of {len(diffs)})",
+                    )
+                raise SystemExit(
+                    "[copy-cross-account] Translation verification failed; see diffs above."
+                )
+            success("[copy-cross-account]", "Translation verification passed")
+        else:
+            dim(
+                "[copy-cross-account]",
+                "Translation verification skipped (--no-translations).",
+            )
 
     # Optionally activate
     if args.activate:
@@ -6415,6 +6603,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--no-translations",
         action="store_true",
         help="Do not copy survey translations (languages + strings) (default: copy translations).",
+    )
+    p_copy_xacct.add_argument(
+        "--verify",
+        action="store_true",
+        help="After copy, verify parity (QIDs/flow/tags) and translations (best-effort); exits non-zero on mismatch.",
     )
     p_copy_xacct.set_defaults(func=handle_copy_cross_account)
 

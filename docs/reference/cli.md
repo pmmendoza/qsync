@@ -588,6 +588,7 @@ usage: qsync survey copy-cross-account [-h] [--target-api-key TARGET_API_KEY]
                                        [--publish-description PUBLISH_DESCRIPTION]
                                        [--force-overwrite] [--yes]
                                        [--no-translations]
+                                       [--verify]
                                        source_survey_id new_name
 
 positional arguments:
@@ -597,10 +598,12 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --target-api-key TARGET_API_KEY
-                        API key for target Qualtrics account
+                        API key for target Qualtrics account (or set
+                        TARGET_X-API-TOKEN in env/.env)
   --target-base-url TARGET_BASE_URL
                         Base URL for target Qualtrics account (e.g.,
-                        iad1.qualtrics.com)
+                        iad1.qualtrics.com) (or set TARGET_QUALTRICS_BASE_URL
+                        in env/.env)
   --source-api-key SOURCE_API_KEY
                         API key for source account (optional; defaults to
                         .env)
@@ -619,6 +622,8 @@ options:
   --yes                 Skip confirmation prompt
   --no-translations     Do not copy survey translations (languages + strings)
                         (default: copy translations).
+  --verify              After copy, verify parity (QIDs/flow/tags) and
+                        translations (best-effort); exits non-zero on mismatch.
 ```
 
 ## `qsync survey rename`

@@ -7,24 +7,21 @@ When exporting a survey from Qualtrics via the **QSF file format** (for backup/i
 - **JSON Definition** = API representation (flattened, direct keys)
 - **QSF Format** = Portable format (nested SurveyEntry + SurveyElements array)
 
-### API Support (as of 2026-01-15)
+### API Support (as of 2026-02-14)
 
-**QSF Export via API**: ❌ **Not supported**
-- There is **no direct API endpoint** to export a survey as a QSF file
-- The `/surveys/{surveyId}` endpoint returns a different JSON format (Survey CRUD API format), not QSF
-- QSF export is **only available through the Qualtrics web UI** (Tools → Import/Export → Export survey)
+**QSF-shaped JSON via API**: ✅ **Supported**
+- `GET /survey-definitions/{surveyId}?format=qsf` returns a **QSF-shaped JSON payload**
+  (`SurveyEntry` + `SurveyElements`) suitable for programmatic copy/import workflows.
+- `GET /survey-definitions/{surveyId}/versions/{versionId}?format=qsf` returns the same shape for a specific version.
+- This is not a “download a `.qsf` file” endpoint, but you can save the JSON to disk as `*.qsf` and re-import it.
 
 **QSF Import via API**: ✅ **Supported**
 - `POST /surveys` with `multipart/form-data` and mime type `application/vnd.qualtrics.survey.qsf`
 - Used by `qsync survey copy` and `qsync survey copy-cross-account`
 
-**Workaround for QSF Export**:
-If you need QSF programmatically, you must:
-1. Use the JSON Definition API (`GET /survey-definitions/{id}`)
-2. Transform the JSON Definition into QSF format (non-trivial, not officially documented)
-3. Or manually export from the Qualtrics UI
-
-For most programmatic use cases, the JSON Definition format is sufficient and preferred.
+**Notes**
+- The QSF-shaped JSON returned by `format=qsf` may not be byte-identical to the UI-exported `.qsf`,
+  but it preserves the same conceptual structure and is sufficient for qsync’s import workflows.
 
 ---
 
