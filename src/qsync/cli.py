@@ -518,6 +518,97 @@ def _get_installed_extras() -> list[str]:
     return _get_installed_extras_for_installer(None)
 
 
+def _infer_installed_extras_from_optional_deps(available_extras: list[str]) -> set[str]:
+    """Infer "effectively installed" extras from installed optional dependencies.
+
+    Packaging tools do not reliably persist which extras were originally requested
+    (especially for pipx + VCS installs). For a better UX, infer extras by checking
+    whether the optional-dependency packages for an extra are present.
+    """
+
+    inferred: set[str] = set()
+    if not available_extras:
+        return inferred
+
+    try:
+        from importlib.metadata import PackageNotFoundError, distribution, version
+    except Exception:
+        return inferred
+
+    try:
+        dist = distribution("qsync")
+    except Exception:
+        return inferred
+
+    requires = list(dist.requires or [])
+    if not requires:
+        return inferred
+
+    # Prefer the real packaging module if available; otherwise use pip's vendored copy.
+    try:
+        from packaging.markers import default_environment  # type: ignore
+        from packaging.requirements import Requirement  # type: ignore
+    except Exception:  # pragma: no cover - packaging may be absent in pipx venvs
+        try:
+            from pip._vendor.packaging.markers import default_environment
+            from pip._vendor.packaging.requirements import Requirement
+        except Exception:
+            return inferred
+
+    env_base = default_environment()
+    extra_to_reqs: dict[str, list[Requirement]] = {e: [] for e in available_extras}
+
+    for raw in requires:
+        raw = str(raw).strip()
+        if not raw:
+            continue
+        try:
+            req = Requirement(raw)
+        except Exception:
+            continue
+
+        if not req.marker:
+            continue
+        # Only treat requirements gated by "extra" (skip base env markers).
+        if "extra" not in str(req.marker):
+            continue
+
+        for extra in available_extras:
+            env = dict(env_base)
+            env["extra"] = extra
+            try:
+                if req.marker.evaluate(env):
+                    extra_to_reqs[extra].append(req)
+            except Exception:
+                continue
+
+    for extra, reqs in extra_to_reqs.items():
+        if not reqs:
+            continue
+
+        ok = True
+        for req in reqs:
+            try:
+                installed = version(req.name)
+            except PackageNotFoundError:
+                ok = False
+                break
+            try:
+                if req.specifier and not req.specifier.contains(
+                    installed, prereleases=True
+                ):
+                    ok = False
+                    break
+            except Exception:
+                # If parsing fails, treat presence as good enough.
+                pass
+
+        if ok:
+            inferred.add(extra)
+
+    return inferred
+
+
 def _get_installed_extras_for_installer(installer: str | None) -> list[str]:
     extras: set[str] = set()
 
@@ -555,6 +646,12 @@ def _get_installed_extras_for_installer(installer: str | None) -> list[str]:
                     extras.add(item)
         except Exception:
             pass
+
+    # As a final fallback, infer extras by checking installed optional-deps.
+    try:
+        extras.update(_infer_installed_extras_from_optional_deps(_get_available_extras()))
+    except Exception:
+        pass
 
     return sorted(extras)
 
@@ -630,9 +727,14 @@ def _build_self_update_spec(
 
 
 def _looks_like_pipx_env() -> bool:
-    exe = Path(sys.executable).resolve()
-    parts = {p.lower() for p in exe.parts}
-    return "pipx" in parts and "venvs" in parts
+    # In venvs, sys.executable can be a symlink to the base interpreter, and
+    # resolving it can erase the venv path. sys.prefix reliably points at the venv.
+    candidates = (Path(sys.prefix), Path(sys.executable))
+    for candidate in candidates:
+        parts = {p.lower() for p in candidate.parts}
+        if "pipx" in parts and "venvs" in parts:
+            return True
+    return False
 
 
 def _pipx_has_qsync() -> bool:
