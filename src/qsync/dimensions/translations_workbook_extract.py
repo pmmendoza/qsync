@@ -17,7 +17,7 @@ from ..excel_io import (
     _language_from_suffix,
     _language_suffix,
 )
-from ..markdown_codec import md_to_html, normalize_text
+from ..markdown_codec import html_to_md, md_to_html, normalize_markdown_for_compare, normalize_text
 from ..scope_filter import ScopeFilter
 from ..translations_utils import normalize_language_code, normalize_language_list
 from .translations_language_blocks import (
@@ -40,11 +40,18 @@ class WorkbookTranslationValue:
     language: str
     field: TranslationField
     item_id: str | None
-    value: str
+    text: str
+    is_html: bool
 
     @property
     def key(self) -> TranslationKey:
         return (self.qid, self.field, self.item_id)
+
+    @property
+    def html_value(self) -> str:
+        if self.is_html:
+            return normalize_text(self.text)
+        return md_to_html(self.text)
 
 
 @dataclass(frozen=True)
@@ -90,12 +97,6 @@ def resolve_languages_from_workbook(wb) -> list[str]:
                 seen.add(code)
                 languages.append(code)
     return normalize_language_list(languages)
-
-
-def _normalize_html_value(text: str, is_html: bool) -> str:
-    if is_html:
-        return normalize_text(text)
-    return md_to_html(text)
 
 
 def _normalize_translation_compare(value: str | None) -> str:
@@ -161,14 +162,15 @@ def _extract_question_values(
         if html_idx is not None:
             html_cell = row[html_idx]
             is_html = bool(html_cell.value) if html_cell is not None else False
-        value = _normalize_html_value(str(raw), is_html)
+        text = normalize_text(str(raw)) if is_html else str(raw)
         values.append(
             WorkbookTranslationValue(
                 qid=qid,
                 language=language,
                 field="QuestionText",
                 item_id=None,
-                value=value,
+                text=text,
+                is_html=is_html,
             )
         )
     return values
@@ -220,7 +222,7 @@ def _extract_option_values(
         if html_idx is not None:
             html_cell = row[html_idx]
             is_html = bool(html_cell.value) if html_cell is not None else False
-        value = _normalize_html_value(str(raw), is_html)
+        text = normalize_text(str(raw)) if is_html else str(raw)
         field: TranslationField = "Choice"
         if qtype.lower() == "matrix":
             field = "Answer"
@@ -230,7 +232,8 @@ def _extract_option_values(
                 language=language,
                 field=field,
                 item_id=choice_id,
-                value=value,
+                text=text,
+                is_html=is_html,
             )
         )
     return values
@@ -297,7 +300,7 @@ def _extract_subitem_values(
         if html_idx is not None:
             html_cell = row[html_idx]
             is_html = bool(html_cell.value) if html_cell is not None else False
-        value = _normalize_html_value(str(raw), is_html)
+        text = normalize_text(str(raw)) if is_html else str(raw)
         effective_field = field
         if question_rows and qid in question_rows:
             qtype = str(getattr(question_rows[qid], "question_type", "") or "")
@@ -309,7 +312,8 @@ def _extract_subitem_values(
                 language=language,
                 field=effective_field,  # type: ignore[arg-type]
                 item_id=answer_id,
-                value=value,
+                text=text,
+                is_html=is_html,
             )
         )
     return values
@@ -375,14 +379,15 @@ def _extract_metadata_values(
             if html_idx is not None:
                 html_cell = row[html_idx]
                 is_html = bool(html_cell.value) if html_cell is not None else False
-            value = _normalize_html_value(str(raw), is_html)
+            text = normalize_text(str(raw)) if is_html else str(raw)
             values.append(
                 WorkbookTranslationValue(
                     qid=SURVEY_METADATA_QID,
                     language=language,
                     field="Metadata",
                     item_id=key,
-                    value=value,
+                    text=text,
+                    is_html=is_html,
                 )
             )
     return values
@@ -465,10 +470,16 @@ def diff_workbook_vs_cache(
                 old = read_answer_display(question, value.language, value.item_id or "")
             else:
                 old = read_label_display(question, value.language, value.item_id or "")
-        old_text = _normalize_translation_compare(old)
-        new_text = _normalize_translation_compare(value.value)
-        if old_text == new_text:
-            continue
+        if value.is_html:
+            old_text = _normalize_translation_compare(old)
+            new_text = _normalize_translation_compare(value.html_value)
+            if old_text == new_text:
+                continue
+        else:
+            md_old = normalize_markdown_for_compare(html_to_md(str(old or "")))
+            md_new = normalize_markdown_for_compare(value.text)
+            if md_old == md_new:
+                continue
         changes.append(
             TranslationChange(
                 qid=value.qid,
@@ -476,7 +487,7 @@ def diff_workbook_vs_cache(
                 field=value.field,
                 item_id=value.item_id,
                 old_value=str(old or ""),
-                new_value=str(value.value or ""),
+                new_value=str(value.html_value or ""),
             )
         )
     return changes
@@ -495,7 +506,7 @@ def build_workbook_value_map(
         scope=scope,
         question_rows=question_rows,
     )
-    return {value.key: value.value for value in values}
+    return {value.key: value.html_value for value in values}
 
 
 def build_base_value_map_for_keys(

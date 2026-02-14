@@ -201,3 +201,28 @@ def test_diff_workbook_vs_cache_includes_metadata(tmp_path: Path) -> None:
     change = next(change for change in changes if change.field == "Metadata")
     assert change.item_id == "SurveyDescription"
     assert change.old_value == "Description FR old"
+
+
+def test_diff_workbook_vs_cache_ignores_markdown_roundtrip_noise(tmp_path: Path) -> None:
+    payload = _survey_payload()
+    # Simulate the real-world case where upstream HTML contains an empty `<strong> </strong>`
+    # and a list followed by a `<br>`, which historically produced phantom diffs.
+    payload["result"]["Questions"]["QID1"]["Language"]["FR"]["QuestionText"] = (
+        "<ul><li>One</li><li>Two</li></ul><br><strong>After</strong> <strong> </strong>"
+    )
+    workbook_path = tmp_path / "workbook.xlsx"
+    init_workbook_from_survey("SV_TEST", payload, workbook_path, languages=["FR"])
+
+    # Force a "legacy" workbook cell representation:
+    # - Blank line after list (list newline + `<br>` newline)
+    # - Extra `****` from empty `<strong> </strong>`
+    wb = load_workbook(workbook_path)
+    q_ws = wb[QUESTION_SHEET]
+    q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
+    q_row = _find_row(q_ws, "QID1")
+    q_text_idx = q_headers.index("Text_fr_MD") + 1
+    q_ws.cell(row=q_row, column=q_text_idx).value = "- One\n- Two\n\n**After******"
+    wb.save(workbook_path)
+
+    changes = diff_workbook_vs_cache(payload, workbook_path, ["FR"])
+    assert changes == []
