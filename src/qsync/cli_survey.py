@@ -5692,9 +5692,9 @@ def handle_master_preview(args: argparse.Namespace) -> None:
 def handle_master_stage(args: argparse.Namespace) -> None:
     """Stage changes from master CSV to pending."""
     from .survey_master import stage_master, load_master_csv
-    from .terminal_colors import use_color_output, colored, Colors
+    from .terminal_colors import colors_enabled, colored, Colors
 
-    use_color = use_color_output()
+    use_color = colors_enabled()
     survey_id = getattr(args, "survey_id", None)
     verbose = bool(getattr(args, "verbose", False))
 

@@ -85,6 +85,11 @@ def colors_enabled() -> bool:
     return bool(_color_enabled)
 
 
+def use_color_output() -> bool:
+    """Backward-compatible alias for colors_enabled()."""
+    return colors_enabled()
+
+
 def enable_colors(force: bool = True) -> None:
     """Enable color output globally."""
     global _color_enabled
