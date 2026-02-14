@@ -53,7 +53,7 @@ options:
 ## `qsync doctor`
 
 ```text
-usage: qsync doctor [-h] [--json] [--quiet] [--check-api]
+usage: qsync doctor [-h] [--json] [--quiet] [--check-api] [--account ACCOUNT]
 
 options:
   -h, --help   show this help message and exit
@@ -61,6 +61,9 @@ options:
   --quiet      Suppress non-error output
   --check-api  Call GET /whoami to validate credentials and detect datacenter
                mismatch (requires network).
+  --account ACCOUNT
+               Use credentials from `.env.<account>` under the workspace root
+               (affects credential checks and --check-api).
 ```
 
 ## `qsync compare`
@@ -499,13 +502,16 @@ options:
 ## `qsync survey list`
 
 ```text
-usage: qsync survey list [-h] [name_pattern]
+usage: qsync survey list [-h] [--account ACCOUNT] [name_pattern]
 
 positional arguments:
   name_pattern  Optional regex to match survey names (case-insensitive)
 
 options:
   -h, --help  show this help message and exit
+  --account ACCOUNT
+              Use credentials from `.env.<account>` under the workspace root
+              (API-only; skips inventory-based ordering).
 ```
 
 ## `qsync survey pull`
@@ -582,8 +588,10 @@ options:
 ```text
 usage: qsync survey copy-cross-account [-h] [--target-api-key TARGET_API_KEY]
                                        [--target-base-url TARGET_BASE_URL]
+                                       [--target-account TARGET_ACCOUNT]
                                        [--source-api-key SOURCE_API_KEY]
                                        [--source-base-url SOURCE_BASE_URL]
+                                       [--source-account SOURCE_ACCOUNT]
                                        [--activate] [--publish]
                                        [--publish-description PUBLISH_DESCRIPTION]
                                        [--force-overwrite] [--yes]
@@ -604,12 +612,19 @@ options:
                         Base URL for target Qualtrics account (e.g.,
                         iad1.qualtrics.com) (or set TARGET_QUALTRICS_BASE_URL
                         in env/.env)
+  --target-account TARGET_ACCOUNT
+                        Load target credentials from `.env.<account>` under the
+                        workspace root (overrides TARGET_* defaults; explicit
+                        --target-* flags still win).
   --source-api-key SOURCE_API_KEY
                         API key for source account (optional; defaults to
                         .env)
   --source-base-url SOURCE_BASE_URL
                         Base URL for source account (optional; defaults to
                         .env)
+  --source-account SOURCE_ACCOUNT
+                        Load source credentials from `.env.<account>` under the
+                        workspace root (explicit --source-* flags still win).
   --activate            Activate the survey after copying
   --publish             Publish the survey after copying (creates version)
   --publish-description PUBLISH_DESCRIPTION

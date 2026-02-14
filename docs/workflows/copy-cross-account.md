@@ -21,6 +21,10 @@ Important limitations:
 By default, the source account is your configured account (from `.env` / `--env-path` / environment variables). Use `--source-api-key` and `--source-base-url` to override the source explicitly.
 
 Target account configuration:
+- Recommended (multi-account): create a workspace-local dotenv file named `.env.<account>` (e.g. `.env.partner`) containing:
+  - `QUALTRICS_BASE_URL`
+  - `X-API-TOKEN` (or `QUALTRICS_API_KEY`)
+  Then use `--target-account <account>`.
 - Recommended: set these in `.env` (or environment variables) and omit `--target-*` flags:
   - `TARGET_QUALTRICS_BASE_URL`
   - `TARGET_X-API-TOKEN` (or `TARGET_QUALTRICS_API_KEY`)
@@ -34,6 +38,13 @@ Target account configuration:
 qsync survey copy-cross-account SV_SOURCE "New Survey Name" \
   --target-base-url iad1.qualtrics.com \
   --target-api-key "$TARGET_API_TOKEN"
+```
+
+If you have a `.env.partner` (or similar) in your workspace root, you can select it directly:
+
+```bash
+qsync survey copy-cross-account SV_SOURCE "New Survey Name" \
+  --target-account partner
 ```
 
 If you have `TARGET_QUALTRICS_BASE_URL` and `TARGET_X-API-TOKEN` configured in `.env`, you can omit the `--target-*` flags:
