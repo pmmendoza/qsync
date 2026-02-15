@@ -13,6 +13,7 @@ from typing import Dict, Tuple
 from .errors import QsyncConfigError, QsyncValidationError
 
 _ROOT_ENV_KEYS = ("QSYNC_ROOT", "QSYNC_DATA_DIR")
+_ACCOUNT_ENV_KEY = "QSYNC_ACCOUNT"
 _ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 try:
@@ -150,6 +151,14 @@ def load_env(path: Path | None = None) -> Dict[str, str]:
     - Values from the process environment override .env values.
     - Missing .env is not an error by itself; callers should validate required keys.
     """
+    # Account selection (QSYNC_ACCOUNT) overrides the default `.env` behavior,
+    # but callers can bypass it by passing an explicit `path` (used by onboarding).
+    if path is None:
+        raw_account = (os.environ.get(_ACCOUNT_ENV_KEY) or "").strip()
+        if raw_account:
+            account = validate_account_name(raw_account)
+            return load_account_env(account)
+
     env_path = path if path is not None else ENV_PATH
     file_env = load_env_file(env_path)
 
@@ -178,6 +187,15 @@ def load_env(path: Path | None = None) -> Dict[str, str]:
             # Best-effort only; treat keyring as an optional enhancement.
             pass
     return merged
+
+
+def get_active_account() -> str | None:
+    """Return the active account selection, if any (from QSYNC_ACCOUNT)."""
+
+    raw = (os.environ.get(_ACCOUNT_ENV_KEY) or "").strip()
+    if not raw:
+        return None
+    return validate_account_name(raw)
 
 
 def validate_account_name(account: str) -> str:
@@ -235,8 +253,9 @@ def resolve_scoped_dir(
 
     root_path = root or resolve_root(required=False) or Path.cwd()
     base = (root_path / dirname).resolve()
-    if account:
-        scoped = validate_account_name(account)
+    selected = account if account is not None else get_active_account()
+    if selected:
+        scoped = validate_account_name(selected)
         return (base / f".{scoped}").resolve()
     return base
 

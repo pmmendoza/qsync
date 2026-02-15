@@ -911,6 +911,144 @@ def _handle_self_update(args: argparse.Namespace) -> None:
     success("[qsync:self-update]", "Update complete.")
 
 
+_HELP_TOPICS: dict[str, tuple[str, str]] = {
+    "topics": (
+        "Available Topics",
+        "Run `qsync help <topic>` to show one topic.\n",
+    ),
+    "sync": (
+        "Sync Workflow",
+        "\n".join(
+            [
+                "Core model: pull -> preview -> stage -> push.",
+                "",
+                "Common commands:",
+                "- qsync sync --survey-id SV_...        (guided sync for one survey)",
+                "- qsync sync --focal                  (batch sync focal surveys)",
+                "- qsync items/translations/js/...     (dimension-specific workflows)",
+                "",
+                "Notes:",
+                "- Non-interactive runs (`--yes`) apply extra safety gates.",
+                "- If you see drift warnings, run the suggested pull/repair command before pushing.",
+            ]
+        )
+        + "\n",
+    ),
+    "pending": (
+        "Pending / Staging",
+        "\n".join(
+            [
+                "Staging writes pending artifacts under `surveys/pending/<dimension>/`.",
+                "",
+                "Typical usage:",
+                "- Stage: qsync <dimension> stage --survey-id SV_...",
+                "- Push:  qsync <dimension> push  --survey-id SV_...",
+                "",
+                "If pending exists and the local surface changes, qsync will warn (drift) and require an explicit choice.",
+            ]
+        )
+        + "\n",
+    ),
+    "drift": (
+        "Drift Checks",
+        "\n".join(
+            [
+                "Drift means local edits are out of sync with the last known baseline.",
+                "",
+                "Typical remediation:",
+                "- Run the recommended pull/repair command shown in the warning.",
+                "- Re-run preview/stage after refreshing baseline.",
+            ]
+        )
+        + "\n",
+    ),
+    "onboard": (
+        "Onboarding",
+        "\n".join(
+            [
+                "First-time setup:",
+                "- qsync onboard",
+                "",
+                "It creates workspace folders and a `.env` with:",
+                "- QUALTRICS_BASE_URL",
+                "- X-API-TOKEN",
+                "",
+                "If credentials look wrong, run:",
+                "- qsync doctor --check-api",
+            ]
+        )
+        + "\n",
+    ),
+    "accounts": (
+        "Accounts (.env.<account>)",
+        "\n".join(
+            [
+                "Some commands support selecting an alternate account via `.env.<account>` files.",
+                "",
+                "Examples:",
+                "- qsync doctor --check-api --account damian",
+                "- qsync survey list --account damian",
+                "- qsync survey pull --account damian",
+                "",
+                "Account selection is strict: it never silently falls back to default credentials.",
+            ]
+        )
+        + "\n",
+    ),
+}
+
+
+def _handle_help(args: argparse.Namespace) -> None:
+    """Print short workflow help topics (CLI-safe, no Rich/TUI requirements)."""
+    from .terminal_output import header, info, error
+
+    topic = (getattr(args, "topic", None) or "").strip().lower() or "topics"
+    if topic in {"list", "ls"}:
+        topic = "topics"
+
+    if topic == "topics":
+        header("[qsync:help]", "Help topics:")
+        for key in sorted(k for k in _HELP_TOPICS.keys() if k != "topics"):
+            title, _ = _HELP_TOPICS[key]
+            info(None, f"  - {key}: {title}")
+        info(None, "\nRun: qsync help <topic>")
+        return
+
+    entry = _HELP_TOPICS.get(topic)
+    if not entry:
+        error("[qsync:help]", f"Unknown topic: {topic}")
+        info(None, "Run: qsync help topics")
+        raise SystemExit(1)
+
+    title, body = entry
+    header("[qsync:help]", title)
+    print(body, end="")
+
+
+def _handle_tui(args: argparse.Namespace) -> None:
+    """Launch the optional Textual TUI (requires `qsync[tui]`)."""
+    from .terminal_output import error, info
+    from .interactive_menu import is_interactive
+
+    if not is_interactive():
+        error("[qsync:tui]", "Interactive TTY required (non-TTY/CI not supported).")
+        raise SystemExit(1)
+    if os.environ.get("QSYNC_JSON_MODE", "").strip():
+        error("[qsync:tui]", "JSON mode is not compatible with the TUI.")
+        raise SystemExit(1)
+
+    try:
+        from .tui.app import QsyncTuiApp  # lazy import (Textual is optional)
+    except Exception:
+        error("[qsync:tui]", "TUI dependencies are not installed.")
+        info(None, "Install: pip install 'qsync[tui]'")
+        info(None, "If using pipx: pipx install --force 'qsync[tui] @ <git-ref>'")
+        raise SystemExit(1)
+
+    start_screen = "sync" if bool(getattr(args, "sync", False)) else None
+    QsyncTuiApp(start_screen=start_screen).run()
+
+
 def _push_items_pending_record(
     *,
     survey_id: str,
@@ -1473,6 +1611,28 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "Use credentials from `.env.<account>` under the workspace root "
             "(affects credential checks and --check-api)."
         ),
+    )
+
+    # help
+    p_help = subparsers.add_parser(
+        "help",
+        help="Show short workflow help topics",
+    )
+    p_help.add_argument(
+        "topic",
+        nargs="?",
+        help="Help topic (run without args to list topics)",
+    )
+
+    # tui (optional extra)
+    p_tui = subparsers.add_parser(
+        "tui",
+        help="Launch interactive TUI (requires qsync[tui])",
+    )
+    p_tui.add_argument(
+        "--sync",
+        action="store_true",
+        help="Start in the sync wizard screen",
     )
 
     # onboard
@@ -2941,6 +3101,8 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "export",
             "compare",
             "logs",
+            "tui",
+            "help",
             "doctor",
             "self-update",
         ],
@@ -3042,6 +3204,14 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
         if args.command == "self-update":
             _handle_self_update(args)
+            return
+
+        if args.command == "help":
+            _handle_help(args)
+            return
+
+        if args.command == "tui":
+            _handle_tui(args)
             return
 
         # First-run hint: suggest onboarding when a workspace-centric command is
@@ -5177,6 +5347,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         _main_impl(argv)
     except SystemExit:
         raise
+    except KeyboardInterrupt:
+        # Ensure Ctrl+C yields a clean cancellation message rather than a stack trace.
+        print("[qsync] Cancelled.", file=sys.stderr)
+        raise SystemExit(130)
     except QsyncError as exc:
         from .terminal_output import error
         from .push_logger import log_push_event

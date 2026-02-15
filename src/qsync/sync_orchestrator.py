@@ -1148,7 +1148,7 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
     Returns:
         List of dimension names to sync
     """
-    from .interactive_menu import select_from_list
+    from .interactive_menu import MenuItem, confirm, select_from_list
 
     changed = changes.changed_dimensions
 
@@ -1161,167 +1161,204 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
         # Non-interactive: sync all changed dimensions
         return changed
 
-    # Interactive prompt
-    print(
-        f"\n{Colors.BLUE}[sync]{Colors.RESET} Changes detected in: {Colors.BOLD}{', '.join(changed)}{Colors.RESET}"
-    )
-    for dim in changed:
-        summary = changes.dimensions[dim].change_summary
-        print(f"  • {dim}: {Colors.DIM}{summary}{Colors.RESET}")
-
-    # Show error explanations if any
-    errors = []
-    for dim in ["items", "js", "translations", "eos", "flow"]:
-        if changes.dimensions[dim].error_detail:
-            errors.append((dim, changes.dimensions[dim].error_detail))
-
-    if errors:
-        from .survey_ref import format_survey_ref
-
-        survey_label = format_survey_ref(changes.survey_id, changes.survey_name)
-        errors = _filter_new_issue_lines(
-            [(survey_label, dim, detail) for dim, detail in errors]
+    def _print_details() -> None:
+        """Print the detailed per-dimension summaries and any warnings/errors."""
+        print(
+            f"\n{Colors.BLUE}[sync]{Colors.RESET} Changes detected in: {Colors.BOLD}{', '.join(changed)}{Colors.RESET}"
         )
-        print(f"\n{Colors.YELLOW}⚠️  Errors:{Colors.RESET}")
-        for _, dimension, detail in errors:
-            # Highlight commands in error messages
-            if "Run:" in detail:
-                parts = detail.split("Run:")
-                if len(parts) == 2:
-                    prefix = parts[0].strip()
-                    cmd = parts[1].strip()
-                    print(
-                        f"  {Colors.DIM}•{Colors.RESET} {dimension}: {prefix} Run: {Colors.CYAN}{cmd}{Colors.RESET}"
-                    )
-                else:
-                    print(f"  {Colors.DIM}•{Colors.RESET} {dimension}: {detail}")
-            else:
+        for dim in changed:
+            summary = changes.dimensions[dim].change_summary
+            print(f"  • {dim}: {Colors.DIM}{summary}{Colors.RESET}")
+
+        # Show error explanations if any (best-effort formatting, no global dedupe).
+        errors: list[tuple[str, str]] = []
+        for dim in MASTER_DIMENSION_ORDER:
+            if dim not in changes.dimensions:
+                continue
+            detail = changes.dimensions[dim].error_detail
+            if detail:
+                errors.append((dim, detail))
+
+        if errors:
+            print(f"\n{Colors.YELLOW}⚠ Errors:{Colors.RESET}")
+            for dimension, detail in errors:
+                if "Run:" in detail:
+                    parts = detail.split("Run:", 1)
+                    if len(parts) == 2:
+                        prefix = parts[0].strip()
+                        cmd = parts[1].strip()
+                        print(
+                            f"  {Colors.DIM}•{Colors.RESET} {dimension}: {prefix} Run: {Colors.CYAN}{cmd}{Colors.RESET}"
+                        )
+                        continue
                 print(f"  {Colors.DIM}•{Colors.RESET} {dimension}: {detail}")
-        print()  # Blank line after errors
+            print()
 
-    warnings = []
-    for dim in MASTER_DIMENSION_ORDER:
-        if dim not in changes.dimensions:
-            continue
-        if changes.dimensions[dim].warning_detail:
-            warnings.append((dim, changes.dimensions[dim].warning_detail))
+        warnings: list[tuple[str, str]] = []
+        for dim in MASTER_DIMENSION_ORDER:
+            if dim not in changes.dimensions:
+                continue
+            detail = changes.dimensions[dim].warning_detail
+            if detail:
+                warnings.append((dim, detail))
 
-    if warnings:
-        from .survey_ref import format_survey_ref
-
-        survey_label = format_survey_ref(changes.survey_id, changes.survey_name)
-        warnings = _filter_new_issue_lines(
-            [(survey_label, dim, detail) for dim, detail in warnings]
-        )
-        print(f"\n{Colors.YELLOW}⚠️  Warnings:{Colors.RESET}")
-        for _, dimension, detail in warnings:
-            if "Run:" in detail or "Repair:" in detail:
-                parts = (
-                    detail.split("Run:")
-                    if "Run:" in detail
-                    else detail.split("Repair:")
-                )
-                if len(parts) == 2:
-                    prefix = parts[0].strip()
-                    cmd = parts[1].strip()
-                    separator = "Run:" if "Run:" in detail else "Repair:"
-                    print(
-                        f"  {Colors.DIM}•{Colors.RESET} {dimension}: {prefix} {separator} {Colors.CYAN}{cmd}{Colors.RESET}"
-                    )
-                else:
-                    print(f"  {Colors.DIM}•{Colors.RESET} {dimension}: {detail}")
-            else:
+        if warnings:
+            print(f"\n{Colors.YELLOW}⚠ Warnings:{Colors.RESET}")
+            for dimension, detail in warnings:
+                if "Run:" in detail or "Repair:" in detail:
+                    if "Run:" in detail:
+                        parts = detail.split("Run:", 1)
+                        sep = "Run:"
+                    else:
+                        parts = detail.split("Repair:", 1)
+                        sep = "Repair:"
+                    if len(parts) == 2:
+                        prefix = parts[0].strip()
+                        cmd = parts[1].strip()
+                        print(
+                            f"  {Colors.DIM}•{Colors.RESET} {dimension}: {prefix} {sep} {Colors.CYAN}{cmd}{Colors.RESET}"
+                        )
+                        continue
                 print(f"  {Colors.DIM}•{Colors.RESET} {dimension}: {detail}")
-        print()
+            print()
 
-    # Build choices
-    choices = []
-    for dim in changed:
-        choices.append(dim)
-    choices.append("─" * 40)
-    choices.append("✓ All dimensions")
-    choices.append("✗ Skip this survey")
+    staged_dims = [dim for dim in changed if _is_dimension_staged(changes.survey_id, dim)]
+    staged_label = ", ".join(staged_dims)
 
-    staged_dims = [
-        dim for dim in changed if _is_dimension_staged(changes.survey_id, dim)
-    ]
-    if staged_dims:
-        choices.append("─" * 40)
-        staged_label = ", ".join(staged_dims)
-        choices.append(f"🧹 Clear staged changes ({staged_label})")
-
-    # Add auto-fix section if there are fixable errors
     fixable_errors = [
-        (dim, changes.dimensions[dim])
+        dim
         for dim in MASTER_DIMENSION_ORDER
         if dim in changes.dimensions
-        if changes.dimensions[dim].error_detail
-        and changes.dimensions[dim].safe_to_autofix
+        if changes.dimensions[dim].error_detail and changes.dimensions[dim].safe_to_autofix
     ]
 
-    if fixable_errors:
-        choices.append("")  # Empty line for spacing
-        choices.append("─" * 40)
-        choices.append("🔧 Fix errors:")
-        for dim, dim_changes in fixable_errors:
-            cmd = _autofix_command(dim, changes.survey_id)
-            if cmd:
-                choices.append(f"  → Fix {dim} error (run {cmd})")
-            else:
-                choices.append(f"  → Fix {dim} error (manual)")
+    error_dims = [
+        dim
+        for dim in MASTER_DIMENSION_ORDER
+        if dim in changes.dimensions and changes.dimensions[dim].error_detail
+    ]
+    warning_dims = [
+        dim
+        for dim in MASTER_DIMENSION_ORDER
+        if dim in changes.dimensions and changes.dimensions[dim].warning_detail
+    ]
 
-    selection = select_from_list(
-        message="Select dimensions to sync:",
-        choices=choices,
+    print(
+        f"\n{Colors.BLUE}[sync]{Colors.RESET} "
+        f"{Colors.BOLD}{changes.survey_name}{Colors.RESET} ({changes.survey_id})"
     )
+    print(
+        f"{Colors.DIM}Changed:{Colors.RESET} {', '.join(changed)}"
+        + (f"  {Colors.DIM}Errors:{Colors.RESET} {', '.join(error_dims)}" if error_dims else "")
+        + (f"  {Colors.DIM}Warnings:{Colors.RESET} {', '.join(warning_dims)}" if warning_dims else "")
+    )
+    print(f"{Colors.DIM}Tip:{Colors.RESET} Select 'View details' for summaries and guidance.")
 
-    if selection is None or "Skip" in selection:
-        return []
-    elif "All dimensions" in selection:
-        return changed
-    elif selection.startswith("🧹 Clear staged changes"):
-        from .interactive_menu import confirm
+    while True:
+        items: list[MenuItem] = []
 
-        if not staged_dims:
-            return []
+        # Dimension choices (stable order, with disabled reasons).
+        for dim in MASTER_DIMENSION_ORDER:
+            if dim not in changes.dimensions:
+                continue
+            info = changes.dimensions[dim]
+            status = render_cell(info)
+            summary = info.change_summary or ""
 
-        should_clear = confirm(
-            message=f"Clear staged changes for {changes.survey_id}?",
-            default=False,
+            enabled = bool(info.has_changes) and not bool(info.error_detail)
+            if info.error_detail:
+                disabled_reason = "blocked (error)"
+            elif not info.has_changes:
+                disabled_reason = "no changes"
+            else:
+                disabled_reason = None
+
+            label = f"{dim:<12} {status:<8} {summary}".rstrip()
+            items.append(
+                MenuItem(
+                    label=label,
+                    value=f"dim:{dim}",
+                    enabled=enabled,
+                    disabled_reason=disabled_reason,
+                )
+            )
+
+        items.append(MenuItem.separator("─" * 60))
+        items.append(MenuItem(label="✓ All changed dimensions", value="all", enabled=True))
+        items.append(MenuItem(label="🔍 View details", value="details", enabled=True))
+        items.append(MenuItem(label="✗ Skip this survey", value="skip", enabled=True))
+
+        items.append(MenuItem.separator("─" * 60))
+        items.append(
+            MenuItem(
+                label=f"🧹 Clear staged changes ({staged_label})" if staged_label else "🧹 Clear staged changes",
+                value="clear",
+                enabled=bool(staged_dims),
+                disabled_reason="no staged changes" if not staged_dims else None,
+            )
         )
-        if not should_clear:
-            return []
 
-        for dim in staged_dims:
-            clear_pending(changes.survey_id, dim)
-        print(
-            f"{Colors.GREEN}✓{Colors.RESET} Cleared staged changes: {', '.join(staged_dims)}"
+        if fixable_errors:
+            items.append(MenuItem.separator("─" * 60))
+            for dim in fixable_errors:
+                cmd = _autofix_command(dim, changes.survey_id)
+                label = f"🔧 Fix {dim} error"
+                if cmd:
+                    label = f"{label} (run {cmd})"
+                items.append(
+                    MenuItem(
+                        label=label,
+                        value=f"fix:{dim}",
+                        enabled=bool(cmd),
+                        disabled_reason="no autofix command" if not cmd else None,
+                    )
+                )
+
+        selection = select_from_list(
+            message="Select what to sync:",
+            choices=items,
         )
-        print(f"{Colors.DIM}Re-run 'qsync sync' to detect changes.{Colors.RESET}")
-        return []
-    elif selection.startswith("  → Fix"):
-        # Extract dimension name from "  → Fix {dim} error"
-        dim_name = selection.split("Fix ")[1].split(" error")[0]
-        # Auto-fix the error
-        from .terminal_output import info
 
-        info("[sync]", f"Auto-fixing {dim_name} error for {changes.survey_id}...")
+        if selection is None or selection == "skip":
+            return []
+        if selection == "details":
+            _print_details()
+            continue
+        if selection == "all":
+            return changed
+        if selection == "clear":
+            if not staged_dims:
+                continue
+            should_clear = confirm(
+                message=f"Clear staged changes for {changes.survey_id}?",
+                default=False,
+            )
+            if not should_clear:
+                continue
+            for dim in staged_dims:
+                clear_pending(changes.survey_id, dim)
+            print(
+                f"{Colors.GREEN}✓{Colors.RESET} Cleared staged changes: {', '.join(staged_dims)}"
+            )
+            print(f"{Colors.DIM}Re-run 'qsync sync' to detect changes.{Colors.RESET}")
+            return []
+        if selection.startswith("fix:"):
+            dim_name = selection.split(":", 1)[1]
+            from .terminal_output import info
 
-        try:
-            result = _run_autofix(dim_name, changes.survey_id)
-            print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
-            print(f"{Colors.DIM}Re-run 'qsync sync' to detect changes{Colors.RESET}")
-        except Exception as e:
-            print(f"{Colors.RED}✗ Failed to fix: {e}{Colors.RESET}")
-
-        return []  # Don't sync after fixing - let user re-run
-    elif "─" in selection or selection == "" or "Fix errors:" in selection:
-        # Separator, empty line, or section header - ignore
-        return []
-    elif selection in changed:
-        return [selection]
-    else:
-        return []
+            info("[sync]", f"Auto-fixing {dim_name} error for {changes.survey_id}...")
+            try:
+                result = _run_autofix(dim_name, changes.survey_id)
+                print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
+                print(f"{Colors.DIM}Re-run 'qsync sync' to detect changes{Colors.RESET}")
+            except Exception as e:
+                print(f"{Colors.RED}✗ Failed to fix: {e}{Colors.RESET}")
+            return []
+        if selection.startswith("dim:"):
+            dim_name = selection.split(":", 1)[1]
+            if dim_name in changed:
+                return [dim_name]
+            return []
 
 
 def stage_dimension(

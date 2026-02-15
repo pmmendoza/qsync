@@ -14,8 +14,10 @@ import tempfile
 import subprocess
 import shlex
 import shutil
+import getpass
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional, Sequence
 
 # Try to import questionary, fall back if not available
 try:
@@ -45,6 +47,36 @@ CUSTOM_STYLE = (
     if QUESTIONARY_AVAILABLE
     else None
 )
+
+_DEFAULT_INSTRUCTION = "↑/↓ to move, Enter to select, Ctrl+C to cancel"
+
+
+@dataclass(frozen=True)
+class MenuItem:
+    """Structured menu entry for consistent questionary + fallback behavior."""
+
+    label: str
+    value: str | None = None
+    enabled: bool = True
+    disabled_reason: str | None = None
+    kind: str = "option"  # "option" | "separator"
+
+    @staticmethod
+    def separator(label: str = "─" * 40) -> "MenuItem":
+        return MenuItem(label=label, value=None, enabled=False, kind="separator")
+
+
+def _coerce_menu_items(choices: Sequence[str | MenuItem]) -> list[MenuItem]:
+    items: list[MenuItem] = []
+    for choice in choices:
+        if isinstance(choice, MenuItem):
+            items.append(choice)
+            continue
+        if _is_separator(choice):
+            items.append(MenuItem.separator(choice))
+        else:
+            items.append(MenuItem(label=choice, value=choice))
+    return items
 
 
 def should_use_questionary() -> bool:
@@ -91,7 +123,7 @@ def _is_separator(choice: str) -> bool:
 
 def select_from_list(
     message: str,
-    choices: List[str],
+    choices: List[str] | List[MenuItem],
     instruction: Optional[str] = None,
     default: Optional[str] = None,
 ) -> Optional[str]:
@@ -105,11 +137,32 @@ def select_from_list(
     Returns:
         Selected choice string, or None if cancelled
     """
+    items = _coerce_menu_items(choices)
+    instruction = instruction or _DEFAULT_INSTRUCTION
+
+    # Make fallback "Enter" behave like questionary: pick a stable default.
+    effective_default = default
+    if effective_default is None:
+        for item in items:
+            if item.kind != "separator" and item.enabled:
+                effective_default = item.value or item.label
+                break
+
     if not should_use_questionary():
-        return _fallback_select(message, choices, default=default)
+        return _fallback_select_items(
+            message,
+            items,
+            default=effective_default,
+            instruction=instruction,
+        )
 
     if not is_interactive():
-        return _fallback_select(message, choices, default=default)
+        return _fallback_select_items(
+            message,
+            items,
+            default=effective_default,
+            instruction=instruction,
+        )
 
     try:
         # Save terminal state before questionary
@@ -118,15 +171,24 @@ def select_from_list(
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
 
-        # Convert separator strings to questionary.Separator objects
+        # Convert to questionary choices with disabled reasons.
         from questionary import Separator
 
-        processed_choices = []
-        for choice in choices:
-            if _is_separator(choice):
-                processed_choices.append(Separator(choice))
-            else:
-                processed_choices.append(choice)
+        processed_choices: list[Any] = []
+        for item in items:
+            if item.kind == "separator":
+                processed_choices.append(Separator(item.label))
+                continue
+            disabled = None
+            if not item.enabled:
+                disabled = item.disabled_reason or "unavailable"
+            processed_choices.append(
+                questionary.Choice(
+                    title=item.label,
+                    value=item.value or item.label,
+                    disabled=disabled,
+                )
+            )
 
         try:
             result = questionary.select(
@@ -137,7 +199,7 @@ def select_from_list(
                 use_arrow_keys=True,
                 use_jk_keys=False,
                 style=CUSTOM_STYLE,
-                default=default,
+                default=effective_default,
             ).ask()
             return result
         finally:
@@ -150,7 +212,12 @@ def select_from_list(
         # Fall back to simple selection if questionary fails
         print(f"\n(Arrow key menu failed: {e})")
         print("(Falling back to numbered selection)")
-        return _fallback_select(message, choices, default=default)
+        return _fallback_select_items(
+            message,
+            items,
+            default=effective_default,
+            instruction=instruction,
+        )
 
 
 def confirm(
@@ -240,17 +307,70 @@ def text_input(
     message: str,
     *,
     default: Optional[str] = None,
+    instruction: Optional[str] = None,
+    validator: Any | None = None,
+    validate_while_typing: bool = False,
+    secret: bool = False,
 ) -> Optional[str]:
     """Prompt for free-form text input.
 
     Uses questionary when available, otherwise falls back to stdin input().
     """
 
-    if not should_use_questionary():
-        return _fallback_text_input(message, default=default)
+    def _validate_fallback(value: str) -> bool:
+        if validator is None:
+            return True
 
-    if not is_interactive():
-        return _fallback_text_input(message, default=default)
+        # Prefer questionary-style validators (Validator.validate(document) -> None)
+        # and allow simple callables (value -> bool/str) as a fallback.
+        try:
+            from questionary import ValidationError  # type: ignore[import-not-found]
+        except Exception:
+            ValidationError = Exception  # type: ignore[assignment]
+
+        if hasattr(validator, "validate"):
+            class _Doc:
+                def __init__(self, text: str) -> None:
+                    self.text = text
+
+            try:
+                validator.validate(_Doc(value))
+                return True
+            except ValidationError as exc:  # type: ignore[misc]
+                print(f"(Invalid input: {exc})")
+                return False
+            except Exception as exc:  # noqa: BLE001
+                print(f"(Invalid input: {exc})")
+                return False
+
+        if callable(validator):
+            try:
+                out = validator(value)
+            except Exception as exc:  # noqa: BLE001
+                print(f"(Invalid input: {exc})")
+                return False
+            if out is True or out is None:
+                return True
+            if out is False:
+                print("(Invalid input)")
+                return False
+            if isinstance(out, str):
+                print(f"(Invalid input: {out})")
+                return False
+            return True
+
+        return True
+
+    if not should_use_questionary() or not is_interactive():
+        # Fallback mode: validate after entry and optionally re-prompt in TTY.
+        while True:
+            val = _fallback_text_input(message, default=default, secret=secret)
+            if val is None:
+                return None
+            if _validate_fallback(val):
+                return val
+            if not is_interactive():
+                return None
 
     try:
         import termios
@@ -258,11 +378,21 @@ def text_input(
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         try:
-            result = questionary.text(
-                message=message,
-                default=default or "",
-                style=CUSTOM_STYLE,
-            ).ask()
+            if secret:
+                result = questionary.password(
+                    message=message,
+                    instruction=instruction,
+                    style=CUSTOM_STYLE,
+                ).ask()
+            else:
+                result = questionary.text(
+                    message=message,
+                    default=default or "",
+                    instruction=instruction,
+                    validate=validator,
+                    validate_while_typing=validate_while_typing,
+                    style=CUSTOM_STYLE,
+                ).ask()
             if result is None:
                 return None
             return str(result)
@@ -272,7 +402,7 @@ def text_input(
         return None
     except Exception as e:
         print(f"\n(Text input failed: {e})")
-        return _fallback_text_input(message, default=default)
+        return _fallback_text_input(message, default=default, secret=secret)
 
 
 def autocomplete_from_list(
@@ -428,14 +558,17 @@ def edit_text_in_editor(
 
 
 def _fallback_text_input(
-    message: str, *, default: Optional[str] = None
+    message: str, *, default: Optional[str] = None, secret: bool = False
 ) -> Optional[str]:
     prompt = f"{message}"
     if default:
         prompt += f" [{default}]"
     prompt += ": "
     try:
-        val = input(prompt)
+        if secret:
+            val = getpass.getpass(prompt)
+        else:
+            val = input(prompt)
     except (KeyboardInterrupt, EOFError):
         return None
     val = val.strip()
@@ -506,31 +639,71 @@ def _fallback_multi_select(
 def _fallback_select(
     message: str, choices: List[str], default: Optional[str] = None
 ) -> Optional[str]:
-    """Fallback selection using simple input."""
+    """Fallback selection using simple input (legacy string choices)."""
+    items = _coerce_menu_items(choices)
+    return _fallback_select_items(
+        message,
+        items,
+        default=default,
+        instruction=None,
+    )
+
+
+def _fallback_select_items(
+    message: str,
+    items: list[MenuItem],
+    *,
+    default: Optional[str],
+    instruction: Optional[str],
+) -> Optional[str]:
+    """Fallback selection for structured menu items.
+
+    Ensures:
+    - separators are visible but never selectable
+    - disabled options are visible with reasons and never selectable
+    - cancelling returns None (not an implicit default)
+    """
     print(f"\n{message}")
+    if instruction:
+        print(f"({instruction})")
 
-    # Filter out separators for display
-    displayable_choices = [
-        (i, c) for i, c in enumerate(choices) if not c.startswith("─")
-    ]
+    enabled_by_index: dict[int, str] = {}
+    display_idx = 1
 
-    for display_idx, (actual_idx, choice) in enumerate(displayable_choices, 1):
-        print(f"  [{display_idx}] {choice}")
+    for item in items:
+        if item.kind == "separator":
+            print(f"  {item.label}")
+            continue
+
+        if not item.enabled:
+            reason = item.disabled_reason or "unavailable"
+            print(f"  [ ] {item.label} ({reason})")
+            continue
+
+        enabled_by_index[display_idx] = item.value or item.label
+        print(f"  [{display_idx}] {item.label}")
+        display_idx += 1
 
     try:
-        response = input("\nEnter number (or 'q' to cancel): ").strip().lower()
-        if not response or response == "q":
-            return default
-
-        display_idx = int(response) - 1
-        if 0 <= display_idx < len(displayable_choices):
-            actual_idx = displayable_choices[display_idx][0]
-            return choices[actual_idx]
-        else:
-            print("Invalid selection")
-            return None
-    except (ValueError, KeyboardInterrupt, EOFError):
+        raw = input(
+            "\nEnter number (blank for default, 'q' to cancel): "
+        ).strip().lower()
+    except (KeyboardInterrupt, EOFError):
         return None
+
+    if raw in {"q", "quit", "cancel"}:
+        return None
+    if not raw:
+        return default
+    if not raw.isdigit():
+        print("Invalid selection")
+        return None
+
+    idx = int(raw)
+    if idx not in enabled_by_index:
+        print("Invalid selection")
+        return None
+    return enabled_by_index[idx]
 
 
 def _fallback_confirm(message: str, default: bool) -> bool:

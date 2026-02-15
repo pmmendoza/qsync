@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 
 from .api_push import send_api_request
-from .config import get_client_config, resolve_root
+from .config import get_client_config, resolve_root, resolve_scoped_dir
 
 SURVEY_VERSION_DESCRIPTION_MAX_CHARS = 140
 
@@ -18,10 +18,11 @@ def _workspace_root() -> Path:
 
 
 def _surveys_dir() -> Path:
-    return _workspace_root() / "surveys"
+    return resolve_scoped_dir("surveys", root=_workspace_root())
 
 
 def _backups_dir() -> Path:
+    # Backups should be account-scoped alongside the primary survey cache.
     return _surveys_dir() / "backups"
 
 

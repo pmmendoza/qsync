@@ -86,7 +86,8 @@ def _pick_survey_id_from_records(
 ) -> str | None:
     """Prompt interactively for a survey from pre-fetched records."""
 
-    from .interactive_menu import confirm, select_from_list
+    from .interactive_menu import confirm, select_from_list, text_input
+    from .input_validators import SurveyIdValidator
 
     filtered = records
     if len(filtered) > 60:
@@ -124,8 +125,13 @@ def _pick_survey_id_from_records(
     if not selection or selection.endswith("Back"):
         return None
     if selection.startswith("✎"):
-        manual = input("Enter Qualtrics SurveyID (e.g. SV_...): ").strip()
-        return manual or None
+        manual = text_input(
+            "Enter Qualtrics SurveyID",
+            instruction="Example: SV_...",
+            validator=SurveyIdValidator(),
+            validate_while_typing=True,
+        )
+        return (manual or "").strip() or None
     return selection.split(" - ", 1)[0].strip()
 
 
@@ -469,6 +475,9 @@ def handle_menu(_args: argparse.Namespace) -> None:
             print(f"[survey-menu] ERROR: unable to list surveys: {exc}")
             return None
 
+        from .input_validators import SurveyIdValidator
+        from .interactive_menu import text_input
+
         # Keep arrow menus usable: require a filter when the list is large.
         filtered = surveys
         if len(filtered) > 60:
@@ -505,8 +514,13 @@ def handle_menu(_args: argparse.Namespace) -> None:
         if not selection or selection.endswith("Back"):
             return None
         if selection.startswith("✎"):
-            manual = input("Enter Qualtrics SurveyID (e.g. SV_...): ").strip()
-            return manual or None
+            manual = text_input(
+                "Enter Qualtrics SurveyID",
+                instruction="Example: SV_...",
+                validator=SurveyIdValidator(),
+                validate_while_typing=True,
+            )
+            return (manual or "").strip() or None
         return selection.split(" - ", 1)[0].strip()
 
     def _run_action(func, ns: argparse.Namespace) -> None:
@@ -877,7 +891,10 @@ def handle_menu(_args: argparse.Namespace) -> None:
                 new_name=new_name,
                 target_api_key="",
                 target_base_url="",
-                target_account=None if target_acct == "default" else target_acct,
+                # Explicitly allow copying into the primary account when the user
+                # picked "default (.env)". `handle_copy_cross_account` treats
+                # the literal value "default" as an alias for the primary creds.
+                target_account=target_acct,
                 source_api_key="",
                 source_base_url="",
                 source_account=None if source_acct == "default" else source_acct,
@@ -2950,6 +2967,19 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     verify = bool(getattr(args, "verify", False))
     verify_deep = bool(getattr(args, "verify_deep", False))
 
+    # Convenience alias: allow `--target-account default` to mean the primary
+    # account credentials (QUALTRICS_BASE_URL + X-API-TOKEN), not TARGET_*.
+    # This is especially useful for the interactive menu flow.
+    target_is_default = False
+    if target_account and target_account.lower() == "default":
+        target_is_default = True
+        target_account = None
+
+    # Mirror the alias for source as well (non-breaking; previously this errored
+    # by attempting to load `.env.default`).
+    if source_account and source_account.lower() == "default":
+        source_account = None
+
     # Read `.env` (if present) so this command can support TARGET_* defaults.
     root = resolve_root(required=False) or Path.cwd()
     env_path = resolve_env_path(root=root)
@@ -2962,6 +2992,17 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         return str(file_env.get(key) or "").strip()
 
     # Resolve target credentials (do not silently fall back to the primary account).
+    if target_is_default and (not target_base_url or not target_api_key):
+        try:
+            default_base, default_headers = get_client_config()
+        except Exception as exc:
+            print(f"ERROR: Invalid default target credentials: {exc}")
+            sys.exit(1)
+        if not target_base_url:
+            target_base_url = default_base
+        if not target_api_key:
+            target_api_key = str(default_headers.get("X-API-TOKEN") or "").strip()
+
     if target_account and (not target_base_url or not target_api_key):
         target_file_env = load_account_env(target_account, root=root)
         if not target_base_url:
@@ -2983,7 +3024,7 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     if not target_base_url or not target_api_key:
         print(
             "ERROR: Target credentials missing. Provide --target-base-url/--target-api-key, "
-            "or use --target-account <name> (.env.<name>), "
+            "or use --target-account <name> (.env.<name>) or --target-account default, "
             "or set TARGET_QUALTRICS_BASE_URL and TARGET_X-API-TOKEN in your environment/.env."
         )
         sys.exit(1)
@@ -4295,7 +4336,8 @@ def _prompt_for_any_survey_id(survey_id: str | None) -> str:
         print("[qsync] ERROR: --survey-id required in non-interactive mode")
         raise SystemExit(1)
 
-    from .interactive_menu import select_from_list, autocomplete_from_list
+    from .interactive_menu import select_from_list, autocomplete_from_list, text_input
+    from .input_validators import SurveyIdValidator
     from .survey_inventory import (
         INVENTORY_CSV,
         LEGACY_SURVEY_CACHE,
@@ -4304,7 +4346,13 @@ def _prompt_for_any_survey_id(survey_id: str | None) -> str:
     )
 
     def _manual_entry() -> str:
-        manual = input("Enter Qualtrics SurveyID (e.g. SV_...): ").strip()
+        manual = text_input(
+            "Enter Qualtrics SurveyID",
+            instruction="Example: SV_...",
+            validator=SurveyIdValidator(),
+            validate_while_typing=True,
+        )
+        manual = (manual or "").strip()
         if not manual:
             print("[qsync] Operation cancelled.")
             raise SystemExit(1)
@@ -7987,7 +8035,8 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--target-account",
         help=(
             "Load target credentials from `.env.<account>` under the workspace root "
-            "(overrides TARGET_* defaults; explicit --target-* flags still win)."
+            "(overrides TARGET_* defaults; explicit --target-* flags still win). "
+            "Use `default` to target the primary `.env` credentials."
         ),
     )
     p_copy_xacct.add_argument(

@@ -147,50 +147,46 @@ def _delete_workspace_artifacts(root: Path, existing: Dict[str, bool]) -> None:
 
 
 def _pick_root(default_root: Path) -> Path:
-    if not (should_use_questionary() and is_interactive()):
-        raw = input(f"Workspace root [{default_root}]: ").strip()
-        return Path(raw).expanduser() if raw else default_root
-    try:
-        import questionary
+    from .interactive_menu import text_input
 
-        resp = questionary.text(
-            "Workspace root:",
-            default=str(default_root),
-            instruction="Path that will contain surveys/, excel/, survey_js/, and .env",
-        ).ask()
-        return Path(resp).expanduser() if resp else default_root
-    except Exception:
-        raw = input(f"Workspace root [{default_root}]: ").strip()
-        return Path(raw).expanduser() if raw else default_root
+    resp = text_input(
+        "Workspace root",
+        default=str(default_root),
+        instruction="Path that will contain surveys/, excel/, survey_js/, and .env",
+        validate_while_typing=False,
+    )
+    return Path(resp).expanduser() if resp else default_root
 
 
 def _collect_credentials() -> Tuple[str | None, str | None]:
-    if not (should_use_questionary() and is_interactive()):
-        print(f"Docs: {QUALTRICS_DOC_DATACENTER_ID}")
-        datacenter = input("Qualtrics datacenter subdomain (example: iad1): ").strip()
-        print(f"Docs: {QUALTRICS_DOC_API_TOKEN}")
-        token = input("API token (X-API-TOKEN): ").strip()
-        return _normalize_datacenter(datacenter), (token or None)
-    try:
-        import questionary
+    from .interactive_menu import text_input
+    from .input_validators import DatacenterHostValidator
 
-        print(f"Docs: {QUALTRICS_DOC_DATACENTER_ID}")
-        datacenter = questionary.text(
-            "Qualtrics datacenter subdomain (example: iad1):",
-            instruction="We will save https://<subdomain>.qualtrics.com",
-        ).ask()
-        print(f"Docs: {QUALTRICS_DOC_API_TOKEN}")
-        token = questionary.password(
-            "API token (X-API-TOKEN):",
+    print(f"Docs: {QUALTRICS_DOC_DATACENTER_ID}")
+    datacenter = text_input(
+        "Qualtrics datacenter subdomain (example: iad1)",
+        instruction="We will save https://<subdomain>.qualtrics.com",
+        validator=DatacenterHostValidator(),
+        validate_while_typing=True,
+    )
+    print(f"Docs: {QUALTRICS_DOC_API_TOKEN}")
+    token = text_input(
+        "API token (X-API-TOKEN)",
+        instruction="Paste the token from Qualtrics (hidden input)",
+        secret=True,
+    )
+
+    token_value = (token or "").strip() or None
+    if token_value is not None and len(token_value) < 10 and (should_use_questionary() and is_interactive()):
+        print("Token looks too short; please paste the full X-API-TOKEN value.")
+        token = text_input(
+            "API token (X-API-TOKEN)",
             instruction="Paste the token from Qualtrics (hidden input)",
-        ).ask()
-        return _normalize_datacenter(datacenter), (token or None)
-    except Exception:
-        print(f"Docs: {QUALTRICS_DOC_DATACENTER_ID}")
-        datacenter = input("Qualtrics datacenter subdomain (example: iad1): ").strip()
-        print(f"Docs: {QUALTRICS_DOC_API_TOKEN}")
-        token = input("API token (X-API-TOKEN): ").strip()
-        return _normalize_datacenter(datacenter), (token or None)
+            secret=True,
+        )
+        token_value = (token or "").strip() or None
+
+    return _normalize_datacenter(datacenter), token_value
 
 
 def _ensure_dirs(root: Path) -> List[Path]:
