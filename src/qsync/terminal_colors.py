@@ -42,7 +42,13 @@ def _supports_color() -> bool:
     Returns True if:
     - stdout is a TTY (not piped)
     - TERM environment variable is not 'dumb'
+    - NO_COLOR is not set (https://no-color.org/)
     """
+    # Honor NO_COLOR convention: any value disables color.
+    # Keep this lightweight and deterministic (no external checks).
+    if "NO_COLOR" in os.environ:
+        return False
+
     if not sys.stdout.isatty():
         return False
 

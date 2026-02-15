@@ -15,6 +15,7 @@ import subprocess
 import shlex
 import shutil
 import getpass
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Optional, Sequence
@@ -71,6 +72,10 @@ def _coerce_menu_items(choices: Sequence[str | MenuItem]) -> list[MenuItem]:
     for choice in choices:
         if isinstance(choice, MenuItem):
             items.append(choice)
+            continue
+        # Treat empty/whitespace-only entries as visual separators (never selectable).
+        if not str(choice).strip():
+            items.append(MenuItem.separator(""))
             continue
         if _is_separator(choice):
             items.append(MenuItem.separator(choice))
@@ -138,7 +143,7 @@ def select_from_list(
         Selected choice string, or None if cancelled
     """
     items = _coerce_menu_items(choices)
-    instruction = instruction or _DEFAULT_INSTRUCTION
+    instruction = _fit_instruction(instruction or _DEFAULT_INSTRUCTION)
 
     # Make fallback "Enter" behave like questionary: pick a stable default.
     effective_default = default
@@ -218,6 +223,21 @@ def select_from_list(
             default=effective_default,
             instruction=instruction,
         )
+
+
+def _fit_instruction(instruction: str) -> str:
+    """Fit instruction text to terminal width (questionary renders it as a single line)."""
+    try:
+        width = shutil.get_terminal_size(fallback=(80, 24)).columns
+    except Exception:
+        width = 80
+    width = max(40, int(width))
+    text = (instruction or "").strip()
+    if not text:
+        return _DEFAULT_INSTRUCTION
+    if len(text) <= width - 4:
+        return text
+    return text[: max(0, width - 7)].rstrip() + "..."
 
 
 def confirm(
@@ -665,7 +685,13 @@ def _fallback_select_items(
     """
     print(f"\n{message}")
     if instruction:
-        print(f"({instruction})")
+        try:
+            width = shutil.get_terminal_size(fallback=(80, 24)).columns
+        except Exception:
+            width = 80
+        width = max(40, int(width))
+        wrapped = textwrap.fill(str(instruction), width=width)
+        print(f"({wrapped})")
 
     enabled_by_index: dict[int, str] = {}
     display_idx = 1
