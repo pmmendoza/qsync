@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import difflib
+import os
 from pathlib import Path
+import re
 from typing import Dict, List, Set, Tuple
 
 from .. import excel_io
@@ -30,6 +32,75 @@ from ..push_safeguards import enforce_push_safeguards, SafeguardConfig
 from ..auto_publish import auto_publish_after_push
 
 ERROR_ID_EMBEDDED_DANGEROUS_SKIPPED = "QSYNC-EMBEDDED-DANGEROUS-001"
+_ALLOW_EXTERNALLY_MANAGED_QIDS_ENV = "QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS"
+_ALLOW_EXTERNALLY_MANAGED_QIDS_SPLIT_RE = re.compile(r"[,\s]+")
+
+
+def _resolve_allow_externally_managed_qids(*, survey_id: str) -> set[str]:
+    """
+    Resolve QIDs that are allowed to override "externally managed" skips.
+
+    Reads `QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS` from the active env config
+    (shell env overrides `.env`), and returns QIDs that apply to this survey.
+
+    Supported token formats (comma/whitespace separated):
+    - `QID15`                  (applies to the current survey_id)
+    - `SV_xxx:QID15` or `SV_xxx/QID15`  (applies only when survey_id matches)
+    """
+
+    # CLI flags are applied by setting this env var. Read it directly so the
+    # override works even when the key is not present in `.env`.
+    if _ALLOW_EXTERNALLY_MANAGED_QIDS_ENV in os.environ:
+        raw = str(os.environ.get(_ALLOW_EXTERNALLY_MANAGED_QIDS_ENV) or "")
+    else:
+        try:
+            from ..config import load_env
+
+            env = load_env()
+        except Exception:
+            env = {}
+        raw = str(env.get(_ALLOW_EXTERNALLY_MANAGED_QIDS_ENV) or "")
+
+    raw = raw.strip()
+    if not raw:
+        return set()
+
+    allow: set[str] = set()
+    for token in _ALLOW_EXTERNALLY_MANAGED_QIDS_SPLIT_RE.split(raw):
+        tok = (token or "").strip()
+        if not tok:
+            continue
+
+        # Optional scoping: SV_xxx:QIDyy (or SV_xxx/QIDyy). Unscoped QIDs apply
+        # to the current survey only, since the command context already selects
+        # a survey_id.
+        if tok.upper().startswith("SV_") and (":" in tok or "/" in tok):
+            if ":" in tok:
+                sv, qid = tok.split(":", 1)
+            else:
+                sv, qid = tok.split("/", 1)
+            if (sv or "").strip() and (sv or "").strip() != survey_id:
+                continue
+            tok = (qid or "").strip()
+            if not tok:
+                continue
+
+        allow.add(tok)
+    return allow
+
+
+def _should_skip_externally_managed(
+    *,
+    qid: str,
+    data_export_tag: str,
+    externally_managed_by: object | None,
+    allow_qids: set[str],
+) -> bool:
+    if qid in allow_qids:
+        return False
+    if externally_managed_by:
+        return True
+    return data_export_tag in excel_io.EXTERNALLY_MANAGED_TAGS
 
 
 @dataclass
@@ -1321,6 +1392,9 @@ def preview_changes(
             context="preview",
         )
     changes: List[PreviewChange] = []
+    allow_externally_managed_qids = _resolve_allow_externally_managed_qids(
+        survey_id=survey_id
+    )
 
     # Question text changes
     for qid in sorted(in_scope_qids):
@@ -1362,9 +1436,12 @@ def preview_changes(
         # Options for externally managed questions (e.g. dynamic newsmem batteries)
         # are owned by scripts and should not be driven from Excel.
         tag = (q_json.get("DataExportTag") or "").strip()
-        if tag in excel_io.EXTERNALLY_MANAGED_TAGS:
-            continue
-        if opt_row.externally_managed_by:
+        if _should_skip_externally_managed(
+            qid=qid,
+            data_export_tag=tag,
+            externally_managed_by=opt_row.externally_managed_by,
+            allow_qids=allow_externally_managed_qids,
+        ):
             continue
         qtype = (opt_row.question_type or q_json.get("QuestionType") or "").strip()
         if qtype == "Matrix":
@@ -1407,7 +1484,12 @@ def preview_changes(
         # Subitems for externally managed questions (e.g. recognition, salience,
         # cued recall) are script-owned and should not be driven from Excel.
         tag = (q_json.get("DataExportTag") or "").strip()
-        if tag in excel_io.EXTERNALLY_MANAGED_TAGS:
+        if _should_skip_externally_managed(
+            qid=qid,
+            data_export_tag=tag,
+            externally_managed_by=None,
+            allow_qids=allow_externally_managed_qids,
+        ):
             continue
         qtype = (sub_row.question_type or q_json.get("QuestionType") or "").strip()
         if qtype == "Matrix":
@@ -1569,6 +1651,9 @@ def apply_changes(
             )
 
         changed_qids: Set[str] = set()
+        allow_externally_managed_qids = _resolve_allow_externally_managed_qids(
+            survey_id=survey_id
+        )
 
         if not embedded_only:
             # Apply question text changes into the survey payload
@@ -1616,9 +1701,12 @@ def apply_changes(
                 if not q_json:
                     continue
                 tag = (q_json.get("DataExportTag") or "").strip()
-                if tag in excel_io.EXTERNALLY_MANAGED_TAGS:
-                    continue
-                if opt_row.externally_managed_by:
+                if _should_skip_externally_managed(
+                    qid=qid,
+                    data_export_tag=tag,
+                    externally_managed_by=opt_row.externally_managed_by,
+                    allow_qids=allow_externally_managed_qids,
+                ):
                     continue
                 qtype = (
                     opt_row.question_type or q_json.get("QuestionType") or ""
@@ -1666,7 +1754,12 @@ def apply_changes(
                 if not q_json:
                     continue
                 tag = (q_json.get("DataExportTag") or "").strip()
-                if tag in excel_io.EXTERNALLY_MANAGED_TAGS:
+                if _should_skip_externally_managed(
+                    qid=qid,
+                    data_export_tag=tag,
+                    externally_managed_by=None,
+                    allow_qids=allow_externally_managed_qids,
+                ):
                     continue
                 qtype = (
                     sub_row.question_type or q_json.get("QuestionType") or ""
@@ -2016,6 +2109,33 @@ def push_staged_changes(
 
     ensure_backup(survey_id)
     survey: SurveyCache = load_cached_survey(survey_id)
+    allow_externally_managed_qids = _resolve_allow_externally_managed_qids(
+        survey_id=survey_id
+    )
+    if pending_changes:
+        questions = (
+            (survey.payload.get("result", {}) or {}).get("Questions", {}) or {}
+        )
+        blocked: set[str] = set()
+        for change in pending_changes:
+            kind = str(change.get("kind") or "").strip()
+            if kind not in {"option", "subitem"}:
+                continue
+            qid = str(change.get("qid") or "").strip()
+            if not qid or qid in allow_externally_managed_qids:
+                continue
+            q_json = questions.get(qid) or {}
+            tag = str(q_json.get("DataExportTag") or "").strip()
+            if tag in excel_io.EXTERNALLY_MANAGED_TAGS:
+                blocked.add(qid)
+        if blocked:
+            blocked_list = ", ".join(sorted(blocked))
+            raise SystemExit(
+                "[qsync:items] Refusing to push externally-managed option/subitem edits "
+                f"for QID(s): {blocked_list}. "
+                "Re-run with --allow-externally-managed-qids (or set "
+                f"{_ALLOW_EXTERNALLY_MANAGED_QIDS_ENV} in your .env) to explicitly opt in."
+            )
     changed_qids, embedded_applied = _apply_pending_item_changes(
         survey.payload,
         pending_changes=pending_changes,

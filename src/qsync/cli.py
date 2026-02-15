@@ -1957,6 +1957,15 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_items_preview.add_argument("--embedded-data-only", action="store_true")
     p_items_preview.add_argument("--scope", help=_SCOPE_HELP_ITEMS)
     p_items_preview.add_argument(
+        "--allow-externally-managed-qids",
+        dest="allow_externally_managed_qids",
+        help=(
+            "Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow editing options/subitems "
+            "even when the question DataExportTag is externally managed. "
+            "Overrides QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS."
+        ),
+    )
+    p_items_preview.add_argument(
         "--allow-drift",
         action="store_true",
         help="Allow preview against a drifted cache without prompting",
@@ -1970,6 +1979,15 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_items_stage.add_argument("--embedded-data-only", action="store_true")
     p_items_stage.add_argument("--allow-dangerous", action="store_true")
     p_items_stage.add_argument("--scope", help=_SCOPE_HELP_ITEMS)
+    p_items_stage.add_argument(
+        "--allow-externally-managed-qids",
+        dest="allow_externally_managed_qids",
+        help=(
+            "Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow staging/pushing "
+            "option/subitem edits for externally managed questions. "
+            "Overrides QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS."
+        ),
+    )
     p_items_stage.add_argument(
         "--allow-drift",
         action="store_true",
@@ -2104,6 +2122,15 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_items_push.add_argument("--dry-run", action="store_true")
     p_items_push.add_argument("--scope", help=_SCOPE_HELP_ITEMS)
     p_items_push.add_argument(
+        "--allow-externally-managed-qids",
+        dest="allow_externally_managed_qids",
+        help=(
+            "Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow pushing option/subitem "
+            "edits for externally managed questions. "
+            "Overrides QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS."
+        ),
+    )
+    p_items_push.add_argument(
         "--allow-drift",
         action="store_true",
         help="Proceed even if cached survey differs from the live API",
@@ -2172,6 +2199,15 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--refresh-workbooks",
         action="store_true",
         help="Refresh Excel workbooks after successful sync (runs qsync items pull)",
+    )
+    p_sync.add_argument(
+        "--allow-externally-managed-qids",
+        dest="allow_externally_managed_qids",
+        help=(
+            "Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow staging/pushing "
+            "option/subitem edits for externally managed questions during sync. "
+            "Overrides QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS."
+        ),
     )
     p_sync.add_argument(
         "--skip-refresh",
@@ -3218,6 +3254,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         args.color = color_flag
     if getattr(args, "allow_locked", False):
         os.environ["QSYNC_ALLOW_LOCKED"] = "1"
+    allow_externally_managed_qids = getattr(args, "allow_externally_managed_qids", None)
+    if allow_externally_managed_qids is not None:
+        os.environ["QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS"] = str(
+            allow_externally_managed_qids
+        )
 
     from .terminal_colors import set_color_mode
     from .terminal_output import operation_timer, reset_timing_emitted
@@ -5387,6 +5428,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         "QSYNC_ACCOUNT": os.environ.get("QSYNC_ACCOUNT"),
         "QSYNC_ALLOW_LOCKED": os.environ.get("QSYNC_ALLOW_LOCKED"),
         "QSYNC_JSON_MODE": os.environ.get("QSYNC_JSON_MODE"),
+        "QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS": os.environ.get(
+            "QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS"
+        ),
     }
 
     from .errors import QsyncError
