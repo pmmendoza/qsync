@@ -420,6 +420,79 @@ def push(
                 "(overriding stale staging)..."
             )
 
+        # Keep the existing unified diff output as the default (high signal, easy to copy/paste),
+        # but offer an optional side-by-side "before/after" view in interactive Rich terminals.
+        view_mode = "diff"
+        try:
+            from ..rich_support import should_use_rich
+
+            if interactive and should_use_rich():
+                from ..interactive_menu import select_from_list
+
+                view_mode = select_from_list(
+                    message="How do you want to view workbook diffs?",
+                    choices=[
+                        "Detailed diffs (unified; cached vs Excel)",
+                        "Before/after panels (summary; cached vs Excel)",
+                        "Both",
+                        "↩ Continue without showing diffs",
+                    ],
+                    default="Detailed diffs (unified; cached vs Excel)",
+                ) or "diff"
+        except Exception:
+            view_mode = "diff"
+
+        if view_mode.startswith("↩") or "Continue without" in view_mode:
+            return []
+
+        def _before_after_from_unified(diff_lines: list[str] | None) -> tuple[str, str]:
+            removed: list[str] = []
+            added: list[str] = []
+            for raw in diff_lines or []:
+                line = str(raw)
+                if not line:
+                    continue
+                if line.startswith(("---", "+++", "@@")):
+                    continue
+                if line.startswith("-") and not line.startswith("---"):
+                    removed.append(line[1:])
+                elif line.startswith("+") and not line.startswith("+++"):
+                    added.append(line[1:])
+            before = "\n".join(removed).strip()
+            after = "\n".join(added).strip()
+            return before or "(no removed lines)", after or "(no added lines)"
+
+        if view_mode.startswith("Before/after") or view_mode == "Both":
+            try:
+                from ..terminal_output import print_panels_in_columns
+
+                print("[sync:items] Before/after (cached vs Excel):")
+                for idx, change in enumerate(workbook_diffs[:20], 1):
+                    print("-" * 80)
+                    title = f"{change.kind.upper()} qid={change.qid}"
+                    if getattr(change, "choice_id", None) is not None:
+                        title += f", choice_id={change.choice_id}"
+                    if getattr(change, "answer_id", None) is not None:
+                        title += f", answer_id={change.answer_id}"
+                    print(title)
+                    before, after = _before_after_from_unified(getattr(change, "diff_lines", None))
+                    print_panels_in_columns(
+                        [
+                            ("Cached", before, "yellow"),
+                            ("Excel", after, "green"),
+                        ]
+                    )
+                if len(workbook_diffs) > 20:
+                    print(
+                        f"[sync:items] (Showing first 20 changes; total {len(workbook_diffs)}.)"
+                    )
+            except Exception:
+                # Fall back to unified diffs below.
+                pass
+
+        if not (view_mode.startswith("Detailed diffs") or view_mode == "Both"):
+            return []
+
         print("[sync:items] Detailed diffs (cached vs Excel):")
         for change in workbook_diffs:
             print("-" * 80)
