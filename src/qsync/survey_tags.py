@@ -9,16 +9,17 @@ import csv
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from .config import resolve_root
+from .config import resolve_root, resolve_scoped_dir
 
 
 def _surveys_csv_path() -> Path:
     """Get path to the inventory CSV (canonical, with legacy fallback)."""
     root = resolve_root(required=False) or Path.cwd()
-    path = root / "surveys" / "inventory.csv"
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    path = surveys_dir / "inventory.csv"
     if path.exists():
         return path
-    return root / "surveys" / "qualtrics_surveys.csv"
+    return surveys_dir / "qualtrics_surveys.csv"
 
 
 def load_survey_tags() -> Dict[str, Dict[str, str]]:

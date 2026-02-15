@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import resolve_root
+from .config import resolve_root, resolve_scoped_dir
 
 
 def _now_iso() -> str:
@@ -72,7 +72,8 @@ class PendingEosRecord:
 
 def _pending_path(survey_id: str) -> Path:
     root = resolve_root(required=False) or Path.cwd()
-    pending_dir = root / "surveys" / "pending" / "eos"
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    pending_dir = surveys_dir / "pending" / "eos"
     safe_id = survey_id.strip() or "unknown"
     return pending_dir / f"{safe_id}.json"
 

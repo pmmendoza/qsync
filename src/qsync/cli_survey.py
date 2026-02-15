@@ -39,10 +39,11 @@ def _workspace_root() -> Path:
 
 
 def _inventory_csv_path(root: Path) -> Path:
-    path = (root / "surveys" / "inventory.csv").resolve()
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    path = (surveys_dir / "inventory.csv").resolve()
     if path.exists():
         return path
-    legacy = (root / "surveys" / "qualtrics_surveys.csv").resolve()
+    legacy = (surveys_dir / "qualtrics_surveys.csv").resolve()
     return legacy if legacy.exists() else path
 
 
@@ -166,7 +167,8 @@ def _default_xlsx_path_for_survey(survey_id: str) -> Path:
         except Exception:
             suffix_slug = _slugify(survey_id)
 
-    return root / "excel" / f"{survey_id}-{suffix_slug}.xlsx"
+    excel_dir = resolve_scoped_dir("excel", root=root)
+    return excel_dir / f"{survey_id}-{suffix_slug}.xlsx"
 
 
 def _collect_languages_from_args(args: argparse.Namespace) -> list[str] | None:
@@ -365,10 +367,16 @@ def handle_focal(args: argparse.Namespace) -> None:
 
 def _resolve_account_from_args(args: argparse.Namespace) -> str | None:
     raw = getattr(args, "account", None)
-    if not isinstance(raw, str):
+    if isinstance(raw, str):
+        name = raw.strip()
+        if name:
+            return name
+    try:
+        from .config import get_active_account
+
+        return get_active_account()
+    except Exception:
         return None
-    name = raw.strip()
-    return name or None
 
 
 def _get_client_config_for_args(args: argparse.Namespace) -> tuple[str, dict]:
@@ -1753,12 +1761,8 @@ def activate_survey(
 def handle_list(args: argparse.Namespace) -> None:
     """List surveys visible to the configured Qualtrics account."""
 
-    account = (getattr(args, "account", None) or "").strip() or None
-    if account:
-        env = load_account_env(account, root=_workspace_root())
-        base, headers = get_client_config(env)
-    else:
-        base, headers = get_client_config()
+    account = _resolve_account_from_args(args)
+    base, headers = _get_client_config_for_args(args)
 
     print(f"Fetching surveys from {base}...")
     surveys = list_surveys(base, headers)
@@ -2427,7 +2431,7 @@ def handle_slice_registry(args: argparse.Namespace) -> None:
     from .terminal_output import info, warn, dim
 
     root = _workspace_root()
-    slices_dir = root / "surveys" / "slices"
+    slices_dir = resolve_scoped_dir("surveys", root=root) / "slices"
     if not slices_dir.exists():
         info("[qsync:slice-registry]", "No slices directory found.")
         return
@@ -3902,12 +3906,8 @@ def handle_delete(args: argparse.Namespace) -> None:
     """Delete one or more surveys by SurveyID."""
     from .survey_ref import format_survey_ref
 
-    account = (getattr(args, "account", None) or "").strip() or None
-    if account:
-        env = load_account_env(account, root=_workspace_root())
-        base, headers = get_client_config(env)
-    else:
-        base, headers = get_client_config()
+    account = _resolve_account_from_args(args)
+    base, headers = _get_client_config_for_args(args)
 
     for survey_id in args.survey_ids:
         print(f"Deleting survey {format_survey_ref(survey_id)}...")
@@ -4269,7 +4269,7 @@ def handle_rename_embedded_field(args: argparse.Namespace) -> None:
 def handle_pull(args: argparse.Namespace) -> None:
     """Download a survey definition JSON to local cache."""
     survey_id = args.survey_id
-    account = getattr(args, "account", None)
+    account = _resolve_account_from_args(args)
     dest_dir: Path | None = _resolve_pull_dest(_workspace_root(), account, args.dest)
     env = None
     if account:

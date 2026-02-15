@@ -2659,10 +2659,10 @@ def push_master(
     if survey_id:
         survey_ids_to_check = [survey_id]
     elif all_surveys:
-        from .config import resolve_root
+        from .config import resolve_root, resolve_scoped_dir
 
         root = resolve_root(required=False) or Path.cwd()
-        pending_dir = root / "surveys" / "pending" / "master"
+        pending_dir = resolve_scoped_dir("surveys", root=root) / "pending" / "master"
         if pending_dir.exists():
             survey_ids_to_check = sorted(
                 {p.stem for p in pending_dir.glob("*.json") if p.is_file()}

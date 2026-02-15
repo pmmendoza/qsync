@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from .types import DimensionChanges
-from ..config import resolve_root
+from ..config import resolve_root, resolve_scoped_dir
 from ..pending_stage import (
     JsPendingPayload,
     PendingStagedChanges,
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def _mapping_csv_path() -> Path:
     root = resolve_root(required=False) or Path.cwd()
-    return root / "survey_js" / "survey_qid_js_map.csv"
+    return resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
 
 
 def detect_changes(survey_id: str) -> DimensionChanges:

@@ -1197,7 +1197,10 @@ def write_json_with_backup(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def default_slices_dir(root: Path) -> Path:
-    return root / "surveys" / "slices"
+    from .config import resolve_scoped_dir
+
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    return surveys_dir / "slices"
 
 
 def write_coverage_report(

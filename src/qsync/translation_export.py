@@ -827,7 +827,9 @@ def export_survey_to_word(
         mermaid_image_path=mermaid_png_path,
         render_mermaid=True,
         edf_overrides=edf_overrides,
-        mapping_path=(root / "survey_js" / "survey_qid_js_map.csv"),
+        mapping_path=(
+            resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
+        ),
         include_html_source=include_html_source,
         layout_heuristics=layout_heuristics,
         render_language=render_language,
@@ -916,7 +918,9 @@ def export_survey_to_pdf(
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_png_path,
         edf_overrides=edf_overrides,
-        mapping_path=(root / "survey_js" / "survey_qid_js_map.csv"),
+        mapping_path=(
+            resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
+        ),
         include_html_source=False,  # PDF renders HTML natively, no source needed
         layout_heuristics=layout_heuristics,
         render_language=render_language,

@@ -102,6 +102,10 @@ def test_survey_list_account_uses_account_env_and_skips_inventory_ordering(
 
     ensure_qsync_workspace(tmp_path)
     write_inventory_csv(tmp_path, "id,name,locked\n")
+    # Account-scoped inventory (doctor resolves inventory under surveys/.<account>/).
+    scoped_inventory = tmp_path / "surveys" / ".damian" / "inventory.csv"
+    scoped_inventory.parent.mkdir(parents=True, exist_ok=True)
+    scoped_inventory.write_text("id,name,locked\n", encoding="utf-8")
 
     # Alternate account env file.
     (tmp_path / ".env.damian").write_text(
@@ -153,6 +157,9 @@ def test_survey_delete_account_uses_account_env(
 
     ensure_qsync_workspace(tmp_path)
     write_inventory_csv(tmp_path, "id,name,locked\n")
+    scoped_inventory = tmp_path / "surveys" / ".damian" / "inventory.csv"
+    scoped_inventory.parent.mkdir(parents=True, exist_ok=True)
+    scoped_inventory.write_text("id,name,locked\n", encoding="utf-8")
 
     (tmp_path / ".env.damian").write_text(
         "\n".join(
@@ -204,6 +211,9 @@ def test_doctor_check_api_account_uses_account_env(
 
     ensure_qsync_workspace(tmp_path)
     write_inventory_csv(tmp_path, "id,name,locked\n")
+    scoped_inventory = tmp_path / "surveys" / ".damian" / "inventory.csv"
+    scoped_inventory.parent.mkdir(parents=True, exist_ok=True)
+    scoped_inventory.write_text("id,name,locked\n", encoding="utf-8")
 
     (tmp_path / ".env.damian").write_text(
         "\n".join(

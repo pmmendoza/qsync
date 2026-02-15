@@ -284,7 +284,7 @@ def _js_pending_out_of_sync(
 ) -> bool:
     from .pending_stage import JsPendingPayload
     from .dimensions.js_preview import preview_differences
-    from .config import resolve_root
+    from .config import resolve_root, resolve_scoped_dir
 
     pending = load_pending(survey_id, "js")
     if not pending or not isinstance(pending.payload, JsPendingPayload):
@@ -299,7 +299,7 @@ def _js_pending_out_of_sync(
         return False
 
     root = resolve_root(required=False) or Path.cwd()
-    mapping_csv = root / "survey_js" / "survey_qid_js_map.csv"
+    mapping_csv = resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
     if not mapping_csv.exists():
         return False
 
@@ -1929,10 +1929,10 @@ def _detect_unstaged_js(
     scope: Optional[ScopeFilter] = None,
 ) -> DimensionChanges:
     from .js_preview import preview_differences
-    from .config import resolve_root
+    from .config import resolve_root, resolve_scoped_dir
 
     root = resolve_root(required=False) or Path.cwd()
-    mapping_csv = root / "survey_js" / "survey_qid_js_map.csv"
+    mapping_csv = resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
     if not mapping_csv.exists():
         return DimensionChanges(
             dimension="js",
@@ -3847,13 +3847,14 @@ def sync_survey(
             try:
                 xlsx_path = resolver.resolve(survey_id)
             except Exception:
-                from .config import resolve_root
+                from .config import resolve_root, resolve_scoped_dir
 
                 root = resolve_root(required=False) or Path.cwd()
                 record = _get_inventory_cached(survey_id)
                 survey_name = record.get("name", survey_id) if record else survey_id
                 safe_name = survey_name.replace(" ", "_").replace("/", "_")
-                xlsx_path = root / "excel" / f"{safe_name}-{survey_id}.xlsx"
+                excel_dir = resolve_scoped_dir("excel", root=root)
+                xlsx_path = excel_dir / f"{safe_name}-{survey_id}.xlsx"
 
             # Prompt in interactive mode (unless --yes)
             should_refresh = True
@@ -4646,12 +4647,14 @@ def display_dimension_preview(
         elif dimension == "js":
             # Reuse existing JS preview
             from .js_preview import preview_differences
-            from .config import resolve_root
+            from .config import resolve_root, resolve_scoped_dir
             from .drift_check import confirm_preview_drift
             from .qualtrics_client import refresh_survey_cache
 
             root = resolve_root(required=False) or Path.cwd()
-            mapping_csv = root / "survey_js" / "survey_qid_js_map.csv"
+            mapping_csv = (
+                resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
+            )
 
             if not mapping_csv.exists():
                 print(

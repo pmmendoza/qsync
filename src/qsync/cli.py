@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 def _extract_global_path_flags(
     argv: list[str],
-) -> tuple[Path | None, Path | None, str | None, list[str]]:
+) -> tuple[Path | None, Path | None, str | None, str | None, list[str]]:
     """
     Extract qsync global path flags from argv, regardless of position.
 
@@ -58,10 +58,12 @@ def _extract_global_path_flags(
       --root <path> / --root=<path>
       --env-path <path> / --env-path=<path>
       --color <auto|always|never> / --color=<...>
+      --account <name> / --account=<name>
     """
     root: Path | None = None
     env_path: Path | None = None
     color: str | None = None
+    account: str | None = None
     cleaned: list[str] = []
 
     i = 0
@@ -110,10 +112,24 @@ def _extract_global_path_flags(
             i += 2
             continue
 
+        if token.startswith("--account="):
+            value = token.split("=", 1)[1].strip()
+            if not value:
+                raise SystemExit("[qsync] ERROR: --account requires a value")
+            account = value
+            i += 1
+            continue
+        if token == "--account":
+            if i + 1 >= len(argv):
+                raise SystemExit("[qsync] ERROR: --account requires a value")
+            account = argv[i + 1].strip()
+            i += 2
+            continue
+
         cleaned.append(token)
         i += 1
 
-    return root, env_path, color, cleaned
+    return root, env_path, color, account, cleaned
 
 
 def _read_git_sha(git_dir: Path) -> str | None:
@@ -233,6 +249,13 @@ def _add_common_args(parser: argparse.ArgumentParser, *, include_xlsx: bool) -> 
 
 
 def _add_js_common_args(parser: argparse.ArgumentParser) -> None:
+    def _default_mapping_path() -> Path:
+        # Account-aware default: survey_js/.<account>/survey_qid_js_map.csv when selected.
+        from .config import resolve_root, resolve_scoped_dir
+
+        root = resolve_root(required=False) or Path.cwd()
+        return resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
+
     parser.add_argument(
         "--survey-id",
         help="Target Qualtrics Survey ID (omit to select interactively)",
@@ -240,8 +263,11 @@ def _add_js_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--mapping",
         type=Path,
-        default=DEFAULT_MAPPING_PATH,
-        help="Path to survey_qid_js_map.csv (default: survey_js/survey_qid_js_map.csv)",
+        default=_default_mapping_path(),
+        help=(
+            "Path to survey_qid_js_map.csv (default: survey_js/survey_qid_js_map.csv, "
+            "or survey_js/.<account>/survey_qid_js_map.csv when --account is used)."
+        ),
     )
     _add_include_args(parser, include_js=True)
 
@@ -1512,8 +1538,8 @@ def _default_xlsx_path(survey_id: str) -> Path:
 
 def _main_impl(argv: Optional[list[str]] = None) -> None:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
-    root_flag, env_path_flag, color_flag, cleaned_argv = _extract_global_path_flags(
-        raw_argv
+    root_flag, env_path_flag, color_flag, account_flag, cleaned_argv = (
+        _extract_global_path_flags(raw_argv)
     )
 
     if "--version" in cleaned_argv or "-V" in cleaned_argv:
@@ -1543,6 +1569,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     os.chdir(discovered)
             except Exception:
                 pass
+        if account_flag:
+            # Validate early so all commands fail fast on invalid account selectors.
+            from .config import validate_account_name
+
+            os.environ["QSYNC_ACCOUNT"] = validate_account_name(str(account_flag))
 
     parser = QsyncArgumentParser(
         prog="qsync",
@@ -1560,6 +1591,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--env-path",
         type=Path,
         help="Path to a .env file with credentials (overrides QSYNC_ENV_PATH and <root>/.env).",
+    )
+    parser.add_argument(
+        "--account",
+        help=(
+            "Use credentials from `.env.<account>` under the workspace root "
+            "(and scope workspace writes under `.<account>/` directories)."
+        ),
     )
     parser.add_argument(
         "--color",
@@ -3257,27 +3295,36 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             from .config import (
                 ENV_PATH,
                 ROOT,
+                get_active_account,
                 load_account_env,
                 load_env,
                 load_env_file,
                 resolve_account_env_path,
                 resolve_env_path,
                 resolve_root,
+                resolve_scoped_dir,
             )
             from .api_push import send_api_request
             from .interactive_menu import QUESTIONARY_AVAILABLE, should_use_questionary
 
             root = resolve_root(required=False) or ROOT
             account = (getattr(args, "account", None) or "").strip() or None
+            if not account:
+                account = get_active_account()
             if account:
                 env_path = resolve_account_env_path(account, root=root)
             else:
                 env_path = resolve_env_path(root=root) or ENV_PATH
             warnings: list[str] = []
             ok = True
-            surveys_dir = root / "surveys"
-            excel_dir = root / "excel"
-            survey_js_dir = root / "survey_js"
+            surveys_dir_base = root / "surveys"
+            excel_dir_base = root / "excel"
+            survey_js_dir_base = root / "survey_js"
+
+            surveys_dir = resolve_scoped_dir("surveys", root=root, account=account)
+            excel_dir = resolve_scoped_dir("excel", root=root, account=account)
+            survey_js_dir = resolve_scoped_dir("survey_js", root=root, account=account)
+
             inventory_csv = surveys_dir / "inventory.csv"
             legacy_inventory_csv = surveys_dir / "qualtrics_surveys.csv"
             inventory_resolved = (
@@ -3290,13 +3337,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 )
             )
 
-            if not surveys_dir.exists():
+            if not surveys_dir_base.exists():
                 ok = False
                 warnings.append("surveys/ directory not found under root")
-            if not excel_dir.exists():
+            if not excel_dir_base.exists():
                 ok = False
                 warnings.append("excel/ directory not found under root")
-            if not survey_js_dir.exists():
+            if not survey_js_dir_base.exists():
                 ok = False
                 warnings.append("survey_js/ directory not found under root")
             if not inventory_resolved.exists():
@@ -5337,6 +5384,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         "QSYNC_ROOT": os.environ.get("QSYNC_ROOT"),
         "QSYNC_DATA_DIR": os.environ.get("QSYNC_DATA_DIR"),
         "QSYNC_ENV_PATH": os.environ.get("QSYNC_ENV_PATH"),
+        "QSYNC_ACCOUNT": os.environ.get("QSYNC_ACCOUNT"),
         "QSYNC_ALLOW_LOCKED": os.environ.get("QSYNC_ALLOW_LOCKED"),
         "QSYNC_JSON_MODE": os.environ.get("QSYNC_JSON_MODE"),
     }

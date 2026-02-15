@@ -34,7 +34,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from qsync.config import resolve_root
+from qsync.config import resolve_root, resolve_scoped_dir
 from qsync.dimensions.translations_language_blocks import (
     get_base_language,
     list_enabled_languages,
@@ -276,7 +276,8 @@ def _resolve_fasttext_model_path() -> Path | None:
 
 
 def _fasttext_prompt_state_path(root: Path) -> Path:
-    return root / "surveys" / _FASTTEXT_PROMPT_FILENAME
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    return surveys_dir / _FASTTEXT_PROMPT_FILENAME
 
 
 def _load_fasttext_prompt_state(root: Path) -> dict[str, Any]:

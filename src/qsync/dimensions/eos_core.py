@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ..api_push import send_api_request
-from ..config import get_client_config, resolve_root
+from ..config import get_client_config, resolve_root, resolve_scoped_dir
 from ..pending_stage import (
     PendingStagedChanges,
     EosPendingPayload,
@@ -28,8 +28,7 @@ from ..drift_check import check_drift as run_drift_check, enforce_no_drift
 from ..push_safeguards import enforce_push_safeguards, SafeguardConfig
 from ..auto_publish import auto_publish_after_push
 
-CONTENTS_DIR = "contents"
-LIB_MESSAGE_DIR = Path(CONTENTS_DIR) / "qualtrics_library_messages"
+LIB_MESSAGE_DIRNAME = "qualtrics_library_messages"
 SURVEY_SOURCE = "SurveyFlow.EndSurvey.DisplayMessage"
 
 ERROR_ID_EOS_SHARED_MESSAGE = "QSYNC-EOS-SHARED-001"
@@ -110,7 +109,8 @@ def extract_eos_message_refs(
 
 def message_dir(library_id: str, message_id: str) -> Path:
     root = resolve_root(required=False) or Path.cwd()
-    return root / LIB_MESSAGE_DIR / library_id / message_id
+    contents_dir = resolve_scoped_dir("contents", root=root)
+    return contents_dir / LIB_MESSAGE_DIRNAME / library_id / message_id
 
 
 def pull_eos_messages(
@@ -968,7 +968,7 @@ def detect_shared_messages(
     """Detect shared messages by scanning locally cached surveys (local-only)."""
 
     root = resolve_root(required=False) or Path.cwd()
-    surveys_dir = root / "surveys"
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
     candidates: list[Path] = []
     if surveys_dir.exists():
         candidates.extend(sorted(surveys_dir.glob("*.json")))
@@ -1065,7 +1065,7 @@ def find_message_contexts(
     """
 
     root = resolve_root(required=False) or Path.cwd()
-    surveys_dir = root / "surveys"
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
     candidates: list[Path] = []
     if surveys_dir.exists():
         candidates.extend(sorted(surveys_dir.glob("*.json")))

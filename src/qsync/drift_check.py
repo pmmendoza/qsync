@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from qsync.push_logger import log_push_event
-from qsync.config import resolve_root
+from qsync.config import resolve_root, resolve_scoped_dir
 from qsync.qualtrics_client import fetch_survey_definition_live, load_cached_survey
 
 DimensionType = Literal["items", "js", "translations", "eos", "flow"]
@@ -1033,7 +1033,7 @@ def _check_js_drift(survey_id: str, *, context: dict | None = None) -> DriftRepo
     live_questions = live_payload.get("Questions") or {}
 
     root = resolve_root(required=False) or Path.cwd()
-    mapping_csv = root / "survey_js" / "survey_qid_js_map.csv"
+    mapping_csv = resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
 
     if mapping_csv.exists():
         try:

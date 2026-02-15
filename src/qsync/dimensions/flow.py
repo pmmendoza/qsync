@@ -30,7 +30,7 @@ from ..pending_stage import (
     load_pending,
     save_pending,
 )
-from ..config import resolve_root
+from ..config import resolve_root, resolve_scoped_dir
 
 
 logger = logging.getLogger(__name__)
@@ -45,9 +45,11 @@ def _flow_dir(survey_id: str) -> Path:
     """Get the flow directory for a survey.
 
     Returns:
-        Path to surveys/flow/{survey_id}/
+        Path to surveys/flow/{survey_id}/ (account-scoped when QSYNC_ACCOUNT is set)
     """
-    return _workspace_root() / "surveys" / "flow" / survey_id
+    root = _workspace_root()
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    return surveys_dir / "flow" / survey_id
 
 
 def _yaml_path(survey_id: str) -> Path:

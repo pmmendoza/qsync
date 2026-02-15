@@ -12,10 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import resolve_root
+from .config import resolve_root, resolve_scoped_dir
 
 ROOT = resolve_root(required=False) or Path.cwd()
-PENDING_DIR = ROOT / "surveys" / "pending"
+SURVEYS_DIR = resolve_scoped_dir("surveys", root=ROOT)
+PENDING_DIR = SURVEYS_DIR / "pending"
 PENDING_JS_DIR = PENDING_DIR / "js"
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .api_push import send_api_request
-from .config import get_client_config, resolve_root
+from .config import get_client_config, resolve_root, resolve_scoped_dir
 from .qualtrics_client import load_cached_survey
 from .qualtrics_client import find_cached_survey_file
 from .survey_inventory import (
@@ -389,7 +389,7 @@ def update_js_mapping_csv(
     """Merge JS mapping updates into survey_js/survey_qid_js_map.csv."""
 
     result = PrepareSurfaceResult()
-    mapping_path = root / "survey_js" / "survey_qid_js_map.csv"
+    mapping_path = resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
     mapping_path.parent.mkdir(parents=True, exist_ok=True)
     is_new_file = not mapping_path.exists()
 
