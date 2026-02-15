@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from .config import resolve_root
+from .config import resolve_root, resolve_scoped_dir
 from .dimensions.flow_diff import FlowChange, diff_flows
 
 
@@ -321,7 +321,7 @@ def write_deep_parity_artifacts(
     write_unified_diff: bool = True,
 ) -> dict[str, Path]:
     root = resolve_root(required=False) or Path.cwd()
-    out_dir = (out_dir or (root / "tmp")).resolve()
+    out_dir = (out_dir or resolve_scoped_dir("tmp", root=root)).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
