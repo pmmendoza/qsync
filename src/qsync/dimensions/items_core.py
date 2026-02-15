@@ -638,7 +638,11 @@ def stage_rename_embedded_field(
 
 
 def init_survey_to_excel(
-    survey_id: str, xlsx_path: Path, *, languages: set[str] | list[str] | None = None
+    survey_id: str,
+    xlsx_path: Path,
+    *,
+    languages: set[str] | list[str] | None = None,
+    check_drift: bool = True,
 ) -> None:
     """Initialize or refresh a survey workbook from the latest Qualtrics cache.
 
@@ -651,6 +655,10 @@ def init_survey_to_excel(
         languages: Optional list of language codes to add as translation columns.
                   If None (default), auto-detects all enabled languages from Qualtrics.
                   If explicit list provided, creates only those columns.
+        check_drift: When True (default), runs a drift check (cache vs live API)
+                    and prints a warning + diff when drift is detected. Set False
+                    for batch hydration workflows where the cache will be refreshed
+                    immediately anyway.
 
     Raises:
         requests.HTTPError: If the Qualtrics API call fails while refreshing.
@@ -661,11 +669,12 @@ def init_survey_to_excel(
         >>> init_survey_to_excel("SV_xxx", Path("excel/SV_xxx-mylabel.xlsx"))
     """
 
-    # Check for drift before refreshing
-    drift_report = check_drift_fn(survey_id, dimension="items", interactive=True)
-    if drift_report.has_drift:
-        print("[qsync:items] WARNING: Drift detected between cache and API.")
-        drift_report.display(interactive=True)
+    # Check for drift before refreshing (informational only).
+    if check_drift:
+        drift_report = check_drift_fn(survey_id, dimension="items", interactive=True)
+        if drift_report.has_drift:
+            print("[qsync:items] WARNING: Drift detected between cache and API.")
+            drift_report.display(interactive=True)
 
     # Refresh cache from Qualtrics and detect drift.
     survey, changed = refresh_survey_cache(survey_id)
