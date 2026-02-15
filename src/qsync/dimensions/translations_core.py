@@ -372,8 +372,14 @@ def _write_json(path: Path, payload: Mapping[str, Any], *, backup: bool) -> None
     path.write_text(serialized, encoding="utf-8")
 
 
-def list_enabled_languages(survey_id: str) -> list[str]:
-    base_url, headers = get_client_config()
+def list_enabled_languages(
+    survey_id: str,
+    *,
+    base_url: str | None = None,
+    headers: dict | None = None,
+) -> list[str]:
+    if base_url is None or headers is None:
+        base_url, headers = get_client_config()
     resp = send_api_request(
         action="qsync.translations.languages.list",
         method="GET",

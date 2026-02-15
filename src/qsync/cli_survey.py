@@ -56,6 +56,16 @@ def _iter_inventory_rows(csv_path: Path) -> Iterable[dict]:
         return list(reader)
 
 
+def _resolve_pull_dest(
+    root: Path, account: str | None, explicit_dest: str | None
+) -> Path:
+    if explicit_dest:
+        return Path(explicit_dest)
+    if account:
+        return (root / "surveys" / f".{account}").resolve()
+    return (root / "surveys").resolve()
+
+
 def _slugify(value: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(value))
 
@@ -282,6 +292,902 @@ def handle_focal(args: argparse.Namespace) -> None:
             print(sid)
         return
     print(" ".join(focal_ids))
+
+
+def _resolve_account_from_args(args: argparse.Namespace) -> str | None:
+    raw = getattr(args, "account", None)
+    if not isinstance(raw, str):
+        return None
+    name = raw.strip()
+    return name or None
+
+
+def _get_client_config_for_args(args: argparse.Namespace) -> tuple[str, dict]:
+    account = _resolve_account_from_args(args)
+    if account:
+        env = load_account_env(account, root=_workspace_root())
+        return get_client_config(env)
+    return get_client_config()
+
+
+def _discover_account_env_files(*, root: Path) -> list[str]:
+    """Return account names for `.env.<account>` files under root (best-effort)."""
+
+    accounts: list[str] = []
+    for path in sorted(root.glob(".env.*")):
+        # ".env.<account>" only; ignore templates/examples and other dotfiles.
+        if not path.is_file():
+            continue
+        if path.name in {".env.example", ".env.template"}:
+            continue
+        account = path.name.split(".env.", 1)[-1].strip()
+        if not account or account == path.name:
+            continue
+        try:
+            # Validate + ensure required keys are present (base url + token).
+            load_account_env(account, root=root)
+        except Exception:
+            continue
+        accounts.append(account)
+    return accounts
+
+
+def _typed_confirmation(
+    *,
+    prompt: str,
+    expected: str,
+    input_fn=input,
+) -> bool:
+    """Require the user to type an exact confirmation string (interactive guardrail)."""
+
+    try:
+        typed = str(input_fn(prompt) or "").strip()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return typed == expected
+
+
+def handle_menu(_args: argparse.Namespace) -> None:
+    """Interactive wizard for common `qsync survey ...` operations."""
+
+    from .interactive_menu import is_interactive, select_from_list, confirm
+
+    if not is_interactive():
+        raise SystemExit("[survey-menu] ERROR: Interactive TTY required.")
+
+    root = _workspace_root()
+    selected_account: str | None = None  # None = default
+
+    # Cache survey lists per base_url for responsiveness within a menu session.
+    survey_cache: dict[str, list[dict[str, Any]]] = {}
+
+    def _account_label() -> str:
+        return selected_account or "default"
+
+    def _resolve_base_url_for_display() -> str | None:
+        if selected_account:
+            try:
+                env = load_account_env(selected_account, root=root)
+                base = (env.get("QUALTRICS_BASE_URL") or "").strip()
+                return base or None
+            except Exception:
+                return None
+        # Default account: best-effort (avoid requiring token just to show base url).
+        try:
+            from .config import load_env, resolve_env_path
+
+            env_path = resolve_env_path(root=root)
+            env = load_env(env_path)
+            base = (env.get("QUALTRICS_BASE_URL") or "").strip()
+            return base or None
+        except Exception:
+            return None
+
+    def _get_client() -> tuple[str, dict]:
+        if selected_account:
+            env = load_account_env(selected_account, root=root)
+            return get_client_config(env)
+        return get_client_config()
+
+    def _get_surveys() -> list[dict[str, Any]]:
+        base, headers = _get_client()
+        cached = survey_cache.get(base)
+        if cached is not None:
+            return cached
+        surveys = list_surveys(base, headers)
+        surveys.sort(key=lambda x: x.get("creationDate", ""), reverse=True)
+        survey_cache[base] = surveys
+        return surveys
+
+    def _pick_survey_id(*, message: str) -> str | None:
+        try:
+            surveys = _get_surveys()
+        except Exception as exc:
+            print(f"[survey-menu] ERROR: unable to list surveys: {exc}")
+            return None
+
+        # Keep arrow menus usable: require a filter when the list is large.
+        filtered = surveys
+        if len(filtered) > 60:
+            raw = input(
+                "Filter surveys by name/ID substring (blank to show all): "
+            ).strip()
+            if raw:
+                needle = raw.lower()
+                filtered = [
+                    s
+                    for s in surveys
+                    if needle in str(s.get("id") or "").lower()
+                    or needle in str(s.get("name") or "").lower()
+                ]
+                if not filtered:
+                    print("[survey-menu] No surveys matched that filter.")
+                    return None
+            else:
+                if not confirm(
+                    f"List all {len(filtered)} surveys in an interactive menu? (may be slow)",
+                    default=False,
+                ):
+                    return None
+
+        choices = [
+            f"{s.get('id')} - {s.get('name', 'Untitled')}"
+            for s in filtered
+            if s.get("id")
+        ]
+        choices.append("─" * 60)
+        choices.append("✎ Enter SurveyID manually")
+        choices.append("↩ Back")
+        selection = select_from_list(message=message, choices=choices)
+        if not selection or selection.endswith("Back"):
+            return None
+        if selection.startswith("✎"):
+            manual = input("Enter Qualtrics SurveyID (e.g. SV_...): ").strip()
+            return manual or None
+        return selection.split(" - ", 1)[0].strip()
+
+    def _run_action(func, ns: argparse.Namespace) -> None:
+        try:
+            func(ns)
+        except SystemExit as exc:
+            # Keep the wizard alive on subcommand exits.
+            code = getattr(exc, "code", None)
+            if code not in (None, 0):
+                print(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[survey-menu] ERROR: {exc}")
+
+    def _require_default_account(*, action: str) -> bool:
+        if selected_account is None:
+            return True
+        print(
+            f"[survey-menu] '{action}' is workspace-mutating and is only supported on the default account in this menu."
+        )
+        print("  Next: Switch account → default and retry.")
+        return False
+
+    def _menu_switch_account() -> None:
+        nonlocal selected_account
+        accounts = _discover_account_env_files(root=root)
+        choices = ["default", *accounts, "↩ Back"]
+        selection = select_from_list("Select account:", choices)
+        if not selection or selection.endswith("Back"):
+            return
+        if selection == "default":
+            selected_account = None
+        else:
+            selected_account = selection
+        survey_cache.clear()
+
+    def _menu_show_account_info() -> None:
+        base = _resolve_base_url_for_display() or "(not configured)"
+        print(f"[survey-menu] account={_account_label()} base_url={base}")
+        try:
+            resolved_base, headers = _get_client()
+            token_present = bool(headers.get("X-API-TOKEN"))
+            print(
+                f"[survey-menu] resolved_base_url={resolved_base} token_present={token_present}"
+            )
+        except Exception as exc:
+            print(f"[survey-menu] NOTE: could not resolve API client ({exc})")
+
+    def _menu_check_api() -> None:
+        try:
+            base, headers = _get_client()
+        except Exception as exc:
+            print(f"[survey-menu] ERROR: could not resolve API client: {exc}")
+            return
+        resp = send_api_request(
+            action="qsync.survey.menu.whoami",
+            method="GET",
+            base_url=base,
+            headers=headers,
+            path="whoami",
+            log_event=False,
+            timeout=15,
+        )
+        result = resp.json().get("result") or {}
+        datacenter = (result.get("datacenter") or "").strip()
+        user_id = (result.get("userId") or "").strip()
+        print(
+            f"[survey-menu] whoami datacenter={datacenter or '(unknown)'} userId={user_id or '(unknown)'}"
+        )
+
+    def _menu_delete() -> None:
+        mode = select_from_list(
+            "Delete: how do you want to select surveys?",
+            [
+                "Pick from survey list (repeat)",
+                "Enter SurveyIDs manually",
+                "↩ Back",
+            ],
+        )
+        if not mode or mode.endswith("Back"):
+            return
+
+        survey_ids: list[str] = []
+        if mode.startswith("Enter"):
+            raw = input("Enter one or more SurveyIDs (space/comma separated): ").strip()
+            for token in raw.replace(",", " ").split():
+                token = token.strip()
+                if token:
+                    survey_ids.append(token)
+        else:
+            while True:
+                picked = _pick_survey_id(message="Pick a survey to delete:")
+                if not picked:
+                    break
+                if picked not in survey_ids:
+                    survey_ids.append(picked)
+                again = select_from_list("Add another?", ["Yes", "No (continue)"])
+                if not again or again.startswith("No"):
+                    break
+
+        survey_ids = list(
+            dict.fromkeys([sid.strip() for sid in survey_ids if sid.strip()])
+        )
+        if not survey_ids:
+            return
+
+        base = _resolve_base_url_for_display() or "(unknown)"
+        print()
+        print("[survey-menu] WARNING: This will permanently delete surveys in Qualtrics.")
+        print("[survey-menu] Account:", _account_label())
+        print("[survey-menu] Base URL:", base)
+        print("[survey-menu] Surveys:", ", ".join(survey_ids))
+        print()
+
+        if not _typed_confirmation(
+            prompt="Type 'delete' to confirm: ",
+            expected="delete",
+        ):
+            print("[survey-menu] Aborted.")
+            return
+
+        _run_action(
+            handle_delete,
+            argparse.Namespace(
+                survey_ids=survey_ids,
+                account=selected_account,
+            ),
+        )
+
+    def _menu_rename() -> None:
+        survey_id = _pick_survey_id(message="Pick a survey to rename:")
+        if not survey_id:
+            return
+        new_name = input("Enter new survey name: ").strip()
+        if not new_name:
+            return
+        _run_action(
+            handle_rename,
+            argparse.Namespace(
+                survey_id=survey_id,
+                new_name=new_name,
+                account=selected_account,
+            ),
+        )
+
+    def _menu_activate(*, active: bool) -> None:
+        survey_id = _pick_survey_id(
+            message="Pick a survey to activate:"
+            if active
+            else "Pick a survey to deactivate:"
+        )
+        if not survey_id:
+            return
+        handler = handle_activate if active else handle_deactivate
+        _run_action(
+            handler,
+            argparse.Namespace(
+                survey_id=survey_id,
+                survey_ids_file=None,
+                dry_run=False,
+                force_live=False,
+                yes=False,
+                publish=False,
+                publish_description="",
+                show_versions=False,
+                versions_limit=5,
+                show_owner=False,
+                account=selected_account,
+            ),
+        )
+
+    def _menu_publish() -> None:
+        survey_id = _pick_survey_id(message="Pick a survey to publish:")
+        if not survey_id:
+            return
+        desc = input("Version description (max 140 chars): ").strip()
+        if not desc:
+            return
+        _run_action(
+            handle_publish,
+            argparse.Namespace(
+                survey_id=survey_id,
+                description=desc,
+                dry_run=False,
+                retry_attempts=1,
+                account=selected_account,
+            ),
+        )
+
+    def _menu_versions() -> None:
+        survey_id = _pick_survey_id(message="Pick a survey to list versions:")
+        if not survey_id:
+            return
+        _run_action(
+            handle_versions,
+            argparse.Namespace(
+                survey_id=survey_id,
+                limit=None,
+                json=False,
+                account=selected_account,
+            ),
+        )
+
+    def _menu_version_fetch() -> None:
+        survey_id = _pick_survey_id(message="Pick a survey to fetch a version:")
+        if not survey_id:
+            return
+        version_id = input("Enter VersionID: ").strip()
+        if not version_id:
+            return
+        fmt = select_from_list("Format:", ["json", "qsf", "↩ Back"])
+        if not fmt or fmt.endswith("Back"):
+            return
+        out_path = input("Output path (optional): ").strip() or None
+        _run_action(
+            handle_version_fetch,
+            argparse.Namespace(
+                survey_id=survey_id,
+                version_id=version_id,
+                format=fmt,
+                output=out_path,
+                json=False,
+                account=selected_account,
+            ),
+        )
+
+    def _menu_rollback() -> None:
+        survey_id = _pick_survey_id(message="Pick a survey to rollback questions:")
+        if not survey_id:
+            return
+        version_id = input("Enter VersionID to rollback from: ").strip()
+        if not version_id:
+            return
+        qids = input(
+            "Enter QIDs to rollback (comma-separated, e.g. QID1,QID2): "
+        ).strip()
+        if not qids:
+            return
+        dry_run = (
+            select_from_list("Dry run?", ["No", "Yes", "↩ Back"]) == "Yes"
+        )
+        _run_action(
+            handle_rollback,
+            argparse.Namespace(
+                survey_id=survey_id,
+                version_id=version_id,
+                question_id=qids,
+                description="",
+                dry_run=bool(dry_run),
+                no_publish=False,
+                force_live=False,
+                yes=False,
+                account=selected_account,
+            ),
+        )
+
+    def _menu_copy() -> None:
+        survey_id = _pick_survey_id(message="Pick a source survey to copy:")
+        if not survey_id:
+            return
+        new_name = input("Enter name for new survey: ").strip()
+        if not new_name:
+            return
+        _run_action(
+            handle_copy,
+            argparse.Namespace(
+                source_survey_id=survey_id,
+                name=new_name,
+                from_qsf=None,
+                project_category=None,
+                language=None,
+                force_duplicate=False,
+                generate_qsf=False,
+                account=selected_account,
+            ),
+        )
+
+    def _menu_slice_language() -> None:
+        survey_id = _pick_survey_id(message="Pick a multilingual source survey:")
+        if not survey_id:
+            return
+        langs = input("Target language(s) (e.g. DE or DE,FR-CA): ").strip()
+        if not langs:
+            return
+        _run_action(
+            handle_slice_language,
+            argparse.Namespace(
+                source_survey_id=survey_id,
+                language=None,
+                languages=langs,
+                name=None,
+                keep_languages="target-only",
+                allow_incomplete=False,
+                allow_fallback=False,
+                no_flow_text=False,
+                dry_run=False,
+                yes=False,
+                verify_parity=False,
+                force_duplicate=False,
+                account=selected_account,
+            ),
+        )
+
+    def _menu_slice_registry() -> None:
+        raw_source = input("Filter by source survey ID (optional): ").strip() or None
+        raw_limit = input("Limit (optional): ").strip()
+        limit = int(raw_limit) if raw_limit.isdigit() else None
+        open_links = select_from_list("Open edit links?", ["No", "Yes"]) == "Yes"
+        _run_action(
+            handle_slice_registry,
+            argparse.Namespace(source=raw_source, limit=limit, open=bool(open_links)),
+        )
+
+    def _menu_parity_check() -> None:
+        survey_a = _pick_survey_id(message="Pick survey A:")
+        if not survey_a:
+            return
+        survey_b = _pick_survey_id(message="Pick survey B:")
+        if not survey_b:
+            return
+        deep = select_from_list("Deep parity?", ["No", "Yes"]) == "Yes"
+        _run_action(
+            handle_parity_check,
+            argparse.Namespace(
+                a=survey_a, b=survey_b, deep=bool(deep), account=selected_account
+            ),
+        )
+
+    def _menu_copy_cross_account() -> None:
+        accounts = _discover_account_env_files(root=root)
+
+        def _pick_account(*, label: str) -> str | None:
+            choices = ["default (.env)", *accounts, "↩ Back"]
+            selection = select_from_list(label, choices)
+            if not selection or selection.endswith("Back"):
+                return None
+            if selection.startswith("default"):
+                return "default"
+            return selection
+
+        source_acct = _pick_account(label="Select source account:")
+        if not source_acct:
+            return
+        target_acct = _pick_account(label="Select target account:")
+        if not target_acct:
+            return
+
+        nonlocal selected_account
+        prior = selected_account
+        try:
+            selected_account = None if source_acct == "default" else source_acct
+            survey_id = _pick_survey_id(message="Pick a source survey to copy:")
+        finally:
+            selected_account = prior
+            survey_cache.clear()
+        if not survey_id:
+            return
+
+        new_name = input(
+            "Enter name for the new survey in target account: "
+        ).strip()
+        if not new_name:
+            return
+
+        _run_action(
+            handle_copy_cross_account,
+            argparse.Namespace(
+                source_survey_id=survey_id,
+                new_name=new_name,
+                target_api_key="",
+                target_base_url="",
+                target_account=None if target_acct == "default" else target_acct,
+                source_api_key="",
+                source_base_url="",
+                source_account=None if source_acct == "default" else source_acct,
+                activate=False,
+                publish=False,
+                publish_description="",
+                force_overwrite=False,
+                yes=False,
+                no_translations=False,
+                verify=False,
+                verify_deep=False,
+            ),
+        )
+
+    def _menu_export_responses() -> None:
+        survey_id = _pick_survey_id(message="Pick a survey to export responses:")
+        if not survey_id:
+            return
+        out = input("Output directory (optional; default: responses/): ").strip() or None
+        _run_action(
+            handle_export_responses,
+            argparse.Namespace(survey_id=survey_id, output=out, account=selected_account),
+        )
+
+    def _menu_export_translation() -> None:
+        if not _require_default_account(action="export-translation"):
+            return
+        _run_action(handle_export_translation, argparse.Namespace())
+
+    def _menu_export_side_by_side() -> None:
+        if not _require_default_account(action="export-side-by-side"):
+            return
+        _run_action(handle_export_side_by_side, argparse.Namespace())
+
+    def _menu_inventory() -> None:
+        if not _require_default_account(action="survey inventory"):
+            return
+        sel = select_from_list(
+            "Inventory refresh:",
+            [
+                "Refresh (no counts)",
+                "Refresh (focal counts)",
+                "Refresh (full counts)",
+                "Refresh (targeted SurveyIDs)",
+                "↩ Back",
+            ],
+        )
+        if not sel or sel.endswith("Back"):
+            return
+        counts_scope = None
+        survey_ids = None
+        if "focal" in sel.lower():
+            counts_scope = "focal"
+        elif "full" in sel.lower():
+            counts_scope = "full"
+        elif "targeted" in sel.lower():
+            raw = input("Enter one or more SurveyIDs (comma-separated): ").strip()
+            if not raw:
+                return
+            survey_ids = [raw]
+        _run_action(
+            handle_inventory,
+            argparse.Namespace(
+                counts_scope=counts_scope,
+                survey_ids=survey_ids,
+                dry_run=False,
+                quiet=False,
+                progress=False,
+                progress_only=False,
+            ),
+        )
+
+    def _menu_pull() -> None:
+        if not _require_default_account(action="survey pull"):
+            return
+        survey_id = _pick_survey_id(message="Pick a survey to pull (cache JSON):")
+        if not survey_id:
+            return
+        dest = input("Destination directory (optional; default: surveys/): ").strip() or None
+        _run_action(handle_pull, argparse.Namespace(survey_id=survey_id, dest=dest))
+
+    def _menu_prepare() -> None:
+        if not _require_default_account(action="survey prepare"):
+            return
+        _run_action(
+            handle_prepare,
+            argparse.Namespace(
+                survey_id=None,
+                focal=False,
+                all_surveys=False,
+                yes=False,
+                surfaces=None,
+                language=None,
+                languages=None,
+                overwrite_js=False,
+                shared_js=False,
+            ),
+        )
+
+    def _menu_embedded_field(action: str) -> None:
+        if not _require_default_account(action=action):
+            return
+        if action == "add-embedded-field":
+            _run_action(
+                handle_add_embedded_field,
+                argparse.Namespace(
+                    survey_id=None,
+                    field=None,
+                    value=None,
+                    flow_id=None,
+                    dry_run=False,
+                ),
+            )
+        elif action == "remove-embedded-field":
+            _run_action(
+                handle_remove_embedded_field,
+                argparse.Namespace(
+                    survey_id=None,
+                    field=None,
+                    flow_id=None,
+                    dry_run=False,
+                ),
+            )
+        elif action == "rename-embedded-field":
+            _run_action(
+                handle_rename_embedded_field,
+                argparse.Namespace(
+                    survey_id=None,
+                    from_field=None,
+                    to_field=None,
+                    flow_id=None,
+                    all_occurrences=False,
+                    dry_run=False,
+                ),
+            )
+
+    def _menu_cleanup_embedded_data() -> None:
+        if not _require_default_account(action="cleanup-embedded-data"):
+            return
+        _run_action(
+            handle_cleanup_embedded_data,
+            argparse.Namespace(
+                survey_id=None,
+                all_duplicates=False,
+                apply=False,
+                dry_run=False,
+                yes=False,
+                publish=False,
+                description="",
+            ),
+        )
+
+    def _menu_prolific_auth() -> None:
+        if not _require_default_account(action="prolific-auth"):
+            return
+        _run_action(
+            handle_prolific_auth,
+            argparse.Namespace(
+                survey_id=None,
+                snippet=None,
+                file=None,
+                mode=None,
+                yes=False,
+                dry_run=False,
+                print_current=False,
+                no_validate=False,
+                no_publish=False,
+                no_activate=False,
+            ),
+        )
+
+    while True:
+        base = _resolve_base_url_for_display() or "(base URL unknown)"
+        top = select_from_list(
+            message=f"qsync survey menu  (account: {_account_label()}  base: {base})",
+            choices=[
+                "Account & Diagnostics",
+                "Browse",
+                "Lifecycle & Versions",
+                "Admin",
+                "Copy & Derive",
+                "Embedded & Options",
+                "Exports",
+                "Workspace",
+                "Exit",
+            ],
+        )
+        if not top or top == "Exit":
+            return
+
+        if top == "Account & Diagnostics":
+            choice = select_from_list(
+                "Account & Diagnostics",
+                [
+                    "Switch account",
+                    "Show account info",
+                    "Check API (/whoami)",
+                    "↩ Back",
+                ],
+            )
+            if not choice or choice.endswith("Back"):
+                continue
+            if choice.startswith("Switch"):
+                _menu_switch_account()
+            elif choice.startswith("Show"):
+                _menu_show_account_info()
+            else:
+                _menu_check_api()
+            continue
+
+        if top == "Browse":
+            choice = select_from_list(
+                "Browse",
+                [
+                    "List surveys",
+                    "Label survey ID (inventory)",
+                    "List focal survey IDs (inventory)",
+                    "↩ Back",
+                ],
+            )
+            if not choice or choice.endswith("Back"):
+                continue
+            if choice.startswith("List surveys"):
+                pattern = input("Optional name regex (blank = all): ").strip() or None
+                _run_action(
+                    handle_list,
+                    argparse.Namespace(name_pattern=pattern, account=selected_account),
+                )
+            elif choice.startswith("Label"):
+                sid = _pick_survey_id(message="Pick a survey to label:")
+                if sid:
+                    _run_action(handle_label, argparse.Namespace(survey_id=sid))
+            else:
+                newline = select_from_list("One ID per line?", ["No", "Yes"]) == "Yes"
+                _run_action(handle_focal, argparse.Namespace(newline=bool(newline)))
+            continue
+
+        if top == "Lifecycle & Versions":
+            choice = select_from_list(
+                "Lifecycle & Versions",
+                [
+                    "Activate survey",
+                    "Deactivate survey",
+                    "Publish survey-definition (new version)",
+                    "List versions",
+                    "Fetch a version",
+                    "Rollback questions to a version",
+                    "↩ Back",
+                ],
+            )
+            if not choice or choice.endswith("Back"):
+                continue
+            if choice.startswith("Activate"):
+                _menu_activate(active=True)
+            elif choice.startswith("Deactivate"):
+                _menu_activate(active=False)
+            elif choice.startswith("Publish"):
+                _menu_publish()
+            elif choice.startswith("List versions"):
+                _menu_versions()
+            elif choice.startswith("Fetch"):
+                _menu_version_fetch()
+            else:
+                _menu_rollback()
+            continue
+
+        if top == "Admin":
+            choice = select_from_list(
+                "Admin",
+                [
+                    "Rename survey",
+                    "Delete survey(s) (type 'delete' to confirm)",
+                    "↩ Back",
+                ],
+            )
+            if not choice or choice.endswith("Back"):
+                continue
+            if choice.startswith("Rename"):
+                _menu_rename()
+            else:
+                _menu_delete()
+            continue
+
+        if top == "Copy & Derive":
+            choice = select_from_list(
+                "Copy & Derive",
+                [
+                    "Copy survey",
+                    "Slice language(s)",
+                    "Slice registry (local)",
+                    "Parity check",
+                    "Copy cross-account",
+                    "↩ Back",
+                ],
+            )
+            if not choice or choice.endswith("Back"):
+                continue
+            if choice.startswith("Copy survey"):
+                _menu_copy()
+            elif choice.startswith("Slice language"):
+                _menu_slice_language()
+            elif choice.startswith("Slice registry"):
+                _menu_slice_registry()
+            elif choice.startswith("Parity"):
+                _menu_parity_check()
+            else:
+                _menu_copy_cross_account()
+            continue
+
+        if top == "Embedded & Options":
+            choice = select_from_list(
+                "Embedded & Options",
+                [
+                    "Add embedded field (stage)",
+                    "Remove embedded field (stage)",
+                    "Rename embedded field (stage)",
+                    "Cleanup embedded data (apply)",
+                    "Prolific authenticity snippet",
+                    "↩ Back",
+                ],
+            )
+            if not choice or choice.endswith("Back"):
+                continue
+            if choice.startswith("Add embedded"):
+                _menu_embedded_field("add-embedded-field")
+            elif choice.startswith("Remove embedded"):
+                _menu_embedded_field("remove-embedded-field")
+            elif choice.startswith("Rename embedded"):
+                _menu_embedded_field("rename-embedded-field")
+            elif choice.startswith("Cleanup embedded"):
+                _menu_cleanup_embedded_data()
+            else:
+                _menu_prolific_auth()
+            continue
+
+        if top == "Exports":
+            choice = select_from_list(
+                "Exports",
+                [
+                    "Export responses",
+                    "Export translation document",
+                    "Export side-by-side document",
+                    "↩ Back",
+                ],
+            )
+            if not choice or choice.endswith("Back"):
+                continue
+            if choice.startswith("Export responses"):
+                _menu_export_responses()
+            elif choice.startswith("Export translation"):
+                _menu_export_translation()
+            else:
+                _menu_export_side_by_side()
+            continue
+
+        if top == "Workspace":
+            choice = select_from_list(
+                "Workspace",
+                [
+                    "Refresh inventory",
+                    "Pull survey definition (cache)",
+                    "Prepare surfaces",
+                    "↩ Back",
+                ],
+            )
+            if not choice or choice.endswith("Back"):
+                continue
+            if choice.startswith("Refresh"):
+                _menu_inventory()
+            elif choice.startswith("Pull"):
+                _menu_pull()
+            else:
+                _menu_prepare()
 
 
 def handle_prepare(args: argparse.Namespace) -> None:
@@ -720,7 +1626,7 @@ def handle_list(args: argparse.Namespace) -> None:
 def handle_copy(args: argparse.Namespace) -> None:
     """Copy/import a survey (from Qualtrics or a local QSF) into a new survey."""
 
-    base, headers = get_client_config()
+    base, headers = _get_client_config_for_args(args)
 
     # Check if importing from local QSF file
     from_qsf = getattr(args, "from_qsf", None)
@@ -768,7 +1674,7 @@ def handle_copy(args: argparse.Namespace) -> None:
         qsf_content = fetch_survey_definition(base, headers, source_id, fmt="qsf")
 
     # Check for duplicate names unless generating QSF only
-    if not args.generate_qsf:
+    if not args.generate_qsf and not _resolve_account_from_args(args):
         ensure_unique_survey_name(new_name, allow_duplicate=args.force_duplicate)
 
     # Determine target language
@@ -851,7 +1757,7 @@ def handle_slice_language(args: argparse.Namespace) -> None:
     import qsync
     import copy
 
-    base, headers = get_client_config()
+    base, headers = _get_client_config_for_args(args)
 
     from .cli import _prompt_for_survey_id_if_needed
     from .dimensions.translations_core import (
@@ -893,7 +1799,9 @@ def handle_slice_language(args: argparse.Namespace) -> None:
     header("[qsync:slice-language]", "Preview:")
 
     try:
-        enabled_langs = api_list_enabled_languages(source_id)
+        enabled_langs = api_list_enabled_languages(
+            source_id, base_url=base, headers=headers
+        )
     except Exception as exc:
         error(
             "[qsync:slice-language]",
@@ -1613,7 +2521,7 @@ def handle_parity_check(args: argparse.Namespace) -> None:
 
     from .terminal_output import header, info, error, success, warn, dim
 
-    base, headers = get_client_config()
+    base, headers = _get_client_config_for_args(args)
 
     survey_a = getattr(args, "a", None) or ""
     survey_b = getattr(args, "b", None) or ""
@@ -3107,7 +4015,11 @@ def handle_rename_embedded_field(args: argparse.Namespace) -> None:
 def handle_pull(args: argparse.Namespace) -> None:
     """Download a survey definition JSON to local cache."""
     survey_id = args.survey_id
-    dest_dir = Path(args.dest) if args.dest else None
+    account = getattr(args, "account", None)
+    dest_dir: Path | None = _resolve_pull_dest(_workspace_root(), account, args.dest)
+    env = None
+    if account:
+        env = load_account_env(account, root=_workspace_root())
 
     from .survey_ref import format_survey_ref
     from .cli import _prompt_for_survey_id_if_needed
@@ -3120,7 +4032,7 @@ def handle_pull(args: argparse.Namespace) -> None:
     print(f"[pull] Downloading survey definition for {format_survey_ref(survey_id)}...")
 
     try:
-        saved_path = download_survey_definition(survey_id, target_dir=dest_dir)
+        saved_path = download_survey_definition(survey_id, target_dir=dest_dir, env=env)
         print(f"[pull] Saved to: {saved_path}")
     except Exception as e:
         print(
@@ -6591,6 +7503,10 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     survey_subs = p_survey.add_subparsers(dest="survey_command", required=True)
 
+    # menu
+    p_menu = survey_subs.add_parser("menu", help="Interactive survey admin menu")
+    p_menu.set_defaults(func=handle_menu)
+
     # label
     p_label = survey_subs.add_parser(
         "label",
@@ -7039,7 +7955,14 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_pull.add_argument(
         "--dest",
-        help="Destination directory (default: surveys/)",
+        help=(
+            "Destination directory (default: surveys/, or "
+            "surveys/.<account>/ when --account is used)."
+        ),
+    )
+    p_pull.add_argument(
+        "--account",
+        help="Use credentials from `.env.<account>` under the workspace root.",
     )
     p_pull.set_defaults(func=handle_pull)
 

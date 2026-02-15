@@ -518,14 +518,18 @@ options:
 ## `qsync survey pull`
 
 ```text
-usage: qsync survey pull [-h] [--survey-id SURVEY_ID] [--dest DEST]
+usage: qsync survey pull [-h] [--survey-id SURVEY_ID] [--dest DEST] [--account ACCOUNT]
 
 options:
   -h, --help            show this help message and exit
   --survey-id SURVEY_ID
                         Qualtrics survey ID to download (omit to select
                         interactively)
-  --dest DEST           Destination directory (default: surveys/)
+  --dest DEST           Destination directory (default: surveys/, or surveys/.<account>/ for
+                        --account mode)
+                        All --account writes land in surveys/.<account>/ unless
+                        --dest is explicitly set.
+  --account ACCOUNT     Use credentials from `.env.<account>` under the workspace root.
 ```
 
 ## `qsync survey prolific-auth`

@@ -87,8 +87,14 @@ def _load_inventory_row(survey_id: str) -> Dict[str, str]:
     )
 
 
-def _fetch_quick_counts(survey_id: str) -> tuple[int, int]:
-    base_url, headers = get_client_config()
+def _fetch_quick_counts(
+    survey_id: str,
+    *,
+    base_url: str | None = None,
+    headers: dict | None = None,
+) -> tuple[int, int]:
+    if base_url is None or headers is None:
+        base_url, headers = get_client_config()
     response = send_api_request(
         action="qsync.push.policy.quick.counts",
         method="GET",
@@ -105,7 +111,12 @@ def _fetch_quick_counts(survey_id: str) -> tuple[int, int]:
     return preview, live
 
 
-def load_push_context(survey_id: str) -> PushContext:
+def load_push_context(
+    survey_id: str,
+    *,
+    base_url: str | None = None,
+    headers: dict | None = None,
+) -> PushContext:
     """Load response-count context for a survey (inventory-first, with optional live-check)."""
 
     inventory_missing = False
@@ -131,7 +142,9 @@ def load_push_context(survey_id: str) -> PushContext:
 
     if needs_refresh:
         try:
-            preview, live = _fetch_quick_counts(survey_id)
+            preview, live = _fetch_quick_counts(
+                survey_id, base_url=base_url, headers=headers
+            )
             counts_unknown = False
             counts_source = "live-check"
             stale = False

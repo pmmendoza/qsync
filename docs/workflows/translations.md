@@ -38,6 +38,8 @@ For **split/sliced survey families** (one SurveyID per language/country), see:
   `excel/<SurveyName>-<SurveyID>.xlsx` (translation columns + `Survey_Metadata`)
 - Cached survey definition:  
   `surveys/*__<SurveyID>.json`
+  - For `--account NAME`, pulls and related refreshes default to  
+    `surveys/.NAME/*__<SurveyID>.json` unless `--dest` is explicitly set.
 - Pending translations (staged list):  
   `surveys/pending/translations/<SurveyID>.json`
 - Legacy (archived reference):  
@@ -62,6 +64,14 @@ Refresh cached survey definition (alias for `qsync survey pull`):
 ```
 qsync translations pull --survey-id SV_xxx
 ```
+
+To refresh from a non-default account, run:
+
+```
+qsync translations pull --survey-id SV_xxx --account damian
+```
+
+This writes to `surveys/.damian/` by default (or a custom location with `--dest`).
 
 Preview diffs:
 
