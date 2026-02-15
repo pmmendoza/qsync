@@ -886,7 +886,9 @@ def write_master_csv(rows: List[List[str]]) -> Path:
     csv_path = _master_csv_path()
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with csv_path.open("w", newline="", encoding="utf-8") as fh:
+    # Write with a UTF-8 BOM so spreadsheet apps (notably Excel) auto-detect UTF-8.
+    # Our reader uses utf-8-sig, so the BOM will never leak into header names.
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.writer(fh)
         for row in rows:
             writer.writerow(row)
@@ -906,7 +908,8 @@ def load_master_csv() -> Tuple[List[str], List[Dict[str, str]]]:
 
     rows = []
     headers = []
-    with csv_path.open(newline="", encoding="utf-8") as fh:
+    # Use utf-8-sig so files generated with a BOM are read correctly.
+    with csv_path.open(newline="", encoding="utf-8-sig") as fh:
         reader = csv.DictReader(fh)
         if reader.fieldnames:
             headers = list(reader.fieldnames)
