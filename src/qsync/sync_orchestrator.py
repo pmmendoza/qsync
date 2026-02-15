@@ -2039,6 +2039,16 @@ def _build_pending_abort_guidance(
         _append_common_flags(tokens)
         return " ".join(tokens)
 
+    def _build_focal_sync_command(*, yes: bool, pending_action: Optional[str]) -> str:
+        """Build `qsync sync` command without a --survey-id (process focal surveys)."""
+        tokens = ["qsync", "sync"]
+        if yes:
+            tokens.append("--yes")
+        if pending_action:
+            tokens.extend(["--pending-action", pending_action])
+        _append_common_flags(tokens)
+        return " ".join(tokens)
+
     def _build_dimension_push_command(dimension: str) -> str:
         if dimension == "master":
             tokens = [
@@ -2071,6 +2081,7 @@ def _build_pending_abort_guidance(
     next_commands = {
         "interactive_review": _build_sync_command(yes=False, pending_action=None),
         "push_all": _build_sync_command(yes=True, pending_action="push"),
+        "push_all_focal": _build_focal_sync_command(yes=True, pending_action="push"),
         "discard_all": _build_sync_command(yes=True, pending_action="discard"),
         "pending_inspect": f"ls surveys/pending/*/{survey_id}.json",
         "push_by_dimension": {
@@ -2090,7 +2101,7 @@ def _build_pending_abort_guidance(
     }
 
     lines = [
-        f"Pending staged changes detected for {survey_id}.",
+        f"[qsync:sync] Pending staged changes detected for {survey_id}.",
         "",
         "Pending summary:",
     ]
@@ -2100,9 +2111,10 @@ def _build_pending_abort_guidance(
         [
             "",
             "Next commands:",
-            f"  interactive review: {next_commands['interactive_review']}",
-            f"  push all staged: {next_commands['push_all']}",
-            f"  discard all staged: {next_commands['discard_all']}",
+            f"  review (interactive): {next_commands['interactive_review']}",
+            f"  push staged (this survey): {next_commands['push_all']}",
+            f"  push staged (all focal surveys): {next_commands['push_all_focal']}",
+            f"  discard staged (this survey): {next_commands['discard_all']}",
             f"  inspect pending: {next_commands['pending_inspect']}",
         ]
     )

@@ -173,6 +173,12 @@ def summarize_structural_ops(
         "answer_edit": "edit",
         "answer_remove": "remove",
         "question_text_edit": "edit",
+        "sbs_column_add": "add",
+        "sbs_column_edit": "edit",
+        "sbs_column_remove": "remove",
+        "sbs_column_answer_add": "add",
+        "sbs_column_answer_edit": "edit",
+        "sbs_column_answer_remove": "remove",
     }
     for op in structural_ops or []:
         qid = str(op.get("qid") or "").strip()
@@ -182,6 +188,32 @@ def summarize_structural_ops(
         label = op_map.get(str(op.get("op") or ""), "other")
         bucket[label] = bucket.get(label, 0) + 1
     return summary
+
+
+def _is_sbs_matrix_question(question: dict) -> bool:
+    """Return True for Qualtrics SBS side-by-side matrix questions."""
+    return (
+        str(question.get("QuestionType") or "").strip() == "SBS"
+        and str(question.get("Selector") or "").strip() == "SBSMatrix"
+    )
+
+
+def _is_matrix_question(question: dict) -> bool:
+    return str(question.get("QuestionType") or "").strip() == "Matrix"
+
+
+def _get_base_language(survey_payload: dict) -> str:
+    """Return the base language code for workbook columns (best-effort)."""
+    try:
+        result = survey_payload.get("result", {})
+        if not isinstance(result, dict):
+            result = survey_payload
+        options = result.get("SurveyOptions") or {}
+        lang = str(options.get("SurveyLanguage") or "").strip()
+        lang = lang.replace("-", "_").upper()
+        return lang or "EN"
+    except Exception:
+        return "EN"
 
 
 def _format_qid_label(
@@ -632,6 +664,18 @@ def stage_choice_op(
         choices = question.setdefault("Choices", {})
         choices[str(new_id)] = {"Display": html, "Display_Unsafe": html}
         _append_choice_order(question, str(new_id))
+        # SBSMatrix: keep duplicated statements under AdditionalQuestions[*].Choices consistent.
+        if _is_sbs_matrix_question(question):
+            additional = question.get("AdditionalQuestions") or {}
+            if isinstance(additional, dict):
+                for aq in additional.values():
+                    if not isinstance(aq, dict):
+                        continue
+                    aq_choices = aq.get("Choices")
+                    if not isinstance(aq_choices, dict):
+                        continue
+                    aq_choices[str(new_id)] = {"Display": html, "Display_Unsafe": html}
+                    _append_choice_order(aq, str(new_id))
         op.update(
             {"op": "choice_add", "choice_id": str(new_id), "html": html, "tag": tag}
         )
@@ -655,6 +699,20 @@ def stage_choice_op(
         entry["Display"] = html
         if "Display_Unsafe" in entry:
             entry["Display_Unsafe"] = html
+        if _is_sbs_matrix_question(question):
+            additional = question.get("AdditionalQuestions") or {}
+            if isinstance(additional, dict):
+                for aq in additional.values():
+                    if not isinstance(aq, dict):
+                        continue
+                    aq_choices = aq.get("Choices")
+                    if not isinstance(aq_choices, dict):
+                        continue
+                    aq_entry = aq_choices.get(str(choice_id))
+                    if isinstance(aq_entry, dict):
+                        aq_entry["Display"] = html
+                        if "Display_Unsafe" in aq_entry:
+                            aq_entry["Display_Unsafe"] = html
         op.update(
             {
                 "op": "choice_edit",
@@ -694,6 +752,18 @@ def stage_choice_op(
             del choices[str(choice_id)]
         _remove_choice_from_order(question, str(choice_id))
         _cleanup_choice_translations(question, str(choice_id), enabled_langs)
+        if _is_sbs_matrix_question(question):
+            additional = question.get("AdditionalQuestions") or {}
+            if isinstance(additional, dict):
+                for aq in additional.values():
+                    if not isinstance(aq, dict):
+                        continue
+                    aq_choices = aq.get("Choices")
+                    if not isinstance(aq_choices, dict):
+                        continue
+                    if str(choice_id) in aq_choices:
+                        del aq_choices[str(choice_id)]
+                    _remove_choice_from_order(aq, str(choice_id))
         op.update(
             {
                 "op": "choice_remove",
@@ -930,6 +1000,310 @@ def stage_question_text_op(
     return op
 
 
+def stage_sbs_column_op(
+    *,
+    survey_id: str,
+    qid: str,
+    action: str,
+    html: str | None,
+    column_id: str | None,
+    allow_delete: bool,
+    interactive: bool,
+    experimental_unsupported: bool,
+) -> dict[str, Any]:
+    """Stage an SBS column header edit (AdditionalQuestions[*].QuestionText)."""
+
+    if not column_id:
+        raise ItemsStructuralError(
+            "[qsync:items:edit] SBS column op requires --id (ColumnId)."
+        )
+    action_norm = (action or "").strip().lower()
+    if action_norm not in {"add", "edit", "remove"}:
+        raise ItemsStructuralError(
+            "[qsync:items:edit] SBS columns support action=add|edit|remove."
+        )
+    if action_norm in {"add", "edit"}:
+        if not html:
+            raise ItemsStructuralError(
+                "[qsync:items:edit] SBS column add/edit requires --text (HTML)."
+            )
+        _validate_html_or_raise(html)
+    if action_norm == "remove" and not allow_delete:
+        if not interactive:
+            raise ItemsStructuralError(
+                "[qsync:items:edit] remove requires --allow-delete in non-interactive mode."
+            )
+        if not confirm(
+            f"Remove SBS ColumnId {column_id} from {qid}? This is destructive.",
+            default=False,
+        ):
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+        if not confirm("Confirm delete again (last chance).", default=False):
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+
+    survey = load_cached_survey(survey_id)
+    question = survey.questions.get(qid)
+    if not isinstance(question, dict):
+        raise ItemsStructuralError(
+            f"[qsync:items:edit] QID {qid} not found in cached survey."
+        )
+    if not _is_sbs_matrix_question(question):
+        raise ItemsStructuralError(
+            f"[qsync:items:edit] QID {qid} is not an SBSMatrix question."
+        )
+
+    tag = (question.get("DataExportTag") or "").strip() or None
+    owner = external_owner_for(qid=qid, data_export_tag=tag)
+    if owner:
+        raise ItemsStructuralError(
+            f"[qsync:items:edit] QID {qid} is externally managed (owner={owner})."
+        )
+
+    additional = question.get("AdditionalQuestions") or {}
+    if not isinstance(additional, dict):
+        raise ItemsStructuralError(
+            f"[qsync:items:edit] QID {qid} has no AdditionalQuestions; cannot edit SBS columns."
+        )
+
+    col_key = str(column_id)
+    aq = additional.get(col_key)
+    if action_norm == "add":
+        if col_key in additional:
+            raise ItemsStructuralError(
+                f"[qsync:items:edit] SBS ColumnId {column_id} already exists for {qid}."
+            )
+        if not additional:
+            raise ItemsStructuralError(
+                f"[qsync:items:edit] QID {qid} has no existing SBS columns to clone from."
+            )
+        import copy
+
+        template = next((v for v in additional.values() if isinstance(v, dict)), None)
+        if not isinstance(template, dict):
+            raise ItemsStructuralError(
+                f"[qsync:items:edit] QID {qid} AdditionalQuestions template missing."
+            )
+        new_col = copy.deepcopy(template)
+        prev_html = ""
+        new_html = normalize_text(html or "")
+        new_col["QuestionText"] = new_html
+        if "QuestionText_Unsafe" in new_col:
+            new_col["QuestionText_Unsafe"] = new_html
+        if "QuestionDescription" in new_col:
+            new_col["QuestionDescription"] = new_html
+        additional[col_key] = new_col
+        op_type = "sbs_column_add"
+    elif action_norm == "remove":
+        if not isinstance(aq, dict):
+            raise ItemsStructuralError(
+                f"[qsync:items:edit] SBS ColumnId {column_id} not found for {qid}."
+            )
+        prev_html = normalize_text(str(aq.get("QuestionText") or ""))
+        if col_key in additional:
+            del additional[col_key]
+        new_html = ""
+        op_type = "sbs_column_remove"
+    else:
+        if not isinstance(aq, dict):
+            raise ItemsStructuralError(
+                f"[qsync:items:edit] SBS ColumnId {column_id} not found for {qid}."
+            )
+        prev_html = normalize_text(str(aq.get("QuestionText") or ""))
+        new_html = normalize_text(html or "")
+        aq["QuestionText"] = new_html
+        if "QuestionText_Unsafe" in aq:
+            aq["QuestionText_Unsafe"] = new_html
+        if "QuestionDescription" in aq:
+            aq["QuestionDescription"] = new_html
+        op_type = "sbs_column_edit"
+
+    op: dict[str, Any] = {
+        "qid": qid,
+        "target": "sbs_columns",
+        "op": op_type,
+        "choice_id": col_key,
+        "html": new_html,
+        "prev_html": prev_html,
+        "tag": tag,
+    }
+
+    survey.save()
+    log_push_event(
+        action="qsync.items.edit.stage",
+        method="LOCAL",
+        path="dimensions.items_structural.stage_sbs_column_op",
+        survey_id=survey_id,
+        meta=op,
+    )
+    return op
+
+
+def stage_sbs_column_answer_op(
+    *,
+    survey_id: str,
+    qid: str,
+    action: str,
+    html: str | None,
+    column_id: str | None,
+    answer_id: str | None,
+    allow_delete: bool,
+    interactive: bool,
+    experimental_unsupported: bool,
+) -> dict[str, Any]:
+    """Stage an SBS per-column answer label edit (AdditionalQuestions[*].Answers[*].Display)."""
+
+    action_norm = (action or "").strip().lower()
+    if action_norm not in {"add", "edit", "remove"}:
+        raise ItemsStructuralError(
+            "[qsync:items:edit] SBS column answers support action=add|edit|remove."
+        )
+    if not column_id:
+        raise ItemsStructuralError(
+            "[qsync:items:edit] SBS column answer op requires --column-id."
+        )
+    if not answer_id:
+        raise ItemsStructuralError(
+            "[qsync:items:edit] SBS column answer op requires --id (AnswerId)."
+        )
+    if action_norm in {"add", "edit"}:
+        if not html:
+            raise ItemsStructuralError(
+                "[qsync:items:edit] SBS column answer add/edit requires --text (HTML)."
+            )
+        _validate_html_or_raise(html)
+    if action_norm == "remove" and not allow_delete:
+        if not interactive:
+            raise ItemsStructuralError(
+                "[qsync:items:edit] remove requires --allow-delete in non-interactive mode."
+            )
+        if not confirm(
+            f"Remove SBS AnswerId {answer_id} from column {column_id}? This is destructive.",
+            default=False,
+        ):
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+        if not confirm("Confirm delete again (last chance).", default=False):
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+
+    survey = load_cached_survey(survey_id)
+    question = survey.questions.get(qid)
+    if not isinstance(question, dict):
+        raise ItemsStructuralError(
+            f"[qsync:items:edit] QID {qid} not found in cached survey."
+        )
+    if not _is_sbs_matrix_question(question):
+        raise ItemsStructuralError(
+            f"[qsync:items:edit] QID {qid} is not an SBSMatrix question."
+        )
+
+    tag = (question.get("DataExportTag") or "").strip() or None
+    owner = external_owner_for(qid=qid, data_export_tag=tag)
+    if owner:
+        raise ItemsStructuralError(
+            f"[qsync:items:edit] QID {qid} is externally managed (owner={owner})."
+        )
+
+    additional = question.get("AdditionalQuestions") or {}
+    if not isinstance(additional, dict):
+        raise ItemsStructuralError(
+            f"[qsync:items:edit] QID {qid} has no AdditionalQuestions; cannot edit SBS columns."
+        )
+    aq = additional.get(str(column_id))
+    if not isinstance(aq, dict):
+        raise ItemsStructuralError(
+            f"[qsync:items:edit] SBS ColumnId {column_id} not found for {qid}."
+        )
+    answers = aq.get("Answers") or {}
+    if not isinstance(answers, dict):
+        raise ItemsStructuralError(
+            f"[qsync:items:edit] SBS ColumnId {column_id} has no Answers map."
+        )
+ 
+    def _append_order(obj: dict, key: str, item: str) -> None:
+        order = obj.get(key)
+        if isinstance(order, list):
+            if item not in order:
+                order.append(item)
+        else:
+            obj[key] = [item]
+
+    def _remove_order(obj: dict, key: str, item: str) -> None:
+        order = obj.get(key)
+        if isinstance(order, list) and item in order:
+            obj[key] = [x for x in order if str(x) != item]
+
+    aid_key = str(answer_id)
+    if action_norm == "add":
+        if aid_key in answers:
+            raise ItemsStructuralError(
+                f"[qsync:items:edit] SBS AnswerId {answer_id} already exists for {qid}#{column_id}."
+            )
+        import copy
+
+        template = next((v for v in answers.values() if isinstance(v, dict)), None)
+        entry = copy.deepcopy(template) if isinstance(template, dict) else {}
+        prev_html = ""
+        new_html = normalize_text(html or "")
+        entry["Display"] = new_html
+        entry["Display_Unsafe"] = new_html
+        answers[aid_key] = entry
+        _append_order(aq, "AnswerOrder", aid_key)
+        try:
+            next_candidate = int(aid_key) + 1
+            current_next = aq.get("NextAnswerId")
+            if isinstance(current_next, int):
+                aq["NextAnswerId"] = max(current_next, next_candidate)
+            else:
+                aq["NextAnswerId"] = next_candidate
+        except (TypeError, ValueError):
+            pass
+        op_type = "sbs_column_answer_add"
+    elif action_norm == "remove":
+        entry = answers.get(aid_key)
+        if not isinstance(entry, dict):
+            raise ItemsStructuralError(
+                f"[qsync:items:edit] SBS AnswerId {answer_id} not found for {qid}#{column_id}."
+            )
+        prev_html = normalize_text(str(entry.get("Display") or ""))
+        if aid_key in answers:
+            del answers[aid_key]
+        _remove_order(aq, "AnswerOrder", aid_key)
+        new_html = ""
+        op_type = "sbs_column_answer_remove"
+    else:
+        entry = answers.get(aid_key)
+        if not isinstance(entry, dict):
+            raise ItemsStructuralError(
+                f"[qsync:items:edit] SBS AnswerId {answer_id} not found for {qid}#{column_id}."
+            )
+        prev_html = normalize_text(str(entry.get("Display") or ""))
+        new_html = normalize_text(html or "")
+        entry["Display"] = new_html
+        if "Display_Unsafe" in entry:
+            entry["Display_Unsafe"] = new_html
+        op_type = "sbs_column_answer_edit"
+
+    op: dict[str, Any] = {
+        "qid": qid,
+        "target": "sbs_column_answers",
+        "op": op_type,
+        "choice_id": str(column_id),
+        "answer_id": aid_key,
+        "html": new_html,
+        "prev_html": prev_html,
+        "tag": tag,
+    }
+
+    survey.save()
+    log_push_event(
+        action="qsync.items.edit.stage",
+        method="LOCAL",
+        path="dimensions.items_structural.stage_sbs_column_answer_op",
+        survey_id=survey_id,
+        meta=op,
+    )
+    return op
+
+
 def stage_structural_op(
     *,
     survey_id: str,
@@ -944,8 +1318,10 @@ def stage_structural_op(
     experimental_unsupported: bool,
 ) -> dict[str, Any]:
     target_norm = (target or "").strip().lower()
-    if target_norm == "subitems":
-        target_norm = "answers"
+    if target_norm in {"options", "option"}:
+        target_norm = "options"
+    if target_norm in {"subitems", "subitem"}:
+        target_norm = "subitems"
     if target_norm == "choices":
         return stage_choice_op(
             survey_id=survey_id,
@@ -957,6 +1333,37 @@ def stage_structural_op(
             interactive=interactive,
             experimental_unsupported=experimental_unsupported,
         )
+    if target_norm == "options":
+        # Workbook terminology: "Options" may map to Answers for Matrix questions.
+        survey = load_cached_survey(survey_id)
+        question = survey.questions.get(qid)
+        if not isinstance(question, dict):
+            raise ItemsStructuralError(f"[qsync:items:edit] QID {qid} not found.")
+        if _is_matrix_question(question):
+            op = stage_answer_op(
+                survey_id=survey_id,
+                qid=qid,
+                action=action,
+                html=html,
+                answer_id=item_id,
+                allow_delete=allow_delete,
+                interactive=interactive,
+                experimental_unsupported=experimental_unsupported,
+            )
+            op.setdefault("surface", "options")
+            return op
+        op = stage_choice_op(
+            survey_id=survey_id,
+            qid=qid,
+            action=action,
+            html=html,
+            choice_id=item_id,
+            allow_delete=allow_delete,
+            interactive=interactive,
+            experimental_unsupported=experimental_unsupported,
+        )
+        op.setdefault("surface", "options")
+        return op
     if target_norm == "answers":
         return stage_answer_op(
             survey_id=survey_id,
@@ -968,6 +1375,39 @@ def stage_structural_op(
             interactive=interactive,
             experimental_unsupported=experimental_unsupported,
         )
+    if target_norm == "subitems":
+        # Workbook terminology: "Subitems" map to:
+        # - Matrix/SBSMatrix: Choices (rows/statements)
+        # - Else: Answers
+        survey = load_cached_survey(survey_id)
+        question = survey.questions.get(qid)
+        if not isinstance(question, dict):
+            raise ItemsStructuralError(f"[qsync:items:edit] QID {qid} not found.")
+        if _is_matrix_question(question) or _is_sbs_matrix_question(question):
+            op = stage_choice_op(
+                survey_id=survey_id,
+                qid=qid,
+                action=action,
+                html=html,
+                choice_id=item_id,
+                allow_delete=allow_delete,
+                interactive=interactive,
+                experimental_unsupported=experimental_unsupported,
+            )
+            op.setdefault("surface", "subitems")
+            return op
+        op = stage_answer_op(
+            survey_id=survey_id,
+            qid=qid,
+            action=action,
+            html=html,
+            answer_id=item_id,
+            allow_delete=allow_delete,
+            interactive=interactive,
+            experimental_unsupported=experimental_unsupported,
+        )
+        op.setdefault("surface", "subitems")
+        return op
     if target_norm in {"question", "question_text", "question-text"}:
         if action != "edit":
             raise ItemsStructuralError(
@@ -983,7 +1423,163 @@ def stage_structural_op(
             interactive=interactive,
             experimental_unsupported=experimental_unsupported,
         )
+    if target_norm in {"sbs_columns", "sbs_column"}:
+        return stage_sbs_column_op(
+            survey_id=survey_id,
+            qid=qid,
+            action=action,
+            html=html,
+            column_id=item_id,
+            allow_delete=allow_delete,
+            interactive=interactive,
+            experimental_unsupported=experimental_unsupported,
+        )
+    if target_norm in {"sbs_column_answers", "sbs_column_answer"}:
+        # For non-interactive calls, pass ColumnId via `--column-id` and AnswerId via `--id`.
+        # This wrapper expects `item_id` to be the AnswerId.
+        raise ItemsStructuralError(
+            "[qsync:items:edit] Use stage_sbs_column_answer_op directly (requires column_id + answer_id)."
+        )
     raise ItemsStructuralError(f"[qsync:items:edit] Unknown target: {target}")
+
+
+def _qid_workbook_diffs(
+    *, survey_id: str, qid: str
+) -> list[Any]:
+    """Return workbook diffs affecting a single QID (best-effort, no writes)."""
+    resolver = WorkbookResolver()
+    xlsx_path = resolver.resolve(survey_id)
+    if not xlsx_path.exists():
+        return []
+    from .items_core import preview_changes
+
+    return list(
+        preview_changes(
+            survey_id,
+            xlsx_path,
+            include_qids={qid},
+            check_drift=False,
+            self_heal_system_columns=False,
+            annotate_dirty=False,
+        )
+        or []
+    )
+
+
+def _wipe_workbook_qid_cells(
+    *,
+    survey_id: str,
+    qid: str,
+    surfaces: set[str] | None = None,
+    dry_run: bool = True,
+) -> list[str]:
+    """Clear base-language workbook cells for a QID so init_workbook_from_survey can refill them.
+
+    Strategy:
+    - Clear `Text_<BASE>_MD` / `Text_<BASE>_IsHTML` on Questions for the QID.
+    - Clear `Label_<BASE>_MD` / `Label_<BASE>_IsHTML` on Options/Subitems/SBS sheets for the QID.
+    - Then re-run `init_workbook_from_survey` to repopulate those now-empty cells from cache.
+    """
+
+    resolver = WorkbookResolver()
+    xlsx_path = resolver.resolve(survey_id)
+    if not xlsx_path.exists():
+        return [f"No workbook found at {xlsx_path}"]
+
+    survey = load_cached_survey(survey_id)
+    base_lang = _get_base_language(survey.payload)
+
+    try:
+        from openpyxl import load_workbook
+    except Exception as exc:
+        return [f"openpyxl unavailable: {exc}"]
+
+    wb = load_workbook(xlsx_path)
+    notes: list[str] = []
+
+    def _clear_sheet_rows(sheet: str, qid_col: str, extra_match: dict[str, str] | None, cols_to_clear: list[str]) -> None:
+        if sheet not in wb.sheetnames:
+            return
+        ws = wb[sheet]
+        rows = list(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+        if not rows:
+            return
+        headers = [str(h or "").strip() for h in rows[0]]
+        idx = {h: i for i, h in enumerate(headers) if h}
+        if qid_col not in idx:
+            return
+        clear_idxs = [idx[c] for c in cols_to_clear if c in idx]
+        if not clear_idxs:
+            return
+        match_idxs = {}
+        if extra_match:
+            for k, v in extra_match.items():
+                if k in idx:
+                    match_idxs[k] = (idx[k], v)
+        cleared = 0
+        for r in ws.iter_rows(min_row=2):
+            cell_qid = r[idx[qid_col]].value
+            if str(cell_qid or "").strip() != qid:
+                continue
+            ok = True
+            for _k, (mi, expected) in match_idxs.items():
+                if str(r[mi].value or "").strip() != expected:
+                    ok = False
+                    break
+            if not ok:
+                continue
+            for ci in clear_idxs:
+                if ci < len(r):
+                    r[ci].value = ""
+            cleared += 1
+        if cleared:
+            notes.append(f"{sheet}: cleared {cleared} row(s) for QID={qid}")
+
+    # Decide which surfaces to wipe.
+    surfaces = set(surfaces or {"question_text", "options", "subitems", "sbs_columns", "sbs_column_answers"})
+
+    if "question_text" in surfaces:
+        _clear_sheet_rows(
+            "Questions",
+            "QID",
+            None,
+            [f"Text_{base_lang}_MD", f"Text_{base_lang}_IsHTML"],
+        )
+    if "options" in surfaces:
+        _clear_sheet_rows(
+            "Options",
+            "QID",
+            None,
+            [f"Label_{base_lang}_MD", f"Label_{base_lang}_IsHTML"],
+        )
+    if "subitems" in surfaces:
+        _clear_sheet_rows(
+            "Subitems",
+            "QID",
+            None,
+            [f"Label_{base_lang}_MD", f"Label_{base_lang}_IsHTML"],
+        )
+    if "sbs_columns" in surfaces:
+        _clear_sheet_rows(
+            "SBS_Columns",
+            "QID",
+            None,
+            [f"Label_{base_lang}_MD", f"Label_{base_lang}_IsHTML"],
+        )
+    if "sbs_column_answers" in surfaces:
+        _clear_sheet_rows(
+            "SBS_ColumnAnswers",
+            "QID",
+            None,
+            [f"Label_{base_lang}_MD", f"Label_{base_lang}_IsHTML"],
+        )
+
+    if dry_run:
+        return notes or [f"No matching rows/columns found to clear for QID={qid}"]
+
+    wb.save(xlsx_path)
+    excel_io.init_workbook_from_survey(survey_id, survey.payload, xlsx_path)
+    return notes or [f"No matching rows/columns found to clear for QID={qid}"]
 
 
 def interactive_choice_wizard(
@@ -1136,6 +1732,57 @@ def interactive_choice_wizard(
     if not isinstance(question, dict):
         raise ItemsStructuralError(f"[qsync:items:edit] QID {qid} not found.")
 
+    # Workbook drift check (scoped to this QID) before editing.
+    diffs = _qid_workbook_diffs(survey_id=survey_id, qid=qid)
+    if diffs:
+        warn(
+            "[qsync:items:edit]",
+            f"Workbook has {len(diffs)} unstaged diff(s) for {qid}.",
+        )
+        sel = select_from_list(
+            "Workbook edits detected for this QID. What next?",
+            [
+                "Enter items sync cycle for this QID (recommended)",
+                "Overwrite workbook edits for this QID (dangerous)",
+                "↩ Cancel",
+            ],
+        )
+        if not sel or "Cancel" in sel:
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+        if sel.startswith("Enter items sync cycle"):
+            from ..scope_filter import ScopeFilter
+            from ..sync_orchestrator import sync_survey
+
+            scope = ScopeFilter.parse(f"qid:{qid}")
+            sync_survey(
+                survey_id=survey_id,
+                dimensions=["items"],
+                interactive=True,
+                scope=scope,
+                per_dimension=False,
+                auto_yes=False,
+                allow_drift=False,
+            )
+            diffs = _qid_workbook_diffs(survey_id=survey_id, qid=qid)
+            if diffs:
+                warn(
+                    "[qsync:items:edit]",
+                    f"Workbook still differs for {qid} after sync ({len(diffs)} diff(s)). Continuing anyway.",
+                )
+        else:
+            if not confirm(
+                "This will overwrite workbook cells for this QID to match cache. Proceed?",
+                default=False,
+            ):
+                raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+            notes = _wipe_workbook_qid_cells(
+                survey_id=survey_id,
+                qid=qid,
+                dry_run=False,
+            )
+            for line in notes[:6]:
+                info("[qsync:items:edit]", line)
+
     tag = (question.get("DataExportTag") or "").strip() or None
     owner = external_owner_for(qid=qid, data_export_tag=tag)
     if owner:
@@ -1143,23 +1790,39 @@ def interactive_choice_wizard(
             f"[qsync:items:edit] QID {qid} is externally managed (owner={owner})."
         )
 
-    supported_targets: list[str] = ["question text"]
-    if isinstance(question.get("Choices"), dict):
-        supported_targets.append("choices/options")
-    if isinstance(question.get("Answers"), dict):
-        supported_targets.append("subitems/answers")
+    is_matrix = _is_matrix_question(question)
+    is_sbs_matrix = _is_sbs_matrix_question(question)
+
+    supported_targets: list[str] = ["Question text"]
+    if is_sbs_matrix:
+        # SBSMatrix does not use the Options sheet; statements live under Subitems.
+        supported_targets.append("Subitems (rows/statements)")
+        supported_targets.append("SBS Columns (headers)")
+        supported_targets.append("SBS Column Answers (per-column)")
+    elif is_matrix:
+        supported_targets.append("Options (columns)")
+        supported_targets.append("Subitems (rows/statements)")
+    else:
+        if isinstance(question.get("Choices"), dict):
+            supported_targets.append("Options")
+        if isinstance(question.get("Answers"), dict):
+            supported_targets.append("Subitems")
     if len(supported_targets) == 1:
         target = supported_targets[0]
     else:
         target = select_from_list("Select edit target", supported_targets)
         if not target:
             raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
-    if target.startswith("question"):
+    if target.lower().startswith("question"):
         target_norm = "question-text"
-    elif target.startswith("choices"):
-        target_norm = "choices"
+    elif target.lower().startswith("sbs columns"):
+        target_norm = "sbs_columns"
+    elif target.lower().startswith("sbs column answers"):
+        target_norm = "sbs_column_answers"
+    elif target.lower().startswith("options"):
+        target_norm = "options"
     else:
-        target_norm = "answers"
+        target_norm = "subitems"
 
     if target_norm == "question-text":
         current_html = normalize_text(str(question.get("QuestionText") or ""))
@@ -1218,18 +1881,227 @@ def interactive_choice_wizard(
             experimental_unsupported=experimental_unsupported,
         )
 
-    _require_supported_question(
-        question,
-        qid=qid,
-        target=target_norm,
-        experimental_unsupported=experimental_unsupported,
-    )
+    if target_norm == "sbs_columns":
+        if not is_sbs_matrix:
+            raise ItemsStructuralError(
+                "[qsync:items:edit] SBS Columns are only supported for SBSMatrix questions."
+            )
+        additional = question.get("AdditionalQuestions") or {}
+        if not isinstance(additional, dict) or not additional:
+            raise ItemsStructuralError(
+                "[qsync:items:edit] No AdditionalQuestions found for SBSMatrix question."
+            )
+        columns = sorted(str(k) for k in additional.keys())
+        labels = []
+        for cid in columns:
+            aq = additional.get(cid) or {}
+            txt = _text_preview(str((aq.get("QuestionText") or "")), max_len=60) if isinstance(aq, dict) else ""
+            labels.append(f"{cid}: {txt}".strip())
+        action = select_from_list("Select an action", ["add", "edit", "remove"])
+        if not action:
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+        action_norm = action.strip().lower()
 
+        if action_norm == "add":
+            nums: list[int] = []
+            for c in columns:
+                try:
+                    nums.append(int(str(c)))
+                except Exception:
+                    continue
+            suggested = str(max(nums) + 1) if nums else ""
+            col_id = text_input("Enter new ColumnId", default=suggested)
+            if col_id is None:
+                raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+            col_id = str(col_id).strip()
+            if not col_id:
+                raise ItemsStructuralError("[qsync:items:edit] ColumnId is required.")
+            new_html = text_input(f"Enter HTML for new SBS ColumnId {col_id}")
+            if new_html is None:
+                raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+            _validate_html_or_raise(new_html)
+            return stage_sbs_column_op(
+                survey_id=survey_id,
+                qid=qid,
+                action="add",
+                html=new_html,
+                column_id=col_id,
+                allow_delete=allow_delete,
+                interactive=True,
+                experimental_unsupported=experimental_unsupported,
+            )
+
+        if action_norm == "edit":
+            sel = select_from_list("Select a ColumnId to edit", labels)
+            if not sel:
+                raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+            col_id = sel.split(":", 1)[0].strip()
+            new_html = text_input(f"Enter new HTML for SBS ColumnId {col_id}")
+            if new_html is None:
+                raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+            _validate_html_or_raise(new_html)
+            return stage_sbs_column_op(
+                survey_id=survey_id,
+                qid=qid,
+                action="edit",
+                html=new_html,
+                column_id=col_id,
+                allow_delete=allow_delete,
+                interactive=True,
+                experimental_unsupported=experimental_unsupported,
+            )
+
+        if not allow_delete:
+            raise ItemsStructuralError(
+                "[qsync:items:edit] Remove requires --allow-delete."
+            )
+        sel = select_from_list("Select a ColumnId to remove", labels)
+        if not sel:
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+        col_id = sel.split(":", 1)[0].strip()
+        if not confirm(
+            f"Delete SBS ColumnId {col_id} from {qid}? This is destructive.",
+            default=False,
+        ):
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+        return stage_sbs_column_op(
+            survey_id=survey_id,
+            qid=qid,
+            action="remove",
+            html=None,
+            column_id=col_id,
+            allow_delete=allow_delete,
+            interactive=True,
+            experimental_unsupported=experimental_unsupported,
+        )
+
+    if target_norm == "sbs_column_answers":
+        if not is_sbs_matrix:
+            raise ItemsStructuralError(
+                "[qsync:items:edit] SBS Column Answers are only supported for SBSMatrix questions."
+            )
+        additional = question.get("AdditionalQuestions") or {}
+        if not isinstance(additional, dict) or not additional:
+            raise ItemsStructuralError(
+                "[qsync:items:edit] No AdditionalQuestions found for SBSMatrix question."
+            )
+        columns = sorted(str(k) for k in additional.keys())
+        chosen_col = autocomplete_from_list(
+            message="Select ColumnId",
+            choices=columns,
+            instruction="type to filter, enter to select",
+        )
+        if not chosen_col:
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+        aq = additional.get(str(chosen_col)) or {}
+        if not isinstance(aq, dict):
+            raise ItemsStructuralError("[qsync:items:edit] Invalid AdditionalQuestion.")
+        answers = aq.get("Answers") or {}
+        if not isinstance(answers, dict) or not answers:
+            raise ItemsStructuralError(
+                "[qsync:items:edit] No SBS answers found for that column."
+            )
+        labels = []
+        for aid, entry in answers.items():
+            txt = ""
+            if isinstance(entry, dict):
+                txt = _text_preview(str(entry.get("Display") or ""), max_len=60)
+            labels.append(f"{aid}: {txt}".strip())
+        action = select_from_list("Select an action", ["add", "edit", "remove"])
+        if not action:
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+        action_norm = action.strip().lower()
+
+        if action_norm == "add":
+            existing = list(answers.keys())
+            nums: list[int] = []
+            for a in existing:
+                try:
+                    nums.append(int(str(a)))
+                except Exception:
+                    continue
+            suggested = str(max(nums) + 1) if nums else ""
+            aid = text_input("Enter new AnswerId", default=suggested)
+            if aid is None:
+                raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+            aid = str(aid).strip()
+            if not aid:
+                raise ItemsStructuralError("[qsync:items:edit] AnswerId is required.")
+            new_html = text_input(f"Enter HTML for new SBS AnswerId {aid}")
+            if new_html is None:
+                raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+            _validate_html_or_raise(new_html)
+            return stage_sbs_column_answer_op(
+                survey_id=survey_id,
+                qid=qid,
+                action="add",
+                html=new_html,
+                column_id=str(chosen_col),
+                answer_id=aid,
+                allow_delete=allow_delete,
+                interactive=True,
+                experimental_unsupported=experimental_unsupported,
+            )
+
+        if action_norm == "edit":
+            sel = select_from_list("Select an AnswerId to edit", labels)
+            if not sel:
+                raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+            aid = sel.split(":", 1)[0].strip()
+            new_html = text_input(f"Enter new HTML for SBS AnswerId {aid}")
+            if new_html is None:
+                raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+            _validate_html_or_raise(new_html)
+            return stage_sbs_column_answer_op(
+                survey_id=survey_id,
+                qid=qid,
+                action="edit",
+                html=new_html,
+                column_id=str(chosen_col),
+                answer_id=aid,
+                allow_delete=allow_delete,
+                interactive=True,
+                experimental_unsupported=experimental_unsupported,
+            )
+
+        if not allow_delete:
+            raise ItemsStructuralError(
+                "[qsync:items:edit] Remove requires --allow-delete."
+            )
+        sel = select_from_list("Select an AnswerId to remove", labels)
+        if not sel:
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+        aid = sel.split(":", 1)[0].strip()
+        if not confirm(
+            f"Delete SBS AnswerId {aid} from column {chosen_col}? This is destructive.",
+            default=False,
+        ):
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+        return stage_sbs_column_answer_op(
+            survey_id=survey_id,
+            qid=qid,
+            action="remove",
+            html=None,
+            column_id=str(chosen_col),
+            answer_id=aid,
+            allow_delete=allow_delete,
+            interactive=True,
+            experimental_unsupported=experimental_unsupported,
+        )
+
+    # Options/Subitems: add/edit/remove
     action = select_from_list("Select an action", ["add", "edit", "remove"])
     if not action:
         raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
 
-    mapping_key = "Choices" if target_norm == "choices" else "Answers"
+    # Resolve container for list rendering. (Operation staging uses stage_structural_op
+    # so it can map by question type.)
+    if target_norm == "options":
+        mapping_key = "Answers" if is_matrix else "Choices"
+    elif target_norm == "subitems":
+        mapping_key = "Choices" if (is_matrix or is_sbs_matrix) else "Answers"
+    else:
+        mapping_key = "Choices"
     existing_map = question.get(mapping_key) or {}
     existing_ids = list(existing_map.keys()) if isinstance(existing_map, dict) else []
 
@@ -1360,7 +2232,13 @@ def push_structural_ops(
 
     # Re-check delete allow at push time.
     has_deletes = any(
-        op.get("op") in {"choice_remove", "answer_remove"}
+        op.get("op")
+        in {
+            "choice_remove",
+            "answer_remove",
+            "sbs_column_remove",
+            "sbs_column_answer_remove",
+        }
         for op in (structural_ops or [])
     )
     if has_deletes and not allow_delete:
@@ -1470,6 +2348,17 @@ def push_structural_ops(
                             question["NextChoiceId"] = next_candidate
                     except (TypeError, ValueError):
                         pass
+                if _is_sbs_matrix_question(question):
+                    additional = question.get("AdditionalQuestions") or {}
+                    if isinstance(additional, dict):
+                        for aq in additional.values():
+                            if not isinstance(aq, dict):
+                                continue
+                            aq_choices = aq.get("Choices")
+                            if not isinstance(aq_choices, dict):
+                                continue
+                            aq_choices[cid] = {"Display": html, "Display_Unsafe": html}
+                            _append_choice_order(aq, cid)
             elif op_type == "choice_edit":
                 html = str(op.get("html") or "")
                 if not cid or not html:
@@ -1484,6 +2373,20 @@ def push_structural_ops(
                 entry["Display"] = html
                 if "Display_Unsafe" in entry:
                     entry["Display_Unsafe"] = html
+                if _is_sbs_matrix_question(question):
+                    additional = question.get("AdditionalQuestions") or {}
+                    if isinstance(additional, dict):
+                        for aq in additional.values():
+                            if not isinstance(aq, dict):
+                                continue
+                            aq_choices = aq.get("Choices")
+                            if not isinstance(aq_choices, dict):
+                                continue
+                            aq_entry = aq_choices.get(cid)
+                            if isinstance(aq_entry, dict):
+                                aq_entry["Display"] = html
+                                if "Display_Unsafe" in aq_entry:
+                                    aq_entry["Display_Unsafe"] = html
             elif op_type == "choice_remove":
                 if not cid:
                     raise ItemsStructuralError(
@@ -1494,6 +2397,18 @@ def push_structural_ops(
                     del choices[cid]
                 _remove_choice_from_order(question, cid)
                 _cleanup_choice_translations(question, cid, enabled_langs)
+                if _is_sbs_matrix_question(question):
+                    additional = question.get("AdditionalQuestions") or {}
+                    if isinstance(additional, dict):
+                        for aq in additional.values():
+                            if not isinstance(aq, dict):
+                                continue
+                            aq_choices = aq.get("Choices")
+                            if not isinstance(aq_choices, dict):
+                                continue
+                            if cid in aq_choices:
+                                del aq_choices[cid]
+                            _remove_choice_from_order(aq, cid)
             elif op_type == "answer_add":
                 aid = str(op.get("answer_id") or "").strip()
                 html = str(op.get("html") or "")
@@ -1560,6 +2475,197 @@ def push_structural_ops(
                 question["QuestionText"] = html
                 if "QuestionText_Unsafe" in question:
                     question["QuestionText_Unsafe"] = html
+            elif op_type == "sbs_column_edit":
+                html = str(op.get("html") or "")
+                if not cid or not html:
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Malformed sbs_column_edit op."
+                    )
+                if not _is_sbs_matrix_question(question):
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] QID {qid} is not SBSMatrix; cannot apply sbs_column_edit."
+                    )
+                additional = question.get("AdditionalQuestions") or {}
+                if not isinstance(additional, dict):
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Missing AdditionalQuestions map."
+                    )
+                aq = additional.get(str(cid))
+                if not isinstance(aq, dict):
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] ColumnId {cid} not found for {qid}."
+                    )
+                aq["QuestionText"] = html
+                if "QuestionDescription" in aq:
+                    aq["QuestionDescription"] = html
+            elif op_type == "sbs_column_add":
+                html = str(op.get("html") or "")
+                if not cid or not html:
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Malformed sbs_column_add op."
+                    )
+                if not _is_sbs_matrix_question(question):
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] QID {qid} is not SBSMatrix; cannot apply sbs_column_add."
+                    )
+                additional = question.setdefault("AdditionalQuestions", {})
+                if not isinstance(additional, dict):
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Missing AdditionalQuestions map."
+                    )
+                if str(cid) in additional:
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] ColumnId {cid} already exists for {qid}."
+                    )
+                import copy
+
+                template = next(
+                    (v for v in additional.values() if isinstance(v, dict)), None
+                )
+                if not isinstance(template, dict):
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Cannot add SBS column (no template column found)."
+                    )
+                new_col = copy.deepcopy(template)
+                new_col["QuestionText"] = html
+                if "QuestionText_Unsafe" in new_col:
+                    new_col["QuestionText_Unsafe"] = html
+                if "QuestionDescription" in new_col:
+                    new_col["QuestionDescription"] = html
+                additional[str(cid)] = new_col
+                order = question.get("AdditionalQuestionsOrder")
+                if isinstance(order, list) and str(cid) not in order:
+                    order.append(str(cid))
+            elif op_type == "sbs_column_remove":
+                if not cid:
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Malformed sbs_column_remove op."
+                    )
+                if not _is_sbs_matrix_question(question):
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] QID {qid} is not SBSMatrix; cannot apply sbs_column_remove."
+                    )
+                additional = question.get("AdditionalQuestions") or {}
+                if not isinstance(additional, dict):
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Missing AdditionalQuestions map."
+                    )
+                if str(cid) in additional:
+                    del additional[str(cid)]
+                order = question.get("AdditionalQuestionsOrder")
+                if isinstance(order, list) and str(cid) in order:
+                    question["AdditionalQuestionsOrder"] = [
+                        x for x in order if str(x) != str(cid)
+                    ]
+            elif op_type == "sbs_column_answer_edit":
+                col_id = str(op.get("choice_id") or "").strip()
+                aid = str(op.get("answer_id") or "").strip()
+                html = str(op.get("html") or "")
+                if not col_id or not aid or not html:
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Malformed sbs_column_answer_edit op."
+                    )
+                if not _is_sbs_matrix_question(question):
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] QID {qid} is not SBSMatrix; cannot apply sbs_column_answer_edit."
+                    )
+                additional = question.get("AdditionalQuestions") or {}
+                if not isinstance(additional, dict):
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Missing AdditionalQuestions map."
+                    )
+                aq = additional.get(str(col_id))
+                if not isinstance(aq, dict):
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] ColumnId {col_id} not found for {qid}."
+                    )
+                answers = aq.get("Answers") or {}
+                if not isinstance(answers, dict):
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Missing SBS answers map."
+                    )
+                entry = answers.get(str(aid))
+                if not isinstance(entry, dict):
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] AnswerId {aid} not found for {qid}#{col_id}."
+                    )
+                entry["Display"] = html
+                if "Display_Unsafe" in entry:
+                    entry["Display_Unsafe"] = html
+            elif op_type == "sbs_column_answer_add":
+                col_id = str(op.get("choice_id") or "").strip()
+                aid = str(op.get("answer_id") or "").strip()
+                html = str(op.get("html") or "")
+                if not col_id or not aid or not html:
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Malformed sbs_column_answer_add op."
+                    )
+                if not _is_sbs_matrix_question(question):
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] QID {qid} is not SBSMatrix; cannot apply sbs_column_answer_add."
+                    )
+                additional = question.get("AdditionalQuestions") or {}
+                if not isinstance(additional, dict):
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Missing AdditionalQuestions map."
+                    )
+                aq = additional.get(str(col_id))
+                if not isinstance(aq, dict):
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] ColumnId {col_id} not found for {qid}."
+                    )
+                answers = aq.setdefault("Answers", {})
+                if not isinstance(answers, dict):
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Missing SBS answers map."
+                    )
+                if str(aid) in answers:
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] AnswerId {aid} already exists for {qid}#{col_id}."
+                    )
+                import copy
+
+                template = next(
+                    (v for v in answers.values() if isinstance(v, dict)), None
+                )
+                entry = copy.deepcopy(template) if isinstance(template, dict) else {}
+                entry["Display"] = html
+                entry["Display_Unsafe"] = html
+                answers[str(aid)] = entry
+                order = aq.get("AnswerOrder")
+                if isinstance(order, list) and str(aid) not in order:
+                    order.append(str(aid))
+            elif op_type == "sbs_column_answer_remove":
+                col_id = str(op.get("choice_id") or "").strip()
+                aid = str(op.get("answer_id") or "").strip()
+                if not col_id or not aid:
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Malformed sbs_column_answer_remove op."
+                    )
+                if not _is_sbs_matrix_question(question):
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] QID {qid} is not SBSMatrix; cannot apply sbs_column_answer_remove."
+                    )
+                additional = question.get("AdditionalQuestions") or {}
+                if not isinstance(additional, dict):
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Missing AdditionalQuestions map."
+                    )
+                aq = additional.get(str(col_id))
+                if not isinstance(aq, dict):
+                    raise ItemsStructuralError(
+                        f"[qsync:items:push] ColumnId {col_id} not found for {qid}."
+                    )
+                answers = aq.get("Answers") or {}
+                if not isinstance(answers, dict):
+                    raise ItemsStructuralError(
+                        "[qsync:items:push] Missing SBS answers map."
+                    )
+                if str(aid) in answers:
+                    del answers[str(aid)]
+                order = aq.get("AnswerOrder")
+                if isinstance(order, list) and str(aid) in order:
+                    aq["AnswerOrder"] = [x for x in order if str(x) != str(aid)]
             else:
                 raise ItemsStructuralError(
                     f"[qsync:items:push] Unknown op type: {op_type}"

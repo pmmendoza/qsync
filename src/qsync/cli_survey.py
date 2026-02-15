@@ -92,6 +92,38 @@ def _pick_survey_id_from_records(
     return pick_survey_id_from_records(message=message, records=records)
 
 
+def _prompt_for_survey_id_api_if_needed(
+    *,
+    survey_id: str | None,
+    args: argparse.Namespace,
+    message: str,
+) -> str:
+    """Prompt for SurveyID using live API list when omitted (interactive only)."""
+
+    if survey_id:
+        return str(survey_id).strip()
+
+    from .interactive_menu import is_interactive
+
+    if not is_interactive():
+        raise SystemExit(
+            "[qsync] ERROR: --survey-id is required in non-interactive mode."
+        )
+
+    base, headers = _get_client_config_for_args(args)
+    from .survey_selection import pick_survey_id_from_api
+
+    picked = pick_survey_id_from_api(
+        message=message,
+        base_url=base,
+        headers=headers,
+        include_back=False,
+    )
+    if not picked:
+        raise SystemExit("[qsync] Cancelled.")
+    return picked
+
+
 def _slugify(value: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(value))
 
@@ -208,9 +240,11 @@ def _dedupe_embedded_data(
 
 
 def handle_cleanup_embedded_data(args: argparse.Namespace) -> None:
-    from .cli import _prompt_for_survey_id_if_needed
-
-    survey_id = _prompt_for_survey_id_if_needed(args.survey_id, allow_all_surveys=False)
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to clean up embedded data:",
+    )
     placeholder_only = not bool(args.all_duplicates)
     apply_changes = bool(args.apply)
     dry_run = bool(args.dry_run) or not apply_changes
@@ -380,13 +414,26 @@ def _typed_confirmation(
     return typed == expected
 
 
-def handle_menu(_args: argparse.Namespace) -> None:
+def handle_menu(args: argparse.Namespace) -> None:
     """Interactive wizard for common `qsync survey ...` operations."""
 
     from .interactive_menu import is_interactive, select_from_list, confirm
 
     if not is_interactive():
         raise SystemExit("[survey-menu] ERROR: Interactive TTY required.")
+
+    # Optional: launch Textual TUI survey menu (opt-in; keep conventional menu intact).
+    if bool(getattr(args, "tui", False)):
+        if (os.environ.get("QSYNC_JSON_MODE") or "").strip():
+            raise SystemExit("[survey-menu] ERROR: JSON mode is not compatible with the TUI.")
+        try:
+            from .tui.app import QsyncTuiApp  # lazy import (Textual is optional)
+        except Exception:
+            print("[survey-menu] ERROR: TUI dependencies are not installed.")
+            print("  Install: pip install 'qsync[tui]'")
+            raise SystemExit(1)
+        QsyncTuiApp(start_screen="survey_menu").run()
+        return
 
     root = _workspace_root()
     selected_account: str | None = None  # None = default
@@ -1131,6 +1178,231 @@ def handle_menu(_args: argparse.Namespace) -> None:
             ),
         )
 
+    def _menu_items_structural_edits() -> None:
+        if not _require_default_account(action="items structural edits"):
+            return
+
+        from .pending_stage import (
+            ItemsPendingPayload,
+            PendingStagedChanges,
+            load_pending,
+            save_pending,
+        )
+        from .qualtrics_client import load_cached_survey, refresh_survey_cache
+        from .workbook_resolver import WorkbookResolver
+        from .dimensions.items_structural import (
+            interactive_choice_wizard,
+            summarize_structural_ops,
+            push_structural_ops,
+            ItemsStructuralError,
+            _wipe_workbook_qid_cells,  # type: ignore
+        )
+        from .terminal_colors import colorize_unified_diff_lines
+        import difflib
+
+        survey_id = _pick_survey_id(message="Pick a survey for structural edits:")
+        if not survey_id:
+            return
+
+        # Ensure cache exists and is fresh enough for safe structural editing.
+        try:
+            refresh_survey_cache(survey_id)
+            survey = load_cached_survey(survey_id)
+        except Exception as exc:
+            print(f"[survey-menu] ERROR: could not load cache for {survey_id}: {exc}")
+            print("  Next: run `qsync survey pull --survey-id <ID>` and retry.")
+            return
+
+        resolver = WorkbookResolver()
+        xlsx_path = resolver.resolve(survey_id)
+
+        def _load_or_init_pending() -> PendingStagedChanges:
+            record = load_pending(survey_id, "items")
+            if record and isinstance(record.payload, ItemsPendingPayload):
+                return record
+            payload = ItemsPendingPayload(
+                qids=[],
+                workbook=str(xlsx_path) if xlsx_path.exists() else None,
+                structural_ops=[],
+                structural_summary={},
+                push_journal={},
+                changes=[],
+                embedded_fields=[],
+            )
+            return PendingStagedChanges(
+                survey_id=survey_id, dimension="items", payload=payload
+            )
+
+        def _stage_op(op: dict) -> None:
+            record = _load_or_init_pending()
+            payload = record.payload
+            assert isinstance(payload, ItemsPendingPayload)
+
+            ops = list(payload.structural_ops or [])
+            ops.append(dict(op))
+            payload.structural_ops = ops
+            payload.structural_summary = summarize_structural_ops(ops)
+            qid = str(op.get("qid") or "").strip()
+            if qid and qid not in (payload.qids or []):
+                payload.qids = list(dict.fromkeys([*(payload.qids or []), qid]))
+            if xlsx_path.exists():
+                payload.workbook = str(xlsx_path)
+            save_pending(record)
+
+        def _preview_ops(ops: list[dict]) -> None:
+            if not ops:
+                print("[survey-menu] No staged structural ops.")
+                return
+            print("\n[survey-menu] Preview: staged structural ops (pending vs cache baseline)")
+            for op in ops:
+                qid = str(op.get("qid") or "").strip()
+                op_type = str(op.get("op") or "").strip()
+                surface = str(op.get("surface") or op.get("target") or "").strip()
+                cid = str(op.get("choice_id") or "").strip()
+                aid = str(op.get("answer_id") or "").strip()
+                label = f"{op_type} qid={qid}"
+                if surface:
+                    label += f" surface={surface}"
+                if cid:
+                    label += f" id={cid}"
+                if aid:
+                    label += f"/{aid}"
+                print("-" * 80)
+                print(label)
+                before = str(op.get("prev_html") or "")
+                after = str(op.get("html") or "")
+                if before or after:
+                    diff = list(
+                        difflib.unified_diff(
+                            before.splitlines(),
+                            after.splitlines(),
+                            fromfile="cache",
+                            tofile="staged",
+                            lineterm="",
+                        )
+                    )
+                    for line in colorize_unified_diff_lines(diff[:160]):
+                        print("  " + line)
+                    if len(diff) > 160:
+                        print("  ... (diff truncated)")
+
+        def _clear_structural_pending() -> None:
+            record = load_pending(survey_id, "items")
+            if not record or not isinstance(record.payload, ItemsPendingPayload):
+                return
+            record.payload.structural_ops = []
+            record.payload.structural_summary = {}
+            record.payload.push_journal = {}
+            save_pending(record)
+
+        def _offer_workbook_patch(ops: list[dict]) -> None:
+            if not xlsx_path.exists():
+                print("[survey-menu] No workbook found; skipping workbook patch.")
+                return
+            qids = sorted(
+                {str(op.get("qid") or "").strip() for op in ops if op.get("qid")}
+            )
+            if not qids:
+                return
+            print("\n[survey-menu] Workbook patch (dry run):")
+            for q in qids:
+                notes = _wipe_workbook_qid_cells(
+                    survey_id=survey_id, qid=q, dry_run=True
+                )
+                for n in notes[:6]:
+                    print("  -", n)
+            if select_from_list("Apply workbook patch now?", ["No", "Yes"]) != "Yes":
+                return
+            for q in qids:
+                _wipe_workbook_qid_cells(survey_id=survey_id, qid=q, dry_run=False)
+            print("[survey-menu] Workbook patched for affected QIDs.")
+
+        while True:
+            try:
+                op = interactive_choice_wizard(
+                    survey_id=survey_id,
+                    qid=None,
+                    allow_delete=False,
+                    experimental_unsupported=False,
+                )
+            except ItemsStructuralError as exc:
+                print(str(exc))
+                return
+            except Exception as exc:
+                print(f"[survey-menu] ERROR: {exc}")
+                return
+
+            if not op:
+                return
+            _stage_op(op)
+            print(
+                f"[survey-menu] Staged: {op.get('op')} qid={op.get('qid')} id={op.get('choice_id') or op.get('answer_id') or ''}"
+            )
+            again = select_from_list("Edit anything else?", ["Yes", "No (review)"])
+            if not again or again.startswith("No"):
+                break
+
+        record = load_pending(survey_id, "items")
+        ops: list[dict] = []
+        if record and isinstance(record.payload, ItemsPendingPayload):
+            ops = list(record.payload.structural_ops or [])
+        _preview_ops(ops)
+
+        decision = select_from_list(
+            "Structural edits staged. Next?",
+            [
+                "Push now",
+                "Revert edits (clear staged + refresh cache)",
+                "Abort (leave staged pending)",
+            ],
+        )
+        if not decision or decision.startswith("Abort"):
+            return
+        if decision.startswith("Revert"):
+            _clear_structural_pending()
+            try:
+                refresh_survey_cache(survey_id)
+            except Exception:
+                pass
+            print("[survey-menu] Cleared staged structural edits.")
+            return
+
+        record = _load_or_init_pending()
+        payload = record.payload
+        assert isinstance(payload, ItemsPendingPayload)
+        ops = list(payload.structural_ops or [])
+        if not ops:
+            print("[survey-menu] No structural ops staged.")
+            return
+
+        publish = select_from_list("Publish after push?", ["Yes", "No"]) == "Yes"
+
+        def _save_journal(journal: dict) -> None:
+            record.payload.push_journal = dict(journal)
+            save_pending(record)
+
+        try:
+            push_structural_ops(
+                survey_id=survey_id,
+                payload=survey.payload,
+                structural_ops=ops,
+                push_journal=dict(payload.push_journal or {}),
+                interactive=True,
+                allow_delete=False,
+                force_live=False,
+                force_preview=False,
+                publish=bool(publish),
+                dry_run=False,
+                refresh_cache=True,
+                save_journal_cb=_save_journal,
+            )
+        except Exception as exc:
+            print(f"[survey-menu] ERROR pushing structural ops: {exc}")
+            return
+
+        _clear_structural_pending()
+        _offer_workbook_patch(ops)
+
     while True:
         base = _resolve_base_url_for_display() or "(base URL unknown)"
         top = select_from_list(
@@ -1232,6 +1504,7 @@ def handle_menu(_args: argparse.Namespace) -> None:
                 [
                     "Rename survey",
                     "Delete survey(s) (type 'delete' to confirm)",
+                    "Items: structural edits (stage → preview → push)",
                     "↩ Back",
                 ],
             )
@@ -1239,8 +1512,10 @@ def handle_menu(_args: argparse.Namespace) -> None:
                 continue
             if choice.startswith("Rename"):
                 _menu_rename()
-            else:
+            elif choice.startswith("Delete"):
                 _menu_delete()
+            else:
+                _menu_items_structural_edits()
             continue
 
         if top == "Copy & Derive":
@@ -1797,11 +2072,10 @@ def handle_copy(args: argparse.Namespace) -> None:
                 sys.exit(1)
     else:
         # Interactive Mode - fetch from Qualtrics
-        from .cli import _prompt_for_survey_id_if_needed
-
-        source_id = _prompt_for_survey_id_if_needed(
-            getattr(args, "source_survey_id", None),
-            allow_all_surveys=True,
+        source_id = _prompt_for_survey_id_api_if_needed(
+            survey_id=getattr(args, "source_survey_id", None),
+            args=args,
+            message="Select a source survey to copy:",
         )
 
         new_name = args.name
@@ -1900,14 +2174,14 @@ def handle_slice_language(args: argparse.Namespace) -> None:
 
     base, headers = _get_client_config_for_args(args)
 
-    from .cli import _prompt_for_survey_id_if_needed
     from .dimensions.translations_core import (
         list_enabled_languages as api_list_enabled_languages,
     )
 
-    source_id = _prompt_for_survey_id_if_needed(
-        getattr(args, "source_survey_id", None),
-        allow_all_surveys=True,
+    source_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "source_survey_id", None),
+        args=args,
+        message="Select a source survey to slice:",
     )
 
     raw_targets: list[str] = []
@@ -4086,9 +4360,12 @@ def _merge_embedded_rename_pending(
 
 def handle_add_embedded_field(args: argparse.Namespace) -> None:
     from .sync_core import stage_add_embedded_field
-    from .cli import _prompt_for_survey_id_if_needed
 
-    survey_id = _prompt_for_survey_id_if_needed(args.survey_id, allow_all_surveys=False)
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to stage an embedded data add:",
+    )
     field = (args.field or "").strip()
     value = args.value
     flow_id = getattr(args, "flow_id", None)
@@ -4119,9 +4396,12 @@ def handle_add_embedded_field(args: argparse.Namespace) -> None:
 
 def handle_remove_embedded_field(args: argparse.Namespace) -> None:
     from .sync_core import stage_remove_embedded_field
-    from .cli import _prompt_for_survey_id_if_needed
 
-    survey_id = _prompt_for_survey_id_if_needed(args.survey_id, allow_all_surveys=False)
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to stage an embedded data removal:",
+    )
     field = (args.field or "").strip()
     flow_id = getattr(args, "flow_id", None)
     dry_run = bool(getattr(args, "dry_run", False))
@@ -4169,9 +4449,12 @@ def handle_remove_embedded_field(args: argparse.Namespace) -> None:
 
 def handle_rename_embedded_field(args: argparse.Namespace) -> None:
     from .sync_core import stage_rename_embedded_field
-    from .cli import _prompt_for_survey_id_if_needed
 
-    survey_id = _prompt_for_survey_id_if_needed(args.survey_id, allow_all_surveys=False)
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to stage an embedded data rename:",
+    )
     old_field = (getattr(args, "from_field", None) or "").strip()
     new_field = (getattr(args, "to_field", None) or "").strip()
     flow_id = getattr(args, "flow_id", None)
@@ -4224,7 +4507,6 @@ def handle_rename_embedded_field(args: argparse.Namespace) -> None:
 
 def handle_pull(args: argparse.Namespace) -> None:
     """Download a survey definition JSON to local cache."""
-    survey_id = args.survey_id
     account = _resolve_account_from_args(args)
     dest_dir: Path | None = _resolve_pull_dest(_workspace_root(), account, args.dest)
     env = None
@@ -4232,30 +4514,12 @@ def handle_pull(args: argparse.Namespace) -> None:
         env = load_account_env(account, root=_workspace_root())
 
     from .survey_ref import format_survey_ref
-    from .cli import _prompt_for_survey_id_if_needed
 
-    if account:
-        if survey_id:
-            survey_id = str(survey_id).strip()
-        else:
-            if not sys.stdin.isatty():
-                print("[qsync] ERROR: --survey-id required in non-interactive mode")
-                sys.exit(1)
-            base_url, headers = get_client_config(env)
-            surveys = list_surveys(base_url, headers)
-            surveys.sort(key=lambda x: x.get("creationDate", ""), reverse=True)
-            survey_id = _pick_survey_id_from_records(
-                "Pick a survey to pull (cache JSON):",
-                surveys,
-            )
-            if not survey_id:
-                print("[qsync] Operation cancelled.")
-                return
-    else:
-        survey_id = _prompt_for_survey_id_if_needed(
-            survey_id,
-            allow_all_surveys=True,
-        )
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Pick a survey to pull (cache JSON):",
+    )
 
     print(f"[pull] Downloading survey definition for {format_survey_ref(survey_id)}...")
 
@@ -4728,11 +4992,10 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
 
 def handle_publish(args: argparse.Namespace) -> None:
     """Publish staged survey-definition changes by creating a new published version."""
-    from .cli import _prompt_for_survey_id_if_needed
-
-    survey_id = _prompt_for_survey_id_if_needed(
-        getattr(args, "survey_id", None),
-        allow_all_surveys=False,
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to publish:",
     )
 
     description = (args.description or "").strip()
@@ -4921,12 +5184,11 @@ def _handle_activation(args: argparse.Namespace, *, target_active: bool) -> None
 
     if not survey_ids:
         # Offer interactive selection for single survey
-        from .cli import _prompt_for_survey_id_if_needed
-
         try:
-            prompted_id = _prompt_for_survey_id_if_needed(
-                None,
-                allow_all_surveys=False,
+            prompted_id = _prompt_for_survey_id_api_if_needed(
+                survey_id=None,
+                args=args,
+                message=f"Select a survey to {verb}:",
             )
             survey_ids.append(prompted_id)
         except SystemExit:
@@ -5288,11 +5550,10 @@ def handle_deactivate(args: argparse.Namespace) -> None:
 
 def handle_versions(args: argparse.Namespace) -> None:
     """List survey-definition versions for a survey."""
-    from .cli import _prompt_for_survey_id_if_needed
-
-    survey_id = _prompt_for_survey_id_if_needed(
-        getattr(args, "survey_id", None),
-        allow_all_surveys=False,
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to list versions:",
     )
 
     limit = getattr(args, "limit", None)
@@ -5353,11 +5614,10 @@ def handle_versions(args: argparse.Namespace) -> None:
 
 def handle_version_fetch(args: argparse.Namespace) -> None:
     """Fetch a specific survey-definition version."""
-    from .cli import _prompt_for_survey_id_if_needed
-
-    survey_id = _prompt_for_survey_id_if_needed(
-        getattr(args, "survey_id", None),
-        allow_all_surveys=False,
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to fetch a version:",
     )
     version_id = (args.version_id or "").strip()
     if not version_id:
@@ -5412,11 +5672,10 @@ def handle_version_fetch(args: argparse.Namespace) -> None:
 
 def handle_rollback(args: argparse.Namespace) -> None:
     """Rollback one or more questions to a historical version, then publish."""
-    from .cli import _prompt_for_survey_id_if_needed
-
-    survey_id = _prompt_for_survey_id_if_needed(
-        getattr(args, "survey_id", None),
-        allow_all_surveys=False,
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to rollback questions:",
     )
     version_id = (args.version_id or "").strip()
     qids_raw = (args.question_id or "").strip()
@@ -5771,35 +6030,15 @@ def handle_push_question(args: argparse.Namespace) -> None:
 
 def handle_export_responses(args: argparse.Namespace) -> None:
     """Export survey responses to CSV."""
-    from .cli import _prompt_for_survey_id_if_needed
-
     root = _workspace_root()
     account = _resolve_account_from_args(args)
     env = load_account_env(account, root=root) if account else None
 
-    survey_id = getattr(args, "survey_id", None)
-    if account:
-        if survey_id:
-            survey_id = str(survey_id).strip()
-        else:
-            if not sys.stdin.isatty():
-                print("[qsync] ERROR: --survey-id required in non-interactive mode")
-                sys.exit(1)
-            base_url, headers = get_client_config(env)
-            surveys = list_surveys(base_url, headers)
-            surveys.sort(key=lambda x: x.get("creationDate", ""), reverse=True)
-            survey_id = _pick_survey_id_from_records(
-                "Pick a survey to export responses:",
-                surveys,
-            )
-            if not survey_id:
-                print("[qsync] Operation cancelled.")
-                return
-    else:
-        survey_id = _prompt_for_survey_id_if_needed(
-            survey_id,
-            allow_all_surveys=False,
-        )
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Pick a survey to export responses:",
+    )
 
     output_dir = _resolve_responses_output_dir(
         root, account, getattr(args, "output", None)
@@ -5911,11 +6150,11 @@ def handle_export_translation(args: argparse.Namespace) -> None:
     from .terminal_output import error, info, success, warn
     from .translation_export import export_survey_to_pdf, export_survey_to_word
     from .interactive_menu import is_interactive
-    from .cli import _prompt_for_survey_id_if_needed
 
-    survey_id = _prompt_for_survey_id_if_needed(
-        getattr(args, "survey_id", None),
-        allow_all_surveys=False,
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to export a translation document:",
     )
 
     output = getattr(args, "output", None)
@@ -7812,6 +8051,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
 
     # menu
     p_menu = survey_subs.add_parser("menu", help="Interactive survey admin menu")
+    p_menu.add_argument(
+        "--tui",
+        action="store_true",
+        help="Launch Textual TUI survey menu (requires qsync[tui]; keeps default menu unchanged).",
+    )
     p_menu.set_defaults(func=handle_menu)
 
     # label

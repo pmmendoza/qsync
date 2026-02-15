@@ -8,12 +8,49 @@ Contract:
   - optional filter prompt when the list is large
   - disabled entries for locked/inactive/no-API-edit (when metadata exists)
   - on-demand "View details" table
-  - manual SurveyID entry escape hatch
+  - manual SurveyID entry escape hatch (or regex filter)
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+
+def _is_valid_survey_id(value: str) -> bool:
+    value = (value or "").strip()
+    if not value:
+        return False
+    try:
+        from .input_validators import SurveyIdValidator
+
+        SurveyIdValidator()(value)
+        return True
+    except Exception:
+        return False
+
+
+def _compile_filter(raw: str) -> re.Pattern[str] | None:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        return re.compile(raw, flags=re.IGNORECASE)
+    except re.error:
+        return re.compile(re.escape(raw), flags=re.IGNORECASE)
+
+
+def _filter_records(records: list[dict[str, Any]], raw: str) -> list[dict[str, Any]]:
+    pat = _compile_filter(raw)
+    if pat is None:
+        return list(records)
+    out: list[dict[str, Any]] = []
+    for r in records:
+        sid = str(r.get("id") or "")
+        name = str(r.get("name") or "")
+        if pat.search(sid) or pat.search(name):
+            out.append(r)
+    return out
 
 
 def pick_survey_id_from_records(
@@ -35,21 +72,18 @@ def pick_survey_id_from_records(
     """
 
     from .interactive_menu import MenuItem, confirm, select_from_list, text_input
-    from .input_validators import SurveyIdValidator
     from .rich_support import should_use_rich
     from .terminal_output import rich_console
 
     filtered = records
     if len(filtered) > 60:
-        raw = input("Filter surveys by name/ID substring (blank to show all): ").strip()
+        raw = input(
+            "Filter surveys by name/ID (regex or plain text; blank to show all): "
+        ).strip()
         if raw:
-            needle = raw.lower()
-            filtered = [
-                s
-                for s in records
-                if needle in str(s.get("id") or "").lower()
-                or needle in str(s.get("name") or "").lower()
-            ]
+            if _is_valid_survey_id(raw):
+                return raw
+            filtered = _filter_records(records, raw)
             if not filtered:
                 print("[qsync] No surveys matched that filter.")
                 return None
@@ -180,11 +214,106 @@ def pick_survey_id_from_records(
             continue
         if selection == "manual":
             manual = text_input(
-                "Enter Qualtrics SurveyID",
-                instruction="Example: SV_...",
-                validator=SurveyIdValidator(),
-                validate_while_typing=True,
+                "Enter SurveyID or regex",
+                instruction="Example SurveyID: SV_...  |  Example regex: (?i)brand|test",
             )
-            return (manual or "").strip() or None
+            manual = (manual or "").strip()
+            if not manual:
+                return None
+            if _is_valid_survey_id(manual):
+                return manual
+
+            narrowed = _filter_records(filtered, manual)
+            if not narrowed:
+                print("[qsync] No surveys matched that regex/text filter.")
+                continue
+            if len(narrowed) == 1:
+                only_id = str(narrowed[0].get("id") or "").strip()
+                return only_id or None
+
+            filtered = narrowed
+            continue
         return str(selection).strip() or None
 
+
+def list_surveys_via_api(
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    timeout: int = 60,
+) -> list[dict[str, Any]]:
+    """Fetch all surveys via Qualtrics API (follows pagination until exhausted)."""
+
+    from .api_push import send_api_request
+
+    url: str | None = f"https://{base_url}/API/v3/surveys"
+    surveys: list[dict[str, Any]] = []
+    first_page = True
+    seen_urls: set[str] = set()
+
+    while url:
+        if url in seen_urls:
+            break
+        seen_urls.add(url)
+
+        params = {"pageSize": 100} if first_page else None
+        resp = send_api_request(
+            action="qsync.survey.list",
+            method="GET",
+            base_url=base_url,
+            headers=headers,
+            path=url,
+            log_event=False,
+            params=params,
+            timeout=timeout,
+        )
+        payload = resp.json()
+        result = payload.get("result") or {}
+        elements = result.get("elements") or []
+        if isinstance(elements, list):
+            surveys.extend([e for e in elements if isinstance(e, dict)])
+
+        next_url = result.get("nextPage")
+        url = str(next_url).strip() if next_url else None
+        first_page = False
+
+    return surveys
+
+
+def pick_survey_id_from_api(
+    *,
+    message: str,
+    base_url: str,
+    headers: dict[str, str],
+    include_back: bool = True,
+    include_manual: bool = True,
+    include_details: bool = True,
+) -> str | None:
+    """Pick a survey ID using live API listing (remote source-of-truth)."""
+
+    surveys = list_surveys_via_api(base_url=base_url, headers=headers)
+    shaped: list[dict[str, Any]] = []
+    for s in surveys:
+        sid = str(s.get("id") or "").strip()
+        if not sid:
+            continue
+        shaped.append(
+            {
+                "id": sid,
+                "name": str(s.get("name") or "Untitled").strip(),
+                "lastModified": str(
+                    s.get("lastModified") or s.get("creationDate") or ""
+                ).strip(),
+                "isActive": s.get("isActive"),
+            }
+        )
+
+    return pick_survey_id_from_records(
+        message=message,
+        records=shaped,
+        include_back=include_back,
+        include_manual=include_manual,
+        manual_label="✎ Enter SurveyID or regex filter",
+        include_details=include_details,
+        details_label="🔍 View details (top 30)",
+    )
