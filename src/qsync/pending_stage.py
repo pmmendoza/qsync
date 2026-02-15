@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from .config import resolve_root
+from .config import resolve_root, resolve_scoped_dir
 
 DimensionType = Literal["items", "js", "translations", "eos", "flow"]
 
@@ -253,7 +253,8 @@ class PendingStagedChanges:
 def _unified_pending_path(survey_id: str, dimension: DimensionType) -> Path:
     """Get path to unified pending file."""
     root = resolve_root(required=False) or Path.cwd()
-    pending_dir = root / "surveys" / "pending" / dimension
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    pending_dir = surveys_dir / "pending" / dimension
     safe_id = survey_id.strip() or "unknown"
     return pending_dir / f"{safe_id}.json"
 
@@ -261,18 +262,19 @@ def _unified_pending_path(survey_id: str, dimension: DimensionType) -> Path:
 def _legacy_pending_paths(survey_id: str, dimension: DimensionType) -> list[Path]:
     """Get legacy pending file paths for migration detection."""
     root = resolve_root(required=False) or Path.cwd()
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
     safe_id = survey_id.strip() or "unknown"
 
     if dimension == "items":
-        return [root / "surveys" / "pending" / f"{safe_id}.json"]
+        return [surveys_dir / "pending" / f"{safe_id}.json"]
     elif dimension == "edf":
-        return [root / "surveys" / "pending" / "edf" / f"{safe_id}.json"]
+        return [surveys_dir / "pending" / "edf" / f"{safe_id}.json"]
     elif dimension == "js":
-        return [root / "surveys" / "pending" / "js" / f"{safe_id}.json"]
+        return [surveys_dir / "pending" / "js" / f"{safe_id}.json"]
     elif dimension == "translations":
-        return [root / "surveys" / "pending" / "translations" / f"{safe_id}.json"]
+        return [surveys_dir / "pending" / "translations" / f"{safe_id}.json"]
     elif dimension == "eos":
-        return [root / "surveys" / "pending" / "eos" / f"{safe_id}.json"]
+        return [surveys_dir / "pending" / "eos" / f"{safe_id}.json"]
     elif dimension == "flow":
         return []
 

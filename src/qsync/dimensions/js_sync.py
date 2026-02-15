@@ -19,14 +19,14 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 from ..argparse_support import QsyncArgumentParser
-from ..config import resolve_root
+from ..config import resolve_root, resolve_scoped_dir
 
 ROOT = resolve_root(required=False) or Path.cwd()
-SURVEYS_DIR = ROOT / "surveys"
+SURVEYS_DIR = resolve_scoped_dir("surveys", root=ROOT)
 SURVEY_JS_CORE = ROOT / "survey_js" / "core"
 
 DEFAULT_SURVEY_ID = "SV_5AsKyAO5QqswBcq"
-DEFAULT_MAPPING_CSV = ROOT / "survey_js" / "survey_qid_js_map.csv"
+DEFAULT_MAPPING_CSV = resolve_scoped_dir("survey_js", root=ROOT) / "survey_qid_js_map.csv"
 
 
 def _find_survey_file(survey_id: str) -> Path:

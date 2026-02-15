@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .config import resolve_root
+from .config import resolve_root, resolve_scoped_dir
 from .translations_utils import normalize_language_code
 
 _SNAPSHOT_DIRNAME = "translation_key_snapshots"
@@ -15,7 +15,8 @@ def workspace_root() -> Path:
 
 def translation_key_snapshot_root(root: Path | None = None) -> Path:
     base = root or workspace_root()
-    return base / "surveys" / _SNAPSHOT_DIRNAME
+    surveys_dir = resolve_scoped_dir("surveys", root=base)
+    return surveys_dir / _SNAPSHOT_DIRNAME
 
 
 def translation_key_snapshot_path(

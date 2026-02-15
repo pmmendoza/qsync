@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Tuple
 
-from .config import get_client_config, resolve_root
+from .config import get_client_config, resolve_root, resolve_scoped_dir
 from .excel_io import EMBEDDED_EMPTY_VALUE, build_embedded_data_rows
 from .flow_traversal import (
     FlowTraversalHandlers,
@@ -789,7 +789,7 @@ def export_survey_to_word(
             _preflight_cache_freshness(survey_id, interactive=interactive)
         cache = load_cached_survey(survey_id)
     root = resolve_root(required=False) or Path.cwd()
-    export_dir = root / EXPORT_DIRNAME
+    export_dir = resolve_scoped_dir(EXPORT_DIRNAME, root=root)
     export_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = Path(output_path) if output_path else None
@@ -879,7 +879,7 @@ def export_survey_to_pdf(
             _preflight_cache_freshness(survey_id, interactive=interactive)
         cache = load_cached_survey(survey_id)
     root = resolve_root(required=False) or Path.cwd()
-    export_dir = root / EXPORT_DIRNAME
+    export_dir = resolve_scoped_dir(EXPORT_DIRNAME, root=root)
     export_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = Path(output_path) if output_path else None
@@ -1188,7 +1188,7 @@ def export_surveys_side_by_side_docx(
             compare_labels = ("Survey A", "Survey B")
 
     root = resolve_root(required=False) or Path.cwd()
-    export_dir = root / EXPORT_DIRNAME
+    export_dir = resolve_scoped_dir(EXPORT_DIRNAME, root=root)
     export_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = _resolve_output_side_by_side_docx_path(

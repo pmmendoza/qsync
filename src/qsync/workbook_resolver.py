@@ -11,7 +11,7 @@ import csv
 from pathlib import Path
 from typing import Optional
 
-from qsync.config import resolve_root
+from qsync.config import resolve_root, resolve_scoped_dir
 
 
 def _slugify(value: str) -> str:
@@ -76,11 +76,13 @@ class WorkbookResolver:
         """
         slug = self._derive_slug(survey_id)
 
+        excel_dir = resolve_scoped_dir("excel", root=self.root)
+
         # New format (preferred)
-        new_format_path = self.root / "excel" / f"{slug}-{survey_id}.xlsx"
+        new_format_path = excel_dir / f"{slug}-{survey_id}.xlsx"
 
         # Old format (for backward compatibility)
-        old_format_path = self.root / "excel" / f"{survey_id}-{slug}.xlsx"
+        old_format_path = excel_dir / f"{survey_id}-{slug}.xlsx"
 
         # If exact old format exists, use it for backward compatibility.
         if old_format_path.exists():
@@ -92,7 +94,6 @@ class WorkbookResolver:
 
         # If any workbook already exists for this survey ID (even with a stale/renamed
         # slug), prefer it to avoid creating duplicates.
-        excel_dir = (self.root / "excel").resolve()
         if excel_dir.exists():
             for pattern in (f"{survey_id}-*.xlsx", f"*-{survey_id}.xlsx"):
                 candidates = []
@@ -125,9 +126,10 @@ class WorkbookResolver:
             Slugified string for use in filename
         """
         # 1) Try inventory CSV 'name' column
-        csv_path = self.root / "surveys" / "inventory.csv"
+        surveys_dir = resolve_scoped_dir("surveys", root=self.root)
+        csv_path = surveys_dir / "inventory.csv"
         if not csv_path.exists():
-            csv_path = self.root / "surveys" / "qualtrics_surveys.csv"
+            csv_path = surveys_dir / "qualtrics_surveys.csv"
         if csv_path.exists():
             try:
                 with csv_path.open(newline="", encoding="utf-8") as f:

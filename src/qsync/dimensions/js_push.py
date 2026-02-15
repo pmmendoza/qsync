@@ -22,13 +22,13 @@ from typing import Dict, Iterable, List, Set
 from ..argparse_support import QsyncArgumentParser
 from ..qualtrics_client import SurveyCache, load_cached_survey, push_questions
 from ..drift_check import enforce_no_drift
-from ..config import resolve_root
+from ..config import resolve_root, resolve_scoped_dir
 from ..push_safeguards import enforce_push_safeguards, SafeguardConfig
 from ..auto_publish import auto_publish_after_push
 
 ROOT = resolve_root(required=False) or Path.cwd()
 DEFAULT_SURVEY_ID = "SV_5AsKyAO5QqswBcq"
-DEFAULT_MAPPING_CSV = ROOT / "survey_js" / "survey_qid_js_map.csv"
+DEFAULT_MAPPING_CSV = resolve_scoped_dir("survey_js", root=ROOT) / "survey_qid_js_map.csv"
 
 
 def _resolve_mapping_column(fieldnames: List[str], survey_id: str) -> str:

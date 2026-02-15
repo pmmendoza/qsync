@@ -22,12 +22,12 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 from ..argparse_support import QsyncArgumentParser
-from ..config import resolve_root
+from ..config import resolve_root, resolve_scoped_dir
 from ..drift_check import check_drift as run_drift_check
 from ..scope_filter import ScopeFilter
 
 ROOT = resolve_root(required=False) or Path.cwd()
-SURVEYS_DIR = ROOT / "surveys"
+SURVEYS_DIR = resolve_scoped_dir("surveys", root=ROOT)
 SURVEY_JS_CORE = ROOT / "survey_js" / "core"
 CORE_JS_FILES = {
     p.relative_to(SURVEY_JS_CORE).as_posix()
@@ -35,7 +35,7 @@ CORE_JS_FILES = {
     if p.is_file()
 }
 DEFAULT_SURVEY_ID = "SV_5AsKyAO5QqswBcq"
-DEFAULT_MAPPING_CSV = ROOT / "survey_js" / "survey_qid_js_map.csv"
+DEFAULT_MAPPING_CSV = resolve_scoped_dir("survey_js", root=ROOT) / "survey_qid_js_map.csv"
 
 
 @dataclass

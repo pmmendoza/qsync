@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from .config import resolve_root
+from .config import resolve_root, resolve_scoped_dir
 from .errors import QsyncValidationError
 from .qualtrics_client import load_cached_survey, refresh_survey_cache
 from .translation_export import (
@@ -209,7 +209,7 @@ def build_translation_pack(
     keep_staging: bool = False,
 ) -> TranslationPackResult:
     root = resolve_root(required=False) or Path.cwd()
-    export_dir = root / EXPORT_DIRNAME / PACK_SUBDIR
+    export_dir = resolve_scoped_dir(EXPORT_DIRNAME, root=root) / PACK_SUBDIR
     export_dir.mkdir(parents=True, exist_ok=True)
     from .interactive_menu import is_interactive
 
@@ -235,7 +235,9 @@ def build_translation_pack(
     )
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    staging_dir = root / "tmp" / "translation_pack" / f"{survey_id}__{stamp}"
+    staging_dir = (
+        resolve_scoped_dir("tmp", root=root) / "translation_pack" / f"{survey_id}__{stamp}"
+    )
     staging_dir.mkdir(parents=True, exist_ok=True)
 
     docx_path = staging_dir / "survey_translation.docx"

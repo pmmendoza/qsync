@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .config import resolve_root
+from .config import resolve_root, resolve_scoped_dir
 from .translations_utils import normalize_language_code
 
-TRANSLATIONS_DIR = Path("contents") / "qualtrics_survey_translations"
+TRANSLATIONS_DIRNAME = "qualtrics_survey_translations"
 TRANSLATIONS_KEYS_DIRNAME = "key_snapshots"
 
 
@@ -16,7 +16,8 @@ def workspace_root() -> Path:
 
 def translations_root(root: Path | None = None) -> Path:
     base = root or workspace_root()
-    return base / TRANSLATIONS_DIR
+    contents_dir = resolve_scoped_dir("contents", root=base)
+    return contents_dir / TRANSLATIONS_DIRNAME
 
 
 def translation_dir(survey_id: str, root: Path | None = None) -> Path:

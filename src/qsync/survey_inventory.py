@@ -15,18 +15,18 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import requests
 
-from .config import resolve_root
+from .config import resolve_root, resolve_scoped_dir
 from .api_push import send_api_request
 
 ROOT = resolve_root(required=False) or Path.cwd()
-SURVEYS_DIR = ROOT / "surveys"
+SURVEYS_DIR = resolve_scoped_dir("surveys", root=ROOT)
 INVENTORY_CSV = SURVEYS_DIR / "inventory.csv"
 LEGACY_SURVEY_CACHE = SURVEYS_DIR / "qualtrics_surveys.csv"
 # Backward-compat alias: many modules still refer to SURVEY_CACHE.
 # Canonical path for writes is now surveys/inventory.csv.
 SURVEY_CACHE = INVENTORY_CSV
 FOCAL_SNAPSHOT = SURVEYS_DIR / ".focal_snapshot.json"
-EXCEL_DIR = ROOT / "excel"
+EXCEL_DIR = resolve_scoped_dir("excel", root=ROOT)
 EXCEL_ARCHIVE = EXCEL_DIR / "archive"
 SURVEY_ARCHIVE_DIR = SURVEYS_DIR / "archive"
 

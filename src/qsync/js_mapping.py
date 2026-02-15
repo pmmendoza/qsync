@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 from .argparse_support import QsyncArgumentParser
-from .config import resolve_root
+from .config import resolve_root, resolve_scoped_dir
 from .survey_inventory import _read_csv_rows
 
 ROOT = resolve_root(required=False) or Path.cwd()
-SURVEYS_DIR = ROOT / "surveys"
+SURVEYS_DIR = resolve_scoped_dir("surveys", root=ROOT)
 CORE_DIR = ROOT / "survey_js" / "core"
-DEFAULT_MAPPING_PATH = ROOT / "survey_js" / "survey_qid_js_map.csv"
+DEFAULT_MAPPING_PATH = resolve_scoped_dir("survey_js", root=ROOT) / "survey_qid_js_map.csv"
 
 COMMENT_RE = re.compile(r"//\s*([^\s]+)")
 QID_RE = re.compile(r"([A-Za-z]+)(\d+)")
