@@ -246,3 +246,137 @@ def test_doctor_check_api_account_uses_account_env(
     assert calls, "Expected /whoami call"
     assert calls[0]["base_url"] == "iad1.qualtrics.com"
     assert calls[0]["path"] == "whoami"
+
+
+def test_survey_pull_account_uses_account_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.cli import main
+    from qsync import cli_survey
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+
+    (tmp_path / ".env.damian").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=syd1.qualtrics.com",
+                "X-API-TOKEN=secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, str | None] = {}
+
+    def _fake_download_survey_definition(
+        survey_id: str, *, target_dir: Path | None = None, env: dict[str, str] | None = None
+    ) -> Path:
+        captured["survey_id"] = survey_id
+        captured["base"] = (env or {}).get("QUALTRICS_BASE_URL")
+        captured["token"] = (env or {}).get("X-API-TOKEN")
+        captured["target_dir"] = str(target_dir)
+        return Path(target_dir or Path("surveys")) / f"{survey_id}.json"
+
+    monkeypatch.setattr(cli_survey, "download_survey_definition", _fake_download_survey_definition)
+
+    main(
+        [
+            "--root",
+            str(tmp_path),
+            "survey",
+            "pull",
+            "--account",
+            "damian",
+            "--survey-id",
+            "SV_1",
+        ]
+    )
+
+    assert captured["survey_id"] == "SV_1"
+    assert captured["base"] == "syd1.qualtrics.com"
+    assert captured["token"] == "secret"
+    assert captured["target_dir"] == str((tmp_path / "surveys" / ".damian").resolve())
+
+
+def test_survey_pull_account_dest_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.cli import main
+    from qsync import cli_survey
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+
+    (tmp_path / ".env.damian").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=syd1.qualtrics.com",
+                "X-API-TOKEN=secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    explicit_dest = tmp_path / "custom" / "pulls"
+    captured: dict[str, str | None] = {}
+
+    def _fake_download_survey_definition(
+        survey_id: str, *, target_dir: Path | None = None, env: dict[str, str] | None = None
+    ) -> Path:
+        captured["target_dir"] = str(target_dir)
+        return Path(target_dir or Path("surveys")) / f"{survey_id}.json"
+
+    monkeypatch.setattr(cli_survey, "download_survey_definition", _fake_download_survey_definition)
+
+    main(
+        [
+            "--root",
+            str(tmp_path),
+            "survey",
+            "pull",
+            "--account",
+            "damian",
+            "--dest",
+            str(explicit_dest),
+            "--survey-id",
+            "SV_1",
+        ]
+    )
+
+    assert captured["target_dir"] == str(explicit_dest)
+
+
+def test_survey_pull_default_destination_no_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.cli import main
+    from qsync import cli_survey
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+
+    captured: dict[str, str | None] = {}
+
+    def _fake_download_survey_definition(
+        survey_id: str, *, target_dir: Path | None = None, env: dict[str, str] | None = None
+    ) -> Path:
+        captured["target_dir"] = str(target_dir)
+        return Path(target_dir or Path("surveys")) / f"{survey_id}.json"
+
+    monkeypatch.setattr(cli_survey, "download_survey_definition", _fake_download_survey_definition)
+
+    main(
+        [
+            "--root",
+            str(tmp_path),
+            "survey",
+            "pull",
+            "--survey-id",
+            "SV_1",
+        ]
+    )
+
+    assert captured["target_dir"] == str((tmp_path / "surveys").resolve())

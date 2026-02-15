@@ -18,6 +18,7 @@ In a standalone workspace/repo, use the CLI directly:
 | Step | Command | Description |
 | --- | --- | --- |
 | Pull (cache) | `qsync survey pull --survey-id SV_xxx` | Refreshes the cached survey definition (recommended before diffing/pushing). |
+| Pull (account-scoped) | `qsync survey pull --survey-id SV_xxx --account damian` | Pulls definition for account `damian` into `surveys/.damian/` by default. |
 | Pull (JS) | `qsync js pull --survey-id SV_xxx` | Rebuilds the mapping CSV and verifies the survey column exists. |
 | Preview | `qsync js preview --survey-id SV_xxx` | Prints a summary table and (optionally) unified diffs. |
 | Stage | `qsync js stage --survey-id SV_xxx` | Writes pending JS entries only (no cache mutation). |
@@ -78,5 +79,7 @@ The tool warns when a mapped QID ends up in Trash/unplaced regions so you can cl
 5. `qsync js stage --survey-id SV_…` (writes pending JS; no cache mutation)
 6. `qsync js push --survey-id SV_… --force-live --yes`
 7. `qsync js preview --survey-id SV_…` again to confirm everything now reads `match`.
+
+For multi-account runs, set `--account` on the cache refresh step above; when omitted, it defaults to `surveys/`, and when set, it defaults to `surveys/.<account>/` unless `--dest` is passed.
 
 Keep `survey_js/core/` committed so Git tracks JS changes alongside the updated survey JSON/mapping rows.

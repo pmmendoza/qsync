@@ -91,14 +91,17 @@ def find_cached_survey_file(survey_id: str, *, in_backups: bool = False) -> Path
 
 
 def download_survey_definition(
-    survey_id: str, *, target_dir: Path | None = None
+    survey_id: str,
+    *,
+    target_dir: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> Path:
     """Download the full survey definition JSON and save it under target_dir.
 
     Returns the path to the saved file.
     """
 
-    base_url, headers = get_client_config()
+    base_url, headers = get_client_config(env)
     target_dir = target_dir or _surveys_dir()
 
     name = _fetch_survey_name(base_url, headers, survey_id)
@@ -343,7 +346,12 @@ def publish_survey_definition(
         return {}
 
 
-def list_survey_versions(survey_id: str) -> dict:
+def list_survey_versions(
+    survey_id: str,
+    *,
+    base_url: str | None = None,
+    headers: dict | None = None,
+) -> dict:
     """List survey-definition versions for a survey.
 
     Calls:
@@ -356,7 +364,8 @@ def list_survey_versions(survey_id: str) -> dict:
       `current_published` boolean flag.
     """
 
-    base_url, headers = get_client_config()
+    if base_url is None or headers is None:
+        base_url, headers = get_client_config()
     resp = send_api_request(
         action="qsync.survey.versions.list",
         method="GET",
@@ -405,6 +414,8 @@ def fetch_survey_version(
     *,
     version_id: str,
     fmt: str = "json",
+    base_url: str | None = None,
+    headers: dict | None = None,
 ) -> dict:
     """Fetch a specific survey-definition version by VersionID.
 
@@ -426,7 +437,8 @@ def fetch_survey_version(
     elif fmt != "json":
         raise ValueError("fetch_survey_version fmt must be 'json' or 'qsf'")
 
-    base_url, headers = get_client_config()
+    if base_url is None or headers is None:
+        base_url, headers = get_client_config()
     resp = send_api_request(
         action="qsync.survey.version.fetch",
         method="GET",
