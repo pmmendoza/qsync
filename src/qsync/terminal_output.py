@@ -7,6 +7,12 @@ These helpers standardize:
 
 Note: Machine-readable output modes (e.g. JSON-only) should avoid these helpers
 and print only JSON to stdout.
+
+Terminal style guide (human output):
+- Headers: `header(prefix, message)` for major steps / section starts.
+- Sections: use a blank line, then a header, then indented bullets/lines.
+- Summaries/decisions: prefer Rich `Panel`/`Table`/`Columns` when available.
+- Non-TTY / CI / JSON mode: keep output line-oriented; no cursor control.
 """
 
 from __future__ import annotations
@@ -209,3 +215,85 @@ def operation_timer(
         elapsed = time.perf_counter() - start_time
         dim(prefix, f"Completed in {format_elapsed(elapsed)}")
         mark_timing_emitted()
+
+
+def rich_console():
+    """Return a Rich Console when Rich output is allowed, else None."""
+    from .rich_support import should_use_rich
+
+    if not should_use_rich():
+        return None
+
+    from rich.console import Console
+
+    try:
+        from .terminal_colors import colors_enabled
+
+        no_color = not colors_enabled()
+    except Exception:
+        no_color = False
+
+    return Console(no_color=no_color)
+
+
+def print_panel(
+    title: str,
+    body: str,
+    *,
+    border_style: str = "cyan",
+) -> None:
+    """Print a Rich panel (TTY only) with a plain-text fallback."""
+    if is_json_mode():
+        return
+    console = rich_console()
+    if console is None:
+        header(None, title)
+        if body:
+            print(body)
+        return
+
+    from rich import box
+    from rich.panel import Panel
+
+    console.print(
+        Panel(
+            body or "",
+            title=title,
+            border_style=border_style,
+            box=box.ROUNDED,
+        )
+    )
+
+
+def print_panels_in_columns(
+    panels: list[tuple[str, str, str]],
+    *,
+    expand: bool = True,
+    equal: bool = True,
+) -> None:
+    """Print multiple (title, body, border_style) panels in columns when possible."""
+    if is_json_mode():
+        return
+    console = rich_console()
+    if console is None:
+        for title, body, _style in panels:
+            header(None, title)
+            if body:
+                print(body)
+            print()
+        return
+
+    from rich import box
+    from rich.columns import Columns
+    from rich.panel import Panel
+
+    renderables = [
+        Panel(
+            body or "",
+            title=title,
+            border_style=style,
+            box=box.ROUNDED,
+        )
+        for title, body, style in panels
+    ]
+    console.print(Columns(renderables, expand=expand, equal=equal))

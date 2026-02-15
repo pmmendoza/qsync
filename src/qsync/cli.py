@@ -948,14 +948,20 @@ _HELP_TOPICS: dict[str, tuple[str, str]] = {
             [
                 "Core model: pull -> preview -> stage -> push.",
                 "",
-                "Common commands:",
-                "- qsync sync --survey-id SV_...        (guided sync for one survey)",
-                "- qsync sync --focal                  (batch sync focal surveys)",
-                "- qsync items/translations/js/...     (dimension-specific workflows)",
+                "Start here:",
+                "- qsync sync --survey-id SV_...              (guided sync for one survey)",
+                "- qsync tui --sync                           (optional TUI wizard; requires qsync[tui])",
+                "",
+                "Dimension workflows (manual control):",
+                "- qsync items preview|stage|push --survey-id SV_...",
+                "- qsync js    preview|stage|push --survey-id SV_...",
+                "- qsync translations preview|stage|push --survey-id SV_...",
                 "",
                 "Notes:",
-                "- Non-interactive runs (`--yes`) apply extra safety gates.",
+                "- Use --dimensions items,js,translations to narrow sync work.",
+                "- Non-interactive runs (--yes / CI) apply extra safety gates.",
                 "- If you see drift warnings, run the suggested pull/repair command before pushing.",
+                "- For partner accounts: use --account <name> (or `qsync account use <name>`).",
             ]
         )
         + "\n",
@@ -970,7 +976,10 @@ _HELP_TOPICS: dict[str, tuple[str, str]] = {
                 "- Stage: qsync <dimension> stage --survey-id SV_...",
                 "- Push:  qsync <dimension> push  --survey-id SV_...",
                 "",
-                "If pending exists and the local surface changes, qsync will warn (drift) and require an explicit choice.",
+                "Tips:",
+                "- Use `qsync sync` for a guided per-survey flow across dimensions.",
+                "- If pending exists and the local surface changes, qsync will warn (drift).",
+                "- To clear staged changes, use the interactive 'Clear staged changes' action in `qsync sync`.",
             ]
         )
         + "\n",
@@ -984,6 +993,9 @@ _HELP_TOPICS: dict[str, tuple[str, str]] = {
                 "Typical remediation:",
                 "- Run the recommended pull/repair command shown in the warning.",
                 "- Re-run preview/stage after refreshing baseline.",
+                "",
+                "Examples:",
+                "- qsync translations drift --survey-id SV_...        (translations-specific drift check)",
             ]
         )
         + "\n",
@@ -1011,10 +1023,19 @@ _HELP_TOPICS: dict[str, tuple[str, str]] = {
             [
                 "Some commands support selecting an alternate account via `.env.<account>` files.",
                 "",
-                "Examples:",
+                "One-off usage:",
                 "- qsync doctor --check-api --account damian",
                 "- qsync survey list --account damian",
                 "- qsync survey pull --account damian",
+                "",
+                "Workspace default (no shell exports required):",
+                "- qsync account list",
+                "- qsync account use damian",
+                "- qsync account status",
+                "- qsync account clear",
+                "",
+                "Adopt existing unscoped artifacts into an account folder:",
+                "- qsync account adopt damian --dry-run",
                 "",
                 "Account selection is strict: it never silently falls back to default credentials.",
             ]
@@ -1569,11 +1590,30 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     os.chdir(discovered)
             except Exception:
                 pass
-        if account_flag:
-            # Validate early so all commands fail fast on invalid account selectors.
-            from .config import validate_account_name
+        # Resolve account selection precedence:
+        #   --account flag > QSYNC_ACCOUNT env var > workspace preference (.qsync/preferences.json)
+        from .config import validate_account_name
 
+        if account_flag:
             os.environ["QSYNC_ACCOUNT"] = validate_account_name(str(account_flag))
+        else:
+            raw_env = (os.environ.get("QSYNC_ACCOUNT") or "").strip()
+            if raw_env:
+                os.environ["QSYNC_ACCOUNT"] = validate_account_name(raw_env)
+            else:
+                try:
+                    from .workspace_prefs import get_workspace_active_account
+
+                    root_for_prefs = Path(
+                        os.environ.get("QSYNC_ROOT") or str(Path.cwd())
+                    ).resolve()
+                    ws_account = get_workspace_active_account(root_for_prefs)
+                    if ws_account:
+                        os.environ["QSYNC_ACCOUNT"] = validate_account_name(ws_account)
+                except Exception:
+                    # Workspace preferences are best-effort: if missing/unreadable,
+                    # keep legacy default behavior.
+                    pass
 
     parser = QsyncArgumentParser(
         prog="qsync",

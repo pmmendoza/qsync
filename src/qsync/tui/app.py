@@ -138,13 +138,49 @@ class SyncSurveyScreen(Screen):
                     "No inventory records found.\n\nRun: qsync survey inventory"
                 )
                 return
-            for r in rows[:400]:
+            self._rows = rows[:400]
+            for r in self._rows:
                 sid = str(r.get("id") or "").strip()
                 name = str(r.get("name") or "Untitled").strip()
                 surveys.add_option(f"{sid} - {name}")
             detail.update("Select a survey to continue.")
         except Exception as exc:
             detail.update(f"Failed to load inventory: {exc}\n\nRun: qsync survey inventory")
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:  # type: ignore[name-defined]
+        idx = getattr(event, "option_index", None)
+        rows = getattr(self, "_rows", None)
+        if idx is None or not rows or idx < 0 or idx >= len(rows):
+            return
+        r = rows[idx]
+        detail = self.query_one("#detail", Static)
+        sid = str(r.get("id") or "").strip()
+        name = str(r.get("name") or "Untitled").strip()
+        locked = r.get("locked")
+        active = r.get("isActive")
+        stage = r.get("stage")
+        component = r.get("component")
+        last_mod = r.get("lastModified") or r.get("lastModifiedDate")
+        preview = r.get("preview_count")
+        resp = r.get("response_count")
+        detail.update(
+            "\n".join(
+                [
+                    f"Survey: {sid}",
+                    f"Name: {name}",
+                    "",
+                    f"Active: {active}",
+                    f"Locked: {locked}",
+                    f"Stage: {stage}",
+                    f"Component: {component}",
+                    "",
+                    f"Last modified: {last_mod}",
+                    f"Preview: {preview}  Responses: {resp}",
+                    "",
+                    "Enter to select. b/Esc to go back. ? for help.",
+                ]
+            )
+        )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
         option = getattr(event, "option", None)
@@ -187,11 +223,13 @@ class SyncDimensionsScreen(Screen):
 
             changes = detect_survey_changes(state.survey_id)
             changed = list(changes.changed_dimensions)
+            self._changes = changes
+            self._changed = changed
             state.dimensions = None
 
             if not changed:
                 detail.update("No changes detected for this survey.")
-                dims.add_option("Back")
+                dims.add_option("← Back")
                 return
 
             detail.update(
@@ -207,10 +245,58 @@ class SyncDimensionsScreen(Screen):
             for d in changed:
                 dims.add_option(d)
             dims.add_option("All changed dimensions")
-            dims.add_option("Back")
+            dims.add_option("← Back")
         except Exception as exc:
             detail.update(f"Failed to detect changes: {exc}")
-            dims.add_option("Back")
+            dims.add_option("← Back")
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:  # type: ignore[name-defined]
+        option = getattr(event, "option", None)
+        if option is None:
+            return
+        text = str(getattr(option, "prompt", "") or getattr(option, "text", "") or "")
+        detail = self.query_one("#detail", Static)
+        state: SyncWizardState = self.app.sync_state  # type: ignore[attr-defined]
+
+        if text in {"← Back", "Back"}:
+            detail.update("Go back to survey selection.\n\nb/Esc also works.")
+            return
+        if text == "All changed dimensions":
+            changed = getattr(self, "_changed", None) or []
+            detail.update(
+                "\n".join(
+                    [
+                        f"Survey: {state.survey_id}",
+                        "",
+                        f"Will sync: {', '.join(changed) if changed else '(none)'}",
+                    ]
+                )
+            )
+            return
+
+        changes = getattr(self, "_changes", None)
+        if changes is None:
+            return
+        dim = text
+        info = changes.dimensions.get(dim)
+        if info is None:
+            return
+        affected = len(getattr(info, "affected_qids", []) or [])
+        detail.update(
+            "\n".join(
+                [
+                    f"Survey: {state.survey_id}",
+                    f"Dimension: {dim}",
+                    "",
+                    f"Summary: {getattr(info, 'change_summary', '')}",
+                    f"Status: {getattr(info, 'status_kind', '')}",
+                    f"Affected QIDs: {affected}",
+                    "",
+                    f"Error: {getattr(info, 'error_detail', None) or '(none)'}",
+                    f"Warning: {getattr(info, 'warning_detail', None) or '(none)'}",
+                ]
+            )
+        )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
         option = getattr(event, "option", None)
@@ -218,7 +304,7 @@ class SyncDimensionsScreen(Screen):
             return
         text = str(getattr(option, "prompt", "") or getattr(option, "text", "") or "")
         state: SyncWizardState = self.app.sync_state  # type: ignore[attr-defined]
-        if text == "Back":
+        if text in {"← Back", "Back"}:
             self.app.pop_screen()  # type: ignore[attr-defined]
             return
         if text == "All changed dimensions":
@@ -298,4 +384,3 @@ class QsyncTuiApp(App):
             self.push_screen("sync_survey")
         else:
             self.push_screen("main")
-

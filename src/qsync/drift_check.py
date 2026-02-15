@@ -288,7 +288,8 @@ class DriftReport:
         Args:
             interactive: If True, allow interactive expansion of truncated diffs
         """
-        from .terminal_output import info
+        from .rich_support import should_use_rich
+        from .terminal_output import info, print_panel, print_panels_in_columns
 
         if not self.has_drift:
             info("[qsync]", "No drift detected - cache is up to date with API.")
@@ -296,6 +297,38 @@ class DriftReport:
 
         # Compute statistics
         self._compute_statistics()
+
+        # Rich multi-panel summary (TTY only). Keep full diff printing as plain lines
+        # to avoid overloading Rich panels with massive payloads.
+        if should_use_rich() and not show_full:
+            stats_msg = None
+            if self.changed_count > 0:
+                stats_msg = f"{self.changed_count} change(s) detected"
+                if self.additions > 0 or self.deletions > 0:
+                    stats_msg += f", +{self.additions} additions, -{self.deletions} deletions"
+
+            left_lines = [f"DRIFT DETECTED: {self.summary}"]
+            if stats_msg:
+                left_lines.append(stats_msg)
+            if self.context_lines:
+                left_lines.append("")
+                left_lines.append("Context:")
+                left_lines.extend([f"- {c}" for c in self.context_lines])
+
+            preview_limit = 80
+            preview = list(self.diff_lines[:preview_limit])
+            if len(self.diff_lines) > preview_limit:
+                preview.append(f"... ({len(self.diff_lines) - preview_limit} more line(s))")
+            right_body = "\n".join(preview) if preview else "(no diff lines)"
+
+            print_panels_in_columns(
+                [
+                    ("Drift summary", "\n".join(left_lines), "red"),
+                    ("Diff preview", right_body, "cyan"),
+                ]
+            )
+            print_panel("Recommendation", self.recommendation, border_style="green")
+            return
 
         # Show summary
         info("[qsync]", f"DRIFT DETECTED: {self.summary}")

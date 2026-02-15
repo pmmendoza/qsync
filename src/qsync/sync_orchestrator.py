@@ -502,43 +502,70 @@ def resolve_conflict_interactive(conflict: Conflict) -> List[str]:
     Returns:
         List of dimension names to apply (in order)
     """
-    from .interactive_menu import select_from_list
+    from .interactive_menu import MenuItem, select_from_list
+    from .rich_support import should_use_rich
+    from .terminal_output import print_panels_in_columns
 
-    print(f"\n{Colors.YELLOW}⚠ Conflict detected on {conflict.qid}{Colors.RESET}")
-    print(f"{Colors.DIM}Modified in: {', '.join(conflict.dimensions)}{Colors.RESET}")
+    def _print_details() -> None:
+        left = "\n".join(
+            [
+                f"QID: {conflict.qid}",
+                f"Modified in: {', '.join(conflict.dimensions)}",
+            ]
+        )
+        right = "\n".join(
+            [f"- {dim}: {conflict.descriptions.get(dim) or ''}".rstrip() for dim in conflict.dimensions]
+        )
+        if should_use_rich():
+            print_panels_in_columns(
+                [
+                    ("Conflict", left, "yellow"),
+                    ("Summaries", right, "cyan"),
+                ]
+            )
+        else:
+            print(f"\n{Colors.YELLOW}⚠ Conflict detected on {conflict.qid}{Colors.RESET}")
+            print(
+                f"{Colors.DIM}Modified in: {', '.join(conflict.dimensions)}{Colors.RESET}"
+            )
+            for dim in conflict.dimensions:
+                print(f"  • {dim}: {conflict.descriptions[dim]}")
 
-    for dim in conflict.dimensions:
-        print(f"  • {dim}: {conflict.descriptions[dim]}")
+    _print_details()
 
-    # Build choices
-    choices = []
-    for dim in conflict.dimensions:
-        choices.append(f"Apply {dim} only")
-    choices.append("─" * 40)
-    choices.append(
+    safe_merge_label = (
         "✓ Apply all (safe merge: items → edf → js → translations → eos → flow → master)"
     )
-    choices.append("✗ Skip this QID")
+    safe_merge_order = ["items", "edf", "js", "translations", "eos", "flow", "master"]
 
-    selection = select_from_list(
-        message="Resolve conflict:",
-        choices=choices,
-    )
+    while True:
+        items: list[MenuItem] = [
+            MenuItem(
+                label=f"Apply {dim} only",
+                value=f"apply:{dim}",
+                enabled=True,
+            )
+            for dim in conflict.dimensions
+        ]
+        items.append(MenuItem.separator("─" * 40))
+        items.append(MenuItem(label=safe_merge_label, value="apply_all", enabled=True))
+        items.append(MenuItem(label="🔍 View details", value="details", enabled=True))
+        items.append(MenuItem(label="✗ Skip this QID", value="skip", enabled=True))
 
-    if selection is None or "Skip" in selection:
-        return []
-    elif "Apply all" in selection:
-        # Safe merge order: items first, then js, then translations, then flow
-        order = ["items", "js", "translations", "eos", "flow"]
-        return [d for d in order if d in conflict.dimensions]
-    elif "─" in selection:
-        return []
-    else:
-        # Extract dimension name from "Apply {dim} only"
-        for dim in conflict.dimensions:
-            if dim in selection:
-                return [dim]
-        return []
+        selection = select_from_list(
+            message="Resolve conflict:",
+            choices=items,
+        )
+
+        if selection is None or selection == "skip":
+            return []
+        if selection == "details":
+            _print_details()
+            continue
+        if selection == "apply_all":
+            return [d for d in safe_merge_order if d in conflict.dimensions]
+        if isinstance(selection, str) and selection.startswith("apply:"):
+            return [selection.split(":", 1)[1]]
 
 
 def resolve_conflicts_interactive(conflicts: List[Conflict]) -> Dict[str, List[str]]:
@@ -678,89 +705,148 @@ def display_change_detection_table(
     if not display_changes:
         return
 
-    print(f"\n{Colors.BLUE}═══ Change Detection Results ═══{Colors.RESET}")
+    from .rich_support import should_use_rich
 
-    # Column widths
-    col_survey_id = 22
-    col_name = 30
-    col_dim = 14
+    if should_use_rich():
+        from .terminal_output import rich_console
 
-    # Header
-    header = (
-        f"{Colors.DIM}"
-        f"{'Survey ID':<{col_survey_id}} "
-        f"{'Name':<{col_name}} "
-        f"{'Items':<{col_dim}} "
-        f"{'EDF':<{col_dim}} "
-        f"{'JS':<{col_dim}} "
-        f"{'Trans':<{col_dim}} "
-        f"{'EOS':<{col_dim}} "
-        f"{'Flow':<{col_dim}} "
-        f"{'Master':<{col_dim}}"
-        f"{Colors.RESET}"
-    )
-    separator = (
-        f"{Colors.DIM}"
-        f"{'─' * (col_survey_id + col_name + col_dim * 7 + 7)}"
-        f"{Colors.RESET}"
-    )
+        console = rich_console()
+        if console is not None:
+            from rich import box
+            from rich.table import Table
+            from rich.text import Text
 
-    print(header)
-    print(separator)
+            table = Table(
+                title="Change Detection Results",
+                box=box.SIMPLE_HEAVY,
+                show_lines=False,
+            )
+            table.add_column("Survey ID", no_wrap=True)
+            table.add_column("Name")
+            for col in ("Items", "EDF", "JS", "Trans", "EOS", "Flow", "Master"):
+                table.add_column(col)
 
-    for changes in display_changes:
-        # Get status for each dimension - show actual summary or dash
-        def format_status(dim_changes: DimensionChanges) -> str:
-            summary = render_cell(dim_changes)
-            max_len = col_dim - 1
-            if len(summary) > max_len:
-                summary = summary[: max_len - 1] + "…"
-            if summary.startswith("✗"):
-                return f"{Colors.RED}{summary}{Colors.RESET}"
-            if summary.startswith("✓"):
-                return f"{Colors.GREEN}{summary}{Colors.RESET}"
-            if summary.startswith("⚡"):
-                return f"{Colors.YELLOW}{summary}{Colors.RESET}"
-            if summary.startswith("⚠"):
-                return f"{Colors.YELLOW}{summary}{Colors.RESET}"
-            if summary == "─":
-                return f"{Colors.DIM}{summary}{Colors.RESET}"
-            return summary
+            def _status_text(dim_changes: DimensionChanges) -> Text:
+                summary = render_cell(dim_changes)
+                if len(summary) > 13:
+                    summary = summary[:12] + "…"
+                t = Text(summary)
+                if summary.startswith("✗"):
+                    t.stylize("bold red")
+                elif summary.startswith("✓"):
+                    t.stylize("green")
+                elif summary.startswith("⚡") or summary.startswith("⚠"):
+                    t.stylize("yellow")
+                elif summary == "─":
+                    t.stylize("dim")
+                return t
 
-        items_status = format_status(changes.dimensions["items"])
-        edf_status = format_status(changes.dimensions["edf"])
-        js_status = format_status(changes.dimensions["js"])
-        trans_status = format_status(changes.dimensions["translations"])
-        eos_status = format_status(changes.dimensions["eos"])
-        flow_status = format_status(changes.dimensions["flow"])
-        master_status = format_status(changes.dimensions["master"])
+            for changes in display_changes:
+                sid = Text(changes.survey_id)
+                if changes.has_any_changes:
+                    sid.stylize("bold yellow")
 
-        # Truncate name if needed
-        name = (
-            changes.survey_name[: col_name - 2]
-            if len(changes.survey_name) > col_name
-            else changes.survey_name
+                name = changes.survey_name
+                if len(name) > 60:
+                    name = name[:57] + "..."
+
+                table.add_row(
+                    sid,
+                    name,
+                    _status_text(changes.dimensions["items"]),
+                    _status_text(changes.dimensions["edf"]),
+                    _status_text(changes.dimensions["js"]),
+                    _status_text(changes.dimensions["translations"]),
+                    _status_text(changes.dimensions["eos"]),
+                    _status_text(changes.dimensions["flow"]),
+                    _status_text(changes.dimensions["master"]),
+                )
+
+            console.print(table)
+    else:
+        print(f"\n{Colors.BLUE}═══ Change Detection Results ═══{Colors.RESET}")
+
+        # Column widths
+        col_survey_id = 22
+        col_name = 30
+        col_dim = 14
+
+        # Header
+        header = (
+            f"{Colors.DIM}"
+            f"{'Survey ID':<{col_survey_id}} "
+            f"{'Name':<{col_name}} "
+            f"{'Items':<{col_dim}} "
+            f"{'EDF':<{col_dim}} "
+            f"{'JS':<{col_dim}} "
+            f"{'Trans':<{col_dim}} "
+            f"{'EOS':<{col_dim}} "
+            f"{'Flow':<{col_dim}} "
+            f"{'Master':<{col_dim}}"
+            f"{Colors.RESET}"
+        )
+        separator = (
+            f"{Colors.DIM}"
+            f"{'─' * (col_survey_id + col_name + col_dim * 7 + 7)}"
+            f"{Colors.RESET}"
         )
 
-        # Survey ID with optional highlighting
-        if changes.has_any_changes:
-            sid_display = f"{Colors.YELLOW}{changes.survey_id}{Colors.RESET}"
-        else:
-            sid_display = changes.survey_id
+        print(header)
+        print(separator)
 
-        # Build row with proper padding
-        row = (
-            f"{_pad_to_width(sid_display, col_survey_id)} "
-            f"{_pad_to_width(name, col_name)} "
-            f"{_pad_to_width(items_status, col_dim)} "
-            f"{_pad_to_width(edf_status, col_dim)} "
-            f"{_pad_to_width(js_status, col_dim)} "
-            f"{_pad_to_width(trans_status, col_dim)} "
-            f"{_pad_to_width(eos_status, col_dim)} "
-            f"{_pad_to_width(flow_status, col_dim)} "
-            f"{_pad_to_width(master_status, col_dim)}"
-        )
-        print(row)
+        for changes in display_changes:
+            # Get status for each dimension - show actual summary or dash
+            def format_status(dim_changes: DimensionChanges) -> str:
+                summary = render_cell(dim_changes)
+                max_len = col_dim - 1
+                if len(summary) > max_len:
+                    summary = summary[: max_len - 1] + "…"
+                if summary.startswith("✗"):
+                    return f"{Colors.RED}{summary}{Colors.RESET}"
+                if summary.startswith("✓"):
+                    return f"{Colors.GREEN}{summary}{Colors.RESET}"
+                if summary.startswith("⚡"):
+                    return f"{Colors.YELLOW}{summary}{Colors.RESET}"
+                if summary.startswith("⚠"):
+                    return f"{Colors.YELLOW}{summary}{Colors.RESET}"
+                if summary == "─":
+                    return f"{Colors.DIM}{summary}{Colors.RESET}"
+                return summary
+
+            items_status = format_status(changes.dimensions["items"])
+            edf_status = format_status(changes.dimensions["edf"])
+            js_status = format_status(changes.dimensions["js"])
+            trans_status = format_status(changes.dimensions["translations"])
+            eos_status = format_status(changes.dimensions["eos"])
+            flow_status = format_status(changes.dimensions["flow"])
+            master_status = format_status(changes.dimensions["master"])
+
+            # Truncate name if needed
+            name = (
+                changes.survey_name[: col_name - 2]
+                if len(changes.survey_name) > col_name
+                else changes.survey_name
+            )
+
+            # Survey ID with optional highlighting
+            if changes.has_any_changes:
+                sid_display = f"{Colors.YELLOW}{changes.survey_id}{Colors.RESET}"
+            else:
+                sid_display = changes.survey_id
+
+            # Build row with proper padding
+            row = (
+                f"{_pad_to_width(sid_display, col_survey_id)} "
+                f"{_pad_to_width(name, col_name)} "
+                f"{_pad_to_width(items_status, col_dim)} "
+                f"{_pad_to_width(edf_status, col_dim)} "
+                f"{_pad_to_width(js_status, col_dim)} "
+                f"{_pad_to_width(trans_status, col_dim)} "
+                f"{_pad_to_width(eos_status, col_dim)} "
+                f"{_pad_to_width(flow_status, col_dim)} "
+                f"{_pad_to_width(master_status, col_dim)}"
+            )
+            print(row)
 
     # Print error explanations if any
     errors: list[tuple[str, str, str]] = []
@@ -790,6 +876,18 @@ def display_change_detection_table(
             prefix = parts[0].strip()
             cmd = parts[1].strip()
             return f"{prefix} {separator} {Colors.CYAN}{cmd}{Colors.RESET}"
+        return detail
+
+    def _render_issue_detail_plain(detail: str, separators: tuple[str, ...]) -> str:
+        for separator in separators:
+            if separator not in detail:
+                continue
+            parts = detail.split(separator, 1)
+            if len(parts) != 2:
+                continue
+            prefix = parts[0].strip()
+            cmd = parts[1].strip()
+            return f"{prefix} {separator} {cmd}"
         return detail
 
     def _select_issue_rows(
@@ -843,6 +941,41 @@ def display_change_detection_table(
             print(
                 f"  {Colors.DIM}… {hidden_count} more {issue_type} hidden{Colors.RESET}"
             )
+
+    selected_errors = _select_issue_rows("errors", errors)
+    selected_warnings = _select_issue_rows("warnings", warnings)
+
+    from .rich_support import should_use_rich
+
+    if should_use_rich() and (selected_errors or selected_warnings):
+        from .terminal_output import print_panels_in_columns
+
+        panels: list[tuple[str, str, str]] = []
+        if selected_errors:
+            body = "\n".join(
+                [
+                    f"- {survey_name} ({dimension}): {_render_issue_detail_plain(detail, ('Run:', 'Add'))}"
+                    for survey_name, dimension, detail in selected_errors
+                ]
+            )
+            hidden = len(errors) - len(selected_errors)
+            if hidden > 0:
+                body += f"\n\n... {hidden} more error(s) hidden"
+            panels.append(("Errors", body, "yellow"))
+        if selected_warnings:
+            body = "\n".join(
+                [
+                    f"- {survey_name} ({dimension}): {_render_issue_detail_plain(detail, ('Run:', 'Repair:'))}"
+                    for survey_name, dimension, detail in selected_warnings
+                ]
+            )
+            hidden = len(warnings) - len(selected_warnings)
+            if hidden > 0:
+                body += f"\n\n... {hidden} more warning(s) hidden"
+            panels.append(("Warnings", body, "yellow"))
+
+        print_panels_in_columns(panels)
+        return
 
     _print_issue_rows(
         title="⚠️  Errors detected:",
@@ -1165,14 +1298,6 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
 
     def _print_details() -> None:
         """Print the detailed per-dimension summaries and any warnings/errors."""
-        print(
-            f"\n{Colors.BLUE}[sync]{Colors.RESET} Changes detected in: {Colors.BOLD}{', '.join(changed)}{Colors.RESET}"
-        )
-        for dim in changed:
-            summary = changes.dimensions[dim].change_summary
-            print(f"  • {dim}: {Colors.DIM}{summary}{Colors.RESET}")
-
-        # Show error explanations if any (best-effort formatting, no global dedupe).
         errors: list[tuple[str, str]] = []
         for dim in MASTER_DIMENSION_ORDER:
             if dim not in changes.dimensions:
@@ -1180,6 +1305,66 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
             detail = changes.dimensions[dim].error_detail
             if detail:
                 errors.append((dim, detail))
+
+        warnings: list[tuple[str, str]] = []
+        for dim in MASTER_DIMENSION_ORDER:
+            if dim not in changes.dimensions:
+                continue
+            detail = changes.dimensions[dim].warning_detail
+            if detail:
+                warnings.append((dim, detail))
+
+        from .rich_support import should_use_rich
+
+        if should_use_rich():
+            from .terminal_output import print_panel, print_panels_in_columns
+
+            change_lines = [
+                f"- {dim}: {changes.dimensions[dim].change_summary or ''}".rstrip()
+                for dim in changed
+            ]
+            print_panel(
+                "Changes detected",
+                "\n".join(
+                    [
+                        f"Survey: {changes.survey_name} ({changes.survey_id})",
+                        f"Dimensions: {', '.join(changed)}",
+                        "",
+                        *change_lines,
+                    ]
+                ),
+                border_style="cyan",
+            )
+
+            panels: list[tuple[str, str, str]] = []
+            if errors:
+                panels.append(
+                    (
+                        "Errors",
+                        "\n".join([f"- {d}: {t}" for d, t in errors]),
+                        "yellow",
+                    )
+                )
+            if warnings:
+                panels.append(
+                    (
+                        "Warnings",
+                        "\n".join([f"- {d}: {t}" for d, t in warnings]),
+                        "yellow",
+                    )
+                )
+            if panels:
+                print_panels_in_columns(panels)
+            print()
+            return
+
+        # Fallback: plain ANSI-colored output.
+        print(
+            f"\n{Colors.BLUE}[sync]{Colors.RESET} Changes detected in: {Colors.BOLD}{', '.join(changed)}{Colors.RESET}"
+        )
+        for dim in changed:
+            summary = changes.dimensions[dim].change_summary
+            print(f"  • {dim}: {Colors.DIM}{summary}{Colors.RESET}")
 
         if errors:
             print(f"\n{Colors.YELLOW}⚠ Errors:{Colors.RESET}")
@@ -1195,14 +1380,6 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
                         continue
                 print(f"  {Colors.DIM}•{Colors.RESET} {dimension}: {detail}")
             print()
-
-        warnings: list[tuple[str, str]] = []
-        for dim in MASTER_DIMENSION_ORDER:
-            if dim not in changes.dimensions:
-                continue
-            detail = changes.dimensions[dim].warning_detail
-            if detail:
-                warnings.append((dim, detail))
 
         if warnings:
             print(f"\n{Colors.YELLOW}⚠ Warnings:{Colors.RESET}")

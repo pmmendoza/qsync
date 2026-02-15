@@ -87,8 +87,10 @@ def _pick_survey_id_from_records(
 ) -> str | None:
     """Prompt interactively for a survey from pre-fetched records."""
 
-    from .interactive_menu import confirm, select_from_list, text_input
+    from .interactive_menu import MenuItem, confirm, select_from_list, text_input
     from .input_validators import SurveyIdValidator
+    from .rich_support import should_use_rich
+    from .terminal_output import rich_console
 
     filtered = records
     if len(filtered) > 60:
@@ -113,27 +115,130 @@ def _pick_survey_id_from_records(
             ):
                 return None
 
-    choices = [
-        f"{s.get('id')} - {s.get('name', 'Untitled')}"
-        for s in filtered
-        if s.get("id")
-    ]
-    choices.append("─" * 60)
-    choices.append("✎ Enter SurveyID manually")
-    choices.append("↩ Back")
+    TRUE_TOKENS = {"true", "1", "yes", "y", "t"}
 
-    selection = select_from_list(message=message, choices=choices)
-    if not selection or selection.endswith("Back"):
-        return None
-    if selection.startswith("✎"):
-        manual = text_input(
-            "Enter Qualtrics SurveyID",
-            instruction="Example: SV_...",
-            validator=SurveyIdValidator(),
-            validate_while_typing=True,
-        )
-        return (manual or "").strip() or None
-    return selection.split(" - ", 1)[0].strip()
+    def _truthy(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in TRUE_TOKENS
+
+    def _print_details() -> None:
+        rows = [r for r in filtered if (r.get("id") or "").strip()]
+        rows = rows[:30]
+        if should_use_rich():
+            console = rich_console()
+            if console is not None:
+                from rich import box
+                from rich.table import Table
+
+                table = Table(title="Inventory (top 30)", box=box.SIMPLE, show_lines=False)
+                table.add_column("Survey ID", no_wrap=True)
+                table.add_column("Name")
+                table.add_column("Active", no_wrap=True)
+                table.add_column("Locked", no_wrap=True)
+                table.add_column("API", no_wrap=True)
+                table.add_column("Last Modified", no_wrap=True)
+                for r in rows:
+                    sid = str(r.get("id") or "").strip()
+                    name = str(r.get("name") or "Untitled").strip()
+                    active = _truthy(r.get("isActive")) if r.get("isActive") is not None else True
+                    locked = _truthy(r.get("locked"))
+                    editable = _truthy(r.get("editableViaApi")) if r.get("editableViaApi") is not None else True
+                    last_mod = str(r.get("lastModified") or "").strip()
+                    table.add_row(
+                        sid,
+                        name,
+                        "yes" if active else "no",
+                        "yes" if locked else "no",
+                        "yes" if editable else "no",
+                        last_mod or "-",
+                    )
+                console.print(table)
+                print()
+                return
+
+        print("\n[qsync] Inventory (top 30):")
+        for r in rows:
+            sid = str(r.get("id") or "").strip()
+            name = str(r.get("name") or "Untitled").strip()
+            active = _truthy(r.get("isActive")) if r.get("isActive") is not None else True
+            locked = _truthy(r.get("locked"))
+            editable = _truthy(r.get("editableViaApi")) if r.get("editableViaApi") is not None else True
+            last_mod = str(r.get("lastModified") or "").strip()
+            flags = []
+            if not active:
+                flags.append("inactive")
+            if locked:
+                flags.append("locked")
+            if not editable:
+                flags.append("no-api-edit")
+            suffix = f" ({', '.join(flags)})" if flags else ""
+            print(f"  - {sid}: {name}{suffix}  lastModified={last_mod or '-'}")
+        print()
+
+    while True:
+        items: list[MenuItem] = []
+        for s in filtered:
+            sid = str(s.get("id") or "").strip()
+            if not sid:
+                continue
+            name = str(s.get("name") or "Untitled").strip()
+            locked = _truthy(s.get("locked"))
+            active = _truthy(s.get("isActive")) if s.get("isActive") is not None else True
+            editable = _truthy(s.get("editableViaApi")) if s.get("editableViaApi") is not None else True
+
+            enabled = True
+            disabled_reason = None
+            if locked:
+                enabled = False
+                disabled_reason = "locked"
+            elif not active:
+                enabled = False
+                disabled_reason = "inactive"
+            elif not editable:
+                enabled = False
+                disabled_reason = "no API edit"
+
+            flags = []
+            if not active:
+                flags.append("inactive")
+            if locked:
+                flags.append("locked")
+            if not editable:
+                flags.append("no-api-edit")
+            suffix = f" ({', '.join(flags)})" if flags else ""
+
+            items.append(
+                MenuItem(
+                    label=f"{sid} - {name}{suffix}",
+                    value=sid,
+                    enabled=enabled,
+                    disabled_reason=disabled_reason,
+                )
+            )
+
+        items.append(MenuItem.separator("─" * 60))
+        items.append(MenuItem(label="🔍 View details (top 30)", value="details", enabled=True))
+        items.append(MenuItem(label="✎ Enter SurveyID manually", value="manual", enabled=True))
+        items.append(MenuItem(label="↩ Back", value="back", enabled=True))
+
+        selection = select_from_list(message=message, choices=items)
+        if selection is None or selection == "back":
+            return None
+        if selection == "details":
+            _print_details()
+            continue
+        if selection == "manual":
+            manual = text_input(
+                "Enter Qualtrics SurveyID",
+                instruction="Example: SV_...",
+                validator=SurveyIdValidator(),
+                validate_while_typing=True,
+            )
+            return (manual or "").strip() or None
+        return str(selection).strip() or None
 
 
 def _slugify(value: str) -> str:
