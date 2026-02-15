@@ -23,6 +23,10 @@ from .argparse_support import (
 SURVEYS_DIR = Path("surveys")
 DEFAULT_MAPPING_PATH = Path("survey_js") / "survey_qid_js_map.csv"
 
+# Internal: how the ambient QSYNC_ACCOUNT context was chosen for this invocation.
+# Values: "flag" | "env" | "workspace" | "none"
+_ACCOUNT_CONTEXT_SOURCE = "none"
+
 # Scope help text is shared across many commands; keep it consistent so users
 # don't have to guess what the expression language supports.
 _SCOPE_HELP_ITEMS = (
@@ -438,7 +442,7 @@ def _should_offer_workspace_onboard_hint(args: argparse.Namespace) -> bool:
         return False
 
     cmd = getattr(args, "command", None)
-    if cmd in {None, "doctor", "onboard", "self-update"}:
+    if cmd in {None, "doctor", "onboard", "self-update", "account"}:
         return False
 
     if cmd == "survey":
@@ -1572,6 +1576,8 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     is_completion = os.environ.get("_ARGCOMPLETE") is not None
 
     if not is_completion:
+        global _ACCOUNT_CONTEXT_SOURCE
+
         if env_path_flag:
             env_abs = Path(env_path_flag).expanduser().resolve()
             os.environ["QSYNC_ENV_PATH"] = str(env_abs)
@@ -1590,16 +1596,19 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     os.chdir(discovered)
             except Exception:
                 pass
+
         # Resolve account selection precedence:
         #   --account flag > QSYNC_ACCOUNT env var > workspace preference (.qsync/preferences.json)
         from .config import validate_account_name
 
         if account_flag:
             os.environ["QSYNC_ACCOUNT"] = validate_account_name(str(account_flag))
+            _ACCOUNT_CONTEXT_SOURCE = "flag"
         else:
             raw_env = (os.environ.get("QSYNC_ACCOUNT") or "").strip()
             if raw_env:
                 os.environ["QSYNC_ACCOUNT"] = validate_account_name(raw_env)
+                _ACCOUNT_CONTEXT_SOURCE = "env"
             else:
                 try:
                     from .workspace_prefs import get_workspace_active_account
@@ -1610,6 +1619,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     ws_account = get_workspace_active_account(root_for_prefs)
                     if ws_account:
                         os.environ["QSYNC_ACCOUNT"] = validate_account_name(ws_account)
+                        _ACCOUNT_CONTEXT_SOURCE = "workspace"
                 except Exception:
                     # Workspace preferences are best-effort: if missing/unreadable,
                     # keep legacy default behavior.
@@ -1690,6 +1700,112 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "(affects credential checks and --check-api)."
         ),
     )
+
+    # account
+    p_account = subparsers.add_parser(
+        "account",
+        help="Manage the workspace default account selection (without exporting env vars)",
+    )
+    account_subs = p_account.add_subparsers(
+        dest="account_command",
+        required=True,
+        metavar="SUBCOMMAND",
+    )
+
+    from .cli_account import (
+        handle_account_adopt,
+        handle_account_clear,
+        handle_account_list,
+        handle_account_status,
+        handle_account_use,
+    )
+
+    p_account_status = account_subs.add_parser(
+        "status",
+        help="Show resolved active account and workspace preference state",
+    )
+    p_account_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON to stdout (no other output)",
+    )
+    p_account_status.set_defaults(func=handle_account_status)
+
+    p_account_list = account_subs.add_parser(
+        "list",
+        help="List available `.env.<account>` files (best-effort validation)",
+    )
+    p_account_list.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON to stdout (no other output)",
+    )
+    p_account_list.set_defaults(func=handle_account_list)
+
+    p_account_use = account_subs.add_parser(
+        "use",
+        help="Persist an active workspace account selection (acts like implicit --account)",
+    )
+    p_account_use.add_argument("account", help="Account name (maps to `.env.<account>`)")
+    p_account_use.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON to stdout (no other output)",
+    )
+    p_account_use.set_defaults(func=handle_account_use)
+
+    p_account_clear = account_subs.add_parser(
+        "clear",
+        help="Clear the active workspace account selection (restore legacy default `.env`)",
+    )
+    p_account_clear.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON to stdout (no other output)",
+    )
+    p_account_clear.set_defaults(func=handle_account_clear)
+
+    p_account_adopt = account_subs.add_parser(
+        "adopt",
+        help="Move existing unscoped qsync-managed artifacts under `.<account>/` directories",
+    )
+    p_account_adopt.add_argument("account", help="Account name to adopt/migrate into")
+    p_account_adopt.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the move plan without changing anything",
+    )
+    p_account_adopt.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip typed confirmation prompt",
+    )
+    p_account_adopt.add_argument(
+        "--merge",
+        action="store_true",
+        help="Skip items whose destination already exists (non-zero exit on conflicts)",
+    )
+    p_account_adopt.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite items whose destination already exists (dangerous)",
+    )
+    p_account_adopt.add_argument(
+        "--no-copy-env",
+        action="store_true",
+        help="Do not create `.env.<account>` by copying `.env` when missing",
+    )
+    p_account_adopt.add_argument(
+        "--use",
+        action="store_true",
+        help="After adoption, set this account as the active workspace account",
+    )
+    p_account_adopt.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON to stdout (no other output)",
+    )
+    p_account_adopt.set_defaults(func=handle_account_adopt)
 
     # help
     p_help = subparsers.add_parser(
@@ -3286,6 +3402,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             pass
 
     args = parser.parse_args(cleaned_argv)
+    args._account_source = _ACCOUNT_CONTEXT_SOURCE
     if getattr(args, "root", None) is None and root_flag:
         args.root = root_flag
     if getattr(args, "env_path", None) is None and env_path_flag:

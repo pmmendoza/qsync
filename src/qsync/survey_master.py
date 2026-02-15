@@ -21,7 +21,7 @@ from importlib import resources
 from typing import Any, Dict, List, Optional, Tuple
 
 from .api_push import send_api_request
-from .config import get_client_config, resolve_root
+from .config import get_active_account, get_client_config, resolve_root, resolve_scoped_dir
 from .rich_support import progress_context, should_use_rich
 from .survey_inventory import load_focal_snapshot, load_existing_metadata
 from .survey_master_validation import validate_all_changes, format_validation_errors
@@ -32,7 +32,9 @@ def _workspace_root() -> Path:
 
 
 def _surveys_dir() -> Path:
-    return _workspace_root() / "surveys"
+    root = _workspace_root()
+    account = get_active_account()
+    return resolve_scoped_dir("surveys", root=root, account=account)
 
 
 def _snapshots_dir() -> Path:
@@ -56,7 +58,8 @@ def _mapping_csv_path() -> Path:
     if override:
         return Path(override).expanduser().resolve()
 
-    surveys_mapping = _surveys_dir() / "qualtrics_api_key_mapping.csv"
+    # Shared across accounts: never scope this into surveys/.<account>/.
+    surveys_mapping = _workspace_root() / "surveys" / "qualtrics_api_key_mapping.csv"
     if surveys_mapping.exists():
         return surveys_mapping
 
