@@ -31,6 +31,8 @@ from .markdown_codec import (
 QUESTION_SHEET = "Questions"
 OPTIONS_SHEET = "Options"
 SUBITEMS_SHEET = "Subitems"
+SBS_COLUMNS_SHEET = "SBS_Columns"
+SBS_COLUMN_ANSWERS_SHEET = "SBS_ColumnAnswers"
 EMBEDDED_DATA_SHEET = "Embedded_Data"
 SYSTEM_SHEET = "System"
 INSTRUCTIONS_SHEET = "Instructions"
@@ -203,6 +205,7 @@ def _column_guide(base_language: str = "EN") -> dict:
             ("QID", "System", "Qualtrics Question ID. Read-only."),
             ("ChoiceId", "System", "Qualtrics choice ID for this option."),
             ("QuestionType", "System", "Qualtrics question type (MC, Matrix, etc.)."),
+            ("ExportTag", "System", "Qualtrics DataExportTag / variable name."),
             ("Code", "System", "Choice code or recode value."),
             (
                 label_md,
@@ -235,6 +238,7 @@ def _column_guide(base_language: str = "EN") -> dict:
                 "Disambiguator for subitem meaning (Answer | Label).",
             ),
             ("QuestionType", "System", "Qualtrics question type."),
+            ("ExportTag", "System", "Qualtrics DataExportTag / variable name."),
             (
                 label_md,
                 "Editable",
@@ -244,6 +248,70 @@ def _column_guide(base_language: str = "EN") -> dict:
                 label_html,
                 "Flag",
                 f"TRUE when {label_md} should be treated as raw HTML.",
+            ),
+            (
+                "Dirty",
+                "System",
+                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
+            ),
+        ],
+        SBS_COLUMNS_SHEET: [
+            ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
+            ("QID", "System", "Qualtrics Question ID. Read-only."),
+            (
+                "ColumnId",
+                "System",
+                "SBS column ID (AdditionalQuestions key). Read-only.",
+            ),
+            ("QuestionType", "System", "Qualtrics question type (SBS)."),
+            ("ExportTag", "System", "Qualtrics DataExportTag / variable name."),
+            (
+                label_md,
+                "Editable",
+                f"{base_upper} SBS column header in restricted Markdown.",
+            ),
+            (
+                label_html,
+                "Flag",
+                f"TRUE when {label_md} should be treated as raw HTML.",
+            ),
+            (
+                "MetaComment",
+                "Note",
+                "Auto-generated or manual notes (e.g., externally managed scripts).",
+            ),
+            (
+                "Dirty",
+                "System",
+                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
+            ),
+        ],
+        SBS_COLUMN_ANSWERS_SHEET: [
+            ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
+            ("QID", "System", "Qualtrics Question ID. Read-only."),
+            ("ColumnId", "System", "SBS column ID (AdditionalQuestions key)."),
+            ("AnswerId", "System", "Qualtrics answer ID inside the SBS column."),
+            ("QuestionType", "System", "Qualtrics question type (SBS)."),
+            ("ExportTag", "System", "Qualtrics DataExportTag / variable name."),
+            (
+                label_md,
+                "Editable",
+                f"{base_upper} SBS column answer label in restricted Markdown.",
+            ),
+            (
+                label_html,
+                "Flag",
+                f"TRUE when {label_md} should be treated as raw HTML.",
+            ),
+            (
+                "MetaComment",
+                "Note",
+                "Auto-generated or manual notes (e.g., externally managed scripts).",
+            ),
+            (
+                "Dirty",
+                "System",
+                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
             ),
         ],
         EMBEDDED_DATA_SHEET: [
@@ -314,15 +382,29 @@ COLUMN_GUIDE = _column_guide()
 
 
 def _make_options_preview_formula(
-    cell_ref: str, *, base_language: str = "EN"
+    cell_ref: str,
+    *,
+    base_language: str = "EN",
+    question_type: str | None = None,
 ) -> ArrayFormula:
-    """Generate array formula for dynamic option preview from OptionsTable."""
+    """Generate array formula for dynamic option preview.
+
+    For regular questions this previews answer options from `OptionsTable`.
+    For SBSMatrix questions (QuestionType="SBS") it previews SBS columns from
+    `SBSColumnsTable` since SBS options live under AdditionalQuestions.
+    """
     label_col = f"Label_{_language_suffix(base_language) or 'en'}_MD"
+    if (question_type or "").strip().upper() == "SBS":
+        table = "SBSColumnsTable"
+        id_col = "ColumnId"
+    else:
+        table = "OptionsTable"
+        id_col = "ChoiceId"
     formula = (
         "=_xlfn.LET(_xlpm.q,QuestionsTable[[#This Row],[QID]],\n"
         "     IFERROR(_xlfn.TEXTJOIN(CHAR(10), TRUE,\n"
-        '         "[" & _xlfn._xlws.FILTER(OptionsTable[ChoiceId], OptionsTable[QID]=_xlpm.q) & "] " &\n'
-        f"         _xlfn._xlws.FILTER(OptionsTable[{label_col}], OptionsTable[QID]=_xlpm.q)\n"
+        f'         "[" & _xlfn._xlws.FILTER({table}[{id_col}], {table}[QID]=_xlpm.q) & "] " &\n'
+        f"         _xlfn._xlws.FILTER({table}[{label_col}], {table}[QID]=_xlpm.q)\n"
         '     ), "")\n'
         ")"
     )
@@ -417,6 +499,38 @@ def _update_instructions_sheet(
         ws.append(
             [
                 SUBITEMS_SHEET,
+                f"Label_{suffix}_IsHTML",
+                "Flag",
+                f"TRUE when Label_{suffix}_MD should be treated as raw HTML.",
+            ]
+        )
+        ws.append(
+            [
+                SBS_COLUMNS_SHEET,
+                f"Label_{suffix}_MD",
+                "Editable",
+                f"{lang} SBS column header in restricted Markdown.",
+            ]
+        )
+        ws.append(
+            [
+                SBS_COLUMNS_SHEET,
+                f"Label_{suffix}_IsHTML",
+                "Flag",
+                f"TRUE when Label_{suffix}_MD should be treated as raw HTML.",
+            ]
+        )
+        ws.append(
+            [
+                SBS_COLUMN_ANSWERS_SHEET,
+                f"Label_{suffix}_MD",
+                "Editable",
+                f"{lang} SBS column answer label in restricted Markdown.",
+            ]
+        )
+        ws.append(
+            [
+                SBS_COLUMN_ANSWERS_SHEET,
                 f"Label_{suffix}_IsHTML",
                 "Flag",
                 f"TRUE when Label_{suffix}_MD should be treated as raw HTML.",
@@ -626,6 +740,35 @@ class SubitemRow:
     export_tag: str
     label_en_md: str | None
     label_en_is_html: bool
+
+
+@dataclass
+class SbsColumnRow:
+    """Typed representation of a row in the `SBS_Columns` sheet."""
+
+    survey_id: str
+    qid: str
+    column_id: str
+    question_type: str
+    export_tag: str
+    label_en_md: str | None
+    label_en_is_html: bool
+    externally_managed_by: str | None = None
+
+
+@dataclass
+class SbsColumnAnswerRow:
+    """Typed representation of a row in the `SBS_ColumnAnswers` sheet."""
+
+    survey_id: str
+    qid: str
+    column_id: str
+    answer_id: str
+    question_type: str
+    export_tag: str
+    label_en_md: str | None
+    label_en_is_html: bool
+    externally_managed_by: str | None = None
 
 
 @dataclass
@@ -973,6 +1116,23 @@ def _build_option_previews(survey_payload: dict) -> Dict[str, str]:
     for qid, q in questions.items():
         qtype = q.get("QuestionType") or ""
 
+        if _is_sbs_matrix_question(q):
+            additional = q.get("AdditionalQuestions") or {}
+            if not isinstance(additional, dict) or not additional:
+                continue
+            lines: List[str] = []
+            for column_id in _ordered_numeric_keys(additional):
+                aq = additional.get(column_id)
+                if not isinstance(aq, dict):
+                    continue
+                display = aq.get("QuestionText") or ""
+                text = html_to_md(display)
+                if text:
+                    lines.append(text)
+            if lines:
+                result[qid] = lines
+            continue
+
         if qtype == "Matrix":
             # For Matrix, options are the Answers (response scale)
             answers = q.get("Answers") or {}
@@ -1037,7 +1197,7 @@ def _build_subitem_previews(survey_payload: dict) -> Dict[str, str]:
     for qid, q in questions.items():
         qtype = q.get("QuestionType") or ""
 
-        if qtype == "Matrix":
+        if qtype == "Matrix" or _is_sbs_matrix_question(q):
             # For Matrix, subitems are Choices (the statements/headlines)
             choices = q.get("Choices") or {}
             if not choices:
@@ -1188,6 +1348,49 @@ def build_question_rows(
     return rows
 
 
+def _is_sbs_matrix_question(question: dict) -> bool:
+    """Return True for Qualtrics SBS side-by-side matrix questions.
+
+    Qualtrics encodes these as QuestionType="SBS" with Selector="SBSMatrix".
+    """
+
+    if not isinstance(question, dict):
+        return False
+    return (
+        str(question.get("QuestionType") or "").strip() == "SBS"
+        and str(question.get("Selector") or "").strip() == "SBSMatrix"
+    )
+
+
+def _ordered_numeric_keys(items: dict) -> List[str]:
+    """Return dict keys ordered numerically when possible (stable fallback to string)."""
+
+    keys = [str(k) for k in (items or {}).keys()]
+
+    def key_fn(value: str) -> tuple[int, int | None, str]:
+        value = str(value)
+        try:
+            return (0, int(value), value)
+        except ValueError:
+            return (1, None, value)
+
+    return sorted(keys, key=key_fn)
+
+
+def _sbs_matrix_qids(survey_payload: dict) -> set[str]:
+    """Return QIDs for non-Trash SBSMatrix questions."""
+
+    questions = (survey_payload.get("result") or {}).get("Questions") or {}
+    if not isinstance(questions, dict):
+        return set()
+    valid_qids = _get_valid_qids(survey_payload)
+    return {
+        str(qid)
+        for qid, q in questions.items()
+        if qid in valid_qids and isinstance(q, dict) and _is_sbs_matrix_question(q)
+    }
+
+
 def build_option_rows(
     survey_id: str,
     survey_payload: dict,
@@ -1214,6 +1417,10 @@ def build_option_rows(
             continue
 
         qtype = q.get("QuestionType") or ""
+        if _is_sbs_matrix_question(q):
+            # SBSMatrix statements live in Choices, but are edited via Subitems.
+            # SBS columns/answer scales live in AdditionalQuestions.
+            continue
         tag = q.get("DataExportTag") or ""
         externally_by = _is_externally_managed_question(tag)
 
@@ -1341,8 +1548,8 @@ def build_subitem_rows(
         qtype = q.get("QuestionType") or ""
         tag = q.get("DataExportTag") or ""
 
-        # For Matrix questions, subitems come from Choices (the matrix rows)
-        if qtype == "Matrix":
+        # For Matrix questions (and SBSMatrix), subitems come from Choices (rows/statements).
+        if qtype == "Matrix" or _is_sbs_matrix_question(q):
             choices = q.get("Choices")
             if not choices:
                 continue
@@ -1443,6 +1650,132 @@ def build_subitem_rows(
     return rows
 
 
+def build_sbs_column_rows(
+    survey_id: str,
+    survey_payload: dict,
+) -> Dict[Tuple[str, str], SbsColumnRow]:
+    """Build SbsColumnRow objects for Qualtrics SBSMatrix questions."""
+
+    questions = survey_payload.get("result", {}).get("Questions", {})
+    valid_qids = _get_valid_qids(survey_payload)
+    rows: Dict[Tuple[str, str], SbsColumnRow] = {}
+
+    for qid, q in questions.items():
+        if qid not in valid_qids:
+            continue
+        if not _is_sbs_matrix_question(q):
+            continue
+
+        qtype = str(q.get("QuestionType") or "").strip()
+        tag = str(q.get("DataExportTag") or "").strip()
+        externally_by = _is_externally_managed_question(tag)
+        additional = q.get("AdditionalQuestions") or {}
+        if not isinstance(additional, dict) or not additional:
+            continue
+
+        for column_id in _ordered_numeric_keys(additional):
+            aq = additional.get(column_id)
+            if not isinstance(aq, dict):
+                continue
+            display = aq.get("QuestionText") or ""
+
+            if is_markdown_safe_html(display):
+                label_md = html_to_md(display)
+                is_html = False
+            elif should_treat_as_html(display):
+                label_md = normalize_text(display)
+                is_html = True
+            else:
+                label_md = html_to_md(display)
+                is_html = False
+
+            rows[(qid, str(column_id))] = SbsColumnRow(
+                survey_id=survey_id,
+                qid=qid,
+                column_id=str(column_id),
+                question_type=qtype,
+                export_tag=tag,
+                label_en_md=label_md,
+                label_en_is_html=is_html,
+                externally_managed_by=externally_by,
+            )
+
+    return rows
+
+
+def build_sbs_column_answer_rows(
+    survey_id: str,
+    survey_payload: dict,
+) -> Dict[Tuple[str, str, str], SbsColumnAnswerRow]:
+    """Build SbsColumnAnswerRow objects for SBSMatrix AdditionalQuestions answer scales."""
+
+    questions = survey_payload.get("result", {}).get("Questions", {})
+    valid_qids = _get_valid_qids(survey_payload)
+    rows: Dict[Tuple[str, str, str], SbsColumnAnswerRow] = {}
+
+    for qid, q in questions.items():
+        if qid not in valid_qids:
+            continue
+        if not _is_sbs_matrix_question(q):
+            continue
+
+        qtype = str(q.get("QuestionType") or "").strip()
+        tag = str(q.get("DataExportTag") or "").strip()
+        externally_by = _is_externally_managed_question(tag)
+        additional = q.get("AdditionalQuestions") or {}
+        if not isinstance(additional, dict) or not additional:
+            continue
+
+        for column_id in _ordered_numeric_keys(additional):
+            aq = additional.get(column_id)
+            if not isinstance(aq, dict):
+                continue
+            answers = aq.get("Answers") or {}
+            if not isinstance(answers, dict) or not answers:
+                continue
+
+            ordered_ids: list[str] = []
+            answer_order = aq.get("AnswerOrder")
+            if isinstance(answer_order, list) and answer_order:
+                ordered_ids.extend(
+                    [str(aid) for aid in answer_order if str(aid) in answers]
+                )
+            for aid in answers.keys():
+                said = str(aid)
+                if said not in ordered_ids:
+                    ordered_ids.append(said)
+
+            for answer_id in ordered_ids:
+                answer = answers.get(answer_id)
+                if not isinstance(answer, dict):
+                    continue
+                display = answer.get("Display") or ""
+
+                if is_markdown_safe_html(display):
+                    label_md = html_to_md(display)
+                    is_html = False
+                elif should_treat_as_html(display):
+                    label_md = normalize_text(display)
+                    is_html = True
+                else:
+                    label_md = html_to_md(display)
+                    is_html = False
+
+                rows[(qid, str(column_id), str(answer_id))] = SbsColumnAnswerRow(
+                    survey_id=survey_id,
+                    qid=qid,
+                    column_id=str(column_id),
+                    answer_id=str(answer_id),
+                    question_type=qtype,
+                    export_tag=tag,
+                    label_en_md=label_md,
+                    label_en_is_html=is_html,
+                    externally_managed_by=externally_by,
+                )
+
+    return rows
+
+
 def _extract_base_language(survey_payload: dict) -> str:
     """Extract the base survey language from the payload, defaulting to EN."""
     result = survey_payload.get("result", {})
@@ -1498,9 +1831,77 @@ def init_workbook_from_survey(
 
     base_language = _extract_base_language(survey_payload)
 
+    # SBSMatrix migration: older workbooks incorrectly placed SBS statements in Options.
+    # Snapshot those values before we re-init sheets so we can move them into Subitems.
+    sbs_qids = _sbs_matrix_qids(survey_payload)
+    sbs_broken_qids: set[str] = set()
+    sbs_option_label_snapshot: dict[tuple[str, str], dict[str, object]] = {}
+
+    if sbs_qids and OPTIONS_SHEET in wb.sheetnames:
+        ws_opt = wb[OPTIONS_SHEET]
+        opt_headers, opt_rows = _iter_sheet_rows(ws_opt)
+        if opt_headers and "QID" in opt_headers and "ChoiceId" in opt_headers:
+            opt_qid_idx = opt_headers.index("QID")
+            opt_choice_idx = opt_headers.index("ChoiceId")
+            option_qids_with_rows: set[str] = set()
+            for row in opt_rows:
+                qid = str(row[opt_qid_idx].value or "").strip()
+                cid = str(row[opt_choice_idx].value or "").strip()
+                if qid in sbs_qids and cid:
+                    option_qids_with_rows.add(qid)
+
+            subitems_qids_with_rows: set[str] = set()
+            if SUBITEMS_SHEET in wb.sheetnames:
+                ws_sub = wb[SUBITEMS_SHEET]
+                sub_headers, sub_rows = _iter_sheet_rows(ws_sub)
+                if sub_headers and "QID" in sub_headers and "AnswerId" in sub_headers:
+                    sub_qid_idx = sub_headers.index("QID")
+                    sub_ans_idx = sub_headers.index("AnswerId")
+                    sub_field_idx = (
+                        sub_headers.index("Field") if "Field" in sub_headers else None
+                    )
+                    for row in sub_rows:
+                        qid = str(row[sub_qid_idx].value or "").strip()
+                        aid = str(row[sub_ans_idx].value or "").strip()
+                        if qid not in sbs_qids or not aid:
+                            continue
+                        field_val = (
+                            row[sub_field_idx].value
+                            if sub_field_idx is not None
+                            else ""
+                        )
+                        field = _normalize_subitem_field(field_val)
+                        if field != "Label":
+                            subitems_qids_with_rows.add(qid)
+
+            sbs_broken_qids = option_qids_with_rows - subitems_qids_with_rows
+
+            label_cols = [
+                str(h or "")
+                for h in opt_headers
+                if str(h or "").startswith("Label_")
+                and (str(h or "").endswith("_MD") or str(h or "").endswith("_IsHTML"))
+            ]
+            idx = {str(name or ""): i for i, name in enumerate(opt_headers)}
+            if sbs_broken_qids and label_cols:
+                for row in opt_rows:
+                    qid = str(row[opt_qid_idx].value or "").strip()
+                    cid = str(row[opt_choice_idx].value or "").strip()
+                    if qid not in sbs_broken_qids or not cid:
+                        continue
+                    snapshot: dict[str, object] = {}
+                    for col in label_cols:
+                        j = idx.get(col)
+                        if j is None or j >= len(row):
+                            continue
+                        snapshot[col] = row[j].value
+                    sbs_option_label_snapshot[(qid, cid)] = snapshot
+
     questions_map = build_question_rows(survey_id, survey_payload)
     options_map = build_option_rows(survey_id, survey_payload)
     subitems_map = build_subitem_rows(survey_id, survey_payload)
+    sbs_columns_map = build_sbs_column_rows(survey_id, survey_payload)
+    sbs_column_answers_map = build_sbs_column_answer_rows(survey_id, survey_payload)
     embedded_rows = build_embedded_data_rows(survey_id, survey_payload)
     option_previews = _build_option_previews(survey_payload)
     subitem_previews = _build_subitem_previews(survey_payload)
@@ -1528,20 +1929,93 @@ def init_workbook_from_survey(
         languages=languages,
         base_language=base_language,
     )
+    _init_sbs_columns_sheet(
+        wb,
+        sbs_columns_map,
+        survey_payload,
+        languages=languages,
+        base_language=base_language,
+    )
+    _init_sbs_column_answers_sheet(
+        wb,
+        sbs_column_answers_map,
+        survey_payload,
+        languages=languages,
+        base_language=base_language,
+    )
     _init_survey_metadata_sheet(wb, survey_payload, languages=languages)
     _init_embedded_data_sheet(wb, embedded_rows)
+
+    # SBSMatrix migration: move SBS statements out of Options and into Subitems.
+    # We only merge values when the workbook was in the "broken" state (Options had rows,
+    # Subitems did not) to avoid clobbering real Subitems edits.
+    if sbs_qids and OPTIONS_SHEET in wb.sheetnames and SUBITEMS_SHEET in wb.sheetnames:
+        if sbs_option_label_snapshot:
+            ws_sub = wb[SUBITEMS_SHEET]
+            sub_headers, _ = _iter_sheet_rows(ws_sub)
+            if sub_headers and "QID" in sub_headers and "AnswerId" in sub_headers:
+                sub_idx = {str(name or ""): i for i, name in enumerate(sub_headers)}
+                snapshot_cols: set[str] = set()
+                for snap in sbs_option_label_snapshot.values():
+                    snapshot_cols.update([str(k) for k in snap.keys()])
+                label_cols = [str(h or "") for h in sub_headers if str(h or "") in snapshot_cols]
+
+                # Build a row lookup for Subitems (Answer field only).
+                sub_row_for_key: dict[tuple[str, str], int] = {}
+                sub_qid_idx = sub_idx["QID"]
+                sub_ans_idx = sub_idx["AnswerId"]
+                sub_field_idx = sub_idx.get("Field")
+                for row in ws_sub.iter_rows(min_row=2, values_only=False):
+                    qid = str(row[sub_qid_idx].value or "").strip()
+                    aid = str(row[sub_ans_idx].value or "").strip()
+                    if not qid or not aid:
+                        continue
+                    field_val = (
+                        row[sub_field_idx].value if sub_field_idx is not None else ""
+                    )
+                    field = _normalize_subitem_field(field_val)
+                    if field == "Label":
+                        continue
+                    sub_row_for_key[(qid, aid)] = int(row[0].row)
+
+                for (qid, cid), snap in sbs_option_label_snapshot.items():
+                    target_row = sub_row_for_key.get((qid, cid))
+                    if not target_row:
+                        continue
+                    for col in label_cols:
+                        val = snap.get(col)
+                        if val is None or str(val).strip() == "":
+                            continue
+                        ws_sub.cell(row=target_row, column=sub_idx[col] + 1, value=val)
+
+        # Always delete SBS option rows: SBS does not use the Options sheet.
+        ws_opt = wb[OPTIONS_SHEET]
+        opt_headers, _ = _iter_sheet_rows(ws_opt)
+        if opt_headers and "QID" in opt_headers:
+            opt_qid_idx = opt_headers.index("QID")
+            delete_rows: list[int] = []
+            for row in ws_opt.iter_rows(min_row=2, values_only=False):
+                qid = str(row[opt_qid_idx].value or "").strip()
+                if qid in sbs_qids:
+                    delete_rows.append(int(row[0].row))
+            for row_idx in sorted(set(delete_rows), reverse=True):
+                ws_opt.delete_rows(row_idx, 1)
 
     # Normalise ordering in the options/subitems sheets so rows are grouped
     # deterministically by (QID, ChoiceId/AnswerId). This keeps previews and
     # manual inspection predictable, even after multiple init runs.
     _sort_sheet_by_qid_and_id(wb[OPTIONS_SHEET], "ChoiceId")
     _sort_sheet_by_qid_and_id(wb[SUBITEMS_SHEET], "AnswerId")
+    _sort_sheet_by_qid_and_id(wb[SBS_COLUMNS_SHEET], "ColumnId")
+    _sort_sheet_by_qid_and_two_ids(wb[SBS_COLUMN_ANSWERS_SHEET], "ColumnId", "AnswerId")
     _sort_sheet_by_flow_order(wb[EMBEDDED_DATA_SHEET])
 
     # Apply table styles, wrapping, colours, and validations.
     _format_questions_sheet(wb[QUESTION_SHEET])
     _format_options_sheet(wb[OPTIONS_SHEET])
     _format_subitems_sheet(wb[SUBITEMS_SHEET])
+    _format_sbs_columns_sheet(wb[SBS_COLUMNS_SHEET])
+    _format_sbs_column_answers_sheet(wb[SBS_COLUMN_ANSWERS_SHEET])
     _format_survey_metadata_sheet(wb[SURVEY_METADATA_SHEET])
     _format_embedded_data_sheet(wb[EMBEDDED_DATA_SHEET])
 
@@ -1675,7 +2149,9 @@ def _init_questions_sheet(
                     row=row_idx,
                     column=col_index["OptionsPreview"] + 1,
                     value=_make_options_preview_formula(
-                        cell_ref, base_language=base_language
+                        cell_ref,
+                        base_language=base_language,
+                        question_type=row_data.question_type,
                     ),
                 )
             if "SubitemsPreview" in col_index:
@@ -1754,7 +2230,9 @@ def _init_questions_sheet(
                     row=new_row_idx,
                     column=col_index["OptionsPreview"] + 1,
                     value=_make_options_preview_formula(
-                        cell_ref, base_language=base_language
+                        cell_ref,
+                        base_language=base_language,
+                        question_type=row_data.question_type,
                     ),
                 )
             if "SubitemsPreview" in col_index:
@@ -2100,7 +2578,9 @@ def _init_subitems_sheet(
         section = "Answers"
         if field_key == "Label":
             section = "Labels"
-        elif str(row_data.question_type or "").strip().lower() == "matrix":
+        elif str(row_data.question_type or "").strip().lower() == "matrix" or _is_sbs_matrix_question(
+            q_json
+        ):
             section = "Choices"
 
         for lang_code, (md_col, html_col) in label_lang_columns.items():
@@ -2220,6 +2700,375 @@ def _init_subitems_sheet(
                         column=col_index[html_col] + 1,
                         value=bool(lang_is_html),
                     )
+
+
+def _init_sbs_columns_sheet(
+    wb: Workbook,
+    columns_map: Dict[Tuple[str, str], SbsColumnRow],
+    survey_payload: dict,
+    *,
+    languages: Sequence[str] | None = None,
+    base_language: str = "EN",
+) -> None:
+    ws = _get_or_create_sheet(wb, SBS_COLUMNS_SHEET)
+    base_suffix = _language_suffix(base_language) or "en"
+    base_label_col = f"Label_{base_suffix}_MD"
+    base_label_html_col = f"Label_{base_suffix}_IsHTML"
+    label_columns = _translation_columns(
+        "Label", languages, base_language=base_language
+    )
+    required_cols = [
+        "SurveyID",
+        "QID",
+        "ColumnId",
+        "QuestionType",
+        "ExportTag",
+        *label_columns,
+        "MetaComment",
+    ]
+    _drop_stale_translation_columns(ws, required_cols, prefixes=["Label"])
+    col_index = _ensure_columns(ws, required_cols)
+
+    headers, data_rows = _iter_sheet_rows(ws)
+    label_lang_columns: dict[str, tuple[str, str | None]] = {}
+    for name in headers:
+        header = str(name or "")
+        if not header.startswith("Label_") or not header.endswith("_MD"):
+            continue
+        suffix = header[len("Label_") : -len("_MD")]
+        lang_code = _language_from_suffix(suffix)
+        is_html_name = f"Label_{suffix}_IsHTML"
+        label_lang_columns[lang_code] = (
+            header,
+            is_html_name if is_html_name in col_index else None,
+        )
+
+    qid_col = col_index["QID"]
+    column_col = col_index["ColumnId"]
+    existing_rows: Dict[Tuple[str, str], int] = {}
+    for idx, row in enumerate(data_rows, start=2):
+        qid_val = row[qid_col].value
+        col_val = row[column_col].value
+        if qid_val is None or col_val is None:
+            continue
+        key = (str(qid_val).strip(), str(col_val).strip())
+        existing_rows[key] = idx
+
+    questions = survey_payload.get("result", {}).get("Questions", {})
+
+    for key, row_data in columns_map.items():
+        qid, column_id = key
+        if key in existing_rows:
+            row_idx = existing_rows[key]
+            ws.cell(
+                row=row_idx, column=col_index["SurveyID"] + 1, value=row_data.survey_id
+            )
+            ws.cell(row=row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            ws.cell(
+                row=row_idx, column=col_index["ColumnId"] + 1, value=row_data.column_id
+            )
+            ws.cell(
+                row=row_idx,
+                column=col_index["QuestionType"] + 1,
+                value=row_data.question_type,
+            )
+            ws.cell(
+                row=row_idx,
+                column=col_index["ExportTag"] + 1,
+                value=row_data.export_tag,
+            )
+
+            label_cell = ws.cell(row=row_idx, column=col_index[base_label_col] + 1)
+            is_html_cell = ws.cell(
+                row=row_idx, column=col_index[base_label_html_col] + 1
+            )
+            if (
+                label_cell.value is None or str(label_cell.value).strip() == ""
+            ) and row_data.label_en_md:
+                label_cell.value = row_data.label_en_md
+            is_html_cell.value = bool(row_data.label_en_is_html)
+
+            meta_cell = ws.cell(row=row_idx, column=col_index["MetaComment"] + 1)
+            if row_data.externally_managed_by:
+                meta_cell.value = _externally_managed_note(
+                    row_data.externally_managed_by
+                )
+            else:
+                current = str(meta_cell.value or "").strip()
+                if current.startswith(_EXTERNALLY_MANAGED_NOTE_PREFIX):
+                    meta_cell.value = ""
+        else:
+            new_row_idx = ws.max_row + 1
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["SurveyID"] + 1,
+                value=row_data.survey_id,
+            )
+            ws.cell(row=new_row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["ColumnId"] + 1,
+                value=row_data.column_id,
+            )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["QuestionType"] + 1,
+                value=row_data.question_type,
+            )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["ExportTag"] + 1,
+                value=row_data.export_tag,
+            )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index[base_label_col] + 1,
+                value=row_data.label_en_md,
+            )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index[base_label_html_col] + 1,
+                value=bool(row_data.label_en_is_html),
+            )
+            meta_cell = ws.cell(row=new_row_idx, column=col_index["MetaComment"] + 1)
+            if row_data.externally_managed_by:
+                meta_cell.value = _externally_managed_note(
+                    row_data.externally_managed_by
+                )
+            row_idx = new_row_idx
+
+        q_json = questions.get(qid, {}) if isinstance(questions, dict) else {}
+        language_blocks = q_json.get("Language") or {}
+
+        for lang_code, (md_col, html_col) in label_lang_columns.items():
+            if lang_code == _normalize_language_code(base_language):
+                continue
+            lang_block = _lookup_language_block(language_blocks, lang_code)
+            if not lang_block:
+                continue
+            lang_display = None
+            answers = lang_block.get("Answers") if isinstance(lang_block, dict) else None
+            if isinstance(answers, dict):
+                entry = answers.get(str(column_id))
+                if isinstance(entry, dict):
+                    lang_display = entry.get("Display")
+            if lang_display is None:
+                aq_block = (
+                    lang_block.get("AdditionalQuestions")
+                    if isinstance(lang_block, dict)
+                    else None
+                )
+                if isinstance(aq_block, dict):
+                    entry = aq_block.get(str(column_id))
+                    if isinstance(entry, dict):
+                        lang_display = entry.get("QuestionText")
+
+            text_md, is_html = _metadata_cell_value(
+                str(lang_display) if lang_display is not None else None
+            )
+            if not text_md:
+                continue
+            lang_cell = ws.cell(row=row_idx, column=col_index[md_col] + 1)
+            if lang_cell.value is not None and str(lang_cell.value).strip() != "":
+                continue
+            lang_cell.value = text_md
+            if html_col:
+                ws.cell(
+                    row=row_idx,
+                    column=col_index[html_col] + 1,
+                    value=bool(is_html),
+                )
+
+
+def _init_sbs_column_answers_sheet(
+    wb: Workbook,
+    answers_map: Dict[Tuple[str, str, str], SbsColumnAnswerRow],
+    survey_payload: dict,
+    *,
+    languages: Sequence[str] | None = None,
+    base_language: str = "EN",
+) -> None:
+    ws = _get_or_create_sheet(wb, SBS_COLUMN_ANSWERS_SHEET)
+    base_suffix = _language_suffix(base_language) or "en"
+    base_label_col = f"Label_{base_suffix}_MD"
+    base_label_html_col = f"Label_{base_suffix}_IsHTML"
+    label_columns = _translation_columns(
+        "Label", languages, base_language=base_language
+    )
+    required_cols = [
+        "SurveyID",
+        "QID",
+        "ColumnId",
+        "AnswerId",
+        "QuestionType",
+        "ExportTag",
+        *label_columns,
+        "MetaComment",
+    ]
+    _drop_stale_translation_columns(ws, required_cols, prefixes=["Label"])
+    col_index = _ensure_columns(ws, required_cols)
+
+    headers, data_rows = _iter_sheet_rows(ws)
+    label_lang_columns: dict[str, tuple[str, str | None]] = {}
+    for name in headers:
+        header = str(name or "")
+        if not header.startswith("Label_") or not header.endswith("_MD"):
+            continue
+        suffix = header[len("Label_") : -len("_MD")]
+        lang_code = _language_from_suffix(suffix)
+        is_html_name = f"Label_{suffix}_IsHTML"
+        label_lang_columns[lang_code] = (
+            header,
+            is_html_name if is_html_name in col_index else None,
+        )
+
+    qid_col = col_index["QID"]
+    column_col = col_index["ColumnId"]
+    answer_col = col_index["AnswerId"]
+    existing_rows: Dict[Tuple[str, str, str], int] = {}
+    for idx, row in enumerate(data_rows, start=2):
+        qid_val = row[qid_col].value
+        col_val = row[column_col].value
+        ans_val = row[answer_col].value
+        if qid_val is None or col_val is None or ans_val is None:
+            continue
+        key = (str(qid_val).strip(), str(col_val).strip(), str(ans_val).strip())
+        existing_rows[key] = idx
+
+    questions = survey_payload.get("result", {}).get("Questions", {})
+
+    for key, row_data in answers_map.items():
+        qid, column_id, answer_id = key
+        if key in existing_rows:
+            row_idx = existing_rows[key]
+            ws.cell(
+                row=row_idx, column=col_index["SurveyID"] + 1, value=row_data.survey_id
+            )
+            ws.cell(row=row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            ws.cell(
+                row=row_idx, column=col_index["ColumnId"] + 1, value=row_data.column_id
+            )
+            ws.cell(
+                row=row_idx, column=col_index["AnswerId"] + 1, value=row_data.answer_id
+            )
+            ws.cell(
+                row=row_idx,
+                column=col_index["QuestionType"] + 1,
+                value=row_data.question_type,
+            )
+            ws.cell(
+                row=row_idx,
+                column=col_index["ExportTag"] + 1,
+                value=row_data.export_tag,
+            )
+
+            label_cell = ws.cell(row=row_idx, column=col_index[base_label_col] + 1)
+            is_html_cell = ws.cell(
+                row=row_idx, column=col_index[base_label_html_col] + 1
+            )
+            if (
+                label_cell.value is None or str(label_cell.value).strip() == ""
+            ) and row_data.label_en_md:
+                label_cell.value = row_data.label_en_md
+            is_html_cell.value = bool(row_data.label_en_is_html)
+
+            meta_cell = ws.cell(row=row_idx, column=col_index["MetaComment"] + 1)
+            if row_data.externally_managed_by:
+                meta_cell.value = _externally_managed_note(
+                    row_data.externally_managed_by
+                )
+            else:
+                current = str(meta_cell.value or "").strip()
+                if current.startswith(_EXTERNALLY_MANAGED_NOTE_PREFIX):
+                    meta_cell.value = ""
+        else:
+            new_row_idx = ws.max_row + 1
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["SurveyID"] + 1,
+                value=row_data.survey_id,
+            )
+            ws.cell(row=new_row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["ColumnId"] + 1,
+                value=row_data.column_id,
+            )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["AnswerId"] + 1,
+                value=row_data.answer_id,
+            )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["QuestionType"] + 1,
+                value=row_data.question_type,
+            )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["ExportTag"] + 1,
+                value=row_data.export_tag,
+            )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index[base_label_col] + 1,
+                value=row_data.label_en_md,
+            )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index[base_label_html_col] + 1,
+                value=bool(row_data.label_en_is_html),
+            )
+            meta_cell = ws.cell(row=new_row_idx, column=col_index["MetaComment"] + 1)
+            if row_data.externally_managed_by:
+                meta_cell.value = _externally_managed_note(
+                    row_data.externally_managed_by
+                )
+
+            row_idx = new_row_idx
+
+        q_json = questions.get(qid, {}) if isinstance(questions, dict) else {}
+        language_blocks = q_json.get("Language") or {}
+
+        # Best-effort: Qualtrics exports may not include per-language SBS column answer labels.
+        for lang_code, (md_col, html_col) in label_lang_columns.items():
+            if lang_code == _normalize_language_code(base_language):
+                continue
+            lang_block = _lookup_language_block(language_blocks, lang_code)
+            if not lang_block:
+                continue
+            aq_block = (
+                lang_block.get("AdditionalQuestions")
+                if isinstance(lang_block, dict)
+                else None
+            )
+            if not isinstance(aq_block, dict):
+                continue
+            aq_entry = aq_block.get(str(column_id))
+            if not isinstance(aq_entry, dict):
+                continue
+            lang_answers = aq_entry.get("Answers")
+            if not isinstance(lang_answers, dict):
+                continue
+            ans_entry = lang_answers.get(str(answer_id))
+            if not isinstance(ans_entry, dict):
+                continue
+            lang_display = ans_entry.get("Display")
+            text_md, is_html = _metadata_cell_value(
+                str(lang_display) if lang_display is not None else None
+            )
+            if not text_md:
+                continue
+            lang_cell = ws.cell(row=row_idx, column=col_index[md_col] + 1)
+            if lang_cell.value is not None and str(lang_cell.value).strip() != "":
+                continue
+            lang_cell.value = text_md
+            if html_col:
+                ws.cell(
+                    row=row_idx,
+                    column=col_index[html_col] + 1,
+                    value=bool(is_html),
+                )
 
 
 def _metadata_language_list(
@@ -2550,6 +3399,50 @@ def _sort_sheet_by_qid_and_id(ws: Worksheet, id_header: str) -> None:
         ws.delete_rows(2, ws.max_row - 1)
 
     # Append rows back in sorted order.
+    for _, values in paired:
+        ws.append(values)
+
+
+def _sort_sheet_by_qid_and_two_ids(
+    ws: Worksheet, id1_header: str, id2_header: str
+) -> None:
+    """Sort a sheet by (QID, id1_header, id2_header) in-place."""
+
+    headers, data_rows = _iter_sheet_rows(ws)
+    if not headers:
+        return
+    if "QID" not in headers or id1_header not in headers or id2_header not in headers:
+        return
+
+    qid_idx = headers.index("QID")
+    id1_idx = headers.index(id1_header)
+    id2_idx = headers.index(id2_header)
+
+    def _num_or_str(value: object) -> tuple[int, int | None, str]:
+        s = str(value or "")
+        try:
+            return (0, int(s), s)
+        except ValueError:
+            return (1, None, s)
+
+    def sort_key(row):
+        qid = str(row[qid_idx].value or "")
+        id1 = _num_or_str(row[id1_idx].value)
+        id2 = _num_or_str(row[id2_idx].value)
+        return (qid, id1, id2)
+
+    rows_with_values = [[cell.value for cell in row] for row in data_rows]
+    if not rows_with_values:
+        return
+
+    paired = [
+        (sort_key(data_rows[i]), rows_with_values[i]) for i in range(len(data_rows))
+    ]
+    paired.sort(key=lambda x: x[0])
+
+    if ws.max_row > 1:
+        ws.delete_rows(2, ws.max_row - 1)
+
     for _, values in paired:
         ws.append(values)
 
@@ -2917,6 +3810,226 @@ def _format_subitems_sheet(ws: Worksheet) -> None:
         "Field": 9.0,
         "QuestionType": 14.0,
         "ExportTag": 19.0,
+    }
+    for idx, name in enumerate(headers, start=1):
+        key = str(name or "")
+        w = widths.get(key)
+        if w:
+            ws.column_dimensions[get_column_letter(idx)].width = w
+            continue
+        if key.startswith("Label_") and key.endswith("_MD"):
+            ws.column_dimensions[get_column_letter(idx)].width = 40.0
+        elif key.startswith("Label_") and key.endswith("_IsHTML"):
+            ws.column_dimensions[get_column_letter(idx)].width = 17.0
+
+
+def _format_sbs_columns_sheet(ws: Worksheet) -> None:
+    headers, _ = _iter_sheet_rows(ws)
+    if not headers:
+        return
+    header_row = next(ws.iter_rows(min_row=1, max_row=1))
+    system_headers = {
+        "SurveyID",
+        "QID",
+        "ColumnId",
+        "QuestionType",
+        "ExportTag",
+    }
+
+    for cell in header_row:
+        name = cell.value or ""
+        if name in system_headers:
+            _make_bold(cell)
+
+    system_indices = [headers.index(h) + 1 for h in system_headers if h in headers]
+    for row in ws.iter_rows(min_row=2):
+        for idx in system_indices:
+            if idx <= len(row):
+                _make_bold(row[idx - 1])
+
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+        for cell in row:
+            cell.alignment = Alignment(
+                vertical="center", horizontal="left", wrap_text=False
+            )
+
+    for name in headers:
+        if str(name).startswith("Label_") and str(name).endswith("_MD"):
+            _wrap_column(ws, str(name))
+
+    _autofit_rows(ws)
+
+    for name in headers:
+        if str(name).startswith("Label_") and str(name).endswith("_IsHTML"):
+            _apply_boolean_validation(ws, str(name))
+
+    try:
+        ws.conditional_formatting.clear()
+    except AttributeError:
+        ws.conditional_formatting._cf_rules = {}
+
+    max_row = ws.max_row
+    for name in headers:
+        if str(name).startswith("Label_") and str(name).endswith("_IsHTML"):
+            suffix = str(name)[len("Label_") : -len("_IsHTML")]
+            text_name = f"Label_{suffix}_MD"
+            if text_name not in headers or max_row < 2:
+                continue
+            html_idx = headers.index(name) + 1
+            text_idx = headers.index(text_name) + 1
+            html_col = get_column_letter(html_idx)
+            text_col = get_column_letter(text_idx)
+            formula = f"=${html_col}2=TRUE"
+            rule = FormulaRule(formula=[formula], fill=_HTML_FILL)
+            ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
+
+    if "Dirty" in headers and max_row >= 2:
+        dirty_idx = headers.index("Dirty") + 1
+        dirty_col = get_column_letter(dirty_idx)
+        for name in headers:
+            if str(name).startswith("Label_") and str(name).endswith("_MD"):
+                text_idx = headers.index(name) + 1
+                text_col = get_column_letter(text_idx)
+                formula = f'=${dirty_col}2="Y"'
+                rule = FormulaRule(formula=[formula], fill=_DIRTY_FILL)
+                ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
+
+    max_col = ws.max_column
+    if max_row >= 2 and max_col >= 1:
+        table = Table(
+            displayName="SBSColumnsTable",
+            ref=f"A1:{get_column_letter(max_col)}{max_row}",
+        )
+        style = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        table.tableStyleInfo = style
+        if "SBSColumnsTable" in ws._tables:
+            del ws._tables["SBSColumnsTable"]
+        ws.add_table(table)
+
+    widths = {
+        "SurveyID": 20.0,
+        "QID": 7.0,
+        "ColumnId": 10.0,
+        "QuestionType": 14.0,
+        "ExportTag": 19.0,
+        "MetaComment": 42.0,
+    }
+    for idx, name in enumerate(headers, start=1):
+        key = str(name or "")
+        w = widths.get(key)
+        if w:
+            ws.column_dimensions[get_column_letter(idx)].width = w
+            continue
+        if key.startswith("Label_") and key.endswith("_MD"):
+            ws.column_dimensions[get_column_letter(idx)].width = 40.0
+        elif key.startswith("Label_") and key.endswith("_IsHTML"):
+            ws.column_dimensions[get_column_letter(idx)].width = 17.0
+
+
+def _format_sbs_column_answers_sheet(ws: Worksheet) -> None:
+    headers, _ = _iter_sheet_rows(ws)
+    if not headers:
+        return
+    header_row = next(ws.iter_rows(min_row=1, max_row=1))
+    system_headers = {
+        "SurveyID",
+        "QID",
+        "ColumnId",
+        "AnswerId",
+        "QuestionType",
+        "ExportTag",
+    }
+
+    for cell in header_row:
+        name = cell.value or ""
+        if name in system_headers:
+            _make_bold(cell)
+
+    system_indices = [headers.index(h) + 1 for h in system_headers if h in headers]
+    for row in ws.iter_rows(min_row=2):
+        for idx in system_indices:
+            if idx <= len(row):
+                _make_bold(row[idx - 1])
+
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+        for cell in row:
+            cell.alignment = Alignment(
+                vertical="center", horizontal="left", wrap_text=False
+            )
+
+    for name in headers:
+        if str(name).startswith("Label_") and str(name).endswith("_MD"):
+            _wrap_column(ws, str(name))
+
+    _autofit_rows(ws)
+
+    for name in headers:
+        if str(name).startswith("Label_") and str(name).endswith("_IsHTML"):
+            _apply_boolean_validation(ws, str(name))
+
+    try:
+        ws.conditional_formatting.clear()
+    except AttributeError:
+        ws.conditional_formatting._cf_rules = {}
+
+    max_row = ws.max_row
+    for name in headers:
+        if str(name).startswith("Label_") and str(name).endswith("_IsHTML"):
+            suffix = str(name)[len("Label_") : -len("_IsHTML")]
+            text_name = f"Label_{suffix}_MD"
+            if text_name not in headers or max_row < 2:
+                continue
+            html_idx = headers.index(name) + 1
+            text_idx = headers.index(text_name) + 1
+            html_col = get_column_letter(html_idx)
+            text_col = get_column_letter(text_idx)
+            formula = f"=${html_col}2=TRUE"
+            rule = FormulaRule(formula=[formula], fill=_HTML_FILL)
+            ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
+
+    if "Dirty" in headers and max_row >= 2:
+        dirty_idx = headers.index("Dirty") + 1
+        dirty_col = get_column_letter(dirty_idx)
+        for name in headers:
+            if str(name).startswith("Label_") and str(name).endswith("_MD"):
+                text_idx = headers.index(name) + 1
+                text_col = get_column_letter(text_idx)
+                formula = f'=${dirty_col}2="Y"'
+                rule = FormulaRule(formula=[formula], fill=_DIRTY_FILL)
+                ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
+
+    max_col = ws.max_column
+    if max_row >= 2 and max_col >= 1:
+        table = Table(
+            displayName="SBSColumnAnswersTable",
+            ref=f"A1:{get_column_letter(max_col)}{max_row}",
+        )
+        style = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        table.tableStyleInfo = style
+        if "SBSColumnAnswersTable" in ws._tables:
+            del ws._tables["SBSColumnAnswersTable"]
+        ws.add_table(table)
+
+    widths = {
+        "SurveyID": 20.0,
+        "QID": 7.0,
+        "ColumnId": 10.0,
+        "AnswerId": 10.0,
+        "QuestionType": 14.0,
+        "ExportTag": 19.0,
+        "MetaComment": 42.0,
     }
     for idx, name in enumerate(headers, start=1):
         key = str(name or "")
@@ -3386,6 +4499,99 @@ def load_subitems_from_workbook(xlsx_path: Path) -> Dict[Tuple[str, str], Subite
     return result
 
 
+def load_sbs_columns_from_workbook(
+    xlsx_path: Path,
+) -> Dict[Tuple[str, str], SbsColumnRow]:
+    """Read SbsColumnRow objects from an existing workbook."""
+
+    wb = load_workbook(xlsx_path, data_only=True)
+    if SBS_COLUMNS_SHEET not in wb.sheetnames:
+        return {}
+    ws = wb[SBS_COLUMNS_SHEET]
+    headers, data_rows = _iter_sheet_rows(ws)
+    idx = {name: i for i, name in enumerate(headers)}
+
+    label_md_col, label_html_col = _find_base_text_col(headers, "Label")
+
+    def _get(row, name, default=None):
+        col = idx.get(name)
+        if col is None or col >= len(row):
+            return default
+        cell = row[col]
+        return cell.value if cell is not None else default
+
+    result: Dict[Tuple[str, str], SbsColumnRow] = {}
+    for row in data_rows:
+        qid_val = _get(row, "QID")
+        col_val = _get(row, "ColumnId")
+        if qid_val is None or col_val is None:
+            continue
+        qid = str(qid_val).strip()
+        column_id = str(col_val).strip()
+        if not qid or not column_id:
+            continue
+        export_tag = str(_get(row, "ExportTag") or "").strip()
+        result[(qid, column_id)] = SbsColumnRow(
+            survey_id=str(_get(row, "SurveyID") or "").strip(),
+            qid=qid,
+            column_id=column_id,
+            question_type=str(_get(row, "QuestionType") or "").strip(),
+            export_tag=export_tag,
+            label_en_md=str(_get(row, label_md_col) or ""),
+            label_en_is_html=bool(_get(row, label_html_col) or False),
+            externally_managed_by=_is_externally_managed_question(export_tag),
+        )
+    return result
+
+
+def load_sbs_column_answers_from_workbook(
+    xlsx_path: Path,
+) -> Dict[Tuple[str, str, str], SbsColumnAnswerRow]:
+    """Read SbsColumnAnswerRow objects from an existing workbook."""
+
+    wb = load_workbook(xlsx_path, data_only=True)
+    if SBS_COLUMN_ANSWERS_SHEET not in wb.sheetnames:
+        return {}
+    ws = wb[SBS_COLUMN_ANSWERS_SHEET]
+    headers, data_rows = _iter_sheet_rows(ws)
+    idx = {name: i for i, name in enumerate(headers)}
+
+    label_md_col, label_html_col = _find_base_text_col(headers, "Label")
+
+    def _get(row, name, default=None):
+        col = idx.get(name)
+        if col is None or col >= len(row):
+            return default
+        cell = row[col]
+        return cell.value if cell is not None else default
+
+    result: Dict[Tuple[str, str, str], SbsColumnAnswerRow] = {}
+    for row in data_rows:
+        qid_val = _get(row, "QID")
+        col_val = _get(row, "ColumnId")
+        ans_val = _get(row, "AnswerId")
+        if qid_val is None or col_val is None or ans_val is None:
+            continue
+        qid = str(qid_val).strip()
+        column_id = str(col_val).strip()
+        answer_id = str(ans_val).strip()
+        if not qid or not column_id or not answer_id:
+            continue
+        export_tag = str(_get(row, "ExportTag") or "").strip()
+        result[(qid, column_id, answer_id)] = SbsColumnAnswerRow(
+            survey_id=str(_get(row, "SurveyID") or "").strip(),
+            qid=qid,
+            column_id=column_id,
+            answer_id=answer_id,
+            question_type=str(_get(row, "QuestionType") or "").strip(),
+            export_tag=export_tag,
+            label_en_md=str(_get(row, label_md_col) or ""),
+            label_en_is_html=bool(_get(row, label_html_col) or False),
+            externally_managed_by=_is_externally_managed_question(export_tag),
+        )
+    return result
+
+
 def load_embedded_data_from_workbook(xlsx_path: Path) -> List[EmbeddedDataRow]:
     """Read EmbeddedDataRow objects from an existing workbook."""
 
@@ -3459,5 +4665,23 @@ def subitem_row_to_html(s: SubitemRow) -> str:
 
     text = s.label_en_md or ""
     if s.label_en_is_html:
+        return normalize_text(text)
+    return md_to_html(text)
+
+
+def sbs_column_row_to_html(c: SbsColumnRow) -> str:
+    """Convert an SbsColumnRow's EN label to HTML according to the IsHTML flag."""
+
+    text = c.label_en_md or ""
+    if c.label_en_is_html:
+        return normalize_text(text)
+    return md_to_html(text)
+
+
+def sbs_column_answer_row_to_html(a: SbsColumnAnswerRow) -> str:
+    """Convert an SbsColumnAnswerRow's EN label to HTML according to the IsHTML flag."""
+
+    text = a.label_en_md or ""
+    if a.label_en_is_html:
         return normalize_text(text)
     return md_to_html(text)

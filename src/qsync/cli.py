@@ -1474,6 +1474,8 @@ def _summarize_preview(changes: list[PreviewChange]) -> None:
         "question": "Questions",
         "option": "Options",
         "subitem": "Subitems",
+        "sbs_column": "SBS_Columns",
+        "sbs_column_answer": "SBS_ColumnAnswers",
         "embedded": "Embedded_Data",
     }
 
@@ -1505,6 +1507,12 @@ def _summarize_preview(changes: list[PreviewChange]) -> None:
         elif change.kind == "subitem":
             target = f"Subitem {change.answer_id}"
             desc = "Subitem label"
+        elif change.kind == "sbs_column":
+            target = f"Column {change.choice_id}"
+            desc = "SBS column header"
+        elif change.kind == "sbs_column_answer":
+            target = f"Column {change.choice_id} Answer {change.answer_id}"
+            desc = "SBS column answer label"
         elif change.kind == "embedded":
             tag = change.flow_id or ""
             target = "Value"

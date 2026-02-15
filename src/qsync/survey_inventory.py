@@ -972,28 +972,39 @@ def _select_from_records(
     if not records:
         return None
 
-    choices: list[str] = []
+    # Convert to shared record shape.
+    shaped = []
     for record in records:
-        focal_tag = " (focal)" if include_focal_tag and record.get("focal") else ""
-        choices.append(f"{record['id']} - {record.get('name', 'Untitled')}{focal_tag}")
+        sid = (record.get("id") or "").strip()
+        if not sid:
+            continue
+        name = record.get("name", "Untitled")
+        if include_focal_tag and record.get("focal"):
+            name = f"{name} (focal)"
+        shaped.append(
+            {
+                "id": sid,
+                "name": name,
+                "lastModified": record.get("lastModified", ""),
+                "focal": record.get("focal"),
+            }
+        )
 
-    choices.append("─" * 60)
-    if include_back:
-        choices.append("Back")
-    choices.append("Cancel")
+    from .survey_selection import pick_survey_id_from_records
 
-    from .interactive_menu import select_from_list
-
-    selection = select_from_list(
+    picked = pick_survey_id_from_records(
         message=message,
-        choices=choices,
-        instruction="Use ↑↓ arrows and Enter to select",
+        records=shaped,
+        include_back=include_back,
+        back_label="Back" if include_back else "↩ Back",
+        include_manual=True,
+        manual_label="✎ Enter SurveyID manually",
+        include_details=True,
+        details_label="🔍 View details (top 30)",
     )
-    if not selection or selection in {"Cancel"}:
-        return None
-    if selection == "Back":
-        return "BACK"
-    return selection.split(" - ", 1)[0].strip()
+    if picked is None:
+        return "BACK" if include_back else None
+    return picked
 
 
 def prompt_for_survey_id(
@@ -1047,35 +1058,31 @@ def prompt_for_survey_id(
         return None
 
     if focal_records:
-        # Focal-first menu with optional expansion to all surveys (match qsync sync style).
+        # Keep scope selection consistent and explicit.
         from .interactive_menu import select_from_list
 
-        focal_choices: list[str] = []
-        for record in focal_records:
-            focal_choices.append(f"{record['id']} - {record.get('name', 'Untitled')}")
-        focal_choices.append("─" * 60)
+        scope_choices = ["Focal surveys"]
         if allow_all_surveys:
-            focal_choices.append("✓ Show all surveys")
-        focal_choices.append("✗ Cancel")
+            scope_choices.append("All surveys")
+        scope_choices.append("✗ Cancel")
 
-        while True:
-            selection = select_from_list(
-                message="Select a survey:",
-                choices=focal_choices,
-            )
-            if not selection or "Cancel" in selection:
-                return None
-            if "Show all surveys" in selection:
-                picked = _select_from_records(
-                    all_records,
-                    message="Select a survey (all):",
-                    include_focal_tag=True,
-                    include_back=True,
-                )
-                if picked == "BACK":
-                    continue
-                return picked
-            return selection.split(" - ", 1)[0].strip()
+        scope = select_from_list(
+            message="Select survey scope:",
+            choices=scope_choices,
+            default="Focal surveys",
+        )
+        if scope is None or "Cancel" in scope:
+            return None
+        target = focal_records if scope.startswith("Focal") else all_records
+        picked = _select_from_records(
+            target,
+            message="Select a survey:",
+            include_focal_tag=True,
+            include_back=False,
+        )
+        if picked in {None, "BACK"}:
+            return None
+        return picked
 
     # No focal surveys defined.
     if not allow_all_surveys:

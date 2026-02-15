@@ -857,7 +857,7 @@ def _apply_include_filters(
 def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -> None:
     """Mark dirty rows/cells in the Excel workbook based on preview changes.
 
-    - Adds/updates a `Dirty` column on Questions/Options sheets.
+    - Adds/updates a `Dirty` column on relevant sheets.
     - Highlights the edited field (Text_*_MD or Label_*_MD).
     """
 
@@ -907,6 +907,16 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
         idx_o = {}
         dirty_col_o = -1
 
+    if excel_io.SUBITEMS_SHEET in wb.sheetnames:
+        ws_s, idx_s, dirty_col_s = ensure_dirty_column(excel_io.SUBITEMS_SHEET)
+        if dirty_col_s > 0:
+            for row in ws_s.iter_rows(min_row=2):
+                row[dirty_col_s - 1].value = ""
+    else:
+        ws_s = None
+        idx_s = {}
+        dirty_col_s = -1
+
     if excel_io.EMBEDDED_DATA_SHEET in wb.sheetnames:
         ws_e, idx_e, dirty_col_e = ensure_dirty_column(excel_io.EMBEDDED_DATA_SHEET)
         if dirty_col_e > 0:
@@ -916,6 +926,28 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
         ws_e = None
         idx_e = {}
         dirty_col_e = -1
+
+    if excel_io.SBS_COLUMNS_SHEET in wb.sheetnames:
+        ws_sc, idx_sc, dirty_col_sc = ensure_dirty_column(excel_io.SBS_COLUMNS_SHEET)
+        if dirty_col_sc > 0:
+            for row in ws_sc.iter_rows(min_row=2):
+                row[dirty_col_sc - 1].value = ""
+    else:
+        ws_sc = None
+        idx_sc = {}
+        dirty_col_sc = -1
+
+    if excel_io.SBS_COLUMN_ANSWERS_SHEET in wb.sheetnames:
+        ws_sa, idx_sa, dirty_col_sa = ensure_dirty_column(
+            excel_io.SBS_COLUMN_ANSWERS_SHEET
+        )
+        if dirty_col_sa > 0:
+            for row in ws_sa.iter_rows(min_row=2):
+                row[dirty_col_sa - 1].value = ""
+    else:
+        ws_sa = None
+        idx_sa = {}
+        dirty_col_sa = -1
 
     # Apply new Dirty markers
     for change in changes:
@@ -937,6 +969,18 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
                 ):
                     row[dirty_col_o - 1].value = "Y"
                     break
+        elif change.kind == "subitem" and ws_s is not None and dirty_col_s > 0:
+            qid_idx = idx_s.get("QID")
+            ans_idx = idx_s.get("AnswerId")
+            for row in ws_s.iter_rows(min_row=2, values_only=False):
+                if (
+                    qid_idx is not None
+                    and ans_idx is not None
+                    and row[qid_idx].value == change.qid
+                    and str(row[ans_idx].value) == str(change.answer_id)
+                ):
+                    row[dirty_col_s - 1].value = "Y"
+                    break
         elif change.kind == "embedded" and ws_e is not None and dirty_col_e > 0:
             field_idx = idx_e.get("Field")
             flow_idx = idx_e.get("FlowID")
@@ -954,6 +998,37 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
                         continue
                 row[dirty_col_e - 1].value = "Y"
                 break
+        elif change.kind == "sbs_column" and ws_sc is not None and dirty_col_sc > 0:
+            qid_idx = idx_sc.get("QID")
+            col_idx = idx_sc.get("ColumnId")
+            for row in ws_sc.iter_rows(min_row=2, values_only=False):
+                if (
+                    qid_idx is not None
+                    and col_idx is not None
+                    and row[qid_idx].value == change.qid
+                    and str(row[col_idx].value) == str(change.choice_id)
+                ):
+                    row[dirty_col_sc - 1].value = "Y"
+                    break
+        elif (
+            change.kind == "sbs_column_answer"
+            and ws_sa is not None
+            and dirty_col_sa > 0
+        ):
+            qid_idx = idx_sa.get("QID")
+            col_idx = idx_sa.get("ColumnId")
+            ans_idx = idx_sa.get("AnswerId")
+            for row in ws_sa.iter_rows(min_row=2, values_only=False):
+                if (
+                    qid_idx is not None
+                    and col_idx is not None
+                    and ans_idx is not None
+                    and row[qid_idx].value == change.qid
+                    and str(row[col_idx].value) == str(change.choice_id)
+                    and str(row[ans_idx].value) == str(change.answer_id)
+                ):
+                    row[dirty_col_sa - 1].value = "Y"
+                    break
 
     # After marking, (re)attach conditional formatting for Dirty flags
     if ws_q is not None and idx_q and dirty_col_q > 0:
@@ -1004,6 +1079,30 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
                 f"{text_col_letter}2:{text_col_letter}{max_row_o}", rule
             )
 
+    if ws_s is not None and idx_s and dirty_col_s > 0:
+        headers_s, _ = excel_io._iter_sheet_rows(ws_s)
+        label_col_name = next(
+            (
+                h
+                for h in headers_s
+                if str(h).startswith("Label_") and str(h).endswith("_MD")
+            ),
+            None,
+        )
+        max_row_s = ws_s.max_row
+        if "Dirty" in headers_s and label_col_name and max_row_s >= 2:
+            dirty_idx = headers_s.index("Dirty") + 1
+            text_idx = headers_s.index(label_col_name) + 1
+            dirty_col_letter = get_column_letter(dirty_idx)
+            text_col_letter = get_column_letter(text_idx)
+            formula = f'=${dirty_col_letter}2="Y"'
+            from openpyxl.formatting.rule import FormulaRule
+
+            rule = FormulaRule(formula=[formula], fill=excel_io._DIRTY_FILL)
+            ws_s.conditional_formatting.add(
+                f"{text_col_letter}2:{text_col_letter}{max_row_s}", rule
+            )
+
     if ws_e is not None and idx_e and dirty_col_e > 0 and "Value" in idx_e:
         headers_e, _ = excel_io._iter_sheet_rows(ws_e)
         max_row_e = ws_e.max_row
@@ -1020,6 +1119,54 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
                 f"{value_col_letter}2:{value_col_letter}{max_row_e}", rule
             )
 
+    if ws_sc is not None and idx_sc and dirty_col_sc > 0:
+        headers_sc, _ = excel_io._iter_sheet_rows(ws_sc)
+        label_col_name = next(
+            (
+                h
+                for h in headers_sc
+                if str(h).startswith("Label_") and str(h).endswith("_MD")
+            ),
+            None,
+        )
+        max_row_sc = ws_sc.max_row
+        if "Dirty" in headers_sc and label_col_name and max_row_sc >= 2:
+            dirty_idx = headers_sc.index("Dirty") + 1
+            text_idx = headers_sc.index(label_col_name) + 1
+            dirty_col_letter = get_column_letter(dirty_idx)
+            text_col_letter = get_column_letter(text_idx)
+            formula = f'=${dirty_col_letter}2="Y"'
+            from openpyxl.formatting.rule import FormulaRule
+
+            rule = FormulaRule(formula=[formula], fill=excel_io._DIRTY_FILL)
+            ws_sc.conditional_formatting.add(
+                f"{text_col_letter}2:{text_col_letter}{max_row_sc}", rule
+            )
+
+    if ws_sa is not None and idx_sa and dirty_col_sa > 0:
+        headers_sa, _ = excel_io._iter_sheet_rows(ws_sa)
+        label_col_name = next(
+            (
+                h
+                for h in headers_sa
+                if str(h).startswith("Label_") and str(h).endswith("_MD")
+            ),
+            None,
+        )
+        max_row_sa = ws_sa.max_row
+        if "Dirty" in headers_sa and label_col_name and max_row_sa >= 2:
+            dirty_idx = headers_sa.index("Dirty") + 1
+            text_idx = headers_sa.index(label_col_name) + 1
+            dirty_col_letter = get_column_letter(dirty_idx)
+            text_col_letter = get_column_letter(text_idx)
+            formula = f'=${dirty_col_letter}2="Y"'
+            from openpyxl.formatting.rule import FormulaRule
+
+            rule = FormulaRule(formula=[formula], fill=excel_io._DIRTY_FILL)
+            ws_sa.conditional_formatting.add(
+                f"{text_col_letter}2:{text_col_letter}{max_row_sa}", rule
+            )
+
     wb.save(xlsx_path)
 
 
@@ -1028,12 +1175,12 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
 
     - For Questions: SurveyID, QuestionType, DataExportTag.
     - For Options:  SurveyID, QuestionType, Code.
+    - For SBS sheets: SurveyID, QuestionType, ExportTag.
 
     When mismatches are found, print a warning and reset the Excel cell to the
     Qualtrics value. If a QID or ChoiceId does not exist in the survey JSON,
     warn and ignore that row.
     """
-
     from openpyxl import load_workbook
 
     xlsx_path = Path(xlsx_path)
@@ -1046,7 +1193,7 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
     # Questions sheet
     if excel_io.QUESTION_SHEET in wb.sheetnames:
         ws_q = wb[excel_io.QUESTION_SHEET]
-        headers, data_rows = excel_io._iter_sheet_rows(ws_q)
+        headers, _ = excel_io._iter_sheet_rows(ws_q)
         idx = {name: i for i, name in enumerate(headers)}
 
         for row in ws_q.iter_rows(min_row=2, values_only=False):
@@ -1066,7 +1213,6 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             expected_qtype = q_json.get("QuestionType") or ""
             expected_tag = q_json.get("DataExportTag") or ""
 
-            # SurveyID
             if "SurveyID" in idx:
                 cell = row[idx["SurveyID"]]
                 if str(cell.value or "").strip() != expected_survey_id:
@@ -1077,7 +1223,6 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                     )
                     cell.value = expected_survey_id
 
-            # QuestionType
             if "QuestionType" in idx:
                 cell = row[idx["QuestionType"]]
                 if str(cell.value or "").strip() != expected_qtype:
@@ -1088,7 +1233,6 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                     )
                     cell.value = expected_qtype
 
-            # DataExportTag
             if "DataExportTag" in idx:
                 cell = row[idx["DataExportTag"]]
                 if str(cell.value or "").strip() != expected_tag:
@@ -1102,7 +1246,7 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
     # Options sheet
     if excel_io.OPTIONS_SHEET in wb.sheetnames:
         ws_o = wb[excel_io.OPTIONS_SHEET]
-        headers, data_rows = excel_io._iter_sheet_rows(ws_o)
+        headers, _ = excel_io._iter_sheet_rows(ws_o)
         idx = {name: i for i, name in enumerate(headers)}
 
         for row in ws_o.iter_rows(min_row=2, values_only=False):
@@ -1138,7 +1282,6 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             expected_qtype = q_json.get("QuestionType") or ""
             expected_code = choice.get("Recode")
 
-            # SurveyID
             if "SurveyID" in idx:
                 cell = row[idx["SurveyID"]]
                 if str(cell.value or "").strip() != expected_survey_id:
@@ -1149,7 +1292,6 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                     )
                     cell.value = expected_survey_id
 
-            # QuestionType
             if "QuestionType" in idx:
                 cell = row[idx["QuestionType"]]
                 if str(cell.value or "").strip() != expected_qtype:
@@ -1160,7 +1302,6 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                     )
                     cell.value = expected_qtype
 
-            # Code
             if "Code" in idx:
                 cell = row[idx["Code"]]
                 excel_code = str(cell.value or "").strip()
@@ -1173,19 +1314,163 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                     )
                     cell.value = expected_code
 
+    # SBS_Columns sheet
+    if excel_io.SBS_COLUMNS_SHEET in wb.sheetnames:
+        ws_sc = wb[excel_io.SBS_COLUMNS_SHEET]
+        headers, _ = excel_io._iter_sheet_rows(ws_sc)
+        idx = {name: i for i, name in enumerate(headers)}
+
+        for row in ws_sc.iter_rows(min_row=2, values_only=False):
+            qid_cell = row[idx.get("QID")] if "QID" in idx else None
+            col_cell = row[idx.get("ColumnId")] if "ColumnId" in idx else None
+            if qid_cell is None or col_cell is None:
+                continue
+            qid = str(qid_cell.value or "").strip()
+            column_id = str(col_cell.value or "").strip()
+            if not qid or not column_id:
+                continue
+            q_json = questions.get(qid)
+            if not q_json:
+                print(
+                    f"[qsync] WARNING: SBS_Columns row {qid_cell.row} refers to unknown QID={qid}; "
+                    "row will be ignored for syncing. Next: re-run `qsync init --survey-id ...` to refresh the workbook."
+                )
+                continue
+
+            additional = q_json.get("AdditionalQuestions") or {}
+            if (
+                (q_json.get("QuestionType") or "") != "SBS"
+                or (q_json.get("Selector") or "") != "SBSMatrix"
+                or not isinstance(additional, dict)
+                or str(column_id) not in additional
+            ):
+                print(
+                    f"[qsync] WARNING: SBS_Columns row {col_cell.row} refers to unknown "
+                    f"ColumnId={column_id} for QID={qid}; row will be ignored for syncing. "
+                    "Next: re-run `qsync init --survey-id ...` to refresh the workbook."
+                )
+                continue
+
+            expected_survey_id = survey.survey_id
+            expected_qtype = q_json.get("QuestionType") or ""
+            expected_tag = q_json.get("DataExportTag") or ""
+
+            if "SurveyID" in idx:
+                cell = row[idx["SurveyID"]]
+                if str(cell.value or "").strip() != expected_survey_id:
+                    print(
+                        f"[qsync] WARNING: System column SurveyID changed in SBS_Columns row "
+                        f"{cell.row} (QID={qid}, ColumnId={column_id}); resetting. "
+                        "Next: avoid editing system columns in Excel."
+                    )
+                    cell.value = expected_survey_id
+
+            if "QuestionType" in idx:
+                cell = row[idx["QuestionType"]]
+                if str(cell.value or "").strip() != expected_qtype:
+                    print(
+                        f"[qsync] WARNING: System column QuestionType changed in SBS_Columns row "
+                        f"{cell.row} (QID={qid}, ColumnId={column_id}); resetting. "
+                        "Next: avoid editing system columns in Excel."
+                    )
+                    cell.value = expected_qtype
+
+            if "ExportTag" in idx:
+                cell = row[idx["ExportTag"]]
+                if str(cell.value or "").strip() != expected_tag:
+                    print(
+                        f"[qsync] WARNING: System column ExportTag changed in SBS_Columns row "
+                        f"{cell.row} (QID={qid}, ColumnId={column_id}); resetting. "
+                        "Next: avoid editing system columns in Excel."
+                    )
+                    cell.value = expected_tag
+
+    # SBS_ColumnAnswers sheet
+    if excel_io.SBS_COLUMN_ANSWERS_SHEET in wb.sheetnames:
+        ws_sa = wb[excel_io.SBS_COLUMN_ANSWERS_SHEET]
+        headers, _ = excel_io._iter_sheet_rows(ws_sa)
+        idx = {name: i for i, name in enumerate(headers)}
+
+        for row in ws_sa.iter_rows(min_row=2, values_only=False):
+            qid_cell = row[idx.get("QID")] if "QID" in idx else None
+            col_cell = row[idx.get("ColumnId")] if "ColumnId" in idx else None
+            ans_cell = row[idx.get("AnswerId")] if "AnswerId" in idx else None
+            if qid_cell is None or col_cell is None or ans_cell is None:
+                continue
+            qid = str(qid_cell.value or "").strip()
+            column_id = str(col_cell.value or "").strip()
+            answer_id = str(ans_cell.value or "").strip()
+            if not qid or not column_id or not answer_id:
+                continue
+            q_json = questions.get(qid)
+            if not q_json:
+                print(
+                    f"[qsync] WARNING: SBS_ColumnAnswers row {qid_cell.row} refers to unknown QID={qid}; "
+                    "row will be ignored for syncing. Next: re-run `qsync init --survey-id ...` to refresh the workbook."
+                )
+                continue
+
+            additional = q_json.get("AdditionalQuestions") or {}
+            aq = additional.get(str(column_id)) if isinstance(additional, dict) else None
+            answers = aq.get("Answers") if isinstance(aq, dict) else None
+            if (
+                (q_json.get("QuestionType") or "") != "SBS"
+                or (q_json.get("Selector") or "") != "SBSMatrix"
+                or not isinstance(answers, dict)
+                or str(answer_id) not in answers
+            ):
+                print(
+                    f"[qsync] WARNING: SBS_ColumnAnswers row {ans_cell.row} refers to unknown "
+                    f"ColumnId={column_id}/AnswerId={answer_id} for QID={qid}; row will be ignored for syncing. "
+                    "Next: re-run `qsync init --survey-id ...` to refresh the workbook."
+                )
+                continue
+
+            expected_survey_id = survey.survey_id
+            expected_qtype = q_json.get("QuestionType") or ""
+            expected_tag = q_json.get("DataExportTag") or ""
+
+            if "SurveyID" in idx:
+                cell = row[idx["SurveyID"]]
+                if str(cell.value or "").strip() != expected_survey_id:
+                    print(
+                        f"[qsync] WARNING: System column SurveyID changed in SBS_ColumnAnswers row "
+                        f"{cell.row} (QID={qid}, ColumnId={column_id}, AnswerId={answer_id}); resetting. "
+                        "Next: avoid editing system columns in Excel."
+                    )
+                    cell.value = expected_survey_id
+
+            if "QuestionType" in idx:
+                cell = row[idx["QuestionType"]]
+                if str(cell.value or "").strip() != expected_qtype:
+                    print(
+                        f"[qsync] WARNING: System column QuestionType changed in SBS_ColumnAnswers row "
+                        f"{cell.row} (QID={qid}, ColumnId={column_id}, AnswerId={answer_id}); resetting. "
+                        "Next: avoid editing system columns in Excel."
+                    )
+                    cell.value = expected_qtype
+
+            if "ExportTag" in idx:
+                cell = row[idx["ExportTag"]]
+                if str(cell.value or "").strip() != expected_tag:
+                    print(
+                        f"[qsync] WARNING: System column ExportTag changed in SBS_ColumnAnswers row "
+                        f"{cell.row} (QID={qid}, ColumnId={column_id}, AnswerId={answer_id}); resetting. "
+                        "Next: avoid editing system columns in Excel."
+                    )
+                    cell.value = expected_tag
+
     # Embedded Data sheet
     if excel_io.EMBEDDED_DATA_SHEET in wb.sheetnames:
         ws_e = wb[excel_io.EMBEDDED_DATA_SHEET]
-        headers, data_rows = excel_io._iter_sheet_rows(ws_e)
+        headers, _ = excel_io._iter_sheet_rows(ws_e)
         idx = {name: i for i, name in enumerate(headers)}
 
-        expected_rows = excel_io.build_embedded_data_rows(
-            survey.survey_id, survey.payload
-        )
+        expected_rows = excel_io.build_embedded_data_rows(survey.survey_id, survey.payload)
         expected_by_key = {(row.flow_id or "", row.field): row for row in expected_rows}
         expected_by_field: Dict[str, List[excel_io.EmbeddedDataRow]] = {}
-        for row in expected_rows:
-            expected_by_field.setdefault(row.field, []).append(row)
+        for expected_row in expected_rows:
+            expected_by_field.setdefault(expected_row.field, []).append(expected_row)
 
         for row in ws_e.iter_rows(min_row=2, values_only=False):
             field_cell = row[idx.get("Field")] if "Field" in idx else None
@@ -1364,6 +1649,10 @@ def preview_changes(
     questions_excel = excel_io.load_questions_from_workbook(Path(xlsx_path))
     options_excel = excel_io.load_options_from_workbook(Path(xlsx_path))
     subitems_excel = excel_io.load_subitems_from_workbook(Path(xlsx_path))
+    sbs_columns_excel = excel_io.load_sbs_columns_from_workbook(Path(xlsx_path))
+    sbs_column_answers_excel = excel_io.load_sbs_column_answers_from_workbook(
+        Path(xlsx_path)
+    )
 
     # Apply scope filtering
     if scope_expr:
@@ -1444,6 +1733,11 @@ def preview_changes(
         ):
             continue
         qtype = (opt_row.question_type or q_json.get("QuestionType") or "").strip()
+        selector = (q_json.get("Selector") or "").strip()
+        if qtype == "SBS" and selector == "SBSMatrix":
+            # SBSMatrix does not use the Options sheet (statements live in Subitems;
+            # columns/answer scales live under AdditionalQuestions).
+            continue
         if qtype == "Matrix":
             container = q_json.get("Answers") or {}
         else:
@@ -1492,7 +1786,8 @@ def preview_changes(
         ):
             continue
         qtype = (sub_row.question_type or q_json.get("QuestionType") or "").strip()
-        if qtype == "Matrix":
+        selector = (q_json.get("Selector") or "").strip()
+        if qtype == "Matrix" or (qtype == "SBS" and selector == "SBSMatrix"):
             container = q_json.get("Choices") or {}
         else:
             container = q_json.get("Answers") or {}
@@ -1519,6 +1814,101 @@ def preview_changes(
                     new_html=new_html,
                     diff_lines=_diff_lines(old_html, new_html),
                     data_export_tag=tag,
+                )
+            )
+
+    # SBS column header changes (SBSMatrix AdditionalQuestions[*].QuestionText)
+    for (qid, column_id), col_row in sbs_columns_excel.items():
+        if qid not in in_scope_qids:
+            continue
+        q_json = survey.questions.get(qid)
+        if not q_json:
+            continue
+        tag = (q_json.get("DataExportTag") or "").strip()
+        if _should_skip_externally_managed(
+            qid=qid,
+            data_export_tag=tag,
+            externally_managed_by=col_row.externally_managed_by,
+            allow_qids=allow_externally_managed_qids,
+        ):
+            continue
+        if (q_json.get("QuestionType") or "") != "SBS" or (q_json.get("Selector") or "") != "SBSMatrix":
+            continue
+        additional = q_json.get("AdditionalQuestions") or {}
+        if not isinstance(additional, dict):
+            continue
+        aq = additional.get(str(column_id))
+        if not isinstance(aq, dict):
+            continue
+        display_json_str = str(aq.get("QuestionText") or "")
+        if not col_row.label_en_is_html:
+            md_old = normalize_markdown_for_compare(html_to_md(display_json_str))
+            md_new = normalize_markdown_for_compare(col_row.label_en_md or "")
+            if md_old == md_new:
+                continue
+        old_html = normalize_text(display_json_str)
+        new_html = normalize_text(excel_io.sbs_column_row_to_html(col_row))
+        if old_html != new_html:
+            changes.append(
+                PreviewChange(
+                    kind="sbs_column",
+                    qid=qid,
+                    choice_id=str(column_id),
+                    old_html=old_html,
+                    new_html=new_html,
+                    diff_lines=_diff_lines(old_html, new_html),
+                    data_export_tag=tag or None,
+                )
+            )
+
+    # SBS column answer label changes (SBSMatrix AdditionalQuestions[*].Answers[*].Display)
+    for (qid, column_id, answer_id), ans_row in sbs_column_answers_excel.items():
+        if qid not in in_scope_qids:
+            continue
+        q_json = survey.questions.get(qid)
+        if not q_json:
+            continue
+        tag = (q_json.get("DataExportTag") or "").strip()
+        if _should_skip_externally_managed(
+            qid=qid,
+            data_export_tag=tag,
+            externally_managed_by=ans_row.externally_managed_by,
+            allow_qids=allow_externally_managed_qids,
+        ):
+            continue
+        if (q_json.get("QuestionType") or "") != "SBS" or (q_json.get("Selector") or "") != "SBSMatrix":
+            continue
+        additional = q_json.get("AdditionalQuestions") or {}
+        if not isinstance(additional, dict):
+            continue
+        aq = additional.get(str(column_id))
+        if not isinstance(aq, dict):
+            continue
+        answers = aq.get("Answers") or {}
+        if not isinstance(answers, dict):
+            continue
+        answer = answers.get(str(answer_id))
+        if not isinstance(answer, dict):
+            continue
+        display_json_str = _display_to_str(answer)
+        if not ans_row.label_en_is_html:
+            md_old = normalize_markdown_for_compare(html_to_md(display_json_str))
+            md_new = normalize_markdown_for_compare(ans_row.label_en_md or "")
+            if md_old == md_new:
+                continue
+        old_html = normalize_text(display_json_str)
+        new_html = normalize_text(excel_io.sbs_column_answer_row_to_html(ans_row))
+        if old_html != new_html:
+            changes.append(
+                PreviewChange(
+                    kind="sbs_column_answer",
+                    qid=qid,
+                    choice_id=str(column_id),
+                    answer_id=str(answer_id),
+                    old_html=old_html,
+                    new_html=new_html,
+                    diff_lines=_diff_lines(old_html, new_html),
+                    data_export_tag=tag or None,
                 )
             )
 
@@ -1622,6 +2012,10 @@ def apply_changes(
         questions_excel = excel_io.load_questions_from_workbook(workbook_path)
         options_excel = excel_io.load_options_from_workbook(workbook_path)
         subitems_excel = excel_io.load_subitems_from_workbook(workbook_path)
+        sbs_columns_excel = excel_io.load_sbs_columns_from_workbook(workbook_path)
+        sbs_column_answers_excel = excel_io.load_sbs_column_answers_from_workbook(
+            workbook_path
+        )
 
         # Apply scope filtering
         if scope_expr:
@@ -1711,6 +2105,9 @@ def apply_changes(
                 qtype = (
                     opt_row.question_type or q_json.get("QuestionType") or ""
                 ).strip()
+                selector = (q_json.get("Selector") or "").strip()
+                if qtype == "SBS" and selector == "SBSMatrix":
+                    continue
                 if qtype == "Matrix":
                     container = q_json.get("Answers") or {}
                 else:
@@ -1764,7 +2161,9 @@ def apply_changes(
                 qtype = (
                     sub_row.question_type or q_json.get("QuestionType") or ""
                 ).strip()
-                if qtype == "Matrix":
+                selector = (q_json.get("Selector") or "").strip()
+                is_sbs_matrix = qtype == "SBS" and selector == "SBSMatrix"
+                if qtype == "Matrix" or is_sbs_matrix:
                     container = q_json.get("Choices") or {}
                 else:
                     container = q_json.get("Answers") or {}
@@ -1788,6 +2187,130 @@ def apply_changes(
                             print(
                                 f"[qsync:apply] WARNING: Potential HTML issues in subitem "
                                 f"{qid}/{answer_id}:"
+                            )
+                            for err in errors:
+                                print(f"  - {err}")
+                            print(
+                                "  Next: fix invalid HTML in the workbook cell (or switch to markdown mode) before pushing."
+                            )
+                    answer["Display"] = new_html
+                    if "Display_Unsafe" in answer:
+                        answer["Display_Unsafe"] = new_html
+                    if is_sbs_matrix:
+                        # SBSMatrix duplicates statements under each AdditionalQuestion.
+                        additional = q_json.get("AdditionalQuestions") or {}
+                        if isinstance(additional, dict):
+                            for aq in additional.values():
+                                if not isinstance(aq, dict):
+                                    continue
+                                aq_choices = aq.get("Choices") or {}
+                                if not isinstance(aq_choices, dict):
+                                    continue
+                                dup = aq_choices.get(str(answer_id))
+                                if not isinstance(dup, dict):
+                                    continue
+                                dup["Display"] = new_html
+                                if "Display_Unsafe" in dup:
+                                    dup["Display_Unsafe"] = new_html
+                    changed_qids.add(qid)
+
+            # Apply SBS column header changes into the survey payload
+            for (qid, column_id), col_row in sbs_columns_excel.items():
+                if qid not in in_scope_qids:
+                    continue
+                q_json = survey.questions.get(qid)
+                if not q_json:
+                    continue
+                tag = (q_json.get("DataExportTag") or "").strip()
+                if _should_skip_externally_managed(
+                    qid=qid,
+                    data_export_tag=tag,
+                    externally_managed_by=col_row.externally_managed_by,
+                    allow_qids=allow_externally_managed_qids,
+                ):
+                    continue
+                if (q_json.get("QuestionType") or "") != "SBS" or (
+                    q_json.get("Selector") or ""
+                ) != "SBSMatrix":
+                    continue
+                additional = q_json.get("AdditionalQuestions") or {}
+                if not isinstance(additional, dict):
+                    continue
+                aq = additional.get(str(column_id))
+                if not isinstance(aq, dict):
+                    continue
+                display_json_str = str(aq.get("QuestionText") or "")
+                if not col_row.label_en_is_html:
+                    md_old = normalize_markdown_for_compare(html_to_md(display_json_str))
+                    md_new = normalize_markdown_for_compare(col_row.label_en_md or "")
+                    if md_old == md_new:
+                        continue
+                old_html = normalize_text(display_json_str)
+                new_html = normalize_text(excel_io.sbs_column_row_to_html(col_row))
+                if old_html != new_html:
+                    if col_row.label_en_is_html:
+                        errors = validate_html_fragment(new_html)
+                        if errors:
+                            print(
+                                f"[qsync:apply] WARNING: Potential HTML issues in SBS column "
+                                f"{qid}#{column_id}:"
+                            )
+                            for err in errors:
+                                print(f"  - {err}")
+                            print(
+                                "  Next: fix invalid HTML in the workbook cell (or switch to markdown mode) before pushing."
+                            )
+                    aq["QuestionText"] = new_html
+                    if "QuestionDescription" in aq:
+                        aq["QuestionDescription"] = new_html
+                    changed_qids.add(qid)
+
+            # Apply SBS column answer label changes into the survey payload
+            for (qid, column_id, answer_id), ans_row in sbs_column_answers_excel.items():
+                if qid not in in_scope_qids:
+                    continue
+                q_json = survey.questions.get(qid)
+                if not q_json:
+                    continue
+                tag = (q_json.get("DataExportTag") or "").strip()
+                if _should_skip_externally_managed(
+                    qid=qid,
+                    data_export_tag=tag,
+                    externally_managed_by=ans_row.externally_managed_by,
+                    allow_qids=allow_externally_managed_qids,
+                ):
+                    continue
+                if (q_json.get("QuestionType") or "") != "SBS" or (
+                    q_json.get("Selector") or ""
+                ) != "SBSMatrix":
+                    continue
+                additional = q_json.get("AdditionalQuestions") or {}
+                if not isinstance(additional, dict):
+                    continue
+                aq = additional.get(str(column_id))
+                if not isinstance(aq, dict):
+                    continue
+                answers = aq.get("Answers") or {}
+                if not isinstance(answers, dict):
+                    continue
+                answer = answers.get(str(answer_id))
+                if not isinstance(answer, dict):
+                    continue
+                display_json_str = _display_to_str(answer)
+                if not ans_row.label_en_is_html:
+                    md_old = normalize_markdown_for_compare(html_to_md(display_json_str))
+                    md_new = normalize_markdown_for_compare(ans_row.label_en_md or "")
+                    if md_old == md_new:
+                        continue
+                old_html = normalize_text(display_json_str)
+                new_html = normalize_text(excel_io.sbs_column_answer_row_to_html(ans_row))
+                if old_html != new_html:
+                    if ans_row.label_en_is_html:
+                        errors = validate_html_fragment(new_html)
+                        if errors:
+                            print(
+                                f"[qsync:apply] WARNING: Potential HTML issues in SBS column answer "
+                                f"{qid}#{column_id}/{answer_id}:"
                             )
                             for err in errors:
                                 print(f"  - {err}")
@@ -1958,9 +2481,13 @@ def _apply_pending_item_changes(
             changed_qids.add(qid)
             continue
         qtype = (question.get("QuestionType") or "").strip()
+        selector = (question.get("Selector") or "").strip()
+        is_sbs_matrix = qtype == "SBS" and selector == "SBSMatrix"
         if kind == "option":
             choice_id = str(change.get("choice_id") or "").strip()
             if not choice_id:
+                continue
+            if is_sbs_matrix:
                 continue
             container = (
                 question.get("Answers") or {}
@@ -1982,7 +2509,7 @@ def _apply_pending_item_changes(
                 continue
             container = (
                 question.get("Choices") or {}
-                if qtype == "Matrix"
+                if qtype == "Matrix" or is_sbs_matrix
                 else question.get("Answers") or {}
             )
             answer = container.get(answer_id)
@@ -1992,7 +2519,64 @@ def _apply_pending_item_changes(
             answer["Display"] = new_html
             if "Display_Unsafe" in answer:
                 answer["Display_Unsafe"] = new_html
+            if is_sbs_matrix:
+                additional = question.get("AdditionalQuestions") or {}
+                if isinstance(additional, dict):
+                    for aq in additional.values():
+                        if not isinstance(aq, dict):
+                            continue
+                        aq_choices = aq.get("Choices") or {}
+                        if not isinstance(aq_choices, dict):
+                            continue
+                        dup = aq_choices.get(str(answer_id))
+                        if not isinstance(dup, dict):
+                            continue
+                        dup["Display"] = new_html
+                        if "Display_Unsafe" in dup:
+                            dup["Display_Unsafe"] = new_html
             changed_qids.add(qid)
+            continue
+
+        if kind == "sbs_column":
+            column_id = str(change.get("choice_id") or "").strip()
+            if not column_id or not is_sbs_matrix:
+                continue
+            additional = question.get("AdditionalQuestions") or {}
+            if not isinstance(additional, dict):
+                continue
+            aq = additional.get(str(column_id))
+            if not isinstance(aq, dict):
+                continue
+            new_html = str(change.get("new_html") or "")
+            aq["QuestionText"] = new_html
+            if "QuestionDescription" in aq:
+                aq["QuestionDescription"] = new_html
+            changed_qids.add(qid)
+            continue
+
+        if kind == "sbs_column_answer":
+            column_id = str(change.get("choice_id") or "").strip()
+            answer_id = str(change.get("answer_id") or "").strip()
+            if not column_id or not answer_id or not is_sbs_matrix:
+                continue
+            additional = question.get("AdditionalQuestions") or {}
+            if not isinstance(additional, dict):
+                continue
+            aq = additional.get(str(column_id))
+            if not isinstance(aq, dict):
+                continue
+            answers = aq.get("Answers") or {}
+            if not isinstance(answers, dict):
+                continue
+            answer = answers.get(str(answer_id))
+            if not isinstance(answer, dict):
+                continue
+            new_html = str(change.get("new_html") or "")
+            answer["Display"] = new_html
+            if "Display_Unsafe" in answer:
+                answer["Display_Unsafe"] = new_html
+            changed_qids.add(qid)
+            continue
 
     if embedded_changes:
         flow_id_map, ordered_nodes = _index_embedded_flow_nodes(survey_payload)
@@ -2119,7 +2703,7 @@ def push_staged_changes(
         blocked: set[str] = set()
         for change in pending_changes:
             kind = str(change.get("kind") or "").strip()
-            if kind not in {"option", "subitem"}:
+            if kind not in {"option", "subitem", "sbs_column", "sbs_column_answer"}:
                 continue
             qid = str(change.get("qid") or "").strip()
             if not qid or qid in allow_externally_managed_qids:
