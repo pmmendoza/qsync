@@ -16,7 +16,7 @@ from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
-from .config import get_client_config, load_account_env, resolve_root
+from .config import get_client_config, load_account_env, resolve_root, resolve_scoped_dir
 from .api_push import send_api_request
 from .survey_registry import ensure_unique_survey_name
 from .survey_inventory import refresh_inventory, SURVEY_CACHE
@@ -60,10 +60,24 @@ def _resolve_pull_dest(
     root: Path, account: str | None, explicit_dest: str | None
 ) -> Path:
     if explicit_dest:
-        return Path(explicit_dest)
+        path = Path(explicit_dest)
+        if path.is_absolute():
+            return path
+        return (root / path).resolve()
     if account:
-        return (root / "surveys" / f".{account}").resolve()
-    return (root / "surveys").resolve()
+        return resolve_scoped_dir("surveys", root=root, account=account)
+    return resolve_scoped_dir("surveys", root=root)
+
+
+def _resolve_responses_output_dir(
+    root: Path, account: str | None, explicit_output: str | None
+) -> Path:
+    if explicit_output:
+        path = Path(explicit_output)
+        if path.is_absolute():
+            return path
+        return (root / path).resolve()
+    return resolve_scoped_dir("responses", root=root, account=account)
 
 
 def _pick_survey_id_from_records(
@@ -882,7 +896,13 @@ def handle_menu(_args: argparse.Namespace) -> None:
         survey_id = _pick_survey_id(message="Pick a survey to export responses:")
         if not survey_id:
             return
-        out = input("Output directory (optional; default: responses/): ").strip() or None
+        default_out = (
+            f"responses/.{selected_account}/" if selected_account else "responses/"
+        )
+        out = (
+            input(f"Output directory (optional; default: {default_out}): ").strip()
+            or None
+        )
         _run_action(
             handle_export_responses,
             argparse.Namespace(survey_id=survey_id, output=out, account=selected_account),
@@ -5749,13 +5769,39 @@ def handle_export_responses(args: argparse.Namespace) -> None:
     """Export survey responses to CSV."""
     from .cli import _prompt_for_survey_id_if_needed
 
-    survey_id = _prompt_for_survey_id_if_needed(
-        getattr(args, "survey_id", None),
-        allow_all_surveys=False,
-    )
-    output_dir = Path(args.output) if args.output else _workspace_root() / "responses"
+    root = _workspace_root()
+    account = _resolve_account_from_args(args)
+    env = load_account_env(account, root=root) if account else None
 
-    base_url, headers = _get_client_config_for_args(args)
+    survey_id = getattr(args, "survey_id", None)
+    if account:
+        if survey_id:
+            survey_id = str(survey_id).strip()
+        else:
+            if not sys.stdin.isatty():
+                print("[qsync] ERROR: --survey-id required in non-interactive mode")
+                sys.exit(1)
+            base_url, headers = get_client_config(env)
+            surveys = list_surveys(base_url, headers)
+            surveys.sort(key=lambda x: x.get("creationDate", ""), reverse=True)
+            survey_id = _pick_survey_id_from_records(
+                "Pick a survey to export responses:",
+                surveys,
+            )
+            if not survey_id:
+                print("[qsync] Operation cancelled.")
+                return
+    else:
+        survey_id = _prompt_for_survey_id_if_needed(
+            survey_id,
+            allow_all_surveys=False,
+        )
+
+    output_dir = _resolve_responses_output_dir(
+        root, account, getattr(args, "output", None)
+    )
+
+    base_url, headers = get_client_config(env) if env else get_client_config()
 
     # Start export
     from .survey_ref import format_survey_ref
@@ -6390,6 +6436,7 @@ def handle_translations_pull(args: argparse.Namespace) -> None:
     from .qualtrics_client import refresh_survey_cache
 
     survey_id = args.survey_id
+    account = _resolve_account_from_args(args)
     languages = _collect_languages_from_args(args)
     if languages:
         warn(
@@ -6398,7 +6445,12 @@ def handle_translations_pull(args: argparse.Namespace) -> None:
             "(translations live in the survey definition).",
         )
 
-    cache, changed = refresh_survey_cache(survey_id)
+    if account:
+        env = load_account_env(account, root=_workspace_root())
+        surveys_dir = resolve_scoped_dir("surveys", root=_workspace_root(), account=account)
+        cache, changed = refresh_survey_cache(survey_id, surveys_dir=surveys_dir, env=env)
+    else:
+        cache, changed = refresh_survey_cache(survey_id)
     if changed:
         success("[qsync:translations]", f"Pulled: {cache.path}")
     else:
@@ -8656,6 +8708,13 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     p_export.add_argument(
         "--output",
         help="Output directory (default: responses/)",
+    )
+    p_export.add_argument(
+        "--account",
+        help=(
+            "Use credentials from `.env.<account>` under the workspace root "
+            "(default output: responses/.<account>/ unless --output is set)."
+        ),
     )
     p_export.set_defaults(func=handle_export_responses)
 

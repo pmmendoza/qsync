@@ -441,3 +441,73 @@ def test_survey_pull_account_prompt_uses_account_live_inventory(
     assert captured["base"] == "syd1.qualtrics.com"
     assert captured["token"] == "secret"
     assert captured["downloaded_dir"] == str((tmp_path / "surveys" / ".damian").resolve())
+
+
+def test_export_responses_defaults_to_account_scoped_output_dir(tmp_path: Path) -> None:
+    from qsync.cli_survey import _resolve_responses_output_dir
+
+    root = tmp_path.resolve()
+    assert _resolve_responses_output_dir(root, None, None) == (root / "responses").resolve()
+    assert _resolve_responses_output_dir(root, "damian", None) == (root / "responses" / ".damian").resolve()
+
+
+def test_translations_pull_account_uses_account_env_and_scoped_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.cli import main
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+
+    (tmp_path / ".env.damian").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=syd1.qualtrics.com",
+                "X-API-TOKEN=secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, str | None] = {}
+
+    from qsync.qualtrics_client import SurveyCache
+
+    def _fake_refresh_survey_cache(
+        survey_id: str,
+        *,
+        surveys_dir: Path | None = None,
+        env: dict[str, str] | None = None,
+    ):
+        captured["survey_id"] = survey_id
+        captured["target_dir"] = str(surveys_dir)
+        captured["base"] = (env or {}).get("QUALTRICS_BASE_URL")
+        captured["token"] = (env or {}).get("X-API-TOKEN")
+        return (
+            SurveyCache(survey_id=survey_id, path=Path(surveys_dir or tmp_path), payload={}),
+            True,
+        )
+
+    monkeypatch.setattr(
+        "qsync.qualtrics_client.refresh_survey_cache",
+        _fake_refresh_survey_cache,
+    )
+
+    main(
+        [
+            "--root",
+            str(tmp_path),
+            "translations",
+            "pull",
+            "--account",
+            "damian",
+            "--survey-id",
+            "SV_1",
+        ]
+    )
+
+    assert captured["survey_id"] == "SV_1"
+    assert captured["base"] == "syd1.qualtrics.com"
+    assert captured["token"] == "secret"
+    assert captured["target_dir"] == str((tmp_path / "surveys" / ".damian").resolve())

@@ -930,7 +930,7 @@ options:
 
 ```text
 usage: qsync survey export-responses [-h] [--survey-id SURVEY_ID]
-                                     [--output OUTPUT]
+                                     [--output OUTPUT] [--account ACCOUNT]
 
 options:
   -h, --help            show this help message and exit
@@ -938,6 +938,9 @@ options:
                         Qualtrics survey ID to export responses from (omit to
                         select interactively)
   --output OUTPUT       Output directory (default: responses/)
+  --account ACCOUNT     Use credentials from `.env.<account>` under the
+                        workspace root (default output: responses/.<account>/
+                        unless --output is set).
 ```
 
 ## `qsync js`
@@ -1353,24 +1356,47 @@ options:
 
 ```text
 usage: qsync translations [-h]
-                          {languages,preview,apply,doctor,drift,pack,push}
+                          {languages,pull,preview,stage,push,pack,drift,doctor,check-language}
                           ...
 
 positional arguments:
-  {languages,preview,apply,stage,doctor,drift,pack,push}
+  {languages,pull,preview,stage,push,pack,drift,doctor,check-language}
     languages           List or enable survey languages
+    pull                Refresh cached survey definition (translations live in
+                        the survey definition)
     preview             Preview workbook vs cached survey definition
                         translations
-    apply               (deprecated) Stage workbook translations (use
-                        `qsync translations stage`)
     stage               Stage workbook translations into pending changes
-    doctor              Run translation validation checks
-    drift               Report drift between repo and Qualtrics translations
-    pack                Create a translator pack zip (docx + translations)
     push                Push staged translations via survey definition
+    pack                Create a translator pack zip (docx + translations)
+    drift               Report drift between repo and Qualtrics translations
+    doctor              Run translation validation checks
+    check-language      Check if translations are in the correct language
+                        using language detection
 
 options:
   -h, --help            show this help message and exit
+```
+
+## `qsync translations pull`
+
+```text
+usage: qsync translations pull [-h] [--survey-id SURVEY_ID]
+                               [--language LANGUAGE] [--languages LANGUAGES]
+                               [--account ACCOUNT]
+
+options:
+  -h, --help            show this help message and exit
+  --survey-id SURVEY_ID
+                        Target survey ID (omit to select interactively)
+  --language LANGUAGE   (ignored) Kept for compatibility with legacy
+                        translation map pulls
+  --languages LANGUAGES
+                        (ignored) Comma-separated language codes (legacy
+                        compatibility)
+  --account ACCOUNT     Use credentials from `.env.<account>` under the
+                        workspace root (writes cache under surveys/.<account>/
+                        by default).
 ```
 
 ## `qsync translations push`

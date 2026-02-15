@@ -2592,6 +2592,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--languages",
         help="(ignored) Comma-separated language codes (legacy compatibility)",
     )
+    p_trans_pull.add_argument(
+        "--account",
+        help=(
+            "Use credentials from `.env.<account>` under the workspace root "
+            "(writes cache under surveys/.<account>/ by default)."
+        ),
+    )
 
     # translations apply (legacy alias for stage)
     p_trans_apply = translations_subparsers.add_parser(

@@ -80,10 +80,15 @@ def _save_definition(dir_: Path, name: str, survey_id: str, payload: dict) -> Pa
     return target
 
 
-def find_cached_survey_file(survey_id: str, *, in_backups: bool = False) -> Path | None:
+def find_cached_survey_file(
+    survey_id: str,
+    *,
+    in_backups: bool = False,
+    base_dir: Path | None = None,
+) -> Path | None:
     """Return the first matching cached survey JSON for a given SurveyID, if any."""
 
-    base = _backups_dir() if in_backups else _surveys_dir()
+    base = base_dir or (_backups_dir() if in_backups else _surveys_dir())
     if not base.exists():
         return None
     candidates = sorted(base.glob(f"*__{survey_id}.json"))
@@ -115,17 +120,25 @@ def fetch_survey_definition_live(survey_id: str) -> dict:
     return _fetch_survey_definition(base_url, headers, survey_id)
 
 
-def ensure_backup(survey_id: str) -> Path:
+def ensure_backup(
+    survey_id: str,
+    *,
+    backups_dir: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> Path:
     """Ensure a backup JSON exists in BACKUPS_DIR for this survey.
 
     If none exists, downloads a fresh copy from Qualtrics.
     Returns the backup path.
     """
 
-    existing = find_cached_survey_file(survey_id, in_backups=True)
+    backups_dir = backups_dir or _backups_dir()
+    backups_dir.mkdir(parents=True, exist_ok=True)
+
+    existing = find_cached_survey_file(survey_id, base_dir=backups_dir)
     if existing:
         return existing
-    return download_survey_definition(survey_id, target_dir=_backups_dir())
+    return download_survey_definition(survey_id, target_dir=backups_dir, env=env)
 
 
 @dataclass
@@ -154,14 +167,19 @@ class SurveyCache:
         self.path.write_text(json.dumps(self.payload, indent=2), encoding="utf-8")
 
 
-def load_cached_survey(survey_id: str) -> SurveyCache:
+def load_cached_survey(
+    survey_id: str,
+    *,
+    surveys_dir: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> SurveyCache:
     """Load the cached survey JSON for a survey, downloading if necessary."""
 
-    surveys_dir = _surveys_dir()
+    surveys_dir = surveys_dir or _surveys_dir()
     surveys_dir.mkdir(parents=True, exist_ok=True)
-    cached = find_cached_survey_file(survey_id, in_backups=False)
+    cached = find_cached_survey_file(survey_id, base_dir=surveys_dir)
     if not cached:
-        cached = download_survey_definition(survey_id, target_dir=surveys_dir)
+        cached = download_survey_definition(survey_id, target_dir=surveys_dir, env=env)
     payload = json.loads(cached.read_text(encoding="utf-8"))
     return SurveyCache(survey_id=survey_id, path=cached, payload=payload)
 
@@ -174,20 +192,25 @@ def _comparable_payload(payload: dict | None) -> dict | None:
     return payload
 
 
-def refresh_survey_cache(survey_id: str) -> Tuple[SurveyCache, bool]:
+def refresh_survey_cache(
+    survey_id: str,
+    *,
+    surveys_dir: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> Tuple[SurveyCache, bool]:
     """Refresh the survey cache from Qualtrics and report if it changed.
 
     Returns (cache, changed_flag).
     """
 
-    surveys_dir = _surveys_dir()
+    surveys_dir = surveys_dir or _surveys_dir()
     surveys_dir.mkdir(parents=True, exist_ok=True)
-    old_path = find_cached_survey_file(survey_id, in_backups=False)
+    old_path = find_cached_survey_file(survey_id, base_dir=surveys_dir)
     old_payload: dict | None = None
     if old_path and old_path.exists():
         old_payload = json.loads(old_path.read_text(encoding="utf-8"))
 
-    new_path = download_survey_definition(survey_id, target_dir=surveys_dir)
+    new_path = download_survey_definition(survey_id, target_dir=surveys_dir, env=env)
     new_payload = json.loads(new_path.read_text(encoding="utf-8"))
 
     if old_payload is None:

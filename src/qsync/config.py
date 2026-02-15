@@ -218,6 +218,29 @@ def resolve_account_env_path(
     return (root_path / f".env.{name}").resolve()
 
 
+def resolve_scoped_dir(
+    dirname: str | Path,
+    *,
+    root: Path | None = None,
+    account: str | None = None,
+) -> Path:
+    """Resolve an account-scoped workspace artifact directory.
+
+    Default account:
+      <root>/<dirname>/
+
+    Alternate account (via `--account NAME`):
+      <root>/<dirname>/.NAME/
+    """
+
+    root_path = root or resolve_root(required=False) or Path.cwd()
+    base = (root_path / dirname).resolve()
+    if account:
+        scoped = validate_account_name(account)
+        return (base / f".{scoped}").resolve()
+    return base
+
+
 def load_account_env(
     account: str,
     *,
