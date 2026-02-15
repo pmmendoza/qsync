@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from tests.workspace_helpers import ensure_qsync_workspace, write_inventory_csv
+
+
+def _touch_env_for_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "QSYNC_ACCOUNT",
+        "QSYNC_ROOT",
+        "QSYNC_ENV_PATH",
+        "QSYNC_JSON_MODE",
+        "QSYNC_ALLOW_LOCKED",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 def test_discover_account_env_files_filters_invalid_envs(tmp_path: Path) -> None:
@@ -77,3 +89,43 @@ def test_survey_menu_requires_tty(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     assert "Interactive TTY required" in str(excinfo.value)
 
+
+def test_survey_menu_check_api_includes_active_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from qsync.cli import main
+
+    _touch_env_for_restore(monkeypatch)
+    ensure_qsync_workspace(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    (tmp_path / ".env.damian").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=iad1.qualtrics.com",
+                "X-API-TOKEN=secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class _FakeResponse:
+        def json(self):
+            return {"result": {"datacenter": "iad1", "userId": "UR_beWPdGZTMK6nHuK"}}
+
+    with (
+        patch(
+            "qsync.interactive_menu.is_interactive",
+            return_value=True,
+        ),
+        patch(
+            "qsync.interactive_menu.select_from_list",
+            side_effect=["Account & Diagnostics", "Check API (/whoami)", "Exit"],
+        ),
+        patch("qsync.cli_survey.send_api_request", return_value=_FakeResponse()),
+    ):
+        main(["--root", str(tmp_path), "--account", "damian", "survey", "menu"])
+
+    captured = capsys.readouterr().out
+    assert "[survey-menu] whoami account=damian" in captured

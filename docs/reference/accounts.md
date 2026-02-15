@@ -52,6 +52,8 @@ If you already have unscoped artifacts (default account layout) and want to migr
   - `--use` sets the workspace active account after adoption.
   - Shared file `surveys/qualtrics_api_key_mapping.csv` is intentionally not moved (it remains unscoped).
 
+In `qsync survey menu`, the `Account & Diagnostics → Check API (/whoami)` action now prints the active account label as part of the WHOAMI output, so you can confirm exactly which account the command is hitting.
+
 ## Cross-Account Copy: Forcing the Primary `.env`
 
 Some commands accept multiple account selectors. For `qsync survey copy-cross-account`, you can explicitly refer to the primary `.env` even when a named account is active:
@@ -60,4 +62,3 @@ Some commands accept multiple account selectors. For `qsync survey copy-cross-ac
 - `--target-account default`
 
 This is useful when you’ve set a workspace active account but need to copy to/from the primary `.env` credentials for one side of the operation.
-

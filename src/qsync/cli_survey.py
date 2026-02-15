@@ -16,7 +16,7 @@ from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
-from .config import get_client_config, load_account_env, resolve_root, resolve_scoped_dir
+from .config import get_active_account, get_client_config, load_account_env, resolve_root, resolve_scoped_dir
 from .api_push import send_api_request
 from .survey_registry import ensure_unique_survey_name
 from .survey_inventory import refresh_inventory, SURVEY_CACHE
@@ -436,13 +436,13 @@ def handle_menu(args: argparse.Namespace) -> None:
         return
 
     root = _workspace_root()
-    selected_account: str | None = None  # None = default
+    selected_account: str | None = None  # None = inherited default/ambient account
 
     # Cache survey lists per base_url for responsiveness within a menu session.
     survey_cache: dict[str, list[dict[str, Any]]] = {}
 
     def _account_label() -> str:
-        return selected_account or "default"
+        return selected_account or get_active_account() or "default"
 
     def _resolve_base_url_for_display() -> str | None:
         if selected_account:
@@ -598,7 +598,7 @@ def handle_menu(args: argparse.Namespace) -> None:
         datacenter = (result.get("datacenter") or "").strip()
         user_id = (result.get("userId") or "").strip()
         print(
-            f"[survey-menu] whoami datacenter={datacenter or '(unknown)'} userId={user_id or '(unknown)'}"
+            f"[survey-menu] whoami account={_account_label()} datacenter={datacenter or '(unknown)'} userId={user_id or '(unknown)'}"
         )
 
     def _menu_delete() -> None:
