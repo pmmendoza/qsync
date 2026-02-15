@@ -14,7 +14,11 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from .argparse_support import QsyncArgumentParser
+from .argparse_support import (
+    QsyncArgumentParser,
+    hide_subparser_choices,
+    reorder_subparser_choices,
+)
 
 SURVEYS_DIR = Path("surveys")
 DEFAULT_MAPPING_PATH = Path("survey_js") / "survey_qid_js_map.csv"
@@ -1435,7 +1439,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         action="store_true",
         help="Bypass surveys/inventory.csv lock checks (dangerous).",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    # Use `metavar` so help output doesn't inline every command in the Usage line.
+    # With many subcommands, the default `{a,b,c,...}` form becomes unreadable.
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="COMMAND",
+    )
 
     # doctor
     p_doctor = subparsers.add_parser(
@@ -1723,9 +1733,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     # items command group
     p_items = subparsers.add_parser(
         "items",
-        help="Manage survey items (questions, options, subitems) via Excel workbook",
+        help="Manage survey items (questions, options, subitems) via Excel workbook (group)",
     )
-    items_subparsers = p_items.add_subparsers(dest="items_command", required=True)
+    items_subparsers = p_items.add_subparsers(
+        dest="items_command",
+        required=True,
+        metavar="COMMAND",
+    )
 
     p_items_pull = items_subparsers.add_parser(
         "pull",
@@ -1985,9 +1999,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     # export command group (alias for survey export-translation)
     p_export = subparsers.add_parser(
         "export",
-        help="Export survey content for review",
+        help="Export survey content for review (group)",
     )
-    export_subs = p_export.add_subparsers(dest="export_command", required=True)
+    export_subs = p_export.add_subparsers(
+        dest="export_command",
+        required=True,
+        metavar="COMMAND",
+    )
     p_export_survey = export_subs.add_parser(
         "survey",
         help="Export survey content (alias for `qsync survey export-translation`)",
@@ -2010,9 +2028,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     # js command group
     p_js = subparsers.add_parser(
         "js",
-        help="Manage Qualtrics QuestionJS via the mapping CSV",
+        help="Manage Qualtrics QuestionJS via the mapping CSV (group)",
     )
-    js_subparsers = p_js.add_subparsers(dest="js_command", required=True)
+    js_subparsers = p_js.add_subparsers(
+        dest="js_command",
+        required=True,
+        metavar="COMMAND",
+    )
 
     # js pull
     p_js_pull = js_subparsers.add_parser(
@@ -2174,9 +2196,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     # eos command group
     p_eos = subparsers.add_parser(
         "eos",
-        help="Manage Qualtrics EndSurvey (EOS) library messages",
+        help="Manage Qualtrics EndSurvey (EOS) library messages (group)",
     )
-    eos_subparsers = p_eos.add_subparsers(dest="eos_command", required=True)
+    eos_subparsers = p_eos.add_subparsers(
+        dest="eos_command",
+        required=True,
+        metavar="COMMAND",
+    )
 
     def _add_eos_common_args(parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
@@ -2347,9 +2373,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     # flow command group
     p_flow = subparsers.add_parser(
         "flow",
-        help="Manage survey flow (branching logic, block ordering, routing)",
+        help="Manage survey flow (branching logic, block ordering, routing) (group)",
     )
-    flow_subparsers = p_flow.add_subparsers(dest="flow_command", required=True)
+    flow_subparsers = p_flow.add_subparsers(
+        dest="flow_command",
+        required=True,
+        metavar="COMMAND",
+    )
 
     def _add_flow_common_args(parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
@@ -2435,21 +2465,24 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     # translations command group
     p_translations = subparsers.add_parser(
         "translations",
-        help="Manage survey translations",
+        help="Manage survey translations (group; includes languages)",
     )
     p_translations.set_defaults(legacy_translations=False)
     translations_subparsers = p_translations.add_subparsers(
-        dest="translations_command", required=True
+        dest="translations_command",
+        required=True,
+        metavar="COMMAND",
     )
 
     # translations languages
     p_trans_lang = translations_subparsers.add_parser(
         "languages",
-        help="List or enable survey languages",
+        help="List or enable survey languages (group)",
     )
     trans_lang_subs = p_trans_lang.add_subparsers(
         dest="translations_languages_command",
         required=True,
+        metavar="COMMAND",
     )
     p_trans_lang_list = trans_lang_subs.add_parser(
         "list",
@@ -2882,6 +2915,85 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         action="store_true",
         help="Require detection even for single-word strings.",
     )
+
+    # Help output ordering: keep core workflows first; push deprecated aliases down.
+    reorder_subparser_choices(
+        subparsers,
+        [
+            # Setup / onboarding
+            "onboard",
+            # Survey inventory + admin
+            "survey",
+            # Daily workflows
+            "sync",
+            "init",
+            "preview",
+            "apply",
+            "push",
+            "items",
+            "translations",
+            "flow",
+            "js",
+            "eos",
+            # Utilities
+            "export",
+            "compare",
+            "logs",
+            "doctor",
+            "self-update",
+        ],
+    )
+
+    reorder_subparser_choices(
+        items_subparsers,
+        [
+            "pull",
+            "preview",
+            "stage",
+            "push",
+            "edit",
+            "inspect",
+            "repair-edf",
+        ],
+    )
+    reorder_subparser_choices(
+        js_subparsers,
+        [
+            "pull",
+            "preview",
+            "stage",
+            "push",
+        ],
+    )
+    hide_subparser_choices(js_subparsers, ["apply"])
+    reorder_subparser_choices(
+        eos_subparsers,
+        [
+            "pull",
+            "preview",
+            "repair",
+            "stage",
+            "push",
+            "references",
+            "clone-shared",
+        ],
+    )
+    hide_subparser_choices(eos_subparsers, ["apply"])
+    reorder_subparser_choices(
+        translations_subparsers,
+        [
+            "languages",
+            "pull",
+            "preview",
+            "stage",
+            "push",
+            "pack",
+            "drift",
+            "doctor",
+            "check-language",
+        ],
+    )
+    hide_subparser_choices(translations_subparsers, ["apply"])
 
     # Optional shell completion support (bash/zsh) via argcomplete.
     # Safe no-op when argcomplete is not installed.

@@ -7494,14 +7494,30 @@ def handle_master_rollback(args: argparse.Namespace) -> None:
 def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     """Register `qsync survey ...` subcommands."""
 
+    from .argparse_support import resolve_raw_description_formatter
+
     p_survey = subparsers.add_parser(
         "survey",
-        help=(
-            "Manage Qualtrics surveys (inventory, copy/rename/delete, "
-            "publish/version/rollback, master)"
+        help="Manage Qualtrics surveys (group; includes master)",
+        formatter_class=resolve_raw_description_formatter(),
+        description=(
+            "Manage Qualtrics surveys.\n\n"
+            "Groups:\n"
+            "  Inventory/cache: list, label, focal, inventory, pull, prepare\n"
+            "  Copy/derive: copy, slice-language, copy-cross-account, slice-registry, parity-check\n"
+            "  Embedded/options: add-embedded-field, remove-embedded-field, rename-embedded-field, cleanup-embedded-data, prolific-auth\n"
+            "  Lifecycle/versions: publish, activate, deactivate, versions, version-fetch, rollback\n"
+            "  Utilities: inspect-question, push-question\n"
+            "  Exports: export-responses, export-translation, export-side-by-side\n"
+            "  Bulk: master (group; has subcommands)\n"
+            "  Admin: rename, delete\n"
         ),
     )
-    survey_subs = p_survey.add_subparsers(dest="survey_command", required=True)
+    survey_subs = p_survey.add_subparsers(
+        dest="survey_command",
+        required=True,
+        metavar="COMMAND",
+    )
 
     # menu
     p_menu = survey_subs.add_parser("menu", help="Interactive survey admin menu")
@@ -8466,9 +8482,13 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     # master
     p_master = survey_subs.add_parser(
         "master",
-        help="Manage survey master (focal-only bulk editing)",
+        help="Manage survey master (group; focal-only bulk editing)",
     )
-    master_subs = p_master.add_subparsers(dest="master_command", required=True)
+    master_subs = p_master.add_subparsers(
+        dest="master_command",
+        required=True,
+        metavar="COMMAND",
+    )
 
     # master pull
     p_master_pull = master_subs.add_parser(
@@ -8739,3 +8759,62 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Skip confirmation prompt for non-dry-run rollbacks",
     )
     p_master_rollback.set_defaults(func=handle_master_rollback)
+
+    # Help output ordering: keep related commands together.
+    from .argparse_support import hide_subparser_choices, reorder_subparser_choices
+
+    reorder_subparser_choices(
+        survey_subs,
+        [
+            # Inventory/cache
+            "list",
+            "label",
+            "focal",
+            "inventory",
+            "pull",
+            "prepare",
+            # Copy/derive
+            "copy",
+            "slice-language",
+            "copy-cross-account",
+            "slice-registry",
+            "parity-check",
+            # Survey definition edits / options
+            "add-embedded-field",
+            "remove-embedded-field",
+            "rename-embedded-field",
+            "cleanup-embedded-data",
+            "prolific-auth",
+            # Lifecycle / versions
+            "publish",
+            "activate",
+            "deactivate",
+            "versions",
+            "version-fetch",
+            "rollback",
+            # Utilities
+            "inspect-question",
+            "push-question",
+            # Exports
+            "export-responses",
+            "export-translation",
+            "export-side-by-side",
+            # Bulk
+            "master",
+            # Admin
+            "rename",
+            "delete",
+        ],
+    )
+
+    reorder_subparser_choices(
+        master_subs,
+        [
+            "pull",
+            "preview",
+            "stage",
+            "push",
+            "rollback",
+        ],
+    )
+    hide_subparser_choices(master_subs, ["apply"])
