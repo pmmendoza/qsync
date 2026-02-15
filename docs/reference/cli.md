@@ -428,11 +428,11 @@ JSON to stdout and exit non-zero. The payload includes:
 
 ```text
 usage: qsync survey [-h]
-                    {label,focal,list,copy,parity-check,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,rename-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
+                    {label,focal,list,copy,parity-check,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,rename-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master,menu}
                     ...
 
 positional arguments:
-  {label,focal,list,copy,parity-check,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,rename-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master}
+  {label,focal,list,copy,parity-check,copy-cross-account,rename,delete,inventory,prepare,add-embedded-field,remove-embedded-field,rename-embedded-field,pull,cleanup-embedded-data,prolific-auth,publish,activate,deactivate,versions,version-fetch,rollback,inspect-question,push-question,export-responses,export-translation,master,menu}
     label               Print '<SurveyID> - <Name>' using
                         surveys/inventory.csv (legacy:
                         surveys/qualtrics_surveys.csv)
@@ -479,9 +479,19 @@ positional arguments:
     export-translation  Export survey content to a Word document for
                         translation validation
     master              Manage survey master (focal-only bulk editing)
+    menu                Interactive survey admin menu
 
 options:
   -h, --help            show this help message and exit
+```
+
+## `qsync survey menu`
+
+```text
+usage: qsync survey menu [-h]
+
+options:
+  -h, --help  show this help message and exit
 ```
 
 ## `qsync survey inventory`
