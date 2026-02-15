@@ -4534,6 +4534,49 @@ def _active_qids_in_flow(result: dict) -> set[str]:
     return qids
 
 
+def active_qids_in_flow(payload: Mapping[str, Any]) -> set[str]:
+    """Return QIDs placed in SurveyFlow blocks excluding Trash blocks.
+
+    This is a best-effort helper for tooling that should ignore translations for
+    unplaced or Trash questions (e.g. cross-account copy validation).
+
+    Args:
+        payload: A `survey-definitions/{survey_id}` payload (or its `result` dict).
+
+    Returns:
+        Set of QIDs that are in SurveyFlow non-Trash blocks. Returns an empty set
+        when the flow cannot be interpreted.
+    """
+
+    if not isinstance(payload, Mapping):
+        return set()
+    result = _survey_result(payload)
+    if not isinstance(result, dict):
+        return set()
+    return _active_qids_in_flow(result)
+
+
+def expected_translation_keys_for_qids(
+    payload: Mapping[str, Any], *, qids: set[str]
+) -> list[str]:
+    """Return the translation keys (QuestionText/Choice/Answer/Label) for QIDs.
+
+    This mirrors the key-generation logic used by `build_translation_map_from_cache`,
+    but allows callers to scope validation/coverage to a specific QID set (e.g.
+    in-flow questions only).
+    """
+
+    if not qids or not isinstance(payload, Mapping):
+        return []
+    result = _survey_result(payload)
+    if not isinstance(result, dict):
+        return []
+    questions = result.get("Questions") or {}
+    if not isinstance(questions, dict):
+        return []
+    return _collect_expected_translation_keys(questions, qids)
+
+
 # ----------------------------
 # Mermaid flow builder
 # ----------------------------
