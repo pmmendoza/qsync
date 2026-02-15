@@ -1,220 +1,151 @@
-# qsync Excel formatting principles (Phase 1)
+# qsync Excel formatting principles (items workbooks)
 
-This document summarises the intended visual layout and formatting for the Phase‑1 `qsync` workbooks. The goal is to make the Excel view self‑explanatory, highlight risky cells (HTML, externally managed options) and keep user edits focused on safe columns.
+This document summarises the workbook structure and formatting rules applied by `qsync` for per-survey Excel workbooks.
 
-The rules below apply to the per‑survey workbook `excel/<SurveyID>.xlsx`.
+Workbooks are written to `excel/<slug>-<SurveyID>.xlsx` (account-scoped workbooks live under `excel/.<account>/`).
+
+Implementation reference: `src/qsync/excel_io.py`.
 
 ---
 
-## 1. Column roles
+## 1. Sheet overview
 
-### 1.1 System‑owned columns
+The per-survey workbook contains these relevant sheets for wording sync:
 
-System columns are populated and maintained by `qsync` and Qualtrics. They are:
+- `Questions` (1 row per QID; question text + flags)
+- `Options` (1 row per option/scale label)
+- `Subitems` (1 row per matrix row/statement)
+- `SBS_Columns` (SBSMatrix only: 1 row per side-by-side column header)
+- `SBS_ColumnAnswers` (SBSMatrix only: 1 row per side-by-side column answer label)
+- `Embedded_Data` (SurveyFlow embedded defaults)
+- `System` (read-only context: timing/meta)
+- `Instructions` (auto-generated guidance; regenerated on workbook refresh)
+
+Some workbooks also include additional helper sheets (for example translation-key mapping); treat them as `qsync`-owned.
+
+---
+
+## 2. Column roles
+
+### 2.1 System-owned columns
+
+System-owned columns are populated and maintained by `qsync` and/or Qualtrics (IDs, tags, ordering/context). Examples include:
 
 - `SurveyID`
 - `QID`
 - `BlockName`
 - `QuestionType`
-- `DataExportTag`
-- `ChoiceId`
-- `Code` (read‑only)
+- `DataExportTag` / `ExportTag`
+- `ChoiceId` / `AnswerId` / `ColumnId`
+- `FlowID` / `FlowOrder`
+- `Code`
+- Preview columns like `OptionsPreview` and `SubitemsPreview`
 
 Formatting:
 
-- Light‑grey background (header + body cells).
-- Header comments explaining that they are system‑owned and should not be edited.
-- No special data validation (these are not meant to be changed).
+- System headers (and their body cells) are bolded.
 
-### 1.2 User‑editable wording columns
+Behaviour:
 
-Columns where you are expected to edit text:
+- These columns are refreshed from cache/API on each workbook refresh (`qsync items pull` / legacy `qsync init`).
 
-- Questions sheet:
-  - `QuestionKey`
-  - `Text_{base}_MD` (e.g. `Text_en_MD` for English‑base surveys, `Text_fr_MD` for French‑base)
-- Options sheet:
-  - `Label_{base}_MD` (same naming convention)
+### 2.2 User-editable columns
 
-The base‑language suffix is determined by the survey's `SurveyLanguage` setting in Qualtrics.
+Columns where you are expected to edit content:
+
+- `Questions`: `QuestionKey`, `Text_{base}_MD` (plus `Text_{base}_IsHTML` when you intentionally need raw HTML)
+- `Options`, `Subitems`, `SBS_Columns`, `SBS_ColumnAnswers`: `Label_{base}_MD` (plus `Label_{base}_IsHTML` when you intentionally need raw HTML)
+- `Embedded_Data`: `Value`
+
+Translation columns:
+
+- When present, `Text_<lang>_MD` / `Label_<lang>_MD` columns (and their `*_IsHTML` flags) are also user-editable.
+
+Preservation rule on refresh:
+
+- `qsync` does not overwrite non-empty `*_MD` cells (and `Embedded_Data.Value`). New rows/cells are filled when missing.
+- `*_IsHTML` flags are treated as workflow flags and may be refreshed from cached survey JSON on workbook refresh.
+
+### 2.3 Boolean flag columns
+
+Common flags include:
+
+- `Text_*_IsHTML`, `Label_*_IsHTML`
+- `InPre`, `InPost` (and similar survey-specific flags)
 
 Formatting:
 
-- Default Excel background (no colour).
-- Text wrapping enabled (`wrap_text = TRUE`) so longer question/option texts are visible.
-- Header comments explaining the expected content (restricted Markdown, one language per column).
+- Data validation is applied as a drop-down list: `TRUE` / `FALSE` (blank allowed).
 
-### 1.3 Boolean flag columns
+### 2.4 Notes
 
-Columns representing booleans or runtime flags:
+Some sheets include `MetaComment` for notes/ownership:
 
-- `Text_{base}_IsHTML` (e.g. `Text_en_IsHTML`)
-- `Label_{base}_IsHTML` (e.g. `Label_en_IsHTML`)
-- `InPre`
-- `InPost`
-
-Formatting:
-
-- Default background.
-- Data validation as a drop‑down list: `TRUE` / `FALSE` (blank allowed).
-- Users can additionally apply "checkbox" cell formatting in Excel; `qsync` stores these as boolean‑interpretable values.
-- Header comments describing what the flag controls.
+- `qsync` writes `MetaComment` for options and SBS rows that are externally managed.
+- Treat `MetaComment` as `qsync`-owned unless you know what you are doing.
 
 ---
 
-## 2. HTML vs Markdown highlighting
+## 3. HTML vs Markdown highlighting
 
-Cells where the content is treated as raw HTML instead of Markdown should be visually distinct.
-
-- When `Text_{base}_IsHTML` is `TRUE`:
-  - The corresponding `Text_{base}_MD` cell is filled with a light highlight colour (e.g. pale yellow/orange).
-  - Header comment explains that no Markdown conversion is applied for these cells.
-
-- When `Label_{base}_IsHTML` is `TRUE`:
-  - The corresponding `Label_{base}_MD` cell is highlighted the same way.
-
-This makes it obvious which cells contain fragile HTML snippets (e.g. links, spans, IDs) where users must be careful not to break attributes or JS hooks.
-
----
-
-## 3. Externally managed options
-
-Some answer options are not meant to be edited by hand in Excel because they are generated by scripts (e.g. salience and recognition items). For these, only the **choices** are externally managed; the **question text** remains editable.
-
-Identification:
-
-- Based on the question’s `DataExportTag`:
-  - `newsmem_recognition`
-  - `newsmem_salience`
-  - `newsmem_recall_cued`
-
-Formatting for externally managed options:
-
-- Option rows in the `Options` sheet:
-  - Label cell (`Label_{base}_MD`) has a grey background, matching other system‑owned cells.
-  - A cell comment is attached: "Externally managed – edit via `<script>.py`, not in Excel."
-- These options are skipped by `qsync apply`; scripts such as `update_newsmem_recognition.py` and `update_salience_items.py` remain responsible for their content.
-
-Question rows for these items:
-
-- Question text (`Text_{base}_MD`) remains editable and is not marked as externally managed.
+When a `*_IsHTML` flag is set to `TRUE`, `qsync` applies conditional formatting to highlight the corresponding `*_MD` cell (pale yellow/orange). This is a visual warning that the cell content is treated as raw HTML.
 
 ---
 
 ## 4. Dirty indicators (changes since last sync)
 
-To help locate items that differ between Excel and the last synced survey JSON, `qsync preview` annotates “dirty” rows:
+`qsync items preview` (and related workflows) maintain a `Dirty` column to help locate rows that differ between Excel and the cached survey JSON.
 
-- A `Dirty` column is added to:
-  - `Questions` sheet.
-  - `Options` sheet.
-- When `preview` detects a difference:
-  - For questions:
-    - The row's `Dirty` cell is set to `Y`.
-    - The `Text_{base}_MD` cell is filled with a "dirty" highlight colour (distinct from the HTML colour).
-  - For options:
-    - The row's `Dirty` cell is set to `Y`.
-    - The `Label_{base}_MD` cell is highlighted similarly.
+- A `Dirty` column exists on:
+  - `Questions`
+  - `Options`
+  - `Subitems`
+  - `SBS_Columns`
+  - `SBS_ColumnAnswers`
+  - `Embedded_Data`
 
 Behaviour:
 
-- Each run of `qsync preview` clears previous `Dirty` flags and re‑marks them based on current diffs.
-- `Dirty = Y` means “Excel wording differs from the cached survey JSON”, i.e. this item would be updated if you run `qsync apply`.
+- Each preview run clears prior `Dirty` values and re-marks them based on current diffs.
+- When a row is dirty, its `Dirty` cell is set to `Y`.
+- Conditional formatting highlights the edited cell:
+  - `Questions`: `Text_{base}_MD`
+  - `Options`/`Subitems`/`SBS_*`: `Label_{base}_MD`
+  - `Embedded_Data`: `Value`
 
 ---
 
-## 5. Workbook refresh preservation rules
+## 5. Externally managed wording
 
-`qsync items pull` / `init_workbook_from_survey` will refresh system-owned columns and add missing rows, but **will not overwrite non-empty user-editable wording cells**. In practice:
+Some questions have options/subitems owned by scripts (for example: recognition, salience, cued recall). These are identified by `DataExportTag` (see `EXTERNALLY_MANAGED_TAGS` in `src/qsync/excel_io.py`).
 
-- Preserved when non-empty:
-  - `Text_*_MD` and `Label_*_MD` columns (base + translation languages).
-- Overwritten/refreshed each run:
-  - System-owned metadata columns (e.g., `SurveyID`, `QID`, `QuestionType`, `DataExportTag`, `ChoiceId`, `Code`).
-- Added when missing:
-  - New QIDs/choices/subitems and their default wording.
+Behaviour:
 
-This keeps local edits intact while still refreshing structure and metadata.
+- Question text (`Questions.Text_*`) remains editable.
+- By default, `qsync items stage/push` (and `qsync sync`) skip option/subitem/SBS edits for externally managed questions.
+- You can override this for specific QIDs by:
+  - Setting `QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS` in your env/.env (supports tokens like `QID15` and `SV_xxx:QID15`), or
+  - Passing `--allow-externally-managed-qids ...` to `qsync items preview|stage|push` or `qsync sync` (CLI flag takes precedence).
 
----
+SBSMatrix note:
 
-## 5. Tables, filters, ordering, and widths
-
-### 5.1 Tables and filters
-
-To make filtering and sorting easier:
-
-- Both `Questions` and `Options` sheets are converted into Excel Tables:
-  - Table names: `QuestionsTable`, `OptionsTable`.
-  - Style: banded rows, filter dropdowns enabled on the header row.
-
-This lets you:
-
-- Filter by `BlockName` (e.g. only `demographics`).
-- Filter by `InPre` or `InPost`.
-- Filter by `Dirty` to see only items that will change on the next apply.
-
-### 5.2 Row ordering
-
-Row order should mirror the Qualtrics survey:
-
-- Questions:
-  - Ordered by `Blocks` order and `BlockElements` order in the survey JSON.
-  - Trash block(s) are excluded.
-- Options:
-  - Ordered by `ChoiceOrder` where present, falling back to the internal dictionary order if needed.
-
-This makes it easy to look at Excel and understand which part of the survey a row belongs to and in what order respondents see items.
-
-### 5.3 Column widths
-
-To keep things readable:
-
-- For all columns **except** the main text:
-  - Column width is auto‑sized based on the longest cell (capped at a reasonable maximum).
-- For `Text_{base}_MD` and `Label_{base}_MD`:
-  - Width remains at a moderate default, with wrapping enabled, so long texts are visible without making the sheet horizontally unwieldy.
+- Qualtrics side-by-side matrices are encoded as `QuestionType="SBS"` and `Selector="SBSMatrix"`.
+- For SBSMatrix questions, the Options sheet is not used; the relevant editable surfaces are:
+  - `Subitems` (statements/rows)
+  - `SBS_Columns` (column headers)
+  - `SBS_ColumnAnswers` (per-column answer labels)
 
 ---
 
-## 6. Summary of editable vs non‑editable fields
+## 6. Tables and widths
 
-- **Editable by user:**
-  - `QuestionKey`
-  - `Text_{base}_MD` (subject to `Text_{base}_IsHTML`)
-  - `Label_{base}_MD` (subject to `Label_{base}_IsHTML`, except externally managed options)
-  - `InPre`, `InPost`
+To support filtering and sorting, the main editing sheets are stored as Excel Tables (banded rows + filter dropdowns). Table names:
 
-- **Editable, but advanced:**
-  - `Text_{base}_IsHTML`, `Label_{base}_IsHTML` (only when you intentionally need raw HTML).
+- `QuestionsTable`
+- `OptionsTable`
+- `SubitemsTable`
+- `SBSColumnsTable`
+- `SBSColumnAnswersTable`
+- `EmbeddedDataTable`
 
-> **Note on `{base}`:** The `{base}` placeholder above refers to the survey's base language code (e.g. `en`, `fr`, `cs`, `nl`). For an English‑base survey the columns are `Text_en_MD`, `Label_en_MD`, etc. For a French‑base survey they become `Text_fr_MD`, `Label_fr_MD`, etc. The base language is determined by the `SurveyLanguage` setting in Qualtrics.
-
-- **Read‑only (should not be edited):**
-  - `SurveyID`, `QID`, `BlockName`, `QuestionType`, `DataExportTag`
-  - `ChoiceId`, `Code`
-  - Option rows whose labels are externally managed (salience/recognition etc.).
-
-The implementation in `src/qsync/excel_io.py` enforces these principles as much as possible via colours, comments, table styling, and data validation, without relying on password‑protected sheets.
-
----
-
-## 7. System sheet and embedded data (future)
-
-The workbook also contains a `System` sheet:
-
-- Lists options for Qualtrics system questions (currently `Timing` questions).
-- Columns:
-  - `SurveyID`, `QID`, `QuestionType`, `DataExportTag`, `ChoiceId`, `Display`.
-- Fully read‑only, shaded as system‑owned.
-
-Embedded data fields are derived from `SurveyFlow.EmbeddedData` in the survey JSON. A future iteration of `qsync` will:
-
-- Provide a dedicated sheet for embedded data:
-  - Each row = one embedded field.
-  - Columns indicating whether the field receives an initial value in the flow (editable) or is set later by JS/logic (read‑only).
-- Use this to distinguish:
-  - “Design-time” embedded fields (safe to edit initial values in Excel) from
-  - “Runtime” embedded fields (set by JS or other flow elements, not editable).
-
-The core code to inspect embedded data is already available (see the examples in `surveys/*SurveyFlow*`) and can be wired into Excel in a subsequent milestone.
+Column widths are tuned by header name, and long text columns are wrapped.

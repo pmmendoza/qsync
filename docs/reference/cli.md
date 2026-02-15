@@ -309,15 +309,16 @@ options:
 ## `qsync items preview`
 
 ```text
-usage: qsync items preview [-h] [--survey-id SURVEY_ID] [--xlsx XLSX]
+Usage: qsync items preview [-h] [--survey-id SURVEY_ID] [--xlsx XLSX]
                            [--filter-column FILTER_COLUMN]
                            [--filter-value FILTER_VALUE]
                            [--include-qid INCLUDE_QIDS]
                            [--include-tag INCLUDE_TAGS] [--detailed]
                            [--embedded-data-only] [--scope SCOPE]
+                           [--allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS]
                            [--allow-drift]
 
-options:
+Options:
   -h, --help            show this help message and exit
   --survey-id SURVEY_ID
                         Target Qualtrics Survey ID (omit to select
@@ -339,6 +340,11 @@ options:
   --scope SCOPE         Scope filter expression (qid:<QID>,
                         tag:<DataExportTag>; supports AND/OR/()). See
                         docs/reference/scope-semantics.md.
+  --allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS
+                        Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow
+                        editing options/subitems even when the question
+                        DataExportTag is externally managed. Overrides
+                        QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS.
   --allow-drift         Allow preview against a drifted cache without
                         prompting
 ```
@@ -346,15 +352,17 @@ options:
 ## `qsync items stage`
 
 ```text
-usage: qsync items stage [-h] [--survey-id SURVEY_ID] [--xlsx XLSX]
+Usage: qsync items stage [-h] [--survey-id SURVEY_ID] [--xlsx XLSX]
                          [--filter-column FILTER_COLUMN]
                          [--filter-value FILTER_VALUE]
                          [--include-qid INCLUDE_QIDS]
                          [--include-tag INCLUDE_TAGS] [--yes]
                          [--embedded-data-only] [--allow-dangerous]
-                         [--scope SCOPE] [--allow-drift]
+                         [--scope SCOPE]
+                         [--allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS]
+                         [--allow-drift]
 
-options:
+Options:
   -h, --help            show this help message and exit
   --survey-id SURVEY_ID
                         Target Qualtrics Survey ID (omit to select
@@ -377,6 +385,11 @@ options:
   --scope SCOPE         Scope filter expression (qid:<QID>,
                         tag:<DataExportTag>; supports AND/OR/()). See
                         docs/reference/scope-semantics.md.
+  --allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS
+                        Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow
+                        staging/pushing option/subitem edits for externally
+                        managed questions. Overrides
+                        QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS.
   --allow-drift         Proceed even if cached survey differs from the live
                         API
 ```
@@ -384,11 +397,13 @@ options:
 ## `qsync items push`
 
 ```text
-usage: qsync items push [-h] [--survey-id SURVEY_ID] [--yes] [--force-live]
-                        [--force-preview] [--no-publish] [--dry-run]
-                        [--scope SCOPE] [--allow-drift]
+Usage: qsync items push [-h] [--survey-id SURVEY_ID] [--yes] [--force-live]
+                        [--force-preview] [--no-publish] [--allow-delete]
+                        [--dry-run] [--scope SCOPE]
+                        [--allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS]
+                        [--allow-drift] [--use-pending]
 
-options:
+Options:
   -h, --help            show this help message and exit
   --survey-id SURVEY_ID
                         Target survey ID (omit to select interactively)
@@ -396,32 +411,44 @@ options:
   --force-live
   --force-preview
   --no-publish
+  --allow-delete        Allow destructive structural deletes if staged
+                        (enforced at push time)
   --dry-run
   --scope SCOPE         Scope filter expression (qid:<QID>,
                         tag:<DataExportTag>; supports AND/OR/()). See
                         docs/reference/scope-semantics.md.
+  --allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS
+                        Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow
+                        pushing option/subitem edits for externally managed
+                        questions. Overrides
+                        QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS.
   --allow-drift         Proceed even if cached survey differs from the live
                         API
+  --use-pending         If staged changes exist and Excel differs, push staged
+                        changes instead of re-staging from Excel
 ```
 
 ## `qsync sync`
 
 ```text
-usage: qsync sync [-h] [--survey-id SURVEY_ID] [--all]
+Usage: qsync sync [-h] [--survey-id SURVEY_ID] [--all]
                   [--dimensions DIMENSIONS] [--scope SCOPE] [--per-dimension]
-                  [--yes] [--pending-action {push,discard,abort}] [--force-live]
-                  [--force-preview] [--skip-publish] [--refresh-workbooks]
-                  [--skip-refresh] [--allow-drift] [--json]
+                  [--yes] [--pending-action {push,discard,abort}]
+                  [--force-live] [--force-preview] [--skip-publish]
+                  [--refresh-workbooks]
+                  [--allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS]
+                  [--skip-refresh] [--allow-drift] [--allow-skip-embedded]
+                  [--json]
 
-options:
+Options:
   -h, --help            show this help message and exit
   --survey-id SURVEY_ID
                         Target survey ID (omit to scan all focal surveys)
   --all                 Process all focal surveys without prompting (for
                         automation)
   --dimensions DIMENSIONS
-                        Comma-separated dimensions to sync (default: auto-
-                        detect)
+                        Comma-separated dimensions to sync (default:
+                        auto-detect)
   --scope SCOPE         Scope filter expression passed to per-dimension
                         workflows where supported (items/js/translations). See
                         docs/reference/scope-semantics.md.
@@ -436,10 +463,18 @@ options:
   --skip-publish        Skip auto-publish step (no version snapshot)
   --refresh-workbooks   Refresh Excel workbooks after successful sync (runs
                         qsync items pull)
+  --allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS
+                        Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow
+                        staging/pushing option/subitem edits for externally
+                        managed questions during sync. Overrides
+                        QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS.
   --skip-refresh        (Legacy/deprecated) Refresh is disabled by default;
                         use --refresh-workbooks to enable
   --allow-drift         Proceed even if cached survey differs from the live
                         API
+  --allow-skip-embedded
+                        Allow sync to proceed when Embedded_Data is invalid by
+                        skipping embedded defaults
   --json                Emit machine-readable JSON when blocked by pending
                         changes
 ```

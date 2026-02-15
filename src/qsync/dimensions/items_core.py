@@ -105,9 +105,14 @@ def _should_skip_externally_managed(
 
 @dataclass
 class PreviewChange:
-    """One previewed change between cached survey HTML and Excel-specified wording."""
+    """One previewed change between cached survey JSON and workbook-specified content.
 
-    kind: str  # "question", "option", or "subitem"
+    Most changes are wording diffs where old/new values are HTML fragments (as
+    stored by Qualtrics). Some change kinds (for example Embedded_Data) use
+    plain string values instead.
+    """
+
+    kind: str  # "question", "option", "subitem", "sbs_column", "sbs_column_answer", or "embedded"
     qid: str
     old_html: str
     new_html: str
@@ -858,7 +863,10 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
     """Mark dirty rows/cells in the Excel workbook based on preview changes.
 
     - Adds/updates a `Dirty` column on relevant sheets.
-    - Highlights the edited field (Text_*_MD or Label_*_MD).
+    - Highlights the edited cell:
+      - Questions: Text_*_MD
+      - Options/Subitems/SBS_*: Label_*_MD
+      - Embedded_Data: Value
     """
 
     if not changes:

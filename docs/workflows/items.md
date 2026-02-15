@@ -26,7 +26,7 @@ The table below shows the file locations for each qsync dimension:
 - **Inventory (`surveys/inventory.csv`)** – built via `qsync survey inventory`. Each row stores `id`, `name`, `focal`, `locked`, `preview_count`, `response_count`, etc. (Legacy filename: `surveys/qualtrics_surveys.csv`.)
 - **Cached survey JSON (`surveys/<label>__SV_… .json`)** – refreshed whenever you run `qsync items pull`. This is the single source of truth for previews/pushes.
 - **Per-survey workbook (`excel/<slug>-<SurveyID>.xlsx`)** – generated/updated by `qsync items pull`. Filenames follow `<slug>-<SurveyID>.xlsx` where slug is derived from: (1) 'name' column in inventory CSV, (2) SurveyTitle from cached survey, or (3) Survey ID as fallback. **Note:** Old-format files (`<SurveyID>-<slug>.xlsx`) are automatically detected and used for backward compatibility. New files are created with the new format. You can override with `--xlsx` explicitly.
-- **Externally managed items** – questions/options owned by scripts (recognition, salience, cued recall). They stay read-only in Excel and are tagged through `MetaComment` + `DataExportTag` (see `EXTERNALLY_MANAGED_TAGS` in `src/qsync/excel_io.py`).
+- **Externally managed items** – questions/options owned by scripts (recognition, salience, cued recall). They stay read-only in Excel and are tagged through `MetaComment` + `DataExportTag` (see `EXTERNALLY_MANAGED_TAGS` in `src/qsync/excel_io.py`). By default, `qsync items stage/push` (and `qsync sync`) skip option/subitem edits for these questions unless you explicitly opt in (see “SBSMatrix notes” below for SBS-specific sheets).
 
 ## 2. Quick runbook (standalone)
 
@@ -106,12 +106,30 @@ Each workbook ships with an `Instructions` sheet regenerated at every `qsync ite
 - **Questions sheet** – 1 row per question; edit `Text_{base}_MD` (e.g. `Text_en_MD` for English‑base surveys) or toggle `Text_{base}_IsHTML`. Use flag columns like `InPre`, `InPost`, `InFollowUp` for custom filtering.
 - **Options sheet** – 1 row per choice/scale point; edit `Label_{base}_MD` (Markdown) or mark `Label_{base}_IsHTML`. `MetaComment` conveys ownership (e.g. "Externally managed by recognition script").
 - **Subitems sheet** – 1 row per matrix row/sub-statement; same Markdown/HTML toggles as Options.
-- **Embedded_Data sheet** – 1 row per embedded field; edit `Value` for defaults. Fields without defaults show `---` and require `qsync apply --allow-dangerous` to stage. `WrittenByQIDs` lists JS writers (map via `survey_js/survey_qid_js_map.csv`).
+- **SBS_Columns sheet** – for SBSMatrix (side-by-side) items only: 1 row per SBS column (the side-by-side “panels”); edit `Label_{base}_MD` (Markdown) or mark `Label_{base}_IsHTML`.
+- **SBS_ColumnAnswers sheet** – for SBSMatrix items only: 1 row per SBS column answer/scale label; edit `Label_{base}_MD` (Markdown) or mark `Label_{base}_IsHTML`.
+- **Embedded_Data sheet** – 1 row per embedded field; edit `Value` for defaults. Fields without defaults show `---` and require `qsync items stage --allow-dangerous` (or legacy `qsync apply --allow-dangerous`) to stage. `WrittenByQIDs` lists JS writers (map via `survey_js/survey_qid_js_map.csv`).
 - **Embedded field renames** – use CLI staging for field-name changes:
   `qsync survey rename-embedded-field --survey-id SV_xxx --from OLD_FIELD --to NEW_FIELD`
 - **System sheet** – read-only (timing, display logic metadata). Provided for context.
 
-`qsync preview` only reports differences when Markdown (for non-HTML cells) or normalized HTML actually changes, so formatting tweaks that don’t alter rendered output remain silent.
+`qsync items preview` (and legacy `qsync preview`) only report differences when Markdown (for non-HTML cells) or normalized HTML actually changes, so formatting tweaks that don’t alter rendered output remain silent.
+
+### SBSMatrix notes (Qualtrics `QuestionType="SBS"`, `Selector="SBSMatrix"`)
+
+Qualtrics SBSMatrix questions (the “side-by-side” layout, e.g. the news memory recognition battery) are represented in JSON differently from typical MC/Matrix questions:
+
+- **Statements (rows)** live under `Questions[QID].Choices[*].Display`, but are edited in Excel via the **Subitems** sheet (not the Options sheet).
+- **SBS columns (headers/panels)** live under `Questions[QID].AdditionalQuestions[*].QuestionText`, edited via **SBS_Columns**.
+- **Per-column answer scales** live under `Questions[QID].AdditionalQuestions[*].Answers[*].Display`, edited via **SBS_ColumnAnswers**.
+
+Important behaviors:
+
+- **Options sheet is not used** for SBSMatrix questions. Older workbooks that incorrectly stored SBS statements in `Options` are automatically migrated to `Subitems` on workbook refresh.
+- SBSMatrix statements are duplicated under each `AdditionalQuestions[*].Choices` block in Qualtrics. When `qsync` pushes Subitems edits for an SBSMatrix question, it mirrors the updated statements into every `AdditionalQuestions[*].Choices` block to keep the survey consistent.
+- If the question’s `DataExportTag` is externally managed (e.g. `newsmem_recognition`), option/subitem/SBS edits are skipped by default. To override this for specific QIDs, use:
+  - Env var `QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS=QID15` (or scoped tokens like `SV_xxx:QID15`), or
+  - CLI flag `--allow-externally-managed-qids QID15` on `qsync items preview|stage|push` and `qsync sync` (flag takes precedence over the env var).
 
 ## 5. Push safeguards (summary)
 

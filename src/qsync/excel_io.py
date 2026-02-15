@@ -1,7 +1,22 @@
-"""Excel workbook IO for qsync wording sync.
+"""Excel workbook IO for qsync workbooks.
 
-This module owns the schema and transformations for the qsync workbook used to
-preview changes and push wording/options/subitems back to Qualtrics.
+This module owns the schema and transformations for the per-survey Excel
+workbooks used by `qsync items ...` to preview/stage/push edits back to
+Qualtrics.
+
+Key sheets:
+- `Questions`: question text
+- `Options`: MC choices and Matrix answer scales
+- `Subitems`: Matrix rows/statements (and SBSMatrix statements)
+- `SBS_Columns` / `SBS_ColumnAnswers`: SBSMatrix column headers + per-column answer
+  labels (Qualtrics `AdditionalQuestions`)
+- `Embedded_Data`: SurveyFlow embedded defaults
+
+SBSMatrix note: Qualtrics encodes side-by-side matrices as
+`QuestionType="SBS"` with `Selector="SBSMatrix"`. In JSON, statements live
+under `Choices` but are edited via the `Subitems` sheet; SBS column headers and
+per-column answer labels live under `AdditionalQuestions` and are edited via
+the SBS sheets.
 """
 
 from __future__ import annotations
@@ -197,7 +212,7 @@ def _column_guide(base_language: str = "EN") -> dict:
             (
                 "Dirty",
                 "System",
-                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
+                "Auto-flag set by qsync items preview/stage when a row has pending pushes.",
             ),
         ],
         OPTIONS_SHEET: [
@@ -225,7 +240,7 @@ def _column_guide(base_language: str = "EN") -> dict:
             (
                 "Dirty",
                 "System",
-                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
+                "Auto-flag set by qsync items preview/stage when a row has pending pushes.",
             ),
         ],
         SUBITEMS_SHEET: [
@@ -252,7 +267,7 @@ def _column_guide(base_language: str = "EN") -> dict:
             (
                 "Dirty",
                 "System",
-                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
+                "Auto-flag set by qsync items preview/stage when a row has pending pushes.",
             ),
         ],
         SBS_COLUMNS_SHEET: [
@@ -283,7 +298,7 @@ def _column_guide(base_language: str = "EN") -> dict:
             (
                 "Dirty",
                 "System",
-                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
+                "Auto-flag set by qsync items preview/stage when a row has pending pushes.",
             ),
         ],
         SBS_COLUMN_ANSWERS_SHEET: [
@@ -311,7 +326,7 @@ def _column_guide(base_language: str = "EN") -> dict:
             (
                 "Dirty",
                 "System",
-                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
+                "Auto-flag set by qsync items preview/stage when a row has pending pushes.",
             ),
         ],
         EMBEDDED_DATA_SHEET: [
@@ -329,7 +344,7 @@ def _column_guide(base_language: str = "EN") -> dict:
             (
                 "Dirty",
                 "System",
-                "Auto-flag set by qsync preview/apply when a row has pending pushes.",
+                "Auto-flag set by qsync items preview/stage when a row has pending pushes.",
             ),
         ],
         SYSTEM_SHEET: [
@@ -1109,6 +1124,8 @@ def _build_option_previews(survey_payload: dict) -> Dict[str, str]:
 
     For Matrix questions, uses Answers (response scale).
     For MC/SC questions, uses Choices.
+    For SBSMatrix questions, previews the SBS column headers from
+    AdditionalQuestions[*].QuestionText (since SBS options are per-column).
     """
 
     result: Dict[str, List[str]] = {}
@@ -1400,6 +1417,8 @@ def build_option_rows(
     Mapping rules (must stay in sync with sync_core.py):
     - For MC/SC questions: options come from `Choices` (one row per choice).
     - For Matrix questions: options come from `Answers` (the response scale).
+    - For SBSMatrix questions: options are per-column under `AdditionalQuestions` and
+      are edited via the `SBS_ColumnAnswers` sheet (so this function skips SBSMatrix).
     Options for each question are ordered by `ChoiceOrder` or `AnswerOrder`
     where available so they match the respondent-facing order.
 
@@ -1529,6 +1548,9 @@ def build_subitem_rows(
 
     Mapping rules (must stay in sync with sync_core.py):
     - For Matrix questions: subitems come from `Choices` (matrix rows/statements).
+    - For SBSMatrix questions (QuestionType="SBS", Selector="SBSMatrix"): subitems
+      come from `Choices` (the SBS statements/rows) and are edited via the Subitems
+      sheet (not Options).
     - For other question types: subitems come from `Answers` (if present).
     - Label rows (Field=Label) come from `Labels` when present.
 
@@ -1795,13 +1817,21 @@ def init_workbook_from_survey(
 ) -> None:
     """Create or update an Excel workbook from a survey JSON payload.
 
-    This is the workbook “source-of-truth” initializer used by `qsync init`.
+    This is the workbook initializer used by `qsync items pull` (and legacy
+    `qsync init`).
 
-    - Creates Questions/Options/Subitems sheets if missing.
-    - Adds rows for new QIDs/choices/subitems.
-    - Does not overwrite existing edited Markdown cells (`*_en_MD`).
-    - Flags externally managed rows via the Options `MetaComment` column.
-    - Rebuilds the Instructions sheet with column guidance.
+    - Ensures the core sheets exist: Questions, Options, Subitems, SBS_Columns,
+      SBS_ColumnAnswers, Embedded_Data, System, and Instructions.
+    - Adds rows for new QIDs/choices/subitems/SBS columns/SBS answers/embedded fields.
+    - Preserves non-empty user-entered Markdown/value cells (`*_MD` and
+      `Embedded_Data.Value`).
+    - Refreshes system-owned metadata columns and workflow flags (for example
+      `*_IsHTML`) from the cached survey JSON.
+    - Writes externally managed notes via `MetaComment` (Options and SBS sheets)
+      when options/columns/answers are owned by scripts (see `EXTERNALLY_MANAGED_TAGS`).
+    - Applies an SBSMatrix migration for legacy/broken workbooks that placed
+      SBS statements in the Options sheet (moves them into Subitems).
+    - Rebuilds the Instructions sheet with up-to-date column guidance.
 
     Args:
         survey_id: Qualtrics survey ID (e.g., `SV_xxx`).
@@ -1813,8 +1843,8 @@ def init_workbook_from_survey(
         >>> from pathlib import Path
         >>> from qsync.excel_io import init_workbook_from_survey
         >>> from qsync.qualtrics_client import load_cached_survey
-        >>> survey = load_cached_survey("SV_xxx")  # requires surveys/SV_xxx.json
-        >>> init_workbook_from_survey("SV_xxx", survey.payload, Path("excel/SV_xxx.xlsx"))
+        >>> survey = load_cached_survey("SV_xxx")  # requires surveys/*__SV_xxx.json
+        >>> init_workbook_from_survey("SV_xxx", survey.payload, Path("excel/workbook.xlsx"))
     """
 
     xlsx_path = Path(xlsx_path)
