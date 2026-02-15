@@ -380,3 +380,64 @@ def test_survey_pull_default_destination_no_account(
     )
 
     assert captured["target_dir"] == str((tmp_path / "surveys").resolve())
+
+
+def test_survey_pull_account_prompt_uses_account_live_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.cli import main
+    from qsync import cli_survey
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+
+    (tmp_path / ".env.damian").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=syd1.qualtrics.com",
+                "X-API-TOKEN=secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, str | None] = {}
+
+    def _fake_list_surveys(base: str, headers: dict[str, str]) -> list[dict]:
+        captured["base"] = base
+        captured["token"] = str(headers.get("X-API-TOKEN") or "")
+        return [{"id": "SV_3", "name": "Damian Survey", "creationDate": "2026-01-01"}]
+
+    def _fake_download_survey_definition(
+        survey_id: str, *, target_dir: Path | None = None, env: dict[str, str] | None = None
+    ) -> Path:
+        captured["survey_id"] = survey_id
+        captured["downloaded_dir"] = str(target_dir)
+        return Path(target_dir or Path("surveys")) / f"{survey_id}.json"
+
+    monkeypatch.setattr(cli_survey, "list_surveys", _fake_list_surveys)
+    monkeypatch.setattr(cli_survey, "download_survey_definition", _fake_download_survey_definition)
+    monkeypatch.setattr(
+        "qsync.cli_survey.sys.stdin.isatty", lambda: True
+    )
+    monkeypatch.setattr(
+        "qsync.interactive_menu.select_from_list",
+        lambda message, choices: "SV_3 - Damian Survey",
+    )
+
+    main(
+        [
+            "--root",
+            str(tmp_path),
+            "survey",
+            "pull",
+            "--account",
+            "damian",
+        ]
+    )
+
+    assert captured["survey_id"] == "SV_3"
+    assert captured["base"] == "syd1.qualtrics.com"
+    assert captured["token"] == "secret"
+    assert captured["downloaded_dir"] == str((tmp_path / "surveys" / ".damian").resolve())

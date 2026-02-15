@@ -66,6 +66,55 @@ def _resolve_pull_dest(
     return (root / "surveys").resolve()
 
 
+def _pick_survey_id_from_records(
+    message: str,
+    records: list[dict[str, Any]],
+) -> str | None:
+    """Prompt interactively for a survey from pre-fetched records."""
+
+    from .interactive_menu import confirm, select_from_list
+
+    filtered = records
+    if len(filtered) > 60:
+        raw = input(
+            "Filter surveys by name/ID substring (blank to show all): "
+        ).strip()
+        if raw:
+            needle = raw.lower()
+            filtered = [
+                s
+                for s in records
+                if needle in str(s.get("id") or "").lower()
+                or needle in str(s.get("name") or "").lower()
+            ]
+            if not filtered:
+                print("[qsync] No surveys matched that filter.")
+                return None
+        else:
+            if not confirm(
+                f"List all {len(filtered)} surveys in an interactive menu? (may be slow)",
+                default=False,
+            ):
+                return None
+
+    choices = [
+        f"{s.get('id')} - {s.get('name', 'Untitled')}"
+        for s in filtered
+        if s.get("id")
+    ]
+    choices.append("─" * 60)
+    choices.append("✎ Enter SurveyID manually")
+    choices.append("↩ Back")
+
+    selection = select_from_list(message=message, choices=choices)
+    if not selection or selection.endswith("Back"):
+        return None
+    if selection.startswith("✎"):
+        manual = input("Enter Qualtrics SurveyID (e.g. SV_...): ").strip()
+        return manual or None
+    return selection.split(" - ", 1)[0].strip()
+
+
 def _slugify(value: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(value))
 
@@ -842,12 +891,44 @@ def handle_menu(_args: argparse.Namespace) -> None:
     def _menu_export_translation() -> None:
         if not _require_default_account(action="export-translation"):
             return
-        _run_action(handle_export_translation, argparse.Namespace())
+        survey_id = _pick_survey_id(message="Pick a survey to export translation:")
+        if not survey_id:
+            return
+        _run_action(handle_export_translation, argparse.Namespace(survey_id=survey_id))
 
     def _menu_export_side_by_side() -> None:
         if not _require_default_account(action="export-side-by-side"):
             return
-        _run_action(handle_export_side_by_side, argparse.Namespace())
+        survey_a = _pick_survey_id(message="Pick survey A:")
+        if not survey_a:
+            return
+        survey_b = _pick_survey_id(message="Pick survey B:")
+        if not survey_b:
+            return
+
+        output = input("Output path (optional; file or directory): ").strip() or None
+        smart_name = select_from_list("Append timestamp to filename?", ["No", "Yes"]) == "Yes"
+        refresh = select_from_list("Refresh cached definitions first?", ["No", "Yes"]) == "Yes"
+        skip_parity = select_from_list("Run parity check first?", ["Yes", "No"]) == "No"
+        do_open = select_from_list("Open document after export?", ["No", "Yes"]) == "Yes"
+
+        _run_action(
+            handle_export_side_by_side,
+            argparse.Namespace(
+                a=survey_a,
+                b=survey_b,
+                output=Path(output) if output else None,
+                label_a=None,
+                label_b=None,
+                skip_parity=bool(skip_parity),
+                refresh=bool(refresh),
+                smart_name=bool(smart_name),
+                no_html=False,
+                layout_heuristics=False,
+                skip_js_strings=False,
+                open=bool(do_open),
+            ),
+        )
 
     def _menu_inventory() -> None:
         if not _require_default_account(action="survey inventory"):
@@ -888,13 +969,20 @@ def handle_menu(_args: argparse.Namespace) -> None:
         )
 
     def _menu_pull() -> None:
-        if not _require_default_account(action="survey pull"):
-            return
         survey_id = _pick_survey_id(message="Pick a survey to pull (cache JSON):")
         if not survey_id:
             return
-        dest = input("Destination directory (optional; default: surveys/): ").strip() or None
-        _run_action(handle_pull, argparse.Namespace(survey_id=survey_id, dest=dest))
+        default_dest = (
+            f"surveys/.{selected_account}/" if selected_account else "surveys/"
+        )
+        dest = (
+            input(f"Destination directory (optional; default: {default_dest}): ").strip()
+            or None
+        )
+        _run_action(
+            handle_pull,
+            argparse.Namespace(survey_id=survey_id, dest=dest, account=selected_account),
+        )
 
     def _menu_prepare() -> None:
         if not _require_default_account(action="survey prepare"):
@@ -917,63 +1005,119 @@ def handle_menu(_args: argparse.Namespace) -> None:
     def _menu_embedded_field(action: str) -> None:
         if not _require_default_account(action=action):
             return
+        survey_id = _pick_survey_id(message="Pick a survey (must be cached locally):")
+        if not survey_id:
+            return
+        flow_id = input("FlowID (optional; blank = auto): ").strip() or None
+        dry_run = select_from_list("Dry run?", ["No", "Yes"]) == "Yes"
         if action == "add-embedded-field":
+            field = input("Embedded field name: ").strip()
+            if not field:
+                return
+            value = input("Value (optional; blank = empty): ")
+            value = value if value.strip() else None
             _run_action(
                 handle_add_embedded_field,
                 argparse.Namespace(
-                    survey_id=None,
-                    field=None,
-                    value=None,
-                    flow_id=None,
-                    dry_run=False,
+                    survey_id=survey_id,
+                    field=field,
+                    value=value,
+                    flow_id=flow_id,
+                    dry_run=bool(dry_run),
                 ),
             )
         elif action == "remove-embedded-field":
+            field = input("Embedded field name to remove: ").strip()
+            if not field:
+                return
             _run_action(
                 handle_remove_embedded_field,
                 argparse.Namespace(
-                    survey_id=None,
-                    field=None,
-                    flow_id=None,
-                    dry_run=False,
+                    survey_id=survey_id,
+                    field=field,
+                    flow_id=flow_id,
+                    dry_run=bool(dry_run),
                 ),
             )
         elif action == "rename-embedded-field":
+            from_field = input("Rename from (old field name): ").strip()
+            if not from_field:
+                return
+            to_field = input("Rename to (new field name): ").strip()
+            if not to_field:
+                return
+            all_occurrences = (
+                select_from_list("Rename in all occurrences?", ["No", "Yes"]) == "Yes"
+            )
             _run_action(
                 handle_rename_embedded_field,
                 argparse.Namespace(
-                    survey_id=None,
-                    from_field=None,
-                    to_field=None,
-                    flow_id=None,
-                    all_occurrences=False,
-                    dry_run=False,
+                    survey_id=survey_id,
+                    from_field=from_field,
+                    to_field=to_field,
+                    flow_id=flow_id,
+                    all_occurrences=bool(all_occurrences),
+                    dry_run=bool(dry_run),
                 ),
             )
 
     def _menu_cleanup_embedded_data() -> None:
         if not _require_default_account(action="cleanup-embedded-data"):
             return
+        survey_id = _pick_survey_id(message="Pick a survey to cleanup embedded data:")
+        if not survey_id:
+            return
+        sel = select_from_list(
+            "Cleanup scope:",
+            [
+                "Placeholder duplicates only (recommended)",
+                "All duplicates (dangerous)",
+                "↩ Back",
+            ],
+        )
+        if not sel or sel.endswith("Back"):
+            return
+        all_duplicates = sel.startswith("All duplicates")
+
+        apply_changes = (
+            select_from_list("Apply cleanup in Qualtrics?", ["No (dry run)", "Yes"])
+            == "Yes"
+        )
+        publish = False
+        description = ""
+        if apply_changes:
+            publish = select_from_list("Publish after cleanup?", ["No", "Yes"]) == "Yes"
+            if publish:
+                description = (
+                    input(
+                        f"Publish description (max {SURVEY_VERSION_DESCRIPTION_MAX_CHARS} chars) "
+                        "(blank = default): "
+                    ).strip()
+                    or "qsync cleanup: embedded data placeholders"
+                )
         _run_action(
             handle_cleanup_embedded_data,
             argparse.Namespace(
-                survey_id=None,
-                all_duplicates=False,
-                apply=False,
+                survey_id=survey_id,
+                all_duplicates=bool(all_duplicates),
+                apply=bool(apply_changes),
                 dry_run=False,
                 yes=False,
-                publish=False,
-                description="",
+                publish=bool(publish),
+                description=description,
             ),
         )
 
     def _menu_prolific_auth() -> None:
         if not _require_default_account(action="prolific-auth"):
             return
+        survey_id = _pick_survey_id(message="Pick a survey to set Prolific snippet:")
+        if not survey_id:
+            return
         _run_action(
             handle_prolific_auth,
             argparse.Namespace(
-                survey_id=None,
+                survey_id=survey_id,
                 snippet=None,
                 file=None,
                 mode=None,
@@ -2098,12 +2242,15 @@ def handle_slice_language(args: argparse.Namespace) -> None:
             )
             continue
 
-        # Check for duplicate names unless forced.
-        try:
-            ensure_unique_survey_name(new_name, allow_duplicate=args.force_duplicate)
-        except Exception as exc:
-            error("[qsync:slice-language]", f"ERROR: {exc}")
-            sys.exit(1)
+        # Check for duplicate names against local inventory (default-account only).
+        # For alternate accounts (`--account` in menu flows), local inventory is not
+        # guaranteed to match remote state, so skip this preflight.
+        if not _resolve_account_from_args(args):
+            try:
+                ensure_unique_survey_name(new_name, allow_duplicate=args.force_duplicate)
+            except Exception as exc:
+                error("[qsync:slice-language]", f"ERROR: {exc}")
+                sys.exit(1)
 
         # Prepare for import (sets name/status; strips SurveyID).
         prepare_qsf_for_import(
@@ -2623,7 +2770,7 @@ def handle_parity_check(args: argparse.Namespace) -> None:
 def handle_rename(args: argparse.Namespace) -> None:
     """Rename a survey by SurveyID (or interactively select from recent surveys)."""
 
-    base, headers = get_client_config()
+    base, headers = _get_client_config_for_args(args)
 
     survey_id = args.survey_id
     old_name = "Unknown"
@@ -4070,10 +4217,28 @@ def handle_pull(args: argparse.Namespace) -> None:
     from .survey_ref import format_survey_ref
     from .cli import _prompt_for_survey_id_if_needed
 
-    survey_id = _prompt_for_survey_id_if_needed(
-        survey_id,
-        allow_all_surveys=True,
-    )
+    if account:
+        if survey_id:
+            survey_id = str(survey_id).strip()
+        else:
+            if not sys.stdin.isatty():
+                print("[qsync] ERROR: --survey-id required in non-interactive mode")
+                sys.exit(1)
+            base_url, headers = get_client_config(env)
+            surveys = list_surveys(base_url, headers)
+            surveys.sort(key=lambda x: x.get("creationDate", ""), reverse=True)
+            survey_id = _pick_survey_id_from_records(
+                "Pick a survey to pull (cache JSON):",
+                surveys,
+            )
+            if not survey_id:
+                print("[qsync] Operation cancelled.")
+                return
+    else:
+        survey_id = _prompt_for_survey_id_if_needed(
+            survey_id,
+            allow_all_surveys=True,
+        )
 
     print(f"[pull] Downloading survey definition for {format_survey_ref(survey_id)}...")
 
@@ -4560,6 +4725,8 @@ def handle_publish(args: argparse.Namespace) -> None:
     if retry_attempts < 1:
         raise SystemExit("[publish] ERROR: --retry-attempts must be >= 1")
 
+    base_url, headers = _get_client_config_for_args(args)
+
     print(
         f"[publish] POST survey-definitions/{survey_id}/versions "
         f"json={{'Description': {description!r}, 'Published': True}}"
@@ -4577,6 +4744,8 @@ def handle_publish(args: argparse.Namespace) -> None:
                 description=description,
                 published=True,
                 context={"origin": "qsync.cli_survey.publish"},
+                base_url=base_url,
+                headers=headers,
             )
             last_exc = None
             break
@@ -4779,7 +4948,7 @@ def _handle_activation(args: argparse.Namespace, *, target_active: bool) -> None
         yes = False
 
     batch_mode = len(survey_ids) > 1
-    base_url, headers = get_client_config()
+    base_url, headers = _get_client_config_for_args(args)
 
     if batch_mode and not yes and not dry_run:
         if not sys.stdin.isatty():
@@ -4845,7 +5014,7 @@ def _handle_activation(args: argparse.Namespace, *, target_active: bool) -> None
 
         ctx = None
         try:
-            ctx = load_push_context(survey_id)
+            ctx = load_push_context(survey_id, base_url=base_url, headers=headers)
             survey_ref = format_survey_ref(survey_id, getattr(ctx, "survey_name", None))
             if ctx.counts_unknown:
                 if not force_live and not dry_run:
@@ -4932,7 +5101,9 @@ def _handle_activation(args: argparse.Namespace, *, target_active: bool) -> None
 
         if show_versions:
             try:
-                data = list_survey_versions(survey_id)
+                data = list_survey_versions(
+                    survey_id, base_url=base_url, headers=headers
+                )
                 versions = data.get("versions") or []
                 if versions_limit:
                     versions = versions[:versions_limit]
@@ -5056,6 +5227,8 @@ def _handle_activation(args: argparse.Namespace, *, target_active: bool) -> None
                 description=publish_description,
                 published=True,
                 context={"origin": f"qsync.cli_survey.{verb}", "survey_id": survey_id},
+                base_url=base_url,
+                headers=headers,
             )
             info(f"[{verb}]", f"{survey_ref}: Published survey definition.")
 
@@ -5101,7 +5274,8 @@ def handle_versions(args: argparse.Namespace) -> None:
     limit = getattr(args, "limit", None)
     as_json = bool(getattr(args, "json", False))
 
-    data = list_survey_versions(survey_id)
+    base_url, headers = _get_client_config_for_args(args)
+    data = list_survey_versions(survey_id, base_url=base_url, headers=headers)
     versions = data.get("versions") or []
     current_id = data.get("current_published_version_id")
 
@@ -5169,7 +5343,14 @@ def handle_version_fetch(args: argparse.Namespace) -> None:
     out_path = getattr(args, "output", None)
     as_json = bool(getattr(args, "json", False))
 
-    payload = fetch_survey_version(survey_id, version_id=version_id, fmt=fmt)
+    base_url, headers = _get_client_config_for_args(args)
+    payload = fetch_survey_version(
+        survey_id,
+        version_id=version_id,
+        fmt=fmt,
+        base_url=base_url,
+        headers=headers,
+    )
 
     if out_path:
         dest = Path(out_path)
@@ -5229,9 +5410,11 @@ def handle_rollback(args: argparse.Namespace) -> None:
     force_live = bool(getattr(args, "force_live", False))
     yes = bool(getattr(args, "yes", False))
 
+    base_url, headers = _get_client_config_for_args(args)
+
     # Push safeguards (same spirit as push-question / push).
     try:
-        ctx = load_push_context(survey_id)
+        ctx = load_push_context(survey_id, base_url=base_url, headers=headers)
         print(f"[rollback] Survey: {ctx.survey_name}")
         print(f"[rollback] {ctx.describe_counts()}")
 
@@ -5280,9 +5463,13 @@ def handle_rollback(args: argparse.Namespace) -> None:
             raise
 
     # Fetch historical definition.
-    historical = fetch_survey_version(survey_id, version_id=version_id, fmt="json")
-
-    base_url, headers = get_client_config()
+    historical = fetch_survey_version(
+        survey_id,
+        version_id=version_id,
+        fmt="json",
+        base_url=base_url,
+        headers=headers,
+    )
 
     print(f"[rollback] Target version: {version_id}")
     print(f"[rollback] QIDs: {', '.join(qids)}")
@@ -5342,6 +5529,8 @@ def handle_rollback(args: argparse.Namespace) -> None:
             "source_version_id": version_id,
             "changed_qids": qids,
         },
+        base_url=base_url,
+        headers=headers,
     )
     print(f"[rollback] Restored {len(qids)} question(s) and published {survey_id}.")
 
@@ -5566,7 +5755,7 @@ def handle_export_responses(args: argparse.Namespace) -> None:
     )
     output_dir = Path(args.output) if args.output else _workspace_root() / "responses"
 
-    base_url, headers = get_client_config()
+    base_url, headers = _get_client_config_for_args(args)
 
     # Start export
     from .survey_ref import format_survey_ref
