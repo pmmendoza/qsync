@@ -190,23 +190,17 @@ def _check_nested_reordering(
             # Check then branch
             old_then = old_node.get("Flow", [])
             new_then = new_node.get("Flow", [])
-            _check_list_reordering(
-                old_then, new_then, f"{path}.{node_id}.then", changes
-            )
+            _check_list_reordering(old_then, new_then, f"{path}.{node_id}.then", changes)
 
             # Check else branch
             old_else = old_node.get("ElseFlow", [])
             new_else = new_node.get("ElseFlow", [])
-            _check_list_reordering(
-                old_else, new_else, f"{path}.{node_id}.else", changes
-            )
+            _check_list_reordering(old_else, new_else, f"{path}.{node_id}.else", changes)
 
         elif node_type in ("BlockRandomizer", "Group"):
             old_flow = old_node.get("Flow", [])
             new_flow = new_node.get("Flow", [])
-            _check_list_reordering(
-                old_flow, new_flow, f"{path}.{node_id}.flow", changes
-            )
+            _check_list_reordering(old_flow, new_flow, f"{path}.{node_id}.flow", changes)
 
 
 def _check_list_reordering(
@@ -382,9 +376,7 @@ def _describe_modification(old_node: dict, new_node: dict, node_type: str) -> st
             old_type = old_field_data.get("Type")
             new_type = new_field_data.get("Type")
             if old_type != new_type:
-                descriptions.append(
-                    f"Field {field}: type changed ({old_type} -> {new_type})"
-                )
+                descriptions.append(f"Field {field}: type changed ({old_type} -> {new_type})")
 
             old_var_type = old_field_data.get("VariableType")
             new_var_type = new_field_data.get("VariableType")
@@ -415,7 +407,7 @@ def _describe_modification(old_node: dict, new_node: dict, node_type: str) -> st
         old_url = old_node.get("URL", "")
         new_url = new_node.get("URL", "")
         if old_url != new_url:
-            descriptions.append("URL changed")
+            descriptions.append(f"URL changed")
 
         old_method = old_node.get("Method", "GET")
         new_method = new_node.get("Method", "GET")

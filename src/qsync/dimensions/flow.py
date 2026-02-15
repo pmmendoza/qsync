@@ -1,4 +1,15 @@
-"""Flow dimension module for survey flow synchronization."""
+"""Flow dimension module for survey flow synchronization.
+
+This module provides the standard dimension interface (pull, detect_changes,
+preview, stage, push) for survey flow management. It enables version-controlled
+editing of survey branching logic, block ordering, and flow structure.
+
+Usage:
+    qsync flow pull --survey-id SV_xxx
+    qsync flow preview --survey-id SV_xxx
+    qsync flow stage --survey-id SV_xxx
+    qsync flow push --survey-id SV_xxx
+"""
 
 from __future__ import annotations
 
@@ -6,18 +17,12 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Optional
 
-from .flow_diff import (
-    FlowChange,
-    diff_flows,
-    format_diff_for_display,
-    format_diff_summary,
-)
-from .flow_validate import FlowValidationError, validate_flow, validate_yaml_structure
-from .flow_yaml import flow_to_yaml, yaml_to_flow
 from .types import DimensionChanges
-from ..config import resolve_root
+from .flow_yaml import flow_to_yaml, yaml_to_flow
+from .flow_diff import FlowChange, diff_flows, format_diff_for_display, format_diff_summary
+from .flow_validate import validate_flow, validate_yaml_structure, FlowValidationError
 from ..pending_stage import (
     FlowPendingPayload,
     PendingStagedChanges,
@@ -25,73 +30,52 @@ from ..pending_stage import (
     load_pending,
     save_pending,
 )
+from ..config import resolve_root
+
 
 logger = logging.getLogger(__name__)
 
 
 def _workspace_root() -> Path:
+    """Get workspace root directory."""
     return resolve_root(required=False) or Path.cwd()
 
 
 def _flow_dir(survey_id: str) -> Path:
+    """Get the flow directory for a survey.
+
+    Returns:
+        Path to surveys/flow/{survey_id}/
+    """
     return _workspace_root() / "surveys" / "flow" / survey_id
 
 
 def _yaml_path(survey_id: str) -> Path:
+    """Get the YAML file path for a survey."""
     return _flow_dir(survey_id) / "flow.yaml"
 
 
 def _baseline_path(survey_id: str) -> Path:
+    """Get the baseline JSON file path for a survey."""
     return _flow_dir(survey_id) / "baseline.json"
 
 
-def _hash_flow(flow: dict[str, Any]) -> str:
-    return hashlib.sha256(
-        json.dumps(flow, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
-
-
-def _confirm(prompt: str, *, default: bool = False) -> bool:
-    try:
-        from ..interactive_menu import confirm
-
-        return confirm(prompt, default=default)
-    except Exception:
-        response = input(f"{prompt} [{'Y/n' if default else 'y/N'}]: ").strip().lower()
-        if not response:
-            return default
-        return response in {"y", "yes"}
-
-
-def _read_yaml_and_baseline(
-    *,
-    survey_id: str,
-    require_files: bool = True,
-) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    yaml_path = _yaml_path(survey_id)
-    baseline_path = _baseline_path(survey_id)
-
-    if require_files and not yaml_path.exists():
-        print(
-            f"[sync:flow] No flow.yaml found. Run: qsync flow pull --survey-id {survey_id}"
-        )
-        return None
-    if require_files and not baseline_path.exists():
-        print(
-            f"[sync:flow] No baseline found. Run: qsync flow pull --survey-id {survey_id}"
-        )
-        return None
-
-    yaml_content = yaml_path.read_text(encoding="utf-8")
-    edited = yaml_to_flow(yaml_content)
-    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-    return edited, baseline
-
-
 def pull(survey_id: str, *, force: bool = False) -> Path:
-    """Pull flow from cached survey JSON and save as YAML + baseline."""
+    """Pull flow from Qualtrics and save as YAML.
+
+    Args:
+        survey_id: Survey ID to pull flow from
+        force: If True, overwrite existing YAML even if it has local changes
+
+    Returns:
+        Path to the created YAML file
+
+    Raises:
+        FileExistsError: If YAML exists with local changes and force=False
+    """
     from ..qualtrics_client import load_cached_survey
 
+    # Load cached survey (downloads if not cached)
     cache = load_cached_survey(survey_id)
     flow = cache.payload.get("result", {}).get("SurveyFlow", {})
     blocks = cache.payload.get("result", {}).get("Blocks", {})
@@ -101,126 +85,103 @@ def pull(survey_id: str, *, force: bool = False) -> Path:
     yaml_path = _yaml_path(survey_id)
     baseline_path = _baseline_path(survey_id)
 
+    # Check for existing changes
     if yaml_path.exists() and baseline_path.exists() and not force:
+        # Check if YAML differs from baseline
         try:
-            loaded = _read_yaml_and_baseline(
-                survey_id=survey_id,
-                require_files=False,
-            )
-            if loaded:
-                edited, baseline = loaded
-                changes = diff_flows(baseline, edited)
-                if changes:
-                    raise FileExistsError(
-                        f"Flow YAML has local changes ({len(changes)} change(s)). "
-                        "Use --force to overwrite or stage/push changes first."
-                    )
+            import yaml as yaml_lib
+            yaml_content = yaml_path.read_text(encoding="utf-8")
+            yaml_data = yaml_lib.safe_load(yaml_content)
+            edited_flow = yaml_to_flow(yaml_content)
+            baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+
+            changes = diff_flows(baseline, edited_flow)
+            if changes:
+                raise FileExistsError(
+                    f"Flow YAML has local changes ({len(changes)} change(s)). "
+                    f"Use --force to overwrite or stage/push changes first."
+                )
         except FileExistsError:
             raise
         except Exception:
-            # If comparison fails, do not block pull; flow files may be malformed.
-            pass
+            pass  # If we can't check, proceed with pull
 
+    # Create directory structure
     flow_dir.mkdir(parents=True, exist_ok=True)
-    yaml_path.write_text(
-        flow_to_yaml(flow, survey_id, blocks, questions),
-        encoding="utf-8",
-    )
-    baseline_path.write_text(
-        json.dumps(flow, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    logger.info("[sync:flow] Pulled flow to %s", yaml_path)
+
+    # Convert to YAML with annotations
+    yaml_content = flow_to_yaml(flow, survey_id, blocks, questions)
+
+    # Save YAML and baseline
+    yaml_path.write_text(yaml_content, encoding="utf-8")
+    baseline_path.write_text(json.dumps(flow, indent=2), encoding="utf-8")
+
+    logger.info(f"[sync:flow] Pulled flow to {yaml_path}")
     return yaml_path
 
 
-def detect_unstaged_changes(survey_id: str) -> DimensionChanges:
-    """Detect unstaged YAML-vs-baseline flow changes (ignores pending)."""
+def detect_changes(survey_id: str) -> DimensionChanges:
+    """Detect staged or unstaged flow changes for a survey.
+
+    Returns:
+        DimensionChanges with change status and summary
+    """
+    # Check for staged changes first
+    pending = load_pending(survey_id, "flow")
+    if pending and isinstance(pending.payload, FlowPendingPayload):
+        num_changes = len(pending.payload.changes)
+        return DimensionChanges(
+            dimension="flow",
+            has_changes=True,
+            change_summary=f"Staged: {num_changes} change(s)",
+            affected_qids=set(),  # Flow doesn't affect QIDs directly
+        )
+
+    # Check for unstaged changes (YAML differs from baseline)
     yaml_path = _yaml_path(survey_id)
     baseline_path = _baseline_path(survey_id)
 
-    if not yaml_path.exists() and not baseline_path.exists():
+    if not yaml_path.exists() or not baseline_path.exists():
         return DimensionChanges(
             dimension="flow",
             has_changes=False,
             change_summary="Not initialized",
             affected_qids=set(),
-            status_kind="none",
-            edit_count=0,
-        )
-
-    if yaml_path.exists() != baseline_path.exists():
-        return DimensionChanges(
-            dimension="flow",
-            has_changes=False,
-            change_summary="⚠ Incomplete local flow files",
-            affected_qids=set(),
-            warning_detail=(
-                "Flow files are incomplete. Run: "
-                f"qsync flow pull --survey-id {survey_id}"
-            ),
+            error_detail=f"Run: qsync flow pull --survey-id {survey_id}",
             safe_to_autofix=True,
-            status_kind="none",
-            edit_count=0,
         )
 
     try:
-        loaded = _read_yaml_and_baseline(survey_id=survey_id, require_files=False)
-        if loaded is None:
-            return DimensionChanges(
-                dimension="flow",
-                has_changes=False,
-                change_summary="Not initialized",
-                affected_qids=set(),
-                status_kind="none",
-                edit_count=0,
-            )
-        edited, baseline = loaded
+        yaml_content = yaml_path.read_text(encoding="utf-8")
+        edited = yaml_to_flow(yaml_content)
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+
         changes = diff_flows(baseline, edited)
+
         if changes:
+            summary = format_diff_summary(changes)
             return DimensionChanges(
                 dimension="flow",
                 has_changes=True,
-                change_summary=f"⚡ Unstaged: {format_diff_summary(changes)}",
+                change_summary=f"Unstaged: {summary}",
                 affected_qids=set(),
-                status_kind="unstaged",
-                edit_count=len(changes),
             )
+
         return DimensionChanges(
             dimension="flow",
             has_changes=False,
             change_summary="No changes",
             affected_qids=set(),
-            status_kind="none",
-            edit_count=0,
         )
-    except Exception as exc:
+
+    except Exception as e:
         return DimensionChanges(
             dimension="flow",
             has_changes=False,
-            change_summary="✗ Error",
+            change_summary="Error detecting changes",
             affected_qids=set(),
-            error_detail=f"Flow detection failed: {str(exc).split(chr(10))[0]}",
-            safe_to_autofix=False,
-            status_kind="error",
-            edit_count=0,
+            error_detail=str(e),
         )
-
-
-def detect_changes(survey_id: str) -> DimensionChanges:
-    """Detect staged or unstaged flow changes for a survey."""
-    pending = load_pending(survey_id, "flow")
-    if pending and isinstance(pending.payload, FlowPendingPayload):
-        count = len(pending.payload.changes or [])
-        return DimensionChanges(
-            dimension="flow",
-            has_changes=True,
-            change_summary=f"✓ Staged: {count} change(s)",
-            affected_qids=set(),
-            status_kind="staged",
-            edit_count=count,
-        )
-    return detect_unstaged_changes(survey_id)
 
 
 def preview(
@@ -230,16 +191,37 @@ def preview(
     visual: bool = False,
     validate: bool = True,
 ) -> list[FlowChange]:
-    """Preview flow changes (YAML vs baseline)."""
+    """Preview flow changes (YAML vs baseline).
+
+    Args:
+        survey_id: Survey ID to preview
+        verbose: If True, print detailed diff output
+        visual: If True, generate Mermaid diagrams (not yet implemented)
+        validate: If True, check for invalid references (deleted QIDs, missing blocks)
+
+    Returns:
+        List of FlowChange objects describing the differences
+    """
     from ..qualtrics_client import load_cached_survey
 
-    loaded = _read_yaml_and_baseline(survey_id=survey_id, require_files=True)
-    if loaded is None:
+    yaml_path = _yaml_path(survey_id)
+    baseline_path = _baseline_path(survey_id)
+
+    if not yaml_path.exists():
+        print(f"[sync:flow] No flow.yaml found. Run: qsync flow pull --survey-id {survey_id}")
         return []
-    edited, baseline = loaded
+
+    if not baseline_path.exists():
+        print(f"[sync:flow] No baseline found. Run: qsync flow pull --survey-id {survey_id}")
+        return []
 
     try:
+        yaml_content = yaml_path.read_text(encoding="utf-8")
+        edited = yaml_to_flow(yaml_content)
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+
         changes = diff_flows(baseline, edited)
+
         if not changes:
             print("[sync:flow] No changes detected")
         else:
@@ -247,29 +229,29 @@ def preview(
             for line in format_diff_for_display(changes, verbose=verbose):
                 print(line)
 
+        # Validate references even if no changes (catch deleted QIDs early)
         if validate:
             try:
                 cache = load_cached_survey(survey_id)
                 blocks = cache.payload.get("result", {}).get("Blocks", {})
                 questions = cache.payload.get("result", {}).get("Questions", {})
                 validate_flow(edited, survey_id, blocks, questions)
-            except FlowValidationError as exc:
-                print("\n[sync:flow] WARNING - Invalid references detected:")
-                for err in exc.errors:
+            except FlowValidationError as e:
+                print(f"\n[sync:flow] WARNING - Invalid references detected:")
+                for err in e.errors:
                     print(f"  ! {err}")
-                print(
-                    "\nThese issues will block push. Fix the flow or restore missing items."
-                )
+                print("\nThese issues will block push. Fix the flow or restore deleted items.")
 
         if visual:
             print("\n[sync:flow] Visual diff (Mermaid) not yet implemented")
+
         return changes
 
-    except FlowValidationError as exc:
-        print(f"[sync:flow] Validation error in YAML:\n{exc}")
+    except FlowValidationError as e:
+        print(f"[sync:flow] Validation error in YAML:\n{e}")
         return []
-    except Exception as exc:
-        print(f"[sync:flow] Error previewing changes: {exc}")
+    except Exception as e:
+        print(f"[sync:flow] Error previewing changes: {e}")
         return []
 
 
@@ -279,63 +261,93 @@ def stage(
     allow_drift: bool = False,
     interactive: bool = True,
 ) -> bool:
-    """Stage flow changes into pending cache."""
+    """Stage flow changes into pending cache.
+
+    Args:
+        survey_id: Survey ID to stage
+        allow_drift: If True, allow staging even if remote has drifted
+        interactive: If True, prompt for confirmation on drift
+
+    Returns:
+        True if staging succeeded, False otherwise
+    """
     from ..drift_check import enforce_no_drift
-    from ..qualtrics_client import load_cached_survey
-    import yaml as yaml_lib
 
-    loaded = _read_yaml_and_baseline(survey_id=survey_id, require_files=True)
-    if loaded is None:
+    yaml_path = _yaml_path(survey_id)
+    baseline_path = _baseline_path(survey_id)
+
+    if not yaml_path.exists():
+        print(f"[sync:flow] No flow.yaml found. Run: qsync flow pull --survey-id {survey_id}")
         return False
 
-    # Stage should be blocked by live drift unless explicitly allowed.
-    enforce_no_drift(
-        survey_id=survey_id,
-        dimension="flow",
-        allow_drift=allow_drift,
-        interactive=interactive,
-    )
+    if not baseline_path.exists():
+        print(f"[sync:flow] No baseline found. Run: qsync flow pull --survey-id {survey_id}")
+        return False
 
-    yaml_text = _yaml_path(survey_id).read_text(encoding="utf-8")
+    # Check for drift
     try:
-        yaml_data = yaml_lib.safe_load(yaml_text)
-        validate_yaml_structure(yaml_data)
-        edited = yaml_to_flow(yaml_text)
-    except FlowValidationError as exc:
-        print(f"[sync:flow] YAML validation error:\n{exc}")
-        return False
-    except Exception as exc:
-        print(f"[sync:flow] Error parsing YAML: {exc}")
+        enforce_no_drift(
+            survey_id=survey_id,
+            dimension="flow",
+            allow_drift=allow_drift,
+            interactive=interactive,
+        )
+    except Exception as e:
+        print(f"[sync:flow] Drift check failed: {e}")
         return False
 
-    _, baseline = loaded
+    # Load and validate YAML
+    try:
+        yaml_content = yaml_path.read_text(encoding="utf-8")
+        import yaml as yaml_lib
+        yaml_data = yaml_lib.safe_load(yaml_content)
+        validate_yaml_structure(yaml_data)
+        edited = yaml_to_flow(yaml_content)
+    except FlowValidationError as e:
+        print(f"[sync:flow] YAML validation error:\n{e}")
+        return False
+    except Exception as e:
+        print(f"[sync:flow] Error parsing YAML: {e}")
+        return False
+
+    # Load baseline and compute changes
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     changes = diff_flows(baseline, edited)
+
     if not changes:
         clear_pending(survey_id, "flow")
         print("[sync:flow] No changes to stage")
         return True
 
+    # Validate the converted flow against survey
     try:
+        from ..qualtrics_client import load_cached_survey
         cache = load_cached_survey(survey_id)
         blocks = cache.payload.get("result", {}).get("Blocks", {})
         questions = cache.payload.get("result", {}).get("Questions", {})
         validate_flow(edited, survey_id, blocks, questions)
-    except FlowValidationError as exc:
-        print(f"[sync:flow] Flow validation error:\n{exc}")
+    except FlowValidationError as e:
+        print(f"[sync:flow] Flow validation error:\n{e}")
         return False
 
+    # Compute baseline hash for integrity check
+    baseline_hash = hashlib.sha256(
+        json.dumps(baseline, sort_keys=True).encode()
+    ).hexdigest()
+
+    # Save pending
     payload = FlowPendingPayload(
-        flow_yaml_path=str(_yaml_path(survey_id)),
-        baseline_hash=_hash_flow(baseline),
+        flow_yaml_path=str(yaml_path),
+        baseline_hash=baseline_hash,
         changes=[c.to_dict() for c in changes],
     )
-    save_pending(
-        PendingStagedChanges(
-            survey_id=survey_id,
-            dimension="flow",
-            payload=payload,
-        )
+    record = PendingStagedChanges(
+        survey_id=survey_id,
+        dimension="flow",
+        payload=payload,
     )
+    save_pending(record)
+
     print(f"[sync:flow] Staged {format_diff_summary(changes)}")
     return True
 
@@ -350,167 +362,200 @@ def push(
     allow_drift: bool = False,
     skip_publish: bool = False,
 ) -> bool:
-    """Push staged flow changes to Qualtrics."""
-    from ..drift_check import enforce_no_drift
-    from ..push_safeguards import SafeguardConfig, enforce_push_safeguards
+    """Push staged flow changes to Qualtrics.
+
+    Args:
+        survey_id: Survey ID to push
+        interactive: If True, prompt for confirmation
+        force_live: If True, allow push to survey with responses
+        force_preview: If True, show preview before push
+        auto_yes: If True, skip confirmation prompts
+        allow_drift: If True, allow push even if remote has drifted
+        skip_publish: If True, don't publish after push
+
+    Returns:
+        True if push succeeded, False otherwise
+    """
     from ..qualtrics_client import (
-        ensure_backup,
-        fetch_survey_definition_live,
         load_cached_survey,
-        publish_survey_definition,
         push_survey_flow,
         refresh_survey_cache,
+        ensure_backup,
     )
+    from ..push_safeguards import enforce_push_safeguards
 
+    # Load pending changes
     pending = load_pending(survey_id, "flow")
     if not pending or not isinstance(pending.payload, FlowPendingPayload):
         print("[sync:flow] No staged flow changes found")
         return True
 
+    # Verify YAML file still exists
     yaml_path = Path(pending.payload.flow_yaml_path)
     if not yaml_path.exists():
         print(f"[sync:flow] YAML file not found: {yaml_path}")
         clear_pending(survey_id, "flow")
         return False
 
-    loaded = _read_yaml_and_baseline(survey_id=survey_id, require_files=True)
-    if loaded is None:
+    # Load and validate
+    try:
+        yaml_content = yaml_path.read_text(encoding="utf-8")
+        edited_flow = yaml_to_flow(yaml_content)
+    except Exception as e:
+        print(f"[sync:flow] Error loading YAML: {e}")
         return False
-    edited_flow, baseline = loaded
 
-    current_changes = diff_flows(baseline, edited_flow)
-    if not current_changes:
-        clear_pending(survey_id, "flow")
-        print("[sync:flow] No changes to push")
-        return True
+    # Verify YAML hasn't changed since staging (integrity check)
+    # Compare staged changes with current changes to detect modifications
+    staged_changes = pending.payload.changes
+    try:
+        baseline_path = _baseline_path(survey_id)
+        if baseline_path.exists():
+            baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+            current_changes = diff_flows(baseline, edited_flow)
+            current_change_ids = {c.node_id for c in current_changes}
+            staged_change_ids = {c.get("node_id") for c in staged_changes}
 
-    # Ensure live API has not drifted from local baseline unless overridden.
-    enforce_no_drift(
-        survey_id=survey_id,
-        dimension="flow",
-        allow_drift=allow_drift,
-        interactive=interactive,
-    )
+            if current_change_ids != staged_change_ids:
+                print(
+                    "[sync:flow] WARNING: YAML has been modified since staging. "
+                    f"Staged: {len(staged_changes)} changes, Current: {len(current_changes)} changes"
+                )
+                if interactive and not auto_yes:
+                    confirm = input("Continue with current changes? [y/N] ").strip().lower()
+                    if confirm != "y":
+                        print("[sync:flow] Aborted - re-stage with 'qsync flow stage'")
+                        return False
+                # Update to use current changes
+                staged_changes = [c.to_dict() for c in current_changes]
+    except Exception as e:
+        logger.warning(f"[sync:flow] Could not verify YAML consistency: {e}")
 
-    current_hash = _hash_flow(baseline)
-    if current_hash != (pending.payload.baseline_hash or ""):
-        print(
-            "[sync:flow] WARNING: Baseline has changed since staging. "
-            "Consider re-staging with 'qsync flow stage'."
-        )
-        if interactive and not auto_yes and not _confirm("Continue anyway?"):
-            print("[sync:flow] Aborted")
-            return False
-
-    staged_change_ids = {str(c.get("node_id") or "") for c in pending.payload.changes}
-    current_change_ids = {c.node_id for c in current_changes}
-    if staged_change_ids != current_change_ids:
-        print(
-            "[sync:flow] WARNING: YAML has changed since staging "
-            f"(staged={len(staged_change_ids)}, current={len(current_change_ids)})."
-        )
-        if interactive and not auto_yes and not _confirm("Push current YAML changes?"):
-            print("[sync:flow] Aborted - re-stage with 'qsync flow stage'")
-            return False
-
+    # Validate flow structure
     try:
         cache = load_cached_survey(survey_id)
         blocks = cache.payload.get("result", {}).get("Blocks", {})
         questions = cache.payload.get("result", {}).get("Questions", {})
         validate_flow(edited_flow, survey_id, blocks, questions)
-    except FlowValidationError as exc:
-        print(f"[sync:flow] Validation error:\n{exc}")
+    except FlowValidationError as e:
+        print(f"[sync:flow] Validation error:\n{e}")
         return False
 
-    enforce_push_safeguards(
-        SafeguardConfig(
+    # Check push safeguards
+    try:
+        enforce_push_safeguards(
             survey_id=survey_id,
-            dimension="flow",
             force_live=force_live,
-            force_preview=force_preview,
-            auto_yes=auto_yes,
+            interactive=interactive and not auto_yes,
         )
-    )
+    except Exception as e:
+        print(f"[sync:flow] Push safeguard failed: {e}")
+        return False
 
-    if interactive and not auto_yes:
-        print(f"[sync:flow] About to push {len(current_changes)} change(s):")
-        for change in current_changes[:5]:
-            symbol = {"added": "+", "removed": "-", "modified": "~"}.get(
-                change.change_type,
-                "?",
-            )
+    # Verify baseline hasn't changed (integrity check)
+    baseline_path = _baseline_path(survey_id)
+    if baseline_path.exists():
+        current_baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        current_hash = hashlib.sha256(
+            json.dumps(current_baseline, sort_keys=True).encode()
+        ).hexdigest()
+        if current_hash != pending.payload.baseline_hash:
             print(
-                f"  {symbol} {change.node_type} [{change.node_id}]: {change.description}"
+                "[sync:flow] WARNING: Baseline has changed since staging. "
+                "Consider re-staging with 'qsync flow stage'."
             )
-        if len(current_changes) > 5:
-            print(f"  ... and {len(current_changes) - 5} more")
-        if not _confirm("Proceed with flow push?"):
+            if interactive and not auto_yes:
+                confirm = input("Continue anyway? [y/N] ").strip().lower()
+                if confirm != "y":
+                    print("[sync:flow] Aborted")
+                    return False
+
+    # Confirm with user
+    if interactive and not auto_yes:
+        changes = pending.payload.changes
+        print(f"[sync:flow] About to push {len(changes)} change(s):")
+        for change_dict in changes[:5]:
+            change = FlowChange.from_dict(change_dict)
+            symbol = {"added": "+", "removed": "-", "modified": "~"}.get(
+                change.change_type, "?"
+            )
+            print(f"  {symbol} {change.node_type} [{change.node_id}]: {change.description}")
+        if len(changes) > 5:
+            print(f"  ... and {len(changes) - 5} more")
+
+        confirm = input("Proceed? [y/N] ").strip().lower()
+        if confirm != "y":
             print("[sync:flow] Aborted")
             return False
 
+    # Create backup
     try:
         ensure_backup(survey_id)
-    except Exception as exc:
-        logger.warning("[sync:flow] Backup failed: %s", exc)
+    except Exception as e:
+        logger.warning(f"[sync:flow] Backup failed: {e}")
 
+    # Push to Qualtrics
     try:
+        # Update cache payload with new flow
         cache = load_cached_survey(survey_id)
         cache.payload.setdefault("result", {})["SurveyFlow"] = edited_flow
+
         push_survey_flow(cache, context={"dimension": "flow"})
         print("[sync:flow] Flow pushed successfully")
-    except Exception as exc:
-        print(f"[sync:flow] Push failed: {exc}")
+
+    except Exception as e:
+        print(f"[sync:flow] Push failed: {e}")
         return False
 
-    final_flow = edited_flow
+    # Verify push was successful by fetching from API
     try:
+        from ..qualtrics_client import fetch_survey_definition_live
+
         live_payload = fetch_survey_definition_live(survey_id)
         live_flow = live_payload.get("result", {}).get("SurveyFlow", {})
+
+        # Compare what we sent with what's now on the API
         sent_json = json.dumps(edited_flow, sort_keys=True)
         live_json = json.dumps(live_flow, sort_keys=True)
+
         if sent_json != live_json:
             logger.warning(
-                "[sync:flow] Pushed flow differs from API response; using API flow as baseline."
+                "[sync:flow] Warning: Pushed flow differs from live API response. "
+                "The API may have normalized or modified the flow structure."
             )
-        final_flow = live_flow
-    except Exception as exc:
-        logger.warning("[sync:flow] Could not verify push result: %s", exc)
+            # Use the live flow as baseline to stay in sync
+            edited_flow = live_flow
+    except Exception as e:
+        logger.warning(f"[sync:flow] Could not verify push result: {e}")
 
-    final_blocks: dict[str, Any] = {}
-    final_questions: dict[str, Any] = {}
+    # Update baseline to match what's actually on the API
+    baseline_path.write_text(json.dumps(edited_flow, indent=2), encoding="utf-8")
+
+    # Refresh cache
     try:
-        refreshed, _ = refresh_survey_cache(survey_id)
-        final_flow = (
-            refreshed.payload.get("result", {}).get("SurveyFlow", {}) or final_flow
-        )
-        final_blocks = refreshed.payload.get("result", {}).get("Blocks", {}) or {}
-        final_questions = refreshed.payload.get("result", {}).get("Questions", {}) or {}
-    except Exception as exc:
-        logger.warning("[sync:flow] Cache refresh failed: %s", exc)
+        refresh_survey_cache(survey_id)
+    except Exception as e:
+        logger.warning(f"[sync:flow] Cache refresh failed: {e}")
 
-    _baseline_path(survey_id).write_text(
-        json.dumps(final_flow, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    try:
-        _yaml_path(survey_id).write_text(
-            flow_to_yaml(final_flow, survey_id, final_blocks, final_questions),
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        logger.warning("[sync:flow] Failed to refresh flow YAML after push: %s", exc)
-
+    # Clear pending
     clear_pending(survey_id, "flow")
 
+    # Publish if requested
     if not skip_publish:
         try:
+            from ..qualtrics_client import publish_survey_definition
             publish_survey_definition(
                 survey_id,
-                description=f"qsync: update flow ({len(current_changes)} change(s))",
+                description="Flow changes via qsync",
             )
             print("[sync:flow] Published survey version")
-        except Exception as exc:
-            logger.warning("[sync:flow] Publish failed: %s", exc)
+        except Exception as e:
+            logger.warning(f"[sync:flow] Publish failed: {e}")
 
-    print(f"[sync:flow] Pushed {len(current_changes)} change(s)")
+    print(f"[sync:flow] Pushed {len(pending.payload.changes)} change(s)")
     return True
+
+
+def detect_unstaged_changes(survey_id: str) -> DimensionChanges:
+    """Alias for detect_changes for orchestrator compatibility."""
+    return detect_changes(survey_id)

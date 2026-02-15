@@ -20,7 +20,7 @@ from typing import Any, Literal, Optional
 
 from .config import resolve_root
 
-DimensionType = Literal["items", "edf", "js", "translations", "eos", "flow", "master"]
+DimensionType = Literal["items", "js", "translations", "eos", "flow"]
 
 
 def _now_iso() -> str:
@@ -166,7 +166,11 @@ class EosPendingPayload:
 
 @dataclass
 class FlowPendingPayload:
-    """Payload for pending flow changes."""
+    """Payload for pending flow changes.
+
+    Stores the path to the edited YAML file, a hash of the baseline JSON
+    for integrity checking, and a list of semantic changes detected.
+    """
 
     flow_yaml_path: str
     baseline_hash: str
@@ -189,30 +193,6 @@ class FlowPendingPayload:
 
 
 @dataclass
-class MasterPendingPayload:
-    """Payload for pending survey master changes."""
-
-    survey_ids: list[str]
-    snapshot_hash: str
-    changes: list[dict[str, Any]] = field(default_factory=list)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "MasterPendingPayload":
-        return cls(
-            survey_ids=list(data.get("survey_ids") or []),
-            snapshot_hash=str(data.get("snapshot_hash") or ""),
-            changes=list(data.get("changes") or []),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "survey_ids": list(self.survey_ids),
-            "snapshot_hash": self.snapshot_hash,
-            "changes": list(self.changes),
-        }
-
-
-@dataclass
 class PendingStagedChanges:
     """Unified pending record for any dimension."""
 
@@ -224,7 +204,6 @@ class PendingStagedChanges:
         | TranslationsPendingPayload
         | EosPendingPayload
         | FlowPendingPayload
-        | MasterPendingPayload
     )
     created_at: Optional[str] = None
     schema_version: int = 1
@@ -249,8 +228,6 @@ class PendingStagedChanges:
             payload = EosPendingPayload.from_dict(payload_data)
         elif dimension == "flow":
             payload = FlowPendingPayload.from_dict(payload_data)
-        elif dimension == "master":
-            payload = MasterPendingPayload.from_dict(payload_data)
         else:
             raise ValueError(f"Unknown dimension: {dimension}")
 
@@ -447,7 +424,7 @@ def list_pending(survey_id: str) -> dict[DimensionType, PendingStagedChanges]:
     """
     result: dict[DimensionType, PendingStagedChanges] = {}
 
-    for dimension in ["items", "edf", "js", "translations", "eos", "flow", "master"]:
+    for dimension in ["items", "js", "translations", "eos", "flow"]:
         record = load_pending(survey_id, dimension)  # type: ignore
         if record:
             result[dimension] = record  # type: ignore

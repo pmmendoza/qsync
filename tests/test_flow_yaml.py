@@ -1,5 +1,8 @@
 """Tests for flow YAML conversion."""
 
+import json
+import pytest
+
 from qsync.dimensions.flow_yaml import (
     flow_to_yaml,
     yaml_to_flow,
@@ -255,7 +258,7 @@ class TestRoundTripTest:
         # Note: This may fail initially due to normalization differences
         # The round_trip_test is more of a debugging utility
         # We just ensure it doesn't raise an exception
-        round_trip_test(flow)
+        result = round_trip_test(flow)
         # Result may be True or False depending on normalization
 
 

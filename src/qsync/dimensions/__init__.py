@@ -1,7 +1,7 @@
 """Canonical dimension entrypoints for qsync."""
 
 from .types import DimensionChanges
-from . import items, js, translations, eos
+from . import items, js, translations, eos, flow
 
 try:
     from . import edf

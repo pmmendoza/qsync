@@ -119,8 +119,6 @@ def _autofix_command(dimension: str, survey_id: str) -> Optional[str]:
         return f"qsync eos pull --survey-id {survey_id}"
     if dimension == "flow":
         return f"qsync flow pull --survey-id {survey_id}"
-    if dimension == "master":
-        return f"qsync survey master pull --survey-id {survey_id}"
     return None
 
 
@@ -182,11 +180,6 @@ def _run_autofix(dimension: str, survey_id: str) -> str:
     if dimension == "flow":
         flow_dimension.pull(survey_id, force=True)
         return f"Pulled flow to surveys/flow/{survey_id}/flow.yaml"
-    if dimension == "master":
-        from .survey_master import pull_master
-
-        pull_master(survey_ids=[survey_id], verbose=False)
-        return f"Pulled master snapshots for {survey_id}"
     raise ValueError(f"Unknown auto-fix dimension: {dimension}")
 
 
@@ -337,7 +330,7 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
 
     Args:
         survey_id: Survey ID
-        dimension: Dimension name (items, edf, js, translations, eos, flow, master)
+        dimension: Dimension name (items, js, translations, eos, flow)
 
     Returns:
         DimensionChanges with detection status and affected QIDs
@@ -355,8 +348,6 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
             return eos_dimension.detect_changes(survey_id)
         if dimension == "flow":
             return flow_dimension.detect_changes(survey_id)
-        if dimension == "master":
-            return master_detect.detect_changes(survey_id)
 
         return DimensionChanges(
             dimension=dimension,
@@ -535,8 +526,9 @@ def resolve_conflict_interactive(conflict: Conflict) -> List[str]:
     if selection is None or "Skip" in selection:
         return []
     elif "Apply all" in selection:
-        # Safe merge order across dimensions.
-        return [d for d in MASTER_DIMENSION_ORDER if d in conflict.dimensions]
+        # Safe merge order: items first, then js, then translations, then flow
+        order = ["items", "js", "translations", "eos", "flow"]
+        return [d for d in order if d in conflict.dimensions]
     elif "─" in selection:
         return []
     else:
@@ -579,7 +571,7 @@ def resolve_conflicts_auto(conflicts: List[Conflict]) -> Dict[str, List[str]]:
         Dict mapping QID to list of dimensions to apply (in order)
     """
     resolutions = {}
-    order = MASTER_DIMENSION_ORDER
+    order = ["items", "js", "translations", "eos", "flow"]
 
     for conflict in conflicts:
         # Apply all dimensions in safe merge order
@@ -1179,9 +1171,7 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
 
     # Show error explanations if any
     errors = []
-    for dim in MASTER_DIMENSION_ORDER:
-        if dim not in changes.dimensions:
-            continue
+    for dim in ["items", "js", "translations", "eos", "flow"]:
         if changes.dimensions[dim].error_detail:
             errors.append((dim, changes.dimensions[dim].error_detail))
 
@@ -1402,15 +1392,6 @@ def stage_dimension(
                 interactive=interactive,
             )
 
-        if dimension == "master":
-            from .survey_master import stage_master
-
-            result = stage_master(
-                verbose=False,
-                survey_id=survey_id,
-            )
-            return not bool(result.get("validation_errors"))
-
         logger.warning(f"[sync:stage] Unknown dimension: {dimension}")
         return False
 
@@ -1461,7 +1442,6 @@ def sync_dimension(
             TranslationsPendingPayload,
             EosPendingPayload,
             FlowPendingPayload,
-            MasterPendingPayload,
             load_pending,
         )
 
@@ -1487,11 +1467,6 @@ def sync_dimension(
             return bool(list(payload.operations or []))
         if dimension == "flow" and isinstance(payload, FlowPendingPayload):
             return bool(list(payload.changes or []))
-        if dimension == "master" and isinstance(payload, MasterPendingPayload):
-            total_changes = 0
-            for diff in list(payload.changes or []):
-                total_changes += len(list((diff or {}).get("changes") or []))
-            return total_changes > 0
 
         return True
 
@@ -1606,57 +1581,16 @@ def sync_dimension(
                 allow_drift=allow_drift,
                 skip_publish=skip_publish,
             )
+
         elif dimension == "flow":
             ok = flow_dimension.push(
                 survey_id,
                 interactive=interactive,
                 force_live=force_live,
-                force_preview=force_preview,
                 auto_yes=auto_yes,
                 allow_drift=allow_drift,
                 skip_publish=skip_publish,
             )
-        elif dimension == "master":
-            from .survey_master import push_master
-
-            push_result = push_master(
-                verbose=False,
-                survey_id=survey_id,
-                no_publish=skip_publish,
-                force_live=force_live,
-                force_preview=force_preview,
-                auto_yes=auto_yes,
-            )
-            if push_result.get("errors"):
-                err = "; ".join(str(e) for e in push_result["errors"])
-                return DimensionSyncResult(
-                    dimension=dimension,
-                    success=False,
-                    applied_changes=False,
-                    error_message=err or "Master push failed",
-                )
-
-            detail = None
-            for row in list(push_result.get("details") or []):
-                if str(row.get("survey_id") or "").strip() == survey_id:
-                    detail = row
-                    break
-            if detail is None and push_result.get("total_surveys", 0) == 0:
-                return DimensionSyncResult(
-                    dimension=dimension,
-                    success=False,
-                    applied_changes=False,
-                    error_message="No staged master changes found",
-                )
-            if detail is not None and not bool(detail.get("pushed")):
-                reason = str(detail.get("reason") or "Master push failed")
-                return DimensionSyncResult(
-                    dimension=dimension,
-                    success=False,
-                    applied_changes=False,
-                    error_message=reason,
-                )
-            ok = True
         else:
             logger.warning(f"[sync] Unknown dimension: {dimension}")
             return DimensionSyncResult(
@@ -1780,14 +1714,6 @@ def _summarize_pending_record(dimension: str, pending) -> str:
         count = len(payload.changes) if getattr(payload, "changes", None) else 0
         return f"staged: {count} change(s)"
 
-    if dimension == "master":
-        changes = list(getattr(payload, "changes", None) or [])
-        field_count = 0
-        for diff in changes:
-            if isinstance(diff, dict):
-                field_count += len(list(diff.get("changes") or []))
-        return f"staged: {field_count} field(s)"
-
     return "staged"
 
 
@@ -1808,7 +1734,7 @@ def _build_pending_abort_guidance(
     force_preview: bool,
     scope_expr: Optional[str],
 ) -> tuple[str, dict[str, object]]:
-    ordered_dims = MASTER_DIMENSION_ORDER
+    ordered_dims = ["items", "js", "translations", "eos", "flow"]
     pending_summary = {
         dim: _summarize_pending_record(dim, pending.get(dim)) for dim in ordered_dims
     }
@@ -2062,7 +1988,6 @@ def _detect_unstaged_changes(
         "translations": _detect_unstaged_translations(survey_id, scope=scope),
         "eos": _detect_unstaged_eos(survey_id),
         "flow": _detect_unstaged_flow(survey_id),
-        "master": master_info,
     }
 
 
@@ -2077,7 +2002,7 @@ def _display_survey_overview(
 
     print(f"\n{Colors.BLUE}═══ Survey Overview {survey_ref} ═══{Colors.RESET}")
     print(f"{Colors.BOLD}Staged changes:{Colors.RESET}")
-    for dim in MASTER_DIMENSION_ORDER:
+    for dim in ["items", "js", "translations", "eos", "flow"]:
         summary = staged.get(dim, "none")
         print(f"  • {dim}: {summary}")
 
@@ -2108,27 +2033,24 @@ def _display_survey_overview(
         f"{'JS':<{col_dim}} "
         f"{'Trans':<{col_dim}} "
         f"{'EOS':<{col_dim}} "
-        f"{'Flow':<{col_dim}} "
-        f"{'Master':<{col_dim}}"
+        f"{'Flow':<{col_dim}}"
         f"{Colors.RESET}"
     )
-    separator = f"{Colors.DIM}{'─' * (col_dim * 7 + 6)}{Colors.RESET}"
+    separator = f"{Colors.DIM}{'─' * (col_dim * 5 + 4)}{Colors.RESET}"
     row = (
         f"{_pad_to_width(_format_status(unstaged['items']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['edf']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['js']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['translations']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['eos']), col_dim)} "
-        f"{_pad_to_width(_format_status(unstaged['flow']), col_dim)} "
-        f"{_pad_to_width(_format_status(unstaged['master']), col_dim)}"
+        f"{_pad_to_width(_format_status(unstaged['flow']), col_dim)}"
     )
     print(header)
     print(separator)
     print(row)
 
-    errors: list[tuple[str, str, str]] = []
-    warnings: list[tuple[str, str, str]] = []
-    for dim in MASTER_DIMENSION_ORDER:
+    errors: list[tuple[str, str]] = []
+    for dim in ["items", "js", "translations", "eos", "flow"]:
         info = unstaged.get(dim)
         if info and info.error_detail:
             errors.append((survey_ref, dim, info.error_detail))
@@ -2202,7 +2124,7 @@ def _preview_staged_changes(
         return
 
     print(f"\n{Colors.BLUE}═══ Preview: Drift + Staged Changes ═══{Colors.RESET}")
-    safe_order = MASTER_DIMENSION_ORDER
+    safe_order = ["items", "js", "translations", "eos", "flow"]
     use_context = True
     shown_no_drift_note = False
     if interactive:
@@ -2641,7 +2563,7 @@ def _resolve_staged_changes_interactive(
     from .interactive_menu import confirm, select_from_list
     from .qualtrics_client import refresh_survey_cache
 
-    safe_order = MASTER_DIMENSION_ORDER
+    safe_order = ["items", "js", "translations", "eos", "flow"]
 
     while True:
         choices = [
@@ -3061,8 +2983,7 @@ def _sync_dimensions_once(
                 print(f"[sync:conflict] {warning}")
 
     # Sort dimensions in safe merge order
-    # Note: master is intentionally last to avoid overwriting dimension-specific changes
-    safe_order = MASTER_DIMENSION_ORDER
+    safe_order = ["items", "js", "translations", "eos", "flow"]
     dimensions_sorted = [d for d in safe_order if d in dimensions]
 
     edf_info = changes.dimensions.get("edf")
@@ -3536,7 +3457,7 @@ def sync_survey(
                 survey_id, getattr(changes, "survey_name", None)
             )
         elif action == "push":
-            safe_order = MASTER_DIMENSION_ORDER
+            safe_order = ["items", "js", "translations", "eos", "flow"]
             pending_dims = [d for d in safe_order if d in pending]
             if dimensions is not None:
                 pending_dims = [d for d in pending_dims if d in set(dimensions)]
@@ -4842,104 +4763,48 @@ def display_dimension_preview(
             return True
 
         elif dimension == "flow":
+            # Reuse existing flow preview
             from .drift_check import confirm_preview_drift
-            from .qualtrics_client import refresh_survey_cache
-            from .dimensions.flow_diff import format_diff_for_display
 
-            def _update_cache() -> None:
-                refresh_survey_cache(survey_id)
-                flow_dimension.pull(survey_id, force=True)
-                print("[qsync:flow] Refreshed flow baseline from API.")
+            try:
 
-            confirm_preview_drift(
-                survey_id=survey_id,
-                dimension="flow",
-                allow_drift=allow_drift,
-                interactive=interactive,
-                update_cache=_update_cache,
-            )
-            changes = flow_dimension.preview(
-                survey_id,
-                verbose=detailed,
-                visual=False,
-                validate=True,
-            )
-            if not changes:
-                print(f"{Colors.DIM}No flow differences detected.{Colors.RESET}")
-                return True
+                def _update_cache() -> None:
+                    flow_dimension.pull(survey_id, force=True)
+                    print("[qsync:flow] Refreshed flow baseline from API.")
 
-            print(f"{Colors.DIM}Flow preview:{Colors.RESET}\n")
-            for line in format_diff_for_display(changes, verbose=False):
-                stripped = line.lstrip()
-                if stripped.startswith("+"):
-                    print(f"  {Colors.GREEN}{line}{Colors.RESET}")
-                elif stripped.startswith("-"):
-                    print(f"  {Colors.RED}{line}{Colors.RESET}")
-                elif stripped.startswith("~") or "↕" in stripped:
-                    print(f"  {Colors.YELLOW}{line}{Colors.RESET}")
-                else:
-                    print(f"  {line}")
-            return True
-
-        elif dimension == "master":
-            from .survey_master import load_master_csv, preview_master
-            from .dimensions.items_core import _diff_lines
-
-            csv_headers, csv_rows = load_master_csv()
-            scoped_rows = [
-                row
-                for row in csv_rows
-                if str(row.get("SurveyID") or "").strip() == survey_id
-            ]
-            if not scoped_rows:
-                print(
-                    f"{Colors.DIM}Survey {survey_id} is not present in qualtrics_master.csv.{Colors.RESET}"
+                confirm_preview_drift(
+                    survey_id=survey_id,
+                    dimension="flow",
+                    allow_drift=allow_drift,
+                    interactive=interactive,
+                    update_cache=_update_cache,
                 )
-                return False
 
-            result = preview_master(
-                csv_headers=csv_headers,
-                csv_rows=scoped_rows,
-                verbose=False,
-                survey_id=survey_id,
-            )
+                changes = flow_dimension.preview(survey_id)
 
-            validation_errors = list(result.get("validation_errors") or [])
-            if validation_errors:
-                print(f"{Colors.RED}✗ Master validation failed:{Colors.RESET}")
-                for err in validation_errors:
-                    print(f"  - {err}")
-                return False
+                if not changes:
+                    print(f"{Colors.DIM}No flow differences detected.{Colors.RESET}")
+                    return True
 
-            survey_diffs = list(result.get("survey_diffs") or [])
-            if not survey_diffs:
-                print(f"{Colors.DIM}No master differences detected.{Colors.RESET}")
+                print(f"{Colors.DIM}Flow preview:{Colors.RESET}\n")
+                from .dimensions.flow_diff import format_diff_for_display
+
+                for line in format_diff_for_display(changes):
+                    # Color-code the status
+                    if line.startswith("+"):
+                        print(f"  {Colors.GREEN}{line}{Colors.RESET}")
+                    elif line.startswith("-"):
+                        print(f"  {Colors.RED}{line}{Colors.RESET}")
+                    elif line.startswith("~"):
+                        print(f"  {Colors.YELLOW}{line}{Colors.RESET}")
+                    else:
+                        print(f"  {line}")
+
                 return True
 
-            diff = survey_diffs[0]
-            if diff.get("error"):
-                print(
-                    f"{Colors.RED}✗ Error computing master diff:{Colors.RESET} {diff['error']}"
-                )
+            except Exception as e:
+                print(f"{Colors.RED}✗ Error previewing flow:{Colors.RESET} {e}")
                 return False
-
-            changes = list(diff.get("changes") or [])
-            if not changes:
-                print(f"{Colors.DIM}No master differences detected.{Colors.RESET}")
-                return True
-
-            print(f"{Colors.DIM}Found {len(changes)} master field change(s){Colors.RESET}\n")
-            for change in changes:
-                field = str(change.get("field_name") or change.get("field") or "").strip()
-                endpoint = str(change.get("endpoint") or "unknown").strip()
-                old_value = str(change.get("old_value") or "")
-                new_value = str(change.get("new_value") or "")
-                marker = "⚠ " if change.get("is_dangerous") else "  "
-                print(f"{marker}[{endpoint}] {field}")
-                diff_lines = _diff_lines(old_value, new_value, context=f"Field: {field}")
-                for line in colorize_unified_diff_lines(diff_lines):
-                    print("  " + line)
-            return True
 
         else:
             print(f"{Colors.RED}✗ Unknown dimension: {dimension}{Colors.RESET}")

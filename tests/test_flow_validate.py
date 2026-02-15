@@ -68,7 +68,9 @@ class TestValidateFlow:
                 {
                     "Type": "EmbeddedData",
                     "FlowID": "FL_1",
-                    "EmbeddedData": [{"Value": "test"}],  # Missing "Field"!
+                    "EmbeddedData": [
+                        {"Value": "test"}  # Missing "Field"!
+                    ],
                 },
             ],
         }

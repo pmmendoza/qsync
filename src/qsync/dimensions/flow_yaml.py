@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 import yaml
 
+
 SCHEMA_VERSION = 1
 
 
@@ -99,7 +100,9 @@ def yaml_to_flow(yaml_content: str) -> dict:
     return result
 
 
-def _convert_node_to_yaml(node: dict, blocks: dict, questions: dict) -> dict[str, Any]:
+def _convert_node_to_yaml(
+    node: dict, blocks: dict, questions: dict
+) -> dict[str, Any]:
     """Convert a single flow node from JSON to YAML format."""
     if not isinstance(node, dict):
         return {"_raw": node}
@@ -205,7 +208,9 @@ def _convert_node_to_yaml(node: dict, blocks: dict, questions: dict) -> dict[str
                 "count": node.get("SubSet"),
                 "evenly_present": node.get("EvenPresentation", False),
             },
-            "blocks": [_convert_node_to_yaml(n, blocks, questions) for n in sub_flow],
+            "blocks": [
+                _convert_node_to_yaml(n, blocks, questions) for n in sub_flow
+            ],
         }
         return result
 
@@ -216,7 +221,9 @@ def _convert_node_to_yaml(node: dict, blocks: dict, questions: dict) -> dict[str
             "type": "Group",
             "id": node.get("FlowID", ""),
             "description": node.get("Description", ""),
-            "flow": [_convert_node_to_yaml(n, blocks, questions) for n in sub_flow],
+            "flow": [
+                _convert_node_to_yaml(n, blocks, questions) for n in sub_flow
+            ],
         }
         return result
 
@@ -262,9 +269,7 @@ def _convert_node_to_yaml(node: dict, blocks: dict, questions: dict) -> dict[str
         return {
             "type": "Authenticator",
             "id": node.get("FlowID", ""),
-            "raw_config": {
-                k: v for k, v in node.items() if k not in ("Type", "FlowID")
-            },
+            "raw_config": {k: v for k, v in node.items() if k not in ("Type", "FlowID")},
         }
 
     # TableOfContents
@@ -531,8 +536,7 @@ def _simplify_expression(expr: dict) -> Optional[dict[str, Any]]:
     if logic_type == "Question":
         result: dict[str, Any] = {
             "logic_type": "Question",
-            "question_id": expr.get("QuestionID")
-            or expr.get("QuestionIDFromLocator", ""),
+            "question_id": expr.get("QuestionID") or expr.get("QuestionIDFromLocator", ""),
             "operator": expr.get("Operator", ""),
         }
         if "ChoiceLocator" in expr:

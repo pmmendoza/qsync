@@ -2373,13 +2373,9 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     # flow command group
     p_flow = subparsers.add_parser(
         "flow",
-        help="Manage survey flow (branching logic, block ordering, routing) (group)",
+        help="Manage survey flow (branching logic, block ordering, routing)",
     )
-    flow_subparsers = p_flow.add_subparsers(
-        dest="flow_command",
-        required=True,
-        metavar="COMMAND",
-    )
+    flow_subparsers = p_flow.add_subparsers(dest="flow_command", required=True)
 
     def _add_flow_common_args(parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
@@ -2393,6 +2389,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             help="Skip interactive confirmations.",
         )
 
+    # flow pull
     p_flow_pull = flow_subparsers.add_parser(
         "pull",
         help="Pull survey flow from Qualtrics and save as YAML",
@@ -2404,6 +2401,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Overwrite existing YAML even if it has local changes",
     )
 
+    # flow preview
     p_flow_preview = flow_subparsers.add_parser(
         "preview",
         help="Preview differences between local flow YAML and cached baseline",
@@ -2417,14 +2415,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_flow_preview.add_argument(
         "--visual",
         action="store_true",
-        help="Generate Mermaid diagrams for visual diff (placeholder)",
-    )
-    p_flow_preview.add_argument(
-        "--allow-drift",
-        action="store_true",
-        help="Allow preview against a drifted baseline without prompting",
+        help="Generate Mermaid diagrams for visual diff",
     )
 
+    # flow stage
     p_flow_stage = flow_subparsers.add_parser(
         "stage",
         help="Stage flow changes into pending cache (no API writes)",
@@ -2436,6 +2430,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Allow staging even if remote has drifted",
     )
 
+    # flow push
     p_flow_push = flow_subparsers.add_parser(
         "push",
         help="Push staged flow changes to Qualtrics",
@@ -2454,7 +2449,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_flow_push.add_argument(
         "--allow-drift",
         action="store_true",
-        help="Proceed even if flow baseline differs from the live API",
+        help="Proceed even if baseline differs from the live API",
     )
     p_flow_push.add_argument(
         "--no-publish",
@@ -3642,16 +3637,17 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             error("[qsync:eos]", f"Unknown eos command: {args.eos_command}")
             raise SystemExit(2)
 
+        # flow command dispatcher
         if args.command == "flow":
             from .terminal_output import error, header, info, success, warn
             from .dimensions import flow as flow_dimension
-            from .drift_check import confirm_preview_drift
-            from .qualtrics_client import refresh_survey_cache
 
-            survey_id = _prompt_for_survey_id_if_needed(
-                getattr(args, "survey_id", None),
-                allow_all_surveys=False,
-            )
+            survey_id = getattr(args, "survey_id", None)
+            if not survey_id:
+                survey_id = _prompt_for_survey_id_if_needed(
+                    None,
+                    allow_all_surveys=False,
+                )
             if not survey_id:
                 error("[qsync:flow]", "Missing --survey-id")
                 raise SystemExit(2)
@@ -3666,41 +3662,28 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         survey_id,
                         force=bool(getattr(args, "force", False)),
                     )
-                except FileExistsError as exc:
-                    warn("[qsync:flow]", str(exc))
+                    success("[qsync:flow]", f"Pulled flow to {yaml_path}")
+                except FileExistsError as e:
+                    warn("[qsync:flow]", str(e))
                     raise SystemExit(1)
-                except Exception as exc:
-                    error("[qsync:flow]", f"ERROR: {exc}")
+                except Exception as e:
+                    error("[qsync:flow]", f"ERROR: {e}")
                     raise SystemExit(2)
-                success("[qsync:flow]", f"Pulled flow to {yaml_path}")
                 return
 
             if args.flow_command == "preview":
                 header("[qsync:flow]", "Previewing flow changes...")
-
-                def _update_cache() -> None:
-                    refresh_survey_cache(survey_id)
-                    flow_dimension.pull(survey_id, force=True)
-                    info("[qsync:flow]", "Refreshed flow baseline from API.")
-
                 try:
-                    confirm_preview_drift(
-                        survey_id=survey_id,
-                        dimension="flow",
-                        allow_drift=bool(getattr(args, "allow_drift", False)),
-                        interactive=sys.stdin.isatty(),
-                        update_cache=_update_cache,
-                    )
                     changes = flow_dimension.preview(
                         survey_id,
                         verbose=bool(getattr(args, "verbose", False)),
                         visual=bool(getattr(args, "visual", False)),
                     )
-                except Exception as exc:
-                    error("[qsync:flow]", f"ERROR: {exc}")
+                    if not changes:
+                        info("[qsync:flow]", "No changes to preview")
+                except Exception as e:
+                    error("[qsync:flow]", f"ERROR: {e}")
                     raise SystemExit(2)
-                if not changes:
-                    info("[qsync:flow]", "No changes to preview")
                 return
 
             if args.flow_command == "stage":
@@ -3711,16 +3694,17 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         allow_drift=bool(getattr(args, "allow_drift", False)),
                         interactive=interactive,
                     )
+                    if staged:
+                        success("[qsync:flow]", "Flow changes staged successfully")
+                    else:
+                        warn("[qsync:flow]", "Staging failed or no changes to stage")
+                        raise SystemExit(1)
                 except SystemExit:
                     raise
-                except Exception as exc:
-                    error("[qsync:flow]", f"ERROR: {exc}")
+                except Exception as e:
+                    error("[qsync:flow]", f"ERROR: {e}")
                     raise SystemExit(2)
-                if staged:
-                    success("[qsync:flow]", "Flow changes staged successfully")
-                    return
-                warn("[qsync:flow]", "Staging failed or no changes to stage")
-                raise SystemExit(1)
+                return
 
             if args.flow_command == "push":
                 header("[qsync:flow]", "Pushing staged flow changes...")
@@ -3734,16 +3718,17 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         allow_drift=bool(getattr(args, "allow_drift", False)),
                         skip_publish=bool(getattr(args, "no_publish", False)),
                     )
+                    if pushed:
+                        success("[qsync:flow]", "Flow pushed successfully")
+                    else:
+                        warn("[qsync:flow]", "Push failed")
+                        raise SystemExit(1)
                 except SystemExit:
                     raise
-                except Exception as exc:
-                    error("[qsync:flow]", f"ERROR: {exc}")
+                except Exception as e:
+                    error("[qsync:flow]", f"ERROR: {e}")
                     raise SystemExit(2)
-                if pushed:
-                    success("[qsync:flow]", "Flow pushed successfully")
-                    return
-                warn("[qsync:flow]", "Push failed")
-                raise SystemExit(1)
+                return
 
             error("[qsync:flow]", f"Unknown flow command: {args.flow_command}")
             raise SystemExit(2)
@@ -4249,15 +4234,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             dimensions = None
             if getattr(args, "dimensions", None):
                 dimensions = [d.strip() for d in args.dimensions.split(",")]
-                valid_dims = {
-                    "items",
-                    "edf",
-                    "js",
-                    "translations",
-                    "eos",
-                    "flow",
-                    "master",
-                }
+                valid_dims = {"items", "js", "translations", "eos", "flow"}
                 invalid = [d for d in dimensions if d not in valid_dims]
                 if invalid:
                     error("[qsync:sync]", f"Invalid dimensions: {', '.join(invalid)}")
