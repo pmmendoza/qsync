@@ -208,33 +208,31 @@ X-API-TOKEN=...
 # QUALTRICS_API_KEY=...
 ```
 
-### Accounts (multi-account workspaces)
+### Multi-account workspaces (`.env.<account>` + scoped artifacts)
 
-To run the same workspace against multiple Qualtrics accounts, create additional dotenv files in the workspace root:
+If you operate against multiple Qualtrics accounts from one workspace, you can
+store additional credentials as `.env.<account>` files under the workspace root
+(e.g. `.env.damian`, `.env.partner2`).
 
-- Default account: `.env`
-- Named account: `.env.<account>` (example: `.env.damian`)
+Account selection options:
+- Per-invocation: `qsync --account <account> …` (does not persist)
+- Workspace default: `qsync account use <account>` (persists in `.qsync/preferences.json`)
+- Clear workspace default: `qsync account clear`
 
-Use one of these approaches:
+When an account is active, qsync scopes workspace artifacts under `.<account>/`
+subdirectories inside each base folder:
+`surveys/.<account>/`, `excel/.<account>/`, `survey_js/.<account>/`, etc.
 
-```bash
-# One-off (per command)
-qsync survey inventory --account damian
-
-# Workspace default (persists only in this workspace; does not export env vars)
-qsync account use damian
-qsync account status
-
-# Clear workspace default (back to `.env`)
-qsync account clear
-```
-
-When a named account is active, `qsync` scopes most workspace artifacts under `.<account>/` inside each directory (for example `surveys/.damian/`, `excel/.damian/`, `export/.damian/`). The default account uses the unscoped directories (`surveys/`, `excel/`, `export/`).
-
-Switching accounts does not move any existing files automatically. If you need to migrate an existing unscoped workspace into an account surface, use:
+Adopt an existing workspace into an account (move unscoped artifacts into the
+scoped layout; keeps shared files like `surveys/qualtrics_api_key_mapping.csv`
+unmoved):
 
 ```bash
-qsync account adopt damian --dry-run
+# Preview what would move
+qsync account adopt <account> --dry-run
+
+# Perform the move (requires --yes or a typed confirmation)
+qsync account adopt <account> --yes --use
 ```
 
 ### Keychain token (optional)
