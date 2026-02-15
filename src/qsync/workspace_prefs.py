@@ -3,6 +3,9 @@
 This module is intentionally small and dependency-light so it can be used
 early in CLI startup (before importing modules that compute account-scoped
 paths at import time).
+
+Currently, the primary preference is `active_account`, which is managed via
+`qsync account use|clear` and used as a workspace-default account selector.
 """
 
 from __future__ import annotations
@@ -75,4 +78,3 @@ def set_workspace_active_account(root: Path, account: str | None) -> None:
     else:
         prefs[_ACTIVE_ACCOUNT_KEY] = str(account)
     save_prefs(root, prefs)
-

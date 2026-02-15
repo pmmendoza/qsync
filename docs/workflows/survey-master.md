@@ -6,6 +6,8 @@ _Migrated from `appendices/survey_master_workflow.md` (monorepo) so the standalo
 > **Updated:** 2026-02-11
 > **Related:** [Survey Master Field Reference](../reference/survey-master-fields.md)
 
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, Survey Master artifacts (CSV, snapshots, pending, rollback) are written under `surveys/.<name>/...` (see `../reference/accounts.md`). The mapping file `surveys/qualtrics_api_key_mapping.csv` remains unscoped/shared across accounts.
+
 ## Overview
 
 The **Survey Master** system allows you to bulk-edit survey metadata, options, and status across multiple focal surveys using a CSV-based workflow. It combines safety guardrails with flexibility for power users.

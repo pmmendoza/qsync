@@ -4,9 +4,11 @@ _Migrated from `appendices/js_sync_workflow.md` (monorepo) so the standalone `qs
 
 This document explains how we keep the QuestionJS embedded in Qualtrics aligned with the ground-truth files under `survey_js/core/`. All commands assume a virtualenv is activated.
 
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). The paths below assume the default account.
+
 ## 1. Mapping CSV recap
 
-- File: `survey_js/survey_qid_js_map.csv`.
+- File: `survey_js/survey_qid_js_map.csv` (or `survey_js/.<account>/survey_qid_js_map.csv` when an account is active).
 - Columns: `js_file`, then one column per survey using the pattern `SV_<ID>-<label>` (e.g. `SV_5AsKyAO5QqswBcq-NEWSFLOWS_pre_pilot_api`).
 - Rows: every JS file in `survey_js/core/` plus “hint rows” for inline JS without a matching file. Hint rows have `js_file` in quotes (`"Qualtrics.SurveyEngi"`) and are ignored by preview/stage/push tooling.
 - Regeneration: `qsync js pull` rebuilds the CSV from the cached survey JSONs (internally calls `src/qsync/js_mapping.py`).

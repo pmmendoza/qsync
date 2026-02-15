@@ -6,18 +6,19 @@ For the most up-to-date view, run `qsync --help` and `qsync <command> --help`.
 ## `qsync (root)`
 
 ```text
-usage: qsync [-h] [--root ROOT] [--env-path ENV_PATH]
-             [--color {auto,always,never}] [--allow-locked]
-             {doctor,compare,init,preview,apply,push,items,sync,export,survey,logs,js,eos,flow,translations}
-             ...
+Usage: qsync [-h] [--root ROOT] [--env-path ENV_PATH] [--account ACCOUNT]
+             [--color {auto,always,never}] [--version] [--allow-locked]
+             COMMAND ...
 
-Qualtrics sync and survey management for Qualtrics surveys
+Qualtrics sync and survey management for NEWSFLOWS surveys. First-time setup:
+run `qsync onboard` to create folders and .env.
 
-positional arguments:
-  {doctor,compare,init,preview,apply,push,items,sync,export,survey,logs,js,eos,flow,translations}
-    doctor              Print resolved workspace/config paths for debugging
-    compare             Compare two surveys (items + JS + metadata) using
-                        cached or refreshed definitions.
+Positional Arguments:
+  COMMAND
+    onboard             Interactive workspace setup (folders, .env, gitignore)
+    survey              Manage Qualtrics surveys (group; includes master)
+    sync                Orchestrate multi-dimension sync for one or more
+                        surveys
     init                Initialise or refresh the Excel workbook for a survey
                         from Qualtrics
     preview             Show what would change in Qualtrics based on the
@@ -26,27 +27,38 @@ positional arguments:
     push                Push staged wording changes from the cached JSON to
                         Qualtrics
     items               Manage survey items (questions, options, subitems) via
-                        Excel workbook
-    sync                Orchestrate multi-dimension sync for one or more
-                        surveys
-    export              Export survey content for review
-    survey              Manage Qualtrics surveys (inventory,
-                        copy/rename/delete, publish/version/rollback, master)
-    logs                View and analyze operation logs
+                        Excel workbook (group)
+    translations        Manage survey translations (group; includes languages)
+    flow                Manage survey flow (branching logic, block ordering,
+                        routing)
     js                  Manage Qualtrics QuestionJS via the mapping CSV
+                        (group)
     eos                 Manage Qualtrics EndSurvey (EOS) library messages
-    flow                Manage survey flow (branching logic, block ordering, routing)
-    translations        Manage survey translations
+                        (group)
+    export              Export survey content for review (group)
+    compare             Compare two surveys (items + JS + metadata) using
+                        cached or refreshed definitions.
+    logs                View and analyze operation logs (group)
+    tui                 Launch interactive TUI (requires qsync)
+    help                Show short workflow help topics
+    doctor              Print resolved workspace/config paths for debugging
+    self-update         Update qsync from GitHub (supports optional extras)
+    account             Manage the workspace default account selection
+                        (without exporting env vars)
 
-options:
+Options:
   -h, --help            show this help message and exit
   --root ROOT           Workspace root directory (contains surveys/, excel/,
                         survey_js/, etc.).
   --env-path ENV_PATH   Path to a .env file with credentials (overrides
                         QSYNC_ENV_PATH and <root>/.env).
+  --account ACCOUNT     Use credentials from `.env.<account>` under the
+                        workspace root (and scope workspace writes under
+                        `.<account>/` directories).
   --color {auto,always,never}
                         Color output: auto (default), always, or never.
                         NO_COLOR forces never.
+  --version, -V         Print diagnostic version info and exit.
   --allow-locked        Bypass surveys/inventory.csv lock checks (dangerous).
 ```
 
@@ -64,6 +76,26 @@ options:
   --account ACCOUNT
                Use credentials from `.env.<account>` under the workspace root
                (affects credential checks and --check-api).
+```
+
+## `qsync account`
+
+```text
+Usage: qsync account [-h] SUBCOMMAND ...
+
+Positional Arguments:
+  SUBCOMMAND
+    status    Show resolved active account and workspace preference state
+    list      List available `.env.<account>` files (best-effort validation)
+    use       Persist an active workspace account selection (acts like
+              implicit --account)
+    clear     Clear the active workspace account selection (restore legacy
+              default `.env`)
+    adopt     Move existing unscoped qsync-managed artifacts under
+              `.<account>/` directories
+
+Options:
+  -h, --help  show this help message and exit
 ```
 
 ## `qsync compare`

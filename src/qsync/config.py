@@ -145,7 +145,14 @@ ENV_PATH = resolve_env_path(root=ROOT)
 
 
 def load_env(path: Path | None = None) -> Dict[str, str]:
-    """Load credentials/settings from environment and optional .env file.
+    """Load credentials/settings for the current run.
+
+    Default account behavior: load from `.env` (or `--env-path` / `QSYNC_ENV_PATH`)
+    and overlay values from the process environment.
+
+    If `QSYNC_ACCOUNT` is set (for example via `--account`, an exported env var, or
+    a workspace default set by `qsync account use`), qsync instead loads
+    `.env.<account>` from the workspace root and does not overlay process env vars.
 
     Precedence:
     - Values from the process environment override .env values.
@@ -190,7 +197,12 @@ def load_env(path: Path | None = None) -> Dict[str, str]:
 
 
 def get_active_account() -> str | None:
-    """Return the active account selection, if any (from QSYNC_ACCOUNT)."""
+    """Return the active account selection, if any (from QSYNC_ACCOUNT).
+
+    Note: the CLI may set `QSYNC_ACCOUNT` from a workspace preference
+    (`.qsync/preferences.json` key `active_account`) so downstream code can treat
+    it uniformly.
+    """
 
     raw = (os.environ.get(_ACCOUNT_ENV_KEY) or "").strip()
     if not raw:
@@ -247,7 +259,7 @@ def resolve_scoped_dir(
     Default account:
       <root>/<dirname>/
 
-    Alternate account (via `--account NAME`):
+    Alternate account (via `QSYNC_ACCOUNT` / `--account NAME` / workspace active account):
       <root>/<dirname>/.NAME/
     """
 

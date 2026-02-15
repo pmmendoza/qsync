@@ -2,6 +2,8 @@
 
 This guide explains practical workflows for keeping **copy** (wording), **logic**, and **translations** consistent across languages in Qualtrics when using `qsync`.
 
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes most workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). The paths below assume the default account.
+
 It covers two common operating modes:
 
 1. **Single survey, multiple languages** (one Qualtrics SurveyID, translations enabled inside the same survey).

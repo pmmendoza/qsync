@@ -3,6 +3,8 @@
 This file is auto-generated from the Survey Master mapping CSV (`surveys/qualtrics_api_key_mapping.csv`).
 In the standalone repo, treat it as a snapshot; if you override the mapping, update this reference accordingly.
 
+Account scoping: Survey Master artifacts (CSV, snapshots, pending, rollback) live under `surveys/` for the default account, or under `surveys/.<account>/` when an account is active (see `accounts.md`). The mapping file `surveys/qualtrics_api_key_mapping.csv` remains unscoped/shared across accounts.
+
 **Auto-generated:** 2026-01-10
 **Status:** MVP complete with 66+ writable fields
 
@@ -146,7 +148,7 @@ qsync survey master pull
 ```
 
 ### 2. Edit CSV
-Edit `surveys/qualtrics_master.csv` with your spreadsheet application.
+Edit `surveys/qualtrics_master.csv` (or `surveys/.<account>/qualtrics_master.csv` when an account is active) with your spreadsheet application.
 
 ### 3. Preview Changes
 ```bash
@@ -160,5 +162,5 @@ qsync survey master apply [--allow-dangerous] [--force]
 
 ---
 
-**For more details, see:** [Survey Master Workflow Guide](survey_master_workflow.md)
-**Schema reference:** [Survey Master Mapping Schema](survey_master_mapping_schema.md)
+**For more details, see:** [Survey Master Workflow Guide](../workflows/survey-master.md)
+**Schema reference:** [Survey Master Mapping Schema](survey-master-mapping-schema.md)

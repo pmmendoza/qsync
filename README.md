@@ -190,9 +190,10 @@ Notes:
 
 `qsync` reads configuration from (in precedence order):
 
-1. CLI flags: `--root`, `--env-path`
-2. Environment variables: `QSYNC_ROOT`, `QSYNC_ENV_PATH`, and Qualtrics credential vars
-3. A `.env` file at the workspace root (or an explicit `--env-path`)
+1. CLI flags: `--root`, `--env-path`, `--account`
+2. Environment variables: `QSYNC_ROOT`, `QSYNC_ENV_PATH`, `QSYNC_ACCOUNT`, and Qualtrics credential vars
+3. Workspace preference: `.qsync/preferences.json` key `active_account` (set via `qsync account use`; used only when no flag/env account is set)
+4. A `.env` file at the workspace root (or an explicit `--env-path`)
 
 ### Minimal `.env`
 
@@ -205,6 +206,35 @@ X-API-TOKEN=...
 
 # Fallback (if needed)
 # QUALTRICS_API_KEY=...
+```
+
+### Accounts (multi-account workspaces)
+
+To run the same workspace against multiple Qualtrics accounts, create additional dotenv files in the workspace root:
+
+- Default account: `.env`
+- Named account: `.env.<account>` (example: `.env.damian`)
+
+Use one of these approaches:
+
+```bash
+# One-off (per command)
+qsync survey inventory --account damian
+
+# Workspace default (persists only in this workspace; does not export env vars)
+qsync account use damian
+qsync account status
+
+# Clear workspace default (back to `.env`)
+qsync account clear
+```
+
+When a named account is active, `qsync` scopes most workspace artifacts under `.<account>/` inside each directory (for example `surveys/.damian/`, `excel/.damian/`, `export/.damian/`). The default account uses the unscoped directories (`surveys/`, `excel/`, `export/`).
+
+Switching accounts does not move any existing files automatically. If you need to migrate an existing unscoped workspace into an account surface, use:
+
+```bash
+qsync account adopt damian --dry-run
 ```
 
 ### Keychain token (optional)

@@ -2,6 +2,8 @@
 
 This document explains how to version-control and synchronize survey branching logic, block ordering, and flow structure between local YAML files and the Qualtrics API.
 
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). For flow, that means `surveys/.<name>/flow/{survey_id}/...`. The paths below assume the default account.
+
 ## 1. Overview
 
 Survey flow defines the execution path through a survey: which blocks appear, in what order, with what branching conditions, randomization, and embedded data. The flow dimension lets you:

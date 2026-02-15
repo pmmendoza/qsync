@@ -9,6 +9,8 @@ These messages are a separate editing surface from:
 
 If you want multilingual parity, EOS messages must be managed explicitly via `qsync eos`.
 
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). The paths below assume the default account.
+
 ## What `qsync eos` manages
 
 `qsync eos` pulls and pushes **library message HTML** referenced by a survey's SurveyFlow. Messages typically have one HTML payload per language.

@@ -27,6 +27,7 @@ Most files here were migrated from this monorepo’s `appendices/` directory so 
 ## Reference
 
 - CLI reference: `reference/cli.md`
+- Accounts and multi-account workspaces: `reference/accounts.md`
 - Excel formatting principles: `reference/excel-format.md`
 - Scope semantics (`--scope`): `reference/scope-semantics.md`
 - Push safeguards: `reference/push-safeguards.md`

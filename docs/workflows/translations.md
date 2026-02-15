@@ -7,6 +7,8 @@ This document describes the canonical workflow for Qualtrics survey translations
 For **split/sliced survey families** (one SurveyID per language/country), see:
 `translation-consistency.md` (explains how translations become base-language “items” after slicing).
 
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). The paths below assume the default account.
+
 ## Migration notes
 
 - **2026-01-23:** Stage 1 introduces the workbook → cached survey definition → question push flow for
@@ -41,7 +43,7 @@ For **split/sliced survey families** (one SurveyID per language/country), see:
   - For `--account NAME`, pulls and related refreshes default to  
     `surveys/.NAME/*__<SurveyID>.json` unless `--dest` is explicitly set.
 - Pending translations (staged list):  
-  `surveys/pending/translations/<SurveyID>.json`
+  `surveys/pending/translations/<SurveyID>.json` (or `surveys/.<account>/pending/translations/<SurveyID>.json` when an account is active)
 - Legacy (archived reference):  
   See `docs/translation_legacy_maps.md` (translation map files removed from workflow).
 
@@ -72,6 +74,12 @@ qsync translations pull --survey-id SV_xxx --account damian
 ```
 
 This writes to `surveys/.damian/` by default (or a custom location with `--dest`).
+
+If you run multiple commands against the same account, you can persist the selection for the current workspace:
+
+```
+qsync account use damian
+```
 
 Preview diffs:
 

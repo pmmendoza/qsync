@@ -18,7 +18,7 @@ Important limitations:
 - Base URLs are host-only (no `https://`), e.g. `iad1.qualtrics.com`.
 - The target account user must have permission to create surveys (and publish/activate if you use those flags).
 
-By default, the source account is your configured account (from `.env` / `--env-path` / environment variables). Use `--source-api-key` and `--source-base-url` to override the source explicitly.
+By default, the source account is whatever `qsync` would normally use for this run (in order: `--account`, `QSYNC_ACCOUNT`, workspace `active_account` set via `qsync account use`, else `.env`). Use `--source-api-key` and `--source-base-url` to override the source explicitly.
 
 Target account configuration:
 - Recommended (multi-account): create a workspace-local dotenv file named `.env.<account>` (e.g. `.env.partner`) containing:
@@ -30,6 +30,11 @@ Target account configuration:
   - `TARGET_QUALTRICS_BASE_URL`
   - `TARGET_X-API-TOKEN` (or `TARGET_QUALTRICS_API_KEY`)
 - Alternatively: pass `--target-base-url` and `--target-api-key` on the command line.
+
+If you have a workspace active account but want to explicitly use the primary `.env` for one side, you can use the literal value `default`:
+
+- `--source-account default`
+- `--target-account default`
 
 ## Recommended runbook
 

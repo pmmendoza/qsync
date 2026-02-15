@@ -3,6 +3,10 @@
 `qsync account …` manages a workspace-default account selection that behaves
 like an implicit `--account` for subsequent commands, without modifying the
 user's shell environment.
+
+The selection is stored in `<root>/.qsync/preferences.json` as `active_account`.
+When a named account is active, qsync scopes most workspace artifacts under
+`.<account>/` subdirectories (for example `surveys/.damian/`, `excel/.damian/`).
 """
 
 from __future__ import annotations
@@ -492,4 +496,3 @@ def handle_account_adopt(args) -> None:
             )
     finally:
         _release_lock(root)
-

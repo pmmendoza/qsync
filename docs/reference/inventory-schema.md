@@ -4,6 +4,8 @@ _Migrated from `appendices/qualtrics_surveys_schema.md` (monorepo) so the standa
 
 This document covers the schema and intended usage of `surveys/inventory.csv`.
 
+Account scoping: when an account is active (via `--account <name>` or `qsync account use <name>`), the inventory lives under `surveys/.<account>/inventory.csv`. See `accounts.md`.
+
 This file is the local “survey inventory” cache used by `qsync` for:
 - selecting focal surveys,
 - enforcing push safeguards (live response checks, locked surveys),

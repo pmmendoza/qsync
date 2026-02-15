@@ -360,6 +360,6 @@ git commit -m "Log snapshot before major changes"
 
 ## See Also
 
-- [CLI Reference](qsync_cli_reference.md) - Full command documentation
-- [Workflows](../WORKFLOWS.md) - Common operation workflows
-- [Survey Master Guide](survey_master_workflow.md) - Master CSV workflow logging
+- [CLI Reference](cli.md) - Full command documentation
+- [Workflows](../index.md) - Common operation workflows
+- [Survey Master Guide](../workflows/survey-master.md) - Master CSV workflow logging

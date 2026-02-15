@@ -3,6 +3,8 @@
 _Migrated from `appendices/qsync_workflow.md` (monorepo) so the standalone `qsync` repo can be self-contained._
 
 This document explains how to edit Qualtrics wording via Excel. It assumes you run commands from your workspace root with a virtualenv activated.
+
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). The paths below assume the default account.
 ## 0. File locations reference
 
 The table below shows the file locations for each qsync dimension:

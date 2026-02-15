@@ -15,6 +15,14 @@ Key checks:
 - `QUALTRICS_BASE_URL` is host-only (e.g. `iad1.qualtrics.com`, not `https://...`).
 - API token is present via `X-API-TOKEN` (preferred) or `QUALTRICS_API_KEY`.
 
+If `qsync doctor` reports missing files under `surveys/.<account>/...` but you only have unscoped files under `surveys/`, you likely have an active account selection. Run:
+
+```bash
+qsync account status
+```
+
+Then either clear it (`qsync account clear`) or run the missing command in the selected account context (for example `qsync survey inventory`).
+
 ## 2) pipx installs (CLI)
 
 If you installed `qsync` with pipx:
