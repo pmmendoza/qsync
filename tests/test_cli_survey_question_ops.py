@@ -292,3 +292,83 @@ def test_move_question_reorders_within_block(monkeypatch) -> None:
         for elem in block_payloads[0].get("BlockElements", [])
     ]
     assert qids == ["QID3", "QID1", "QID2"]
+
+
+def test_move_question_before_anchor_same_block_keeps_correct_order(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    definition = {
+        "Questions": {
+            "QID1": {"QuestionID": "QID1", "QuestionType": "MC"},
+            "QID2": {"QuestionID": "QID2", "QuestionType": "MC"},
+            "QID3": {"QuestionID": "QID3", "QuestionType": "MC"},
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID1"},
+                    {"Type": "Question", "QuestionID": "QID2"},
+                    {"Type": "Question", "QuestionID": "QID3"},
+                ],
+            }
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_MAIN"}]},
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(cli_survey, "ensure_unlocked", lambda _sid: None)
+    monkeypatch.setattr(cli_survey, "load_push_context", lambda *_a, **_k: _PushCtx())
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda *_a, **_k: definition,
+    )
+
+    captured_block: dict[str, Any] = {}
+
+    def _send_api_request(*, method: str, path: str, json=None, **_kwargs):
+        if method == "PUT" and path == "survey-definitions/SV_TEST/blocks/BL_MAIN":
+            captured_block.clear()
+            captured_block.update(json or {})
+            return _Resp({"result": {"ok": True}})
+        raise AssertionError(f"Unexpected API call: {method} {path}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", _send_api_request)
+    monkeypatch.setattr(
+        cli_survey,
+        "download_survey_definition",
+        lambda survey_id, **_kwargs: Path(f"/tmp/{survey_id}.json"),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        question_id=["QID2"],
+        target_block_id=None,
+        after_qid=None,
+        before_qid="QID3",
+        position="append",
+        dry_run=False,
+        force_live=False,
+        yes=True,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+    )
+
+    cli_survey.handle_move_question(args)
+
+    qids = [
+        str(elem.get("QuestionID") or "")
+        for elem in captured_block.get("BlockElements", [])
+    ]
+    assert qids == ["QID1", "QID2", "QID3"]

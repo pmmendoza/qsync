@@ -6801,6 +6801,13 @@ def handle_add_question(args: argparse.Namespace) -> None:
         raise SystemExit(f"[add-question] ERROR: {exc}") from exc
 
     touched_blocks = _remove_qids_from_all_blocks(live_definition, created_qids)
+    insert_index = _resolve_insert_index(
+        live_definition,
+        block_id=block_id,
+        after_qid=after_qid,
+        before_qid=before_qid,
+        position=position,
+    )
     _insert_question_elements(
         live_definition,
         block_id=block_id,
@@ -6941,6 +6948,13 @@ def handle_move_question(args: argparse.Namespace) -> None:
     )
 
     touched_blocks = _remove_qids_from_all_blocks(definition, qids)
+    insert_index = _resolve_insert_index(
+        definition,
+        block_id=block_id,
+        after_qid=after_qid,
+        before_qid=before_qid,
+        position=position,
+    )
     _insert_question_elements(
         definition,
         block_id=block_id,
