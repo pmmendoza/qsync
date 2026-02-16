@@ -92,16 +92,40 @@ def _pick_survey_id_from_records(
     return pick_survey_id_from_records(message=message, records=records)
 
 
-def _prompt_for_survey_id_api_if_needed(
+def _normalize_survey_ids(value: object) -> list[str]:
+    ids: list[str] = []
+
+    if value is None:
+        return ids
+    if isinstance(value, list):
+        values = value
+    else:
+        values = [value]
+
+    for item in values:
+        if item is None:
+            continue
+        if isinstance(item, str):
+            parts = [part.strip() for part in item.split(",") if part.strip()]
+        else:
+            item_str = str(item).strip()
+            parts = [part.strip() for part in item_str.split(",") if part.strip()]
+        ids.extend(parts)
+    return ids
+
+
+def _prompt_for_survey_ids_api_if_needed(
     *,
-    survey_id: str | None,
+    survey_ids: object,
     args: argparse.Namespace,
     message: str,
-) -> str:
-    """Prompt for SurveyID using live API list when omitted (interactive only)."""
+    allow_multiple: bool = False,
+) -> list[str]:
+    """Prompt for SurveyIDs using live API list when omitted (interactive only)."""
 
-    if survey_id:
-        return str(survey_id).strip()
+    existing_ids = _normalize_survey_ids(survey_ids)
+    if existing_ids:
+        return existing_ids
 
     from .interactive_menu import is_interactive
 
@@ -111,52 +135,42 @@ def _prompt_for_survey_id_api_if_needed(
         )
 
     base, headers = _get_client_config_for_args(args)
-    from .survey_selection import pick_survey_id_from_api
+    from .survey_selection import pick_survey_ids_from_api
 
-    picked = pick_survey_id_from_api(
+    picked = pick_survey_ids_from_api(
         message=message,
         base_url=base,
         headers=headers,
         include_back=False,
+        allow_multiple=allow_multiple,
     )
     if not picked:
         raise SystemExit("[qsync] Cancelled.")
     return picked
 
 
-def _slugify(value: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(value))
+def _prompt_for_survey_id_api_if_needed(
+    *,
+    survey_id: str | None,
+    args: argparse.Namespace,
+    message: str,
+) -> str:
+    """Prompt for SurveyID using live API list when omitted (interactive only)."""
+
+    picked = _prompt_for_survey_ids_api_if_needed(
+        survey_ids=survey_id,
+        args=args,
+        message=message,
+        allow_multiple=False,
+    )
+    return picked[0]
 
 
 def _default_xlsx_path_for_survey(survey_id: str) -> Path:
-    root = _workspace_root()
-    csv_path = _inventory_csv_path(root)
-    suffix_slug = None
-    if csv_path.exists():
-        for row in _iter_inventory_rows(csv_path):
-            if (row.get("id") or "").strip() == survey_id:
-                name = (row.get("name") or "").strip()
-                if name:
-                    suffix_slug = _slugify(name)
-                break
+    from .workbook_resolver import WorkbookResolver
 
-    if not suffix_slug:
-        try:
-            from .qualtrics_client import load_cached_survey
-
-            survey = load_cached_survey(survey_id)
-            title = (
-                survey.payload.get("result", {})
-                .get("SurveyOptions", {})
-                .get("SurveyTitle")
-                or survey_id
-            )
-            suffix_slug = _slugify(title)
-        except Exception:
-            suffix_slug = _slugify(survey_id)
-
-    excel_dir = resolve_scoped_dir("excel", root=root)
-    return excel_dir / f"{survey_id}-{suffix_slug}.xlsx"
+    resolver = WorkbookResolver(root=_workspace_root())
+    return resolver.default_path(survey_id)
 
 
 def _collect_languages_from_args(args: argparse.Namespace) -> list[str] | None:
@@ -1548,6 +1562,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             choice = select_from_list(
                 "Embedded & Options",
                 [
+                    "Items: structural edits (stage → preview → push)",
                     "Add embedded field (stage)",
                     "Remove embedded field (stage)",
                     "Rename embedded field (stage)",
@@ -1558,7 +1573,9 @@ def handle_menu(args: argparse.Namespace) -> None:
             )
             if not choice or choice.endswith("Back"):
                 continue
-            if choice.startswith("Add embedded"):
+            if choice.startswith("Items: structural edits"):
+                _menu_items_structural_edits()
+            elif choice.startswith("Add embedded"):
                 _menu_embedded_field("add-embedded-field")
             elif choice.startswith("Remove embedded"):
                 _menu_embedded_field("remove-embedded-field")
@@ -4548,195 +4565,6 @@ def _read_multiline_snippet_interactive(*, prompt: str) -> str:
     return "\n".join(lines)
 
 
-def _prompt_for_any_survey_id(survey_id: str | None) -> str:
-    if survey_id:
-        return str(survey_id).strip()
-
-    if not sys.stdin.isatty():
-        print("[qsync] ERROR: --survey-id required in non-interactive mode")
-        raise SystemExit(1)
-
-    from .interactive_menu import select_from_list, autocomplete_from_list, text_input
-    from .input_validators import SurveyIdValidator
-    from .survey_inventory import (
-        INVENTORY_CSV,
-        LEGACY_SURVEY_CACHE,
-        _refresh_inventory_for_prompt,
-        _load_all_survey_records,
-    )
-
-    def _manual_entry() -> str:
-        manual = text_input(
-            "Enter Qualtrics SurveyID",
-            instruction="Example: SV_...",
-            validator=SurveyIdValidator(),
-            validate_while_typing=True,
-        )
-        manual = (manual or "").strip()
-        if not manual:
-            print("[qsync] Operation cancelled.")
-            raise SystemExit(1)
-        return manual
-
-    has_inventory = INVENTORY_CSV.exists() or LEGACY_SURVEY_CACHE.exists()
-    if not has_inventory:
-        selection = select_from_list(
-            message="Inventory file missing. What do you want to do?",
-            choices=[
-                "✓ Run `qsync survey inventory` now",
-                "✎ Enter SurveyID manually",
-                "✗ Cancel",
-            ],
-        )
-        if selection is None or "Cancel" in selection:
-            print("[qsync] Operation cancelled.")
-            raise SystemExit(1)
-        if "inventory" in selection.lower():
-            if not _refresh_inventory_for_prompt():
-                print(
-                    "[qsync] Could not refresh inventory. Next: verify credentials "
-                    "(run `qsync doctor --check-api`) or pass --survey-id."
-                )
-                raise SystemExit(1)
-        else:
-            return _manual_entry()
-
-    records = _load_all_survey_records()
-    if not records:
-        print("[qsync] No surveys found in inventory. Entering manual SurveyID.")
-        return _manual_entry()
-
-    labels = []
-    for record in records:
-        focal_tag = " (focal)" if record.get("focal") else ""
-        labels.append(f"{record['id']} - {record.get('name', 'Untitled')}{focal_tag}")
-
-    label_to_id = {
-        label.strip().lower(): record["id"] for label, record in zip(labels, records)
-    }
-
-    def _resolve_selected_survey(raw_selection: str | None) -> str | None:
-        if raw_selection is None:
-            return None
-        raw = str(raw_selection).strip()
-        if not raw:
-            return None
-
-        # Exact label match from autocomplete list.
-        exact_label = label_to_id.get(raw.lower())
-        if exact_label:
-            return exact_label
-
-        # Accept direct SurveyID input (case-insensitive).
-        first_token = raw.split(" - ", 1)[0].strip()
-        for record in records:
-            sid = str(record.get("id", "")).strip()
-            if sid and sid.lower() == first_token.lower():
-                return sid
-
-        # Try exact survey-name match.
-        exact_name_matches = [
-            record
-            for record in records
-            if str(record.get("name", "")).strip().lower() == raw.lower()
-        ]
-        if len(exact_name_matches) == 1:
-            return str(exact_name_matches[0]["id"])
-
-        # Fallback for users pressing Enter on partial autocomplete input.
-        prefix_matches = [
-            record
-            for record in records
-            if str(record.get("id", "")).lower().startswith(raw.lower())
-            or str(record.get("name", "")).lower().startswith(raw.lower())
-        ]
-        if len(prefix_matches) == 1:
-            return str(prefix_matches[0]["id"])
-
-        contains_matches = [
-            record
-            for record in records
-            if raw.lower() in str(record.get("id", "")).lower()
-            or raw.lower() in str(record.get("name", "")).lower()
-        ]
-        if len(contains_matches) == 1:
-            return str(contains_matches[0]["id"])
-
-        candidate_matches = prefix_matches or contains_matches
-        if len(candidate_matches) > 1:
-            candidate_labels = []
-            for record in candidate_matches:
-                focal_tag = " (focal)" if record.get("focal") else ""
-                candidate_labels.append(
-                    f"{record['id']} - {record.get('name', 'Untitled')}{focal_tag}"
-                )
-            matched = select_from_list(
-                "Multiple surveys match your search:",
-                candidate_labels + ["Cancel"],
-            )
-            if not matched or matched == "Cancel":
-                return None
-            return matched.split(" - ", 1)[0].strip()
-
-        return None
-
-    def _select_via_autocomplete() -> str:
-        while True:
-            selected = autocomplete_from_list(
-                message="Search survey (name or ID)",
-                choices=labels,
-                instruction="type to filter, enter to select",
-            )
-            if not selected:
-                print("[qsync] Operation cancelled.")
-                raise SystemExit(1)
-            resolved = _resolve_selected_survey(selected)
-            if resolved:
-                return resolved
-            print(
-                "[qsync] Could not match that input to a unique survey. "
-                "Please refine your search, select a listed option, or enter SurveyID manually."
-            )
-
-    if len(labels) > 40:
-        mode = select_from_list(
-            "How do you want to select a survey?",
-            [
-                "Search by name/ID (autocomplete)",
-                "Browse all surveys (arrow list)",
-                "Enter SurveyID manually",
-                "Cancel",
-            ],
-        )
-        if not mode or "Cancel" in mode:
-            print("[qsync] Operation cancelled.")
-            raise SystemExit(1)
-        if mode.startswith("Enter"):
-            return _manual_entry()
-        if mode.startswith("Browse"):
-            selection = select_from_list("Select a survey:", labels)
-            if not selection:
-                print("[qsync] Operation cancelled.")
-                raise SystemExit(1)
-            return selection.split(" - ", 1)[0].strip()
-        return _select_via_autocomplete()
-
-    choices = list(labels)
-    choices.append("─" * 60)
-    choices.append("Search by name/ID (autocomplete)")
-    choices.append("Enter SurveyID manually")
-    choices.append("Cancel")
-    selection = select_from_list("Select a survey:", choices)
-    if not selection or selection == "Cancel":
-        print("[qsync] Operation cancelled.")
-        raise SystemExit(1)
-    if selection.startswith("Search"):
-        return _select_via_autocomplete()
-    if selection.startswith("Enter"):
-        return _manual_entry()
-    return selection.split(" - ", 1)[0].strip()
-
-
 def handle_prolific_auth(args: argparse.Namespace) -> None:
     """Set or append a Prolific authenticity-check snippet in SurveyOptions.Header."""
     from .qualtrics_client import (
@@ -4761,7 +4589,11 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
         value = getattr(args, name, False)
         return value if isinstance(value, bool) else False
 
-    survey_id = _prompt_for_any_survey_id(args.survey_id)
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey for prolific-auth:",
+    )
 
     base_url, headers = get_client_config()
     resp = send_api_request(
@@ -5171,26 +5003,21 @@ def _handle_activation(args: argparse.Namespace, *, target_active: bool) -> None
     from .terminal_colors import Colors, colored
 
     verb = "activate" if target_active else "deactivate"
-    survey_ids: list[str] = []
-    raw_ids = getattr(args, "survey_id", None)
-    if isinstance(raw_ids, list):
-        survey_ids.extend([sid.strip() for sid in raw_ids if sid and sid.strip()])
-    elif raw_ids:
-        survey_ids.append(str(raw_ids).strip())
+    survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
 
     ids_file = getattr(args, "survey_ids_file", None)
     if isinstance(ids_file, str) and ids_file:
         survey_ids.extend(_load_survey_ids_from_file(ids_file))
 
     if not survey_ids:
-        # Offer interactive selection for single survey
+        # Offer interactive selection for one or more surveys.
         try:
-            prompted_id = _prompt_for_survey_id_api_if_needed(
-                survey_id=None,
+            survey_ids = _prompt_for_survey_ids_api_if_needed(
+                survey_ids=None,
                 args=args,
                 message=f"Select a survey to {verb}:",
+                allow_multiple=True,
             )
-            survey_ids.append(prompted_id)
         except SystemExit:
             raise SystemExit(
                 f"[{verb}] ERROR: --survey-id is required (or provide --survey-ids-file)"
@@ -8035,7 +7862,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "Groups:\n"
             "  Inventory/cache: list, label, focal, inventory, pull, prepare\n"
             "  Copy/derive: copy, slice-language, copy-cross-account, slice-registry, parity-check\n"
-            "  Embedded/options: add-embedded-field, remove-embedded-field, rename-embedded-field, cleanup-embedded-data, prolific-auth\n"
+            "  Embedded/options: items structural edits, add-embedded-field, remove-embedded-field, rename-embedded-field, cleanup-embedded-data, prolific-auth\n"
             "  Lifecycle/versions: publish, activate, deactivate, versions, version-fetch, rollback\n"
             "  Utilities: inspect-question, push-question\n"
             "  Exports: export-responses, export-translation, export-side-by-side\n"
@@ -8659,7 +8486,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--survey-id",
         action="append",
         dest="survey_id",
-        help="Qualtrics survey ID to activate (repeatable; omit for interactive selection of single survey)",
+        help="Qualtrics Survey IDs to activate (repeatable; omit for interactive selection)",
     )
     p_activate.add_argument(
         "--survey-ids-file",
