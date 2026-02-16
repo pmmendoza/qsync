@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -1632,6 +1633,17 @@ def interactive_choice_wizard(
     survey = load_cached_survey(survey_id)
     active = list(iter_active_qids_in_flow(survey))
     all_qids = iter_all_qids(survey)
+
+    def _filter_labels(labels: list[str], raw: str) -> list[str]:
+        needle = (raw or "").strip()
+        if not needle:
+            return list(labels)
+        try:
+            pat = re.compile(needle, re.IGNORECASE)
+        except re.error:
+            pat = re.compile(re.escape(needle), re.IGNORECASE)
+        return [label for label in labels if pat.search(label)]
+
     if not qid:
         if not active and not all_qids:
             raise ItemsStructuralError(
@@ -1650,12 +1662,10 @@ def interactive_choice_wizard(
                     )
                 )
         if active and len(active) > 30:
-            from ..interactive_menu import autocomplete_from_list
-
             choices = [
                 "Browse active-in-flow (arrow list)",
-                "Search active by tag/text (autocomplete)",
-                "Filter active by ExportTag (autocomplete)",
+                "Search active by tag/text (manual filter)",
+                "Filter active by ExportTag",
             ]
             if all_qids and len(active) < len(all_qids):
                 choices.append("Show all questions (includes not-in-flow)")
@@ -1678,13 +1688,22 @@ def interactive_choice_wizard(
                             include_flow_status=True,
                         )
                     )
-                selected = autocomplete_from_list(
-                    message="Search QID (all)",
-                    choices=labels,
-                    instruction="type to filter, enter to select",
+                raw = text_input(
+                    "Filter all questions by QID/tag/text (regex supported)"
                 )
-                if not selected:
+                if raw is None:
                     raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+                filtered = _filter_labels(labels, str(raw))
+                if not filtered:
+                    raise ItemsStructuralError(
+                        "[qsync:items:edit] No questions matched that filter."
+                    )
+                if len(filtered) == 1:
+                    selected = filtered[0]
+                else:
+                    selected = select_from_list("Select a QID to edit", filtered)
+                    if not selected:
+                        raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
                 qid = selected.split()[0]
                 question = survey.questions.get(qid)
                 if not isinstance(question, dict):
@@ -1700,13 +1719,22 @@ def interactive_choice_wizard(
                 # Continue with target/action selection below.
             else:
                 if mode.startswith("Search active"):
-                    selected = autocomplete_from_list(
-                        message="Search QID (active)",
-                        choices=labels,
-                        instruction="type to filter, enter to select",
+                    raw = text_input(
+                        "Filter active questions by QID/tag/text (regex supported)"
                     )
-                    if not selected:
+                    if raw is None:
                         raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+                    filtered = _filter_labels(labels, str(raw))
+                    if not filtered:
+                        raise ItemsStructuralError(
+                            "[qsync:items:edit] No active questions matched that filter."
+                        )
+                    if len(filtered) == 1:
+                        selected = filtered[0]
+                    else:
+                        selected = select_from_list("Select a QID to edit", filtered)
+                        if not selected:
+                            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
                 elif mode.startswith("Filter active"):
                     tags: list[str] = []
                     tag_to_qids: dict[str, list[str]] = {}
@@ -1721,11 +1749,7 @@ def interactive_choice_wizard(
                         raise ItemsStructuralError(
                             "[qsync:items:edit] No DataExportTag values found in active questions."
                         )
-                    chosen_tag = autocomplete_from_list(
-                        message="Select ExportTag",
-                        choices=tags,
-                        instruction="type to filter, enter to select",
-                    )
+                    chosen_tag = select_from_list("Select ExportTag", tags)
                     if not chosen_tag:
                         raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
                     filtered_labels = [

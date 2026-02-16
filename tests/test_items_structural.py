@@ -24,6 +24,132 @@ class TestItemsStructuralHelpers(unittest.TestCase):
             items_structural.iter_all_qids(survey), ["QID1", "QID2", "QID3"]
         )
 
+    def test_iter_active_qids_in_flow_yields_question_ids_not_block_ids(self):
+        survey = items_structural.SurveyCache(
+            survey_id="SV_TEST",
+            path=items_structural.Path("dummy.json"),
+            payload={
+                "result": {
+                    "Questions": {
+                        "QID1": {},
+                        "QID2": {},
+                    },
+                    "Blocks": {
+                        "BL_A": {
+                            "Type": "Standard",
+                            "BlockElements": [
+                                {"Type": "Question", "QuestionID": "QID2"},
+                                {"Type": "Question", "QuestionID": "QIDX_UNKNOWN"},
+                            ],
+                        },
+                        "BL_B": {
+                            "Type": "Standard",
+                            "BlockElements": [
+                                {"Type": "Question", "QuestionID": "QID1"},
+                                {"Type": "Question", "QuestionID": "QID2"},
+                            ],
+                        },
+                        "BL_TRASH": {
+                            "Type": "Trash",
+                            "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+                        },
+                    },
+                    "SurveyFlow": {
+                        "Flow": [
+                            {"Type": "Block", "ID": "BL_A"},
+                            {"Type": "Branch", "Then": [{"Type": "Block", "ID": "BL_B"}]},
+                            {"Type": "Block", "ID": "BL_TRASH"},
+                        ]
+                    },
+                }
+            },
+        )
+        self.assertEqual(
+            list(items_structural.iter_active_qids_in_flow(survey)),
+            ["QID2", "QID1"],
+        )
+
+    def test_wizard_manual_filter_selects_active_qid(self):
+        qids = [f"QID{i}" for i in range(1, 36)]
+        questions = {
+            qid: {
+                "QuestionText": f"<p>{qid} text</p>",
+                "DataExportTag": f"TAG_{qid}",
+                "Choices": {"1": {"Display": "A"}},
+            }
+            for qid in qids
+        }
+        survey = items_structural.SurveyCache(
+            survey_id="SV_TEST",
+            path=items_structural.Path("dummy.json"),
+            payload={"result": {"Questions": questions}},
+        )
+
+        def _select_from_list(message, choices, instruction=None, default=None):
+            if message.startswith("How do you want to select a QID?"):
+                return "Search active by tag/text (manual filter)"
+            if message.startswith("Select a QID to edit"):
+                for choice in choices:
+                    if str(choice).startswith("QID15 "):
+                        return choice
+                return choices[0]
+            raise AssertionError(f"Unexpected select prompt: {message}")
+
+        def _stop_on_qid(*, survey_id, qid):
+            self.assertEqual(survey_id, "SV_TEST")
+            self.assertEqual(qid, "QID15")
+            raise items_structural.ItemsStructuralError("STOP_AFTER_QID")
+
+        with mock.patch.object(items_structural, "load_cached_survey", return_value=survey):
+            with mock.patch.object(items_structural, "iter_active_qids_in_flow", return_value=qids):
+                with mock.patch.object(items_structural, "iter_all_qids", return_value=qids):
+                    with mock.patch.object(items_structural, "select_from_list", side_effect=_select_from_list):
+                        with mock.patch.object(items_structural, "text_input", return_value="QID15"):
+                            with mock.patch.object(items_structural, "_qid_workbook_diffs", side_effect=_stop_on_qid):
+                                with self.assertRaises(items_structural.ItemsStructuralError) as excinfo:
+                                    items_structural.interactive_choice_wizard(
+                                        survey_id="SV_TEST",
+                                        qid=None,
+                                        allow_delete=False,
+                                        experimental_unsupported=False,
+                                    )
+        self.assertIn("STOP_AFTER_QID", str(excinfo.exception))
+
+    def test_wizard_manual_filter_no_match_is_actionable(self):
+        qids = [f"QID{i}" for i in range(1, 36)]
+        questions = {
+            qid: {
+                "QuestionText": f"<p>{qid} text</p>",
+                "DataExportTag": f"TAG_{qid}",
+                "Choices": {"1": {"Display": "A"}},
+            }
+            for qid in qids
+        }
+        survey = items_structural.SurveyCache(
+            survey_id="SV_TEST",
+            path=items_structural.Path("dummy.json"),
+            payload={"result": {"Questions": questions}},
+        )
+
+        def _select_from_list(message, choices, instruction=None, default=None):
+            if message.startswith("How do you want to select a QID?"):
+                return "Search active by tag/text (manual filter)"
+            raise AssertionError(f"Unexpected select prompt: {message}")
+
+        with mock.patch.object(items_structural, "load_cached_survey", return_value=survey):
+            with mock.patch.object(items_structural, "iter_active_qids_in_flow", return_value=qids):
+                with mock.patch.object(items_structural, "iter_all_qids", return_value=qids):
+                    with mock.patch.object(items_structural, "select_from_list", side_effect=_select_from_list):
+                        with mock.patch.object(items_structural, "text_input", return_value="NO_MATCH_999"):
+                            with self.assertRaises(items_structural.ItemsStructuralError) as excinfo:
+                                items_structural.interactive_choice_wizard(
+                                    survey_id="SV_TEST",
+                                    qid=None,
+                                    allow_delete=False,
+                                    experimental_unsupported=False,
+                                )
+        self.assertIn("No active questions matched that filter.", str(excinfo.exception))
+
     def test_allocate_choice_id_uses_nextchoiceid_and_bumps(self):
         q = {
             "Choices": {"1": {"Display": "A"}, "2": {"Display": "B"}},
