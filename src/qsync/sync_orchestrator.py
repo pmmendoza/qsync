@@ -21,7 +21,7 @@ import shlex
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from .pending_stage import clear_pending, list_pending, load_pending
 from .dimensions import edf as edf_dimension
@@ -48,6 +48,316 @@ ISSUE_DETAIL_MENU_THRESHOLD = 10
 _EMBEDDED_FIELD_TOKEN_RE = re.compile(r"\$\{e://Field/([^}]+)\}")
 _ISSUE_KEYS_SEEN: set[str] = set()
 
+
+@dataclass(frozen=True)
+class FixableIssue:
+    """A safe-to-autofix issue detected for a dimension/survey."""
+
+    survey_id: str
+    survey_name: str
+    dimension: str
+    issue_type: str
+    detail: str
+    command: str
+
+
+def _short_detail(detail: str, *, limit: int = 90) -> str:
+    text = " ".join(str(detail or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _infer_issue_type(dimension: str, detail: str) -> str:
+    text = (detail or "").strip().lower()
+    if dimension == "flow" and "qsync flow pull" in text:
+        return "FLOW_NOT_INITIALIZED"
+    if dimension == "translations" and "workbook not found" in text:
+        return "TRANSLATIONS_WORKBOOK_MISSING"
+    if dimension == "edf":
+        if "embedded_data worksheet is inconsistent" in text:
+            return "EDF_WORKBOOK_INCONSISTENT"
+        if "embedded_data" in text:
+            return "EDF_WORKBOOK_UNHEALTHY"
+    if dimension == "eos":
+        if "message files not found" in text:
+            return "EOS_MESSAGES_MISSING"
+        if "baselines not found" in text:
+            return "EOS_BASELINES_MISSING"
+    if dimension == "items":
+        if "embedded_data sheet is missing rows" in text:
+            return "ITEMS_EMBEDDED_ROWS_MISSING"
+        if "embedded data fields" in text:
+            return "ITEMS_EMBEDDED_FIELDS_MISSING"
+    if dimension == "js":
+        if "mapping csv missing a column" in text:
+            return "JS_MAPPING_MISSING_COLUMN"
+    if dimension == "master":
+        if "failed to load master csv" in text:
+            return "MASTER_CSV_LOAD_FAILED"
+        if "validation" in text:
+            return "MASTER_VALIDATION_FAILED"
+    return f"{dimension.upper()}_FIXABLE"
+
+
+def _collect_fixable_issues(
+    changes: "SurveyChanges",
+    *,
+    selected_dims: Optional[set[str]] = None,
+    survey_id: Optional[str] = None,
+    survey_name: Optional[str] = None,
+) -> list[FixableIssue]:
+    sid = survey_id or getattr(changes, "survey_id", None)
+    sname = survey_name or getattr(changes, "survey_name", None) or sid or "unknown"
+    if not sid:
+        return []
+
+    issues: list[FixableIssue] = []
+    seen: set[tuple[str, str, str]] = set()
+    for dim in MASTER_DIMENSION_ORDER:
+        info = changes.dimensions.get(dim)
+        if not info:
+            continue
+        if selected_dims and dim not in selected_dims:
+            continue
+        detail = _fixable_detail(info)
+        if not detail:
+            continue
+        cmd = _autofix_command(dim, sid)
+        if not cmd:
+            continue
+        issue_type = _infer_issue_type(dim, detail)
+        key = (sid, dim, issue_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        issues.append(
+            FixableIssue(
+                survey_id=sid,
+                survey_name=sname,
+                dimension=dim,
+                issue_type=issue_type,
+                detail=detail,
+                command=cmd,
+            )
+        )
+    return issues
+
+
+def _collect_fixable_issues_many(changes_list: list["SurveyChanges"]) -> list[FixableIssue]:
+    issues: list[FixableIssue] = []
+    for changes in changes_list:
+        issues.extend(_collect_fixable_issues(changes))
+    # Stable deterministic order for menus and logs.
+    issues.sort(
+        key=lambda issue: (
+            issue.issue_type,
+            issue.survey_name.lower(),
+            issue.survey_id,
+            issue.dimension,
+        )
+    )
+    return issues
+
+
+def _parse_fix_selector(selector: Optional[str]) -> tuple[Literal["none", "safe", "type"], Optional[str]]:
+    if selector is None:
+        return ("none", None)
+    raw = selector.strip()
+    if not raw:
+        return ("none", None)
+    lowered = raw.lower()
+    if lowered in {"safe", "all-safe", "all_safe"}:
+        return ("safe", None)
+    if lowered.startswith("type:"):
+        value = raw.split(":", 1)[1].strip().upper()
+        if not value:
+            raise ValueError("Issue type cannot be empty after 'type:'")
+        return ("type", value)
+    raise ValueError(
+        "Invalid --fix selector. Use one of: safe, all-safe, type:<ISSUE_TYPE>"
+    )
+
+
+def _filter_issues_for_selector(
+    issues: list[FixableIssue],
+    *,
+    selector_mode: Literal["none", "safe", "type"],
+    selector_type: Optional[str] = None,
+) -> list[FixableIssue]:
+    if selector_mode == "none":
+        return []
+    if selector_mode == "safe":
+        return list(issues)
+    if selector_mode == "type":
+        issue_type = (selector_type or "").strip().upper()
+        return [issue for issue in issues if issue.issue_type == issue_type]
+    return []
+
+
+def _format_issue_types(issues: list[FixableIssue]) -> str:
+    if not issues:
+        return "(none)"
+    counts: dict[str, int] = {}
+    for issue in issues:
+        counts[issue.issue_type] = counts.get(issue.issue_type, 0) + 1
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return ", ".join([f"{code} ({count})" for code, count in ordered])
+
+
+def _execute_repair_actions(
+    actions: list[FixableIssue],
+    *,
+    interactive: bool,
+    auto_yes: bool,
+    context_label: str,
+) -> bool:
+    from .survey_ref import format_survey_ref
+
+    unique: dict[tuple[str, str], FixableIssue] = {}
+    for action in actions:
+        unique[(action.survey_id, action.dimension)] = action
+    ordered = sorted(
+        unique.values(),
+        key=lambda issue: (
+            issue.issue_type,
+            issue.survey_name.lower(),
+            issue.survey_id,
+            issue.dimension,
+        ),
+    )
+    if not ordered:
+        print(f"{Colors.DIM}[sync:fix] No matching fixable issues for {context_label}.{Colors.RESET}")
+        return False
+
+    print(f"\n{Colors.YELLOW}⚠ Planned repairs for {context_label}{Colors.RESET}")
+    for issue in ordered:
+        survey_ref = format_survey_ref(issue.survey_id, issue.survey_name)
+        print(
+            f"  • [{issue.issue_type}] {survey_ref} / {issue.dimension}: "
+            f"{Colors.CYAN}{issue.command}{Colors.RESET}"
+        )
+
+    if interactive and not auto_yes:
+        from .interactive_menu import confirm
+
+        if not confirm(message="Apply selected repairs?", default=True):
+            print(f"{Colors.DIM}[sync:fix] Repair cancelled by user.{Colors.RESET}")
+            return False
+
+    successes = 0
+    failures: list[str] = []
+    for issue in ordered:
+        survey_ref = format_survey_ref(issue.survey_id, issue.survey_name)
+        print(
+            f"\n[sync:fix] Running {issue.command} "
+            f"for {survey_ref} ({issue.dimension}, {issue.issue_type})..."
+        )
+        try:
+            result = _run_autofix(issue.dimension, issue.survey_id)
+            successes += 1
+            print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
+        except Exception as exc:
+            failures.append(
+                f"{survey_ref}/{issue.dimension} [{issue.issue_type}]: {exc}"
+            )
+            print(f"{Colors.RED}✗ Failed: {exc}{Colors.RESET}")
+
+    print(
+        f"\n[sync:fix] Completed: {successes} succeeded, {len(failures)} failed "
+        f"(types: {_format_issue_types(ordered)})"
+    )
+    if failures:
+        print(f"{Colors.YELLOW}[sync:fix] Failures:{Colors.RESET}")
+        for failure in failures:
+            print(f"  • {failure}")
+    return successes > 0
+
+
+def _select_repair_actions_interactive(
+    *,
+    context_issues: list[FixableIssue],
+    all_issues: Optional[list[FixableIssue]] = None,
+    context_label: str,
+) -> list[FixableIssue]:
+    from .interactive_menu import select_from_list
+
+    if not context_issues:
+        print(f"{Colors.DIM}[sync:fix] No fixable issues in {context_label}.{Colors.RESET}")
+        return []
+
+    universe = all_issues if all_issues else context_issues
+    universe = list(universe)
+
+    while True:
+        print(
+            f"\n{Colors.YELLOW}⚠ Fixable issues for {context_label}{Colors.RESET}: "
+            f"{len(context_issues)} in scope, {len(universe)} available"
+        )
+        print(f"{Colors.DIM}Issue types: {_format_issue_types(universe)}{Colors.RESET}")
+
+        selection = select_from_list(
+            message="Choose repair mode:",
+            choices=[
+                "Fix one issue",
+                "Fix all issues of a type",
+                "Fix all safe issues",
+                "View issue details",
+                "↩ Back",
+            ],
+        )
+
+        if selection is None or selection.startswith("↩"):
+            return []
+        if selection == "View issue details":
+            print(f"{Colors.DIM}[sync:fix] Details:{Colors.RESET}")
+            for issue in universe:
+                print(
+                    f"  • [{issue.issue_type}] {issue.survey_name} ({issue.survey_id}) "
+                    f"/ {issue.dimension}: {_short_detail(issue.detail, limit=140)}"
+                )
+            continue
+        if selection == "Fix one issue":
+            issue_labels: list[str] = []
+            label_to_issue: dict[str, FixableIssue] = {}
+            for issue in context_issues:
+                label = (
+                    f"{issue.survey_name} ({issue.survey_id}) / {issue.dimension} "
+                    f"[{issue.issue_type}] - {_short_detail(issue.detail)}"
+                )
+                issue_labels.append(label)
+                label_to_issue[label] = issue
+            chosen = select_from_list(
+                message="Select issue to fix:",
+                choices=issue_labels + ["↩ Back"],
+            )
+            if chosen is None or chosen.startswith("↩"):
+                continue
+            selected_issue = label_to_issue.get(chosen)
+            return [selected_issue] if selected_issue else []
+        if selection == "Fix all safe issues":
+            return universe
+        if selection == "Fix all issues of a type":
+            type_counts: dict[str, set[str]] = {}
+            type_issue_counts: dict[str, int] = {}
+            for issue in universe:
+                type_counts.setdefault(issue.issue_type, set()).add(issue.survey_id)
+                type_issue_counts[issue.issue_type] = (
+                    type_issue_counts.get(issue.issue_type, 0) + 1
+                )
+            type_choices = [
+                f"{issue_type} ({type_issue_counts[issue_type]} issue(s), "
+                f"{len(type_counts[issue_type])} survey(s))"
+                for issue_type in sorted(type_issue_counts.keys())
+            ]
+            chosen_type = select_from_list(
+                message="Select issue type:",
+                choices=type_choices + ["↩ Back"],
+            )
+            if chosen_type is None or chosen_type.startswith("↩"):
+                continue
+            issue_type = chosen_type.split(" ", 1)[0].strip()
+            return [issue for issue in universe if issue.issue_type == issue_type]
 
 def _filter_new_issue_lines(
     issues: list[tuple[str, str, str]],
@@ -924,13 +1234,13 @@ def display_change_detection_table(
         title: str,
         issue_type: str,
         rows: list[tuple[str, str, str]],
+        selected_rows: list[tuple[str, str, str]],
         *,
         separators: tuple[str, ...],
     ) -> None:
         if not rows:
             return
         print(f"\n{Colors.YELLOW}{title}{Colors.RESET}")
-        selected_rows = _select_issue_rows(issue_type, rows)
         for survey_name, dimension, detail in selected_rows:
             rendered = _render_issue_detail(detail, separators)
             print(
@@ -981,12 +1291,14 @@ def display_change_detection_table(
         title="⚠️  Errors detected:",
         issue_type="errors",
         rows=errors,
+        selected_rows=selected_errors,
         separators=("Run:", "Add"),
     )
     _print_issue_rows(
         title="⚠️  Warnings:",
         issue_type="warnings",
         rows=warnings,
+        selected_rows=selected_warnings,
         separators=("Run:", "Repair:"),
     )
 
@@ -1404,11 +1716,10 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
     staged_dims = [dim for dim in changed if _is_dimension_staged(changes.survey_id, dim)]
     staged_label = ", ".join(staged_dims)
 
-    fixable_errors = [
+    fixable_issues = [
         dim
         for dim in MASTER_DIMENSION_ORDER
-        if dim in changes.dimensions
-        if changes.dimensions[dim].error_detail and changes.dimensions[dim].safe_to_autofix
+        if dim in changes.dimensions and _fixable_detail(changes.dimensions[dim])
     ]
 
     error_dims = [
@@ -1477,11 +1788,11 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
             )
         )
 
-        if fixable_errors:
+        if fixable_issues:
             items.append(MenuItem.separator("─" * 60))
-            for dim in fixable_errors:
+            for dim in fixable_issues:
                 cmd = _autofix_command(dim, changes.survey_id)
-                label = f"🔧 Fix {dim} error"
+                label = f"🔧 Fix {dim} issue"
                 if cmd:
                     label = f"{label} (run {cmd})"
                 items.append(
@@ -3612,6 +3923,7 @@ def sync_survey(
     allow_drift: bool = False,
     allow_skip_embedded: bool = False,
     json_output: bool = False,
+    fix: Optional[str] = None,
 ) -> Optional[SurveySyncSummary]:
     """Sync one or more dimensions for a survey.
 
@@ -3630,6 +3942,8 @@ def sync_survey(
         allow_drift: Allow drift during sync
         allow_skip_embedded: Allow skip-embedded pushes when EDF is invalid
         json_output: Emit machine-readable JSON for blocked runs
+        fix: Optional non-interactive/interactive autofix selector:
+             safe|all-safe, or type:<ISSUE_TYPE>
 
     Returns:
         SurveySyncSummary with per-dimension results, or None if nothing synced
@@ -3647,77 +3961,81 @@ def sync_survey(
         changes = detect_survey_changes(survey_id)
     survey_ref = format_survey_ref(survey_id, getattr(changes, "survey_name", None))
 
+    try:
+        fix_selector_mode, fix_selector_type = _parse_fix_selector(fix)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+
+    selected_dims = set(dimensions or [])
+    scoped_fixable = _collect_fixable_issues(
+        changes,
+        selected_dims=selected_dims or None,
+        survey_id=survey_id,
+        survey_name=getattr(changes, "survey_name", survey_id),
+    )
+
+    if fix_selector_mode != "none":
+        selected_actions = _filter_issues_for_selector(
+            scoped_fixable,
+            selector_mode=fix_selector_mode,
+            selector_type=fix_selector_type,
+        )
+        if not selected_actions:
+            print(
+                f"{Colors.DIM}[sync:fix] No matching fixable issues for selector '{fix}'. "
+                f"Available: {_format_issue_types(scoped_fixable)}{Colors.RESET}"
+            )
+        else:
+            ran_any = _execute_repair_actions(
+                selected_actions,
+                interactive=interactive,
+                auto_yes=auto_yes,
+                context_label=survey_ref,
+            )
+            if ran_any:
+                print("\n[sync] Re-detecting changes after repair...")
+                with rich_status("Re-detecting staged changes..."):
+                    changes = detect_survey_changes(survey_id)
+                survey_ref = format_survey_ref(
+                    survey_id, getattr(changes, "survey_name", None)
+                )
+                scoped_fixable = _collect_fixable_issues(
+                    changes,
+                    selected_dims=selected_dims or None,
+                    survey_id=survey_id,
+                    survey_name=getattr(changes, "survey_name", survey_id),
+                )
+
     # Check for fixable errors in interactive single-survey mode.
     # This is advisory only: users can continue syncing selected dimensions
-    # without running auto-fixes first.
-    if interactive and not auto_yes:
-        selected_dims = set(dimensions or [])
-        fixable_errors = [
-            (dim, info)
-            for dim, info in changes.dimensions.items()
-            if _fixable_detail(info)
-            and (not selected_dims or dim in selected_dims)
-        ]
-
-        if fixable_errors:
-            print(f"\n{Colors.YELLOW}⚠ Fixable Issues Detected{Colors.RESET}")
-            for dim, info in fixable_errors:
-                detail = _fixable_detail(info) or "Issue requires repair."
-                print(f"  • {Colors.BOLD}{dim}{Colors.RESET}: {detail}")
-
-            ordered = MASTER_DIMENSION_ORDER
-            fixable_errors.sort(
-                key=lambda entry: ordered.index(entry[0]) if entry[0] in ordered else 99
+    # and can also run repairs from the persistent overview menu.
+    if interactive and not auto_yes and fix_selector_mode == "none" and scoped_fixable:
+        print(f"\n{Colors.YELLOW}⚠ Fixable Issues Detected{Colors.RESET}")
+        for issue in scoped_fixable:
+            print(
+                f"  • {Colors.BOLD}{issue.dimension}{Colors.RESET} "
+                f"[{issue.issue_type}]: {issue.detail}"
             )
-            fix_cmds = [
-                (dim, _autofix_command(dim, survey_id)) for dim, _ in fixable_errors
-            ]
-            fix_cmds = [(dim, cmd) for dim, cmd in fix_cmds if cmd]
-
-            if not fix_cmds:
-                print(
-                    f"{Colors.DIM}No auto-fix command available for selected issues; continuing sync.{Colors.RESET}"
+        should_fix_now = confirm(message="Fix these issues now?", default=True)
+        if should_fix_now:
+            ran_any = _execute_repair_actions(
+                scoped_fixable,
+                interactive=interactive,
+                auto_yes=auto_yes,
+                context_label=survey_ref,
+            )
+            if ran_any:
+                print("\n[sync] Re-detecting changes after repair...")
+                with rich_status("Re-detecting staged changes..."):
+                    changes = detect_survey_changes(survey_id)
+                survey_ref = format_survey_ref(
+                    survey_id, getattr(changes, "survey_name", None)
                 )
-            else:
-                print(
-                    f"\n{Colors.DIM}These issues can be fixed automatically by running:{Colors.RESET}"
-                )
-                for dim, cmd in fix_cmds:
-                    print(f"  • {dim}: {Colors.CYAN}{cmd}{Colors.RESET}")
-
-                should_fix = confirm(message="Fix these issues now?", default=True)
-
-                if should_fix:
-                    autofix_failed = False
-                    for dim, cmd in fix_cmds:
-                        print(f"\n[sync:fix] Running {cmd} for {survey_ref}...")
-                        try:
-                            result = _run_autofix(dim, survey_id)
-                            print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
-                        except Exception as e:
-                            print(f"{Colors.RED}✗ Failed to fix {dim}: {e}{Colors.RESET}")
-                            autofix_failed = True
-                            break
-
-                    print("\n[sync] Re-detecting changes after fix...")
-                    with rich_status("Re-detecting staged changes..."):
-                        changes = detect_survey_changes(survey_id)
-                    survey_ref = format_survey_ref(
-                        survey_id, getattr(changes, "survey_name", None)
-                    )
-                    if autofix_failed:
-                        print(
-                            f"{Colors.DIM}Continuing sync without applying remaining auto-fixes.{Colors.RESET}"
-                        )
-                else:
-                    print(
-                        f"{Colors.DIM}Fix cancelled. You can run manually:{Colors.RESET}"
-                    )
-                    for _, cmd in fix_cmds:
-                        print(f"  {Colors.CYAN}{cmd}{Colors.RESET}")
-                    print(
-                        f"{Colors.DIM}Continuing sync without auto-fix.{Colors.RESET}"
-                    )
+        else:
+            print(
+                f"{Colors.DIM}[sync:fix] Continuing without upfront repair. "
+                f"Use 'Repair issues' in the menu anytime.{Colors.RESET}"
+            )
 
     pending = list_pending(survey_id)
     if auto_yes and pending:
@@ -3820,6 +4138,13 @@ def sync_survey(
             has_pending=bool(pending),
         )
 
+        unstaged_changes = SurveyChanges(
+            survey_id=survey_id,
+            survey_name=survey_name,
+            dimensions=unstaged,
+        )
+        fixable_issues = _collect_fixable_issues(unstaged_changes)
+
         if pending:
             resolved = _resolve_staged_changes_interactive(
                 survey_id,
@@ -3856,15 +4181,22 @@ def sync_survey(
             break
 
         has_unstaged = any(info.has_changes for info in unstaged.values())
-        if not has_unstaged:
+        if not has_unstaged and not fixable_issues:
             print(f"[sync] No unstaged changes detected for {survey_ref}")
             break
 
-        choices = [
-            "✓ Sync dimensions",
-            "🔎 QID-mode (items/js/translations + EDF status)",
-            "↩ Exit sync",
-        ]
+        choices: list[str] = []
+        if has_unstaged:
+            choices.extend(
+                [
+                    "✓ Sync dimensions",
+                    "🔎 QID-mode (items/js/translations + EDF status)",
+                ]
+            )
+        if fixable_issues:
+            choices.append("🔧 Repair issues")
+        choices.append("↩ Exit sync")
+
         selection = select_from_list(
             message="Select next action:",
             choices=choices,
@@ -3872,6 +4204,21 @@ def sync_survey(
 
         if selection is None or "Exit" in selection:
             break
+
+        if selection.startswith("🔧"):
+            selected_actions = _select_repair_actions_interactive(
+                context_issues=fixable_issues,
+                context_label=survey_ref,
+            )
+            if not selected_actions:
+                continue
+            _execute_repair_actions(
+                selected_actions,
+                interactive=interactive,
+                auto_yes=auto_yes,
+                context_label=survey_ref,
+            )
+            continue
 
         if selection.startswith("🔎"):
             qid_choice = select_from_list(
@@ -4169,6 +4516,7 @@ def sync_focal_surveys(
     allow_drift: bool = False,
     allow_skip_embedded: bool = False,
     json_output: bool = False,
+    fix: Optional[str] = None,
 ) -> bool:
     """Sync all focal surveys with detected changes.
 
@@ -4186,6 +4534,8 @@ def sync_focal_surveys(
         allow_drift: Allow drift during sync
         allow_skip_embedded: Allow skip-embedded pushes when EDF is invalid
         json_output: Emit machine-readable JSON for blocked runs
+        fix: Optional non-interactive/interactive autofix selector:
+             safe|all-safe, or type:<ISSUE_TYPE>
 
     Returns:
         True if all syncs succeeded, False otherwise
@@ -4196,6 +4546,11 @@ def sync_focal_surveys(
     from .terminal_output import format_elapsed
 
     start_time = time.perf_counter()
+
+    try:
+        fix_selector_mode, fix_selector_type = _parse_fix_selector(fix)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
 
     focal_ids = get_focal_survey_ids()
 
@@ -4286,6 +4641,41 @@ def sync_focal_surveys(
                         },
                     )
                 )
+
+    def _redetect_surveys(survey_ids: set[str]) -> None:
+        if not survey_ids:
+            return
+        by_id = {c.survey_id: c for c in all_changes}
+        for sid in survey_ids:
+            try:
+                by_id[sid] = detect_survey_changes(sid)
+            except Exception as exc:
+                logger.warning(
+                    "[sync] Error re-detecting changes for %s after repair: %s", sid, exc
+                )
+        all_changes[:] = [by_id[sid] for sid in focal_ids if sid in by_id]
+
+    if fix_selector_mode != "none":
+        all_fixable = _collect_fixable_issues_many(all_changes)
+        selected_actions = _filter_issues_for_selector(
+            all_fixable,
+            selector_mode=fix_selector_mode,
+            selector_type=fix_selector_type,
+        )
+        if not selected_actions:
+            print(
+                f"{Colors.DIM}[sync:fix] No matching fixable issues for selector '{fix}'. "
+                f"Available: {_format_issue_types(all_fixable)}{Colors.RESET}"
+            )
+        else:
+            ran_any = _execute_repair_actions(
+                selected_actions,
+                interactive=interactive,
+                auto_yes=auto_yes,
+                context_label="focal surveys",
+            )
+            if ran_any:
+                _redetect_surveys({action.survey_id for action in selected_actions})
 
     surveys_with_changes = [c for c in all_changes if c.has_any_changes]
 
@@ -4403,6 +4793,7 @@ def sync_focal_surveys(
         while True:
             # Build choice list with survey info
             choices = []
+            all_fixable_issues = _collect_fixable_issues_many(surveys_to_process)
 
             # Section 1: Surveys with changes to sync
             surveys_with_changes_only = [
@@ -4440,6 +4831,23 @@ def sync_focal_surveys(
                     choice = f"fix {changes.survey_name} (⚠ {error_desc})"
                     choices.append(choice)
 
+            if all_fixable_issues:
+                choices.append("─" * 60)
+                choices.append(
+                    f"fix all safe issues ({len(all_fixable_issues)} issue(s))"
+                )
+                grouped_types: dict[str, list[FixableIssue]] = {}
+                for issue in all_fixable_issues:
+                    grouped_types.setdefault(issue.issue_type, []).append(issue)
+                for issue_type in sorted(grouped_types.keys()):
+                    issue_count = len(grouped_types[issue_type])
+                    survey_count = len(
+                        {issue.survey_id for issue in grouped_types[issue_type]}
+                    )
+                    choices.append(
+                        f"fix type {issue_type} ({issue_count} issue(s), {survey_count} survey(s))"
+                    )
+
             surveys_with_issues_only = [
                 c
                 for c in surveys_to_process
@@ -4474,6 +4882,51 @@ def sync_focal_surveys(
             elif "Sync all surveys" in selection or "All surveys" in selection:
                 selected = surveys_to_process
                 break
+            elif selection.startswith("fix all safe issues"):
+                ran_any = _execute_repair_actions(
+                    all_fixable_issues,
+                    interactive=interactive,
+                    auto_yes=auto_yes,
+                    context_label="focal surveys",
+                )
+                if ran_any:
+                    _redetect_surveys({issue.survey_id for issue in all_fixable_issues})
+                    _recategorize()
+                    if not surveys_to_process:
+                        _display_focal_status()
+                        print(
+                            f"\n{Colors.GREEN}✓{Colors.RESET} All issues resolved, no remaining changes"
+                        )
+                        break
+                    _display_focal_status()
+                continue
+            elif selection.startswith("fix type "):
+                match = re.match(r"^fix type ([A-Z0-9_]+) \(", selection)
+                issue_type = match.group(1) if match else ""
+                selected_type_actions = [
+                    issue
+                    for issue in all_fixable_issues
+                    if issue.issue_type == issue_type
+                ]
+                ran_any = _execute_repair_actions(
+                    selected_type_actions,
+                    interactive=interactive,
+                    auto_yes=auto_yes,
+                    context_label=f"focal surveys ({issue_type})",
+                )
+                if ran_any:
+                    _redetect_surveys(
+                        {issue.survey_id for issue in selected_type_actions}
+                    )
+                    _recategorize()
+                    if not surveys_to_process:
+                        _display_focal_status()
+                        print(
+                            f"\n{Colors.GREEN}✓{Colors.RESET} All issues resolved, no remaining changes"
+                        )
+                        break
+                    _display_focal_status()
+                continue
             elif "─" in selection:
                 # User selected separator, re-show menu
                 continue

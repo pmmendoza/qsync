@@ -2418,6 +2418,15 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         action="store_true",
         help="Emit machine-readable JSON when blocked by pending changes",
     )
+    p_sync.add_argument(
+        "--fix",
+        help=(
+            "Optional auto-repair selector before sync. "
+            "Use `safe`/`all-safe` to apply all safe repairs, "
+            "or `type:<ISSUE_TYPE>` to repair one issue class "
+            "(for example `type:FLOW_NOT_INITIALIZED`)."
+        ),
+    )
 
     # export command group (alias for survey export-translation)
     p_export = subparsers.add_parser(
@@ -4755,6 +4764,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         getattr(args, "allow_skip_embedded", False)
                     ),
                     json_output=json_output,
+                    fix=getattr(args, "fix", None),
                 )
                 elapsed = time.perf_counter() - start_time
                 success = summary.success if summary else True
@@ -4790,6 +4800,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         getattr(args, "allow_skip_embedded", False)
                     ),
                     json_output=json_output,
+                    fix=getattr(args, "fix", None),
                 )
 
             if not success:

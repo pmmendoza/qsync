@@ -5,6 +5,7 @@ Survey management CLI commands for qsync.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import os
@@ -6164,6 +6165,836 @@ def _format_question(obj: dict) -> str:
     return json.dumps(obj, indent=2, sort_keys=True)
 
 
+def _normalize_question_ids(value: object) -> list[str]:
+    ids: list[str] = []
+    if value is None:
+        return ids
+    if isinstance(value, list):
+        values = value
+    else:
+        values = [value]
+    for item in values:
+        if item is None:
+            continue
+        for token in str(item).split(","):
+            qid = token.strip()
+            if qid:
+                ids.append(qid)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for qid in ids:
+        if qid in seen:
+            continue
+        seen.add(qid)
+        deduped.append(qid)
+    return deduped
+
+
+def _is_trash_block(block: Mapping[str, Any]) -> bool:
+    return str((block or {}).get("Type") or "").strip().lower() == "trash"
+
+
+def _block_elements_ref(block: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    elements = block.get("BlockElements")
+    if isinstance(elements, list):
+        return elements, "BlockElements"
+    elements = block.get("Elements")
+    if isinstance(elements, list):
+        return elements, "Elements"
+    block["BlockElements"] = []
+    return block["BlockElements"], "BlockElements"
+
+
+def _question_element_index(
+    block: Mapping[str, Any],
+    question_id: str,
+) -> int | None:
+    elements = (
+        block.get("BlockElements")
+        if isinstance(block.get("BlockElements"), list)
+        else block.get("Elements")
+    )
+    if not isinstance(elements, list):
+        return None
+    for idx, elem in enumerate(elements):
+        if not isinstance(elem, dict):
+            continue
+        if str(elem.get("QuestionID") or "").strip() == question_id:
+            return idx
+    return None
+
+
+def _find_question_blocks(
+    definition: Mapping[str, Any],
+    question_id: str,
+    *,
+    include_trash: bool = False,
+) -> list[tuple[str, int]]:
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        return []
+    matches: list[tuple[str, int]] = []
+    for block_id, block_payload in blocks.items():
+        if not isinstance(block_payload, dict):
+            continue
+        if not include_trash and _is_trash_block(block_payload):
+            continue
+        idx = _question_element_index(block_payload, question_id)
+        if idx is not None:
+            matches.append((str(block_id), idx))
+    return matches
+
+
+def _ensure_single_question_block(
+    definition: Mapping[str, Any],
+    question_id: str,
+    *,
+    include_trash: bool = False,
+) -> tuple[str, int]:
+    matches = _find_question_blocks(
+        definition, question_id, include_trash=include_trash
+    )
+    if not matches:
+        raise ValueError(f"QID {question_id} is not present in any eligible block.")
+    if len(matches) > 1:
+        block_ids = ", ".join(sorted({block_id for block_id, _ in matches}))
+        raise ValueError(
+            f"QID {question_id} appears in multiple blocks ({block_ids}); "
+            "use --target-block-id to disambiguate."
+        )
+    return matches[0]
+
+
+def _flow_ordered_block_ids(definition: Mapping[str, Any]) -> list[str]:
+    flow = definition.get("SurveyFlow")
+    if isinstance(flow, dict):
+        root = flow.get("Flow")
+    elif isinstance(flow, list):
+        root = flow
+    else:
+        root = []
+
+    ordered: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, list):
+            for child in node:
+                _walk(child)
+            return
+        if not isinstance(node, dict):
+            return
+        node_type = str(node.get("Type") or "").strip()
+        if node_type in {"Block", "Standard"}:
+            block_id = str(node.get("ID") or "").strip()
+            if block_id and block_id not in ordered:
+                ordered.append(block_id)
+        for key in ("Flow", "Then", "Else", "ElseFlow"):
+            _walk(node.get(key))
+
+    _walk(root)
+    return ordered
+
+
+def _first_eligible_block_id(definition: Mapping[str, Any]) -> str:
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise ValueError("Survey definition has no Blocks map.")
+
+    for block_id in _flow_ordered_block_ids(definition):
+        block = blocks.get(block_id)
+        if isinstance(block, dict) and not _is_trash_block(block):
+            return str(block_id)
+
+    for block_id, block in blocks.items():
+        if isinstance(block, dict) and not _is_trash_block(block):
+            return str(block_id)
+    raise ValueError("No non-trash block found in this survey.")
+
+
+def _resolve_target_block_id(
+    definition: Mapping[str, Any],
+    *,
+    target_block_id: str | None,
+    after_qid: str | None,
+    before_qid: str | None,
+    fallback_qid: str | None = None,
+) -> str:
+    explicit = (target_block_id or "").strip() or None
+    after = (after_qid or "").strip() or None
+    before = (before_qid or "").strip() or None
+    fallback = (fallback_qid or "").strip() or None
+
+    if after and before:
+        raise ValueError("Use only one of --after-qid or --before-qid.")
+
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise ValueError("Survey definition has no Blocks map.")
+
+    if after:
+        block_id, _ = _ensure_single_question_block(definition, after)
+        if explicit and explicit != block_id:
+            raise ValueError(
+                f"--target-block-id ({explicit}) conflicts with --after-qid block ({block_id})."
+            )
+        return block_id
+
+    if before:
+        block_id, _ = _ensure_single_question_block(definition, before)
+        if explicit and explicit != block_id:
+            raise ValueError(
+                f"--target-block-id ({explicit}) conflicts with --before-qid block ({block_id})."
+            )
+        return block_id
+
+    if explicit:
+        block = blocks.get(explicit)
+        if not isinstance(block, dict):
+            raise ValueError(f"Block {explicit} was not found in this survey.")
+        if _is_trash_block(block):
+            raise ValueError(f"Block {explicit} is Trash and cannot receive questions.")
+        return explicit
+
+    if fallback:
+        block_id, _ = _ensure_single_question_block(definition, fallback)
+        return block_id
+
+    return _first_eligible_block_id(definition)
+
+
+def _resolve_insert_index(
+    definition: Mapping[str, Any],
+    *,
+    block_id: str,
+    after_qid: str | None,
+    before_qid: str | None,
+    position: str,
+) -> int:
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise ValueError("Survey definition has no Blocks map.")
+    block = blocks.get(block_id)
+    if not isinstance(block, dict):
+        raise ValueError(f"Block {block_id} was not found in this survey.")
+    elements, _ = _block_elements_ref(block)
+
+    after = (after_qid or "").strip() or None
+    before = (before_qid or "").strip() or None
+
+    if after:
+        location_block_id, idx = _ensure_single_question_block(definition, after)
+        if location_block_id != block_id:
+            raise ValueError(
+                f"QID {after} is in block {location_block_id}, not {block_id}."
+            )
+        return idx + 1
+    if before:
+        location_block_id, idx = _ensure_single_question_block(definition, before)
+        if location_block_id != block_id:
+            raise ValueError(
+                f"QID {before} is in block {location_block_id}, not {block_id}."
+            )
+        return idx
+    if (position or "").strip().lower() == "prepend":
+        return 0
+    return len(elements)
+
+
+def _remove_qids_from_all_blocks(
+    definition: Mapping[str, Any],
+    qids: Iterable[str],
+) -> set[str]:
+    qid_set = {str(qid).strip() for qid in qids if str(qid).strip()}
+    if not qid_set:
+        return set()
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        return set()
+
+    changed: set[str] = set()
+    for block_id, block_payload in blocks.items():
+        if not isinstance(block_payload, dict):
+            continue
+        elements, key = _block_elements_ref(block_payload)
+        new_elements: list[dict[str, Any]] = []
+        removed_any = False
+        for elem in elements:
+            if not isinstance(elem, dict):
+                new_elements.append(elem)
+                continue
+            qid = str(elem.get("QuestionID") or "").strip()
+            if qid and qid in qid_set:
+                removed_any = True
+                continue
+            new_elements.append(elem)
+        if removed_any:
+            block_payload[key] = new_elements
+            changed.add(str(block_id))
+    return changed
+
+
+def _insert_question_elements(
+    definition: Mapping[str, Any],
+    *,
+    block_id: str,
+    insert_index: int,
+    qids: list[str],
+) -> None:
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise ValueError("Survey definition has no Blocks map.")
+    block = blocks.get(block_id)
+    if not isinstance(block, dict):
+        raise ValueError(f"Block {block_id} was not found in this survey.")
+    elements, _ = _block_elements_ref(block)
+    idx = max(0, min(int(insert_index), len(elements)))
+    for qid in qids:
+        elements.insert(idx, {"Type": "Question", "QuestionID": str(qid)})
+        idx += 1
+
+
+def _update_block(
+    *,
+    survey_id: str,
+    block_id: str,
+    block_payload: Mapping[str, Any],
+    base_url: str,
+    headers: dict[str, str],
+    log_meta: dict[str, Any] | None = None,
+) -> None:
+    send_api_request(
+        action="qsync.survey.block.update",
+        method="PUT",
+        base_url=base_url,
+        headers=headers,
+        path=f"survey-definitions/{survey_id}/blocks/{block_id}",
+        survey_id=survey_id,
+        log_meta=log_meta,
+        json=dict(block_payload),
+        timeout=60,
+    )
+
+
+def _extract_question_id_from_api_payload(payload: Any) -> str | None:
+    candidates: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                key_norm = str(key).strip().lower()
+                if key_norm in {"questionid", "question_id", "questionidfromlocator"}:
+                    qid = str(value or "").strip()
+                    if qid:
+                        candidates.append(qid)
+                else:
+                    _walk(value)
+            return
+        if isinstance(node, list):
+            for value in node:
+                _walk(value)
+
+    _walk(payload)
+    for qid in candidates:
+        if qid.upper().startswith("QID"):
+            return qid
+    return candidates[0] if candidates else None
+
+
+def _resolve_template_question_payload(
+    *,
+    definition: Mapping[str, Any],
+    from_question_id: str | None,
+    question_json_path: str | None,
+) -> tuple[dict[str, Any], str | None]:
+    source_qid = (from_question_id or "").strip() or None
+    json_path = (question_json_path or "").strip() or None
+    if bool(source_qid) == bool(json_path):
+        raise ValueError(
+            "Provide exactly one of --from-question-id or --question-json."
+        )
+
+    if source_qid:
+        questions = definition.get("Questions")
+        if not isinstance(questions, dict):
+            raise ValueError("Survey definition has no Questions map.")
+        source = questions.get(source_qid)
+        if not isinstance(source, dict):
+            raise ValueError(f"Template question {source_qid} was not found.")
+        return (copy.deepcopy(source), source_qid)
+
+    path = Path(str(json_path))
+    if not path.exists():
+        raise ValueError(f"Question JSON file not found: {path}")
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(loaded, dict) and isinstance(loaded.get("result"), dict):
+        loaded = loaded["result"]
+    if isinstance(loaded, dict) and isinstance(loaded.get("Questions"), dict):
+        questions = loaded["Questions"]
+        if len(questions) != 1:
+            raise ValueError(
+                "Question JSON with 'Questions' map must contain exactly one question."
+            )
+        loaded = next(iter(questions.values()))
+    if not isinstance(loaded, dict):
+        raise ValueError("Question JSON must decode to a question object.")
+    return (copy.deepcopy(loaded), None)
+
+
+def _collect_new_question_texts(args: argparse.Namespace) -> list[str | None]:
+    texts: list[str] = []
+    raw = getattr(args, "question_text", None)
+    if raw:
+        for item in raw if isinstance(raw, list) else [raw]:
+            text = str(item or "").strip()
+            if text:
+                texts.append(text)
+    path_value = str(getattr(args, "question_text_file", "") or "").strip()
+    if path_value:
+        path = Path(path_value)
+        if not path.exists():
+            raise ValueError(f"Question text file not found: {path}")
+        for line in path.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if text:
+                texts.append(text)
+    if texts:
+        return list(texts)
+    return [None]
+
+
+def _normalize_data_export_tag(value: str) -> str:
+    cleaned = re.sub(r"\s+", "_", str(value or "").strip())
+    return cleaned
+
+
+def _next_unique_data_export_tag(base: str, existing: set[str]) -> str:
+    candidate = _normalize_data_export_tag(base)
+    if not candidate:
+        return ""
+    if candidate not in existing:
+        return candidate
+    suffix = 2
+    while f"{candidate}_{suffix}" in existing:
+        suffix += 1
+    return f"{candidate}_{suffix}"
+
+
+def _preflight_question_writes(
+    *,
+    survey_id: str,
+    base_url: str,
+    headers: dict[str, str],
+    dry_run: bool,
+    force_live: bool,
+) -> None:
+    try:
+        ensure_unlocked(survey_id)
+    except (SurveyLockedError, RuntimeError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+    try:
+        ctx = load_push_context(survey_id, base_url=base_url, headers=headers)
+        print(f"[question-op] Survey: {ctx.survey_name}")
+        print(f"[question-op] {ctx.describe_counts()}")
+        if ctx.counts_unknown and not force_live and not dry_run:
+            raise SystemExit(
+                f"[question-op] Unable to verify response counts for {survey_id}. "
+                "Refresh inventory and retry or pass --force-live after manual review."
+            )
+        if ctx.response_count > 0 and not force_live and not dry_run:
+            raise SystemExit(
+                f"[question-op] Survey has {ctx.response_count} finished response(s). "
+                "Re-run with --force-live after double-checking."
+            )
+    except Exception as exc:
+        if dry_run:
+            print(f"[question-op] NOTE: Could not load push context: {exc}")
+            return
+        raise
+
+
+def _confirm_noninteractive_safe(*, yes: bool, prompt: str) -> None:
+    if yes:
+        return
+    if not sys.stdin.isatty():
+        raise SystemExit(
+            "[question-op] Confirmation required but stdin is not interactive. "
+            "Re-run with --yes to proceed."
+        )
+    try:
+        from qsync.interactive_menu import confirm
+
+        if not confirm(prompt, default=True):
+            raise SystemExit("[question-op] Aborted.")
+    except Exception:
+        answer = input(f"{prompt} [Y/n]: ").strip().lower()
+        if answer and answer != "y":
+            raise SystemExit("[question-op] Aborted.")
+
+
+def _refresh_cache_after_question_write(
+    *,
+    survey_id: str,
+    args: argparse.Namespace,
+) -> None:
+    try:
+        account = _resolve_account_from_args(args)
+        env = load_account_env(account, root=_workspace_root()) if account else None
+        path = download_survey_definition(survey_id, env=env)
+        print(f"[question-op] Refreshed local cache: {path}")
+    except Exception as exc:
+        print(f"[question-op] WARNING: Cache refresh failed: {exc}")
+
+
+def handle_add_question(args: argparse.Namespace) -> None:
+    """Create one or more questions and place them into a target block position."""
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to add question(s):",
+    )
+    dry_run = bool(getattr(args, "dry_run", False))
+    force_live = bool(getattr(args, "force_live", False))
+    yes = bool(getattr(args, "yes", False))
+    no_publish = bool(getattr(args, "no_publish", False))
+    after_qid = (getattr(args, "after_qid", None) or "").strip() or None
+    before_qid = (getattr(args, "before_qid", None) or "").strip() or None
+    target_block_id = (getattr(args, "target_block_id", None) or "").strip() or None
+    from_question_id = (
+        getattr(args, "from_question_id", None) or ""
+    ).strip() or None
+    question_json = (getattr(args, "question_json", None) or "").strip() or None
+    position = (getattr(args, "position", None) or "append").strip().lower()
+    if position not in {"append", "prepend"}:
+        raise SystemExit("[add-question] ERROR: --position must be append or prepend.")
+    if after_qid and before_qid:
+        raise SystemExit(
+            "[add-question] ERROR: Use only one of --after-qid or --before-qid."
+        )
+
+    base_url, headers = _get_client_config_for_args(args)
+    _preflight_question_writes(
+        survey_id=survey_id,
+        base_url=base_url,
+        headers=headers,
+        dry_run=dry_run,
+        force_live=force_live,
+    )
+
+    definition = fetch_survey_definition(base_url, headers, survey_id)
+    try:
+        template, template_qid = _resolve_template_question_payload(
+            definition=definition,
+            from_question_id=from_question_id,
+            question_json_path=question_json,
+        )
+        texts = _collect_new_question_texts(args)
+    except ValueError as exc:
+        raise SystemExit(f"[add-question] ERROR: {exc}") from exc
+
+    explicit_tag = (getattr(args, "data_export_tag", None) or "").strip()
+    allow_duplicate_tags = bool(getattr(args, "allow_duplicate_tags", False))
+
+    questions = definition.get("Questions")
+    if not isinstance(questions, dict):
+        raise SystemExit("[add-question] ERROR: Survey definition has no Questions map.")
+    existing_tags = {
+        str((question or {}).get("DataExportTag") or "").strip()
+        for question in questions.values()
+        if isinstance(question, dict)
+    }
+    existing_tags.discard("")
+
+    planned_payloads: list[dict[str, Any]] = []
+    for text in texts:
+        payload = copy.deepcopy(template)
+        payload.pop("QuestionID", None)
+        payload.pop("QuestionId", None)
+        if text is not None:
+            payload["QuestionText"] = text
+            if "QuestionText_Unsafe" in payload:
+                payload["QuestionText_Unsafe"] = text
+        base_tag = explicit_tag or str(payload.get("DataExportTag") or "").strip()
+        if base_tag:
+            if allow_duplicate_tags:
+                payload["DataExportTag"] = _normalize_data_export_tag(base_tag)
+            else:
+                next_tag = _next_unique_data_export_tag(base_tag, existing_tags)
+                if next_tag:
+                    payload["DataExportTag"] = next_tag
+                    existing_tags.add(next_tag)
+        planned_payloads.append(payload)
+
+    try:
+        planned_block_id = _resolve_target_block_id(
+            definition,
+            target_block_id=target_block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+            fallback_qid=template_qid,
+        )
+        planned_index = _resolve_insert_index(
+            definition,
+            block_id=planned_block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+            position=position,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[add-question] ERROR: {exc}") from exc
+
+    print(
+        f"[add-question] Plan: create {len(planned_payloads)} question(s) in block {planned_block_id} at index {planned_index}."
+    )
+    if template_qid:
+        print(f"[add-question] Template: {template_qid}")
+    elif question_json:
+        print(f"[add-question] Template JSON: {question_json}")
+
+    if dry_run:
+        print("[add-question] DRY-RUN: no API writes performed.")
+        return
+
+    _confirm_noninteractive_safe(
+        yes=yes,
+        prompt=f"Create {len(planned_payloads)} question(s) in {survey_id}?",
+    )
+
+    created_qids: list[str] = []
+    for payload in planned_payloads:
+        resp = send_api_request(
+            action="qsync.survey.question.create",
+            method="POST",
+            base_url=base_url,
+            headers=headers,
+            path=f"survey-definitions/{survey_id}/questions",
+            survey_id=survey_id,
+            json=payload,
+            timeout=60,
+        )
+        response_payload = resp.json()
+        created_qid = _extract_question_id_from_api_payload(response_payload)
+        if not created_qid:
+            raise SystemExit(
+                "[add-question] ERROR: Could not determine created QuestionID from API response."
+            )
+        created_qids.append(created_qid)
+        print(f"[add-question] Created {created_qid}")
+
+    live_definition = fetch_survey_definition(base_url, headers, survey_id)
+    try:
+        block_id = _resolve_target_block_id(
+            live_definition,
+            target_block_id=target_block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+            fallback_qid=template_qid,
+        )
+        insert_index = _resolve_insert_index(
+            live_definition,
+            block_id=block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+            position=position,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[add-question] ERROR: {exc}") from exc
+
+    touched_blocks = _remove_qids_from_all_blocks(live_definition, created_qids)
+    _insert_question_elements(
+        live_definition,
+        block_id=block_id,
+        insert_index=insert_index,
+        qids=created_qids,
+    )
+    touched_blocks.add(block_id)
+
+    blocks = live_definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise SystemExit("[add-question] ERROR: Survey definition has no Blocks map.")
+    ordered_blocks = [block_id] + sorted(
+        [bid for bid in touched_blocks if bid != block_id]
+    )
+    for bid in ordered_blocks:
+        block_payload = blocks.get(bid)
+        if not isinstance(block_payload, dict):
+            continue
+        _update_block(
+            survey_id=survey_id,
+            block_id=bid,
+            block_payload=block_payload,
+            base_url=base_url,
+            headers=headers,
+            log_meta={"operation": "add-question", "question_ids": created_qids},
+        )
+
+    if not no_publish:
+        description = (getattr(args, "publish_description", None) or "").strip()
+        if not description:
+            description = make_publish_description(
+                operation="add-question",
+                changed_qids=created_qids,
+                count=len(created_qids),
+                label=f"block {block_id}",
+                max_chars=SURVEY_VERSION_DESCRIPTION_MAX_CHARS,
+            )
+        publish_survey_definition(
+            survey_id,
+            description=description,
+            published=True,
+            context={
+                "origin": "qsync.cli_survey.add-question",
+                "changed_qids": created_qids,
+                "block_id": block_id,
+            },
+            base_url=base_url,
+            headers=headers,
+        )
+
+    _refresh_cache_after_question_write(survey_id=survey_id, args=args)
+    print(
+        f"[add-question] Added {len(created_qids)} question(s): {', '.join(created_qids)}"
+    )
+
+
+def handle_move_question(args: argparse.Namespace) -> None:
+    """Move one or more existing questions to a new position within survey blocks."""
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to move question(s):",
+    )
+    qids = _normalize_question_ids(getattr(args, "question_id", None))
+    if not qids:
+        raise SystemExit("[move-question] ERROR: --question-id is required.")
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    force_live = bool(getattr(args, "force_live", False))
+    yes = bool(getattr(args, "yes", False))
+    no_publish = bool(getattr(args, "no_publish", False))
+    after_qid = (getattr(args, "after_qid", None) or "").strip() or None
+    before_qid = (getattr(args, "before_qid", None) or "").strip() or None
+    target_block_id = (getattr(args, "target_block_id", None) or "").strip() or None
+    position = (getattr(args, "position", None) or "append").strip().lower()
+    if position not in {"append", "prepend"}:
+        raise SystemExit("[move-question] ERROR: --position must be append or prepend.")
+    if after_qid and before_qid:
+        raise SystemExit(
+            "[move-question] ERROR: Use only one of --after-qid or --before-qid."
+        )
+    if after_qid and after_qid in qids:
+        raise SystemExit(
+            "[move-question] ERROR: --after-qid cannot reference a moved question."
+        )
+    if before_qid and before_qid in qids:
+        raise SystemExit(
+            "[move-question] ERROR: --before-qid cannot reference a moved question."
+        )
+
+    base_url, headers = _get_client_config_for_args(args)
+    _preflight_question_writes(
+        survey_id=survey_id,
+        base_url=base_url,
+        headers=headers,
+        dry_run=dry_run,
+        force_live=force_live,
+    )
+
+    definition = fetch_survey_definition(base_url, headers, survey_id)
+    questions = definition.get("Questions")
+    if not isinstance(questions, dict):
+        raise SystemExit("[move-question] ERROR: Survey definition has no Questions map.")
+    missing = [qid for qid in qids if qid not in questions]
+    if missing:
+        raise SystemExit(
+            f"[move-question] ERROR: Unknown question ID(s): {', '.join(missing)}"
+        )
+
+    try:
+        block_id = _resolve_target_block_id(
+            definition,
+            target_block_id=target_block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+            fallback_qid=qids[0],
+        )
+        insert_index = _resolve_insert_index(
+            definition,
+            block_id=block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+            position=position,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[move-question] ERROR: {exc}") from exc
+
+    print(
+        f"[move-question] Plan: move {len(qids)} question(s) into block {block_id} at index {insert_index}."
+    )
+    if dry_run:
+        print("[move-question] DRY-RUN: no API writes performed.")
+        return
+
+    _confirm_noninteractive_safe(
+        yes=yes,
+        prompt=f"Move {len(qids)} question(s) in {survey_id}?",
+    )
+
+    touched_blocks = _remove_qids_from_all_blocks(definition, qids)
+    _insert_question_elements(
+        definition,
+        block_id=block_id,
+        insert_index=insert_index,
+        qids=qids,
+    )
+    touched_blocks.add(block_id)
+
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise SystemExit("[move-question] ERROR: Survey definition has no Blocks map.")
+    ordered_blocks = [block_id] + sorted(
+        [bid for bid in touched_blocks if bid != block_id]
+    )
+    for bid in ordered_blocks:
+        block_payload = blocks.get(bid)
+        if not isinstance(block_payload, dict):
+            continue
+        _update_block(
+            survey_id=survey_id,
+            block_id=bid,
+            block_payload=block_payload,
+            base_url=base_url,
+            headers=headers,
+            log_meta={"operation": "move-question", "question_ids": qids},
+        )
+
+    if not no_publish:
+        description = (getattr(args, "publish_description", None) or "").strip()
+        if not description:
+            description = make_publish_description(
+                operation="move-question",
+                changed_qids=qids,
+                count=len(qids),
+                label=f"block {block_id}",
+                max_chars=SURVEY_VERSION_DESCRIPTION_MAX_CHARS,
+            )
+        publish_survey_definition(
+            survey_id,
+            description=description,
+            published=True,
+            context={
+                "origin": "qsync.cli_survey.move-question",
+                "changed_qids": qids,
+                "block_id": block_id,
+            },
+            base_url=base_url,
+            headers=headers,
+        )
+
+    _refresh_cache_after_question_write(survey_id=survey_id, args=args)
+    print(f"[move-question] Moved question(s): {', '.join(qids)}")
+
+
 def handle_push_question(args: argparse.Namespace) -> None:
     """Push a single question from cached survey JSON to Qualtrics."""
     from .cli import _prompt_for_survey_id_if_needed
@@ -8394,7 +9225,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "  Embedded/options: items structural edits, add-embedded-field, remove-embedded-field, rename-embedded-field, cleanup-embedded-data, prolific-auth\n"
             "  Prolific wiring: prolific-wiring (alias to qsync prolific)\n"
             "  Lifecycle/versions: publish, activate, deactivate, versions, version-fetch, rollback\n"
-            "  Utilities: inspect-question, push-question\n"
+            "  Utilities: inspect-question, add-question, move-question, push-question\n"
             "  Exports: export-responses, export-translation, export-side-by-side\n"
             "  Bulk: master (group; has subcommands)\n"
             "  Admin: rename, delete\n"
@@ -9277,6 +10108,173 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_inspect.set_defaults(func=handle_inspect_question)
 
+    # add-question
+    p_add_question = survey_subs.add_parser(
+        "add-question",
+        help="Create one or more questions and place them into a block position",
+    )
+    p_add_question.add_argument(
+        "--survey-id",
+        dest="survey_id",
+        help="Target Qualtrics survey ID (omit to select interactively)",
+    )
+    p_add_question.add_argument(
+        "--from-question-id",
+        dest="from_question_id",
+        help="Template question ID to clone (recommended)",
+    )
+    p_add_question.add_argument(
+        "--question-json",
+        dest="question_json",
+        help=(
+            "Path to a JSON file containing one question payload "
+            "(alternative to --from-question-id)"
+        ),
+    )
+    p_add_question.add_argument(
+        "--question-text",
+        action="append",
+        dest="question_text",
+        help=(
+            "Question text to set on created question(s). Repeat for multiple questions. "
+            "If omitted, one question is created with template text."
+        ),
+    )
+    p_add_question.add_argument(
+        "--question-text-file",
+        dest="question_text_file",
+        help="Path to a newline-delimited file of question texts (one question per line)",
+    )
+    p_add_question.add_argument(
+        "--target-block-id",
+        dest="target_block_id",
+        help="Target Block ID (default: inferred from anchor/template/first eligible block)",
+    )
+    p_add_question.add_argument(
+        "--after-qid",
+        dest="after_qid",
+        help="Insert after this QID",
+    )
+    p_add_question.add_argument(
+        "--before-qid",
+        dest="before_qid",
+        help="Insert before this QID",
+    )
+    p_add_question.add_argument(
+        "--position",
+        choices=["append", "prepend"],
+        default="append",
+        help="Placement when no --after-qid/--before-qid is provided (default: append)",
+    )
+    p_add_question.add_argument(
+        "--data-export-tag",
+        dest="data_export_tag",
+        help="Base DataExportTag for created questions (auto-deduped by default)",
+    )
+    p_add_question.add_argument(
+        "--allow-duplicate-tags",
+        action="store_true",
+        help="Allow duplicate DataExportTag values (dangerous; disabled by default)",
+    )
+    p_add_question.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the plan without calling create/update endpoints",
+    )
+    p_add_question.add_argument(
+        "--force-live",
+        action="store_true",
+        help="Allow writes even if finished responses exist",
+    )
+    p_add_question.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+    p_add_question.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip publishing the survey after adding questions",
+    )
+    p_add_question.add_argument(
+        "--publish-description",
+        help=f"Publish description override (max {SURVEY_VERSION_DESCRIPTION_MAX_CHARS} chars).",
+    )
+    p_add_question.add_argument(
+        "--account",
+        help="Use credentials from `.env.<account>` under the workspace root.",
+    )
+    p_add_question.set_defaults(func=handle_add_question)
+
+    # move-question
+    p_move_question = survey_subs.add_parser(
+        "move-question",
+        help="Move one or more existing questions to a different block position",
+    )
+    p_move_question.add_argument(
+        "--survey-id",
+        dest="survey_id",
+        help="Target Qualtrics survey ID (omit to select interactively)",
+    )
+    p_move_question.add_argument(
+        "--question-id",
+        action="append",
+        dest="question_id",
+        help="Question ID(s) to move (repeatable, comma-separated)",
+    )
+    p_move_question.add_argument(
+        "--target-block-id",
+        dest="target_block_id",
+        help="Target Block ID (default: inferred from anchor/current question block)",
+    )
+    p_move_question.add_argument(
+        "--after-qid",
+        dest="after_qid",
+        help="Insert after this QID",
+    )
+    p_move_question.add_argument(
+        "--before-qid",
+        dest="before_qid",
+        help="Insert before this QID",
+    )
+    p_move_question.add_argument(
+        "--position",
+        choices=["append", "prepend"],
+        default="append",
+        help="Placement when no --after-qid/--before-qid is provided (default: append)",
+    )
+    p_move_question.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the plan without calling update endpoints",
+    )
+    p_move_question.add_argument(
+        "--force-live",
+        action="store_true",
+        help="Allow writes even if finished responses exist",
+    )
+    p_move_question.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+    p_move_question.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip publishing the survey after moving questions",
+    )
+    p_move_question.add_argument(
+        "--publish-description",
+        help=f"Publish description override (max {SURVEY_VERSION_DESCRIPTION_MAX_CHARS} chars).",
+    )
+    p_move_question.add_argument(
+        "--account",
+        help="Use credentials from `.env.<account>` under the workspace root.",
+    )
+    p_move_question.set_defaults(func=handle_move_question)
+
     # push-question
     p_push_q = survey_subs.add_parser(
         "push-question",
@@ -9723,6 +10721,8 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "rollback",
             # Utilities
             "inspect-question",
+            "add-question",
+            "move-question",
             "push-question",
             # Exports
             "export-responses",
