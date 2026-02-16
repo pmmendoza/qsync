@@ -210,3 +210,94 @@ def write_choicegroup_description(
     entry = groups.get(str(group_id)) or {}
     entry["Description"] = value
     groups[str(group_id)] = entry
+
+
+def read_sbs_column_question_text(
+    question: dict,
+    language: str,
+    column_id: str,
+) -> str | None:
+    lang = normalize_language_code(language)
+    language_block = question.get("Language")
+    if not isinstance(language_block, dict):
+        return None
+    lang_block = language_block.get(lang)
+    if not isinstance(lang_block, dict):
+        return None
+    additional = (
+        lang_block.get("AdditionalQuestions", {})
+        if isinstance(lang_block.get("AdditionalQuestions"), dict)
+        else {}
+    )
+    value = additional.get(str(column_id), {}).get("QuestionText")
+    return str(value) if value is not None else None
+
+
+def write_sbs_column_question_text(
+    question: dict,
+    language: str,
+    column_id: str,
+    value: str,
+) -> None:
+    additional = _ensure_section(question, language, "AdditionalQuestions")
+    entry = additional.get(str(column_id)) or {}
+    entry["QuestionText"] = value
+    additional[str(column_id)] = entry
+
+
+def read_sbs_column_answer_display(
+    question: dict,
+    language: str,
+    column_id: str,
+    answer_id: str,
+) -> str | None:
+    lang = normalize_language_code(language)
+    language_block = question.get("Language")
+    if not isinstance(language_block, dict):
+        return None
+    lang_block = language_block.get(lang)
+    if not isinstance(lang_block, dict):
+        return None
+
+    additional = (
+        lang_block.get("AdditionalQuestions", {})
+        if isinstance(lang_block.get("AdditionalQuestions"), dict)
+        else {}
+    )
+    column = additional.get(str(column_id))
+    if isinstance(column, dict):
+        answers = column.get("Answers")
+        if isinstance(answers, dict):
+            value = answers.get(str(answer_id), {}).get("Display")
+            if value is not None:
+                return str(value)
+
+    # Fallback for payloads that only expose language-level Answers.
+    answers = (
+        lang_block.get("Answers", {})
+        if isinstance(lang_block.get("Answers"), dict)
+        else {}
+    )
+    value = answers.get(str(answer_id), {}).get("Display")
+    return str(value) if value is not None else None
+
+
+def write_sbs_column_answer_display(
+    question: dict,
+    language: str,
+    column_id: str,
+    answer_id: str,
+    value: str,
+) -> None:
+    additional = _ensure_section(question, language, "AdditionalQuestions")
+    column = additional.get(str(column_id))
+    if not isinstance(column, dict):
+        column = {}
+        additional[str(column_id)] = column
+    answers = column.get("Answers")
+    if not isinstance(answers, dict):
+        answers = {}
+        column["Answers"] = answers
+    entry = answers.get(str(answer_id)) or {}
+    entry["Display"] = value
+    answers[str(answer_id)] = entry

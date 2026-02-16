@@ -11,6 +11,8 @@ from ..errors import QsyncValidationError
 from ..excel_io import (
     OPTIONS_SHEET,
     QUESTION_SHEET,
+    SBS_COLUMNS_SHEET,
+    SBS_COLUMN_ANSWERS_SHEET,
     SUBITEMS_SHEET,
     SURVEY_METADATA_SHEET,
     _iter_sheet_rows,
@@ -26,6 +28,8 @@ from .translations_language_blocks import (
     read_choice_display,
     read_label_display,
     read_question_text,
+    read_sbs_column_answer_display,
+    read_sbs_column_question_text,
 )
 
 TranslationField = Literal["QuestionText", "Choice", "Answer", "Label", "Metadata"]
@@ -71,6 +75,8 @@ def resolve_languages_from_workbook(wb) -> list[str]:
         (QUESTION_SHEET, "Text"),
         (OPTIONS_SHEET, "Label"),
         (SUBITEMS_SHEET, "Label"),
+        (SBS_COLUMNS_SHEET, "Label"),
+        (SBS_COLUMN_ANSWERS_SHEET, "Label"),
     ):
         if sheet_name not in wb.sheetnames:
             continue
@@ -121,6 +127,26 @@ def _normalize_field(value: str | None) -> str:
         impact="Translations cannot be staged safely.",
         action="Set Field to Answer or Label and retry.",
     )
+
+
+def _make_sbs_scoped_qid(qid: str, column_id: str) -> str:
+    qid_s = str(qid or "").strip()
+    column_s = str(column_id or "").strip()
+    if not qid_s or not column_s:
+        return ""
+    return f"{qid_s}#{column_s}"
+
+
+def _split_sbs_scoped_qid(qid: str) -> tuple[str, str] | None:
+    raw = str(qid or "").strip()
+    if "#" not in raw:
+        return None
+    base_qid, column_id = raw.split("#", 1)
+    base_qid = base_qid.strip()
+    column_id = column_id.strip()
+    if not base_qid or not column_id:
+        return None
+    return base_qid, column_id
 
 
 def _extract_question_values(
@@ -232,6 +258,132 @@ def _extract_option_values(
                 language=language,
                 field=field,
                 item_id=choice_id,
+                text=text,
+                is_html=is_html,
+            )
+        )
+    return values
+
+
+def _extract_sbs_column_values(
+    wb,
+    language: str,
+    *,
+    scope_qids: set[str] | None,
+) -> list[WorkbookTranslationValue]:
+    if SBS_COLUMNS_SHEET not in wb.sheetnames:
+        return []
+    ws = wb[SBS_COLUMNS_SHEET]
+    headers, data_rows = _iter_sheet_rows(ws)
+    if not headers or "QID" not in headers or "ColumnId" not in headers:
+        return []
+    qid_idx = headers.index("QID")
+    column_idx = headers.index("ColumnId")
+    suffix = _language_suffix(language)
+    if not suffix:
+        return []
+    text_col = f"Label_{suffix}_MD"
+    html_col = f"Label_{suffix}_IsHTML"
+    if text_col not in headers:
+        return []
+    text_idx = headers.index(text_col)
+    html_idx = headers.index(html_col) if html_col in headers else None
+
+    values: list[WorkbookTranslationValue] = []
+    for row in data_rows:
+        qid_val = row[qid_idx].value
+        column_val = row[column_idx].value
+        qid = str(qid_val or "").strip()
+        column_id = str(column_val or "").strip()
+        if not qid or not column_id:
+            continue
+        if scope_qids is not None and qid not in scope_qids:
+            continue
+        scoped_qid = _make_sbs_scoped_qid(qid, column_id)
+        if not scoped_qid:
+            continue
+        cell = row[text_idx]
+        raw = cell.value if cell is not None else None
+        if raw is None or str(raw).strip() == "":
+            continue
+        is_html = False
+        if html_idx is not None:
+            html_cell = row[html_idx]
+            is_html = bool(html_cell.value) if html_cell is not None else False
+        text = normalize_text(str(raw)) if is_html else str(raw)
+        values.append(
+            WorkbookTranslationValue(
+                qid=scoped_qid,
+                language=language,
+                field="QuestionText",
+                item_id=None,
+                text=text,
+                is_html=is_html,
+            )
+        )
+    return values
+
+
+def _extract_sbs_column_answer_values(
+    wb,
+    language: str,
+    *,
+    scope_qids: set[str] | None,
+) -> list[WorkbookTranslationValue]:
+    if SBS_COLUMN_ANSWERS_SHEET not in wb.sheetnames:
+        return []
+    ws = wb[SBS_COLUMN_ANSWERS_SHEET]
+    headers, data_rows = _iter_sheet_rows(ws)
+    if (
+        not headers
+        or "QID" not in headers
+        or "ColumnId" not in headers
+        or "AnswerId" not in headers
+    ):
+        return []
+    qid_idx = headers.index("QID")
+    column_idx = headers.index("ColumnId")
+    answer_idx = headers.index("AnswerId")
+    suffix = _language_suffix(language)
+    if not suffix:
+        return []
+    text_col = f"Label_{suffix}_MD"
+    html_col = f"Label_{suffix}_IsHTML"
+    if text_col not in headers:
+        return []
+    text_idx = headers.index(text_col)
+    html_idx = headers.index(html_col) if html_col in headers else None
+
+    values: list[WorkbookTranslationValue] = []
+    for row in data_rows:
+        qid_val = row[qid_idx].value
+        column_val = row[column_idx].value
+        answer_val = row[answer_idx].value
+        qid = str(qid_val or "").strip()
+        column_id = str(column_val or "").strip()
+        answer_id = str(answer_val or "").strip()
+        if not qid or not column_id or not answer_id:
+            continue
+        if scope_qids is not None and qid not in scope_qids:
+            continue
+        scoped_qid = _make_sbs_scoped_qid(qid, column_id)
+        if not scoped_qid:
+            continue
+        cell = row[text_idx]
+        raw = cell.value if cell is not None else None
+        if raw is None or str(raw).strip() == "":
+            continue
+        is_html = False
+        if html_idx is not None:
+            html_cell = row[html_idx]
+            is_html = bool(html_cell.value) if html_cell is not None else False
+        text = normalize_text(str(raw)) if is_html else str(raw)
+        values.append(
+            WorkbookTranslationValue(
+                qid=scoped_qid,
+                language=language,
+                field="Answer",
+                item_id=answer_id,
                 text=text,
                 is_html=is_html,
             )
@@ -415,6 +567,7 @@ def extract_workbook_values(
     values: list[WorkbookTranslationValue] = []
     for lang in langs:
         values.extend(_extract_question_values(wb, lang, scope_qids=scope_qids))
+        values.extend(_extract_sbs_column_values(wb, lang, scope_qids=scope_qids))
         values.extend(
             _extract_option_values(
                 wb,
@@ -422,6 +575,9 @@ def extract_workbook_values(
                 scope_qids=scope_qids,
                 question_rows=question_rows,
             )
+        )
+        values.extend(
+            _extract_sbs_column_answer_values(wb, lang, scope_qids=scope_qids)
         )
         values.extend(
             _extract_subitem_values(
@@ -454,10 +610,27 @@ def diff_workbook_vs_cache(
     questions = (survey_payload.get("result") or {}).get("Questions") or {}
     changes: list[TranslationChange] = []
     for value in values:
+        sbs_scope = _split_sbs_scoped_qid(value.qid)
         if value.field == "Metadata":
             old = _read_metadata_value(
                 survey_payload, value.language, value.item_id or ""
             )
+        elif sbs_scope is not None:
+            qid, column_id = sbs_scope
+            question = questions.get(qid)
+            if not question:
+                continue
+            if value.field == "QuestionText":
+                old = read_sbs_column_question_text(question, value.language, column_id)
+            elif value.field == "Answer":
+                old = read_sbs_column_answer_display(
+                    question,
+                    value.language,
+                    column_id,
+                    value.item_id or "",
+                )
+            else:
+                continue
         else:
             question = questions.get(value.qid)
             if not question:
@@ -517,8 +690,29 @@ def build_base_value_map_for_keys(
     result = survey_payload.get("result") or {}
     base_map: dict[TranslationKey, str] = {}
     for qid, field, item_id in keys:
+        sbs_scope = _split_sbs_scoped_qid(qid)
         if field == "Metadata":
             value = _base_metadata_value(result, str(item_id or ""))
+        elif sbs_scope is not None:
+            base_qid, column_id = sbs_scope
+            question = questions.get(base_qid)
+            if not question:
+                continue
+            additional = question.get("AdditionalQuestions") or {}
+            if not isinstance(additional, dict):
+                additional = {}
+            column = additional.get(str(column_id))
+            if not isinstance(column, dict):
+                continue
+            if field == "QuestionText":
+                value = column.get("QuestionText")
+            elif field == "Answer":
+                answers = column.get("Answers") or {}
+                if not isinstance(answers, dict):
+                    answers = {}
+                value = (answers.get(str(item_id)) or {}).get("Display")
+            else:
+                continue
         else:
             question = questions.get(qid)
             if not question:

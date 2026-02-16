@@ -9,6 +9,8 @@ from qsync.errors import QsyncValidationError
 from qsync.excel_io import (
     OPTIONS_SHEET,
     QUESTION_SHEET,
+    SBS_COLUMNS_SHEET,
+    SBS_COLUMN_ANSWERS_SHEET,
     SUBITEMS_SHEET,
     SURVEY_METADATA_SHEET,
     init_workbook_from_survey,
@@ -65,6 +67,78 @@ def _survey_payload() -> dict:
                             "Choices": {"1": {"Display": "Choix old"}},
                             "Answers": {"1": {"Display": "Réponse old"}},
                             "Labels": {"1": {"Display": "Bas old"}},
+                        }
+                    },
+                }
+            },
+        }
+    }
+
+
+def _sbs_survey_payload() -> dict:
+    return {
+        "result": {
+            "SurveyID": "SV_TEST",
+            "SurveyOptions": {
+                "SurveyLanguage": "EN",
+                "AvailableLanguages": ["EN", "FR"],
+            },
+            "SurveyFlow": {"Flow": [{"Type": "Standard", "ID": "BL_1"}]},
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Default",
+                    "Description": "Block 1",
+                    "BlockElements": [{"Type": "Question", "QuestionID": "QID15"}],
+                }
+            },
+            "Questions": {
+                "QID15": {
+                    "QuestionType": "SBS",
+                    "Selector": "SBSMatrix",
+                    "QuestionText": "Base SBS question",
+                    "DataExportTag": "q15",
+                    "Choices": {"1": {"Display": "Statement 1"}},
+                    "ChoiceOrder": ["1"],
+                    "AdditionalQuestions": {
+                        "1": {
+                            "QuestionText": "Definitely didn't happen",
+                            "Answers": {
+                                "1": {"Display": "Answer 1"},
+                                "2": {"Display": "Answer 2"},
+                            },
+                            "AnswerOrder": ["1", "2"],
+                        },
+                        "2": {
+                            "QuestionText": "Probably didn't happen",
+                            "Answers": {
+                                "1": {"Display": "Answer 1"},
+                                "2": {"Display": "Answer 2"},
+                                "3": {"Display": "Answer 3"},
+                            },
+                            "AnswerOrder": ["1", "2", "3"],
+                        },
+                    },
+                    "Language": {
+                        "FR": {
+                            "QuestionText": "Question SBS FR old",
+                            "Choices": {"1": {"Display": "Déclaration old"}},
+                            "AdditionalQuestions": {
+                                "1": {
+                                    "QuestionText": "Certainement pas arrivé old",
+                                    "Answers": {
+                                        "1": {"Display": "Réponse 1 old"},
+                                        "2": {"Display": "Réponse 2 old"},
+                                    },
+                                },
+                                "2": {
+                                    "QuestionText": "Probablement pas arrivé old",
+                                    "Answers": {
+                                        "1": {"Display": "Réponse 1 col2 old"},
+                                        "2": {"Display": "Réponse 2 col2 old"},
+                                        "3": {"Display": "Réponse 3 col2 old"},
+                                    },
+                                },
+                            },
                         }
                     },
                 }
@@ -226,3 +300,53 @@ def test_diff_workbook_vs_cache_ignores_markdown_roundtrip_noise(tmp_path: Path)
 
     changes = diff_workbook_vs_cache(payload, workbook_path, ["FR"])
     assert changes == []
+
+
+def test_diff_workbook_vs_cache_extracts_sbs_column_changes(tmp_path: Path) -> None:
+    payload = _sbs_survey_payload()
+    workbook_path = tmp_path / "workbook_sbs.xlsx"
+    init_workbook_from_survey("SV_TEST", payload, workbook_path, languages=["FR"])
+
+    wb = load_workbook(workbook_path)
+
+    col_ws = wb[SBS_COLUMNS_SHEET]
+    col_headers = [cell.value for cell in next(col_ws.iter_rows(max_row=1))]
+    col_qid_idx = col_headers.index("QID") + 1
+    col_id_idx = col_headers.index("ColumnId") + 1
+    col_label_idx = col_headers.index("Label_fr_MD") + 1
+    for row in range(2, col_ws.max_row + 1):
+        if str(col_ws.cell(row=row, column=col_qid_idx).value or "").strip() != "QID15":
+            continue
+        if str(col_ws.cell(row=row, column=col_id_idx).value or "").strip() != "1":
+            continue
+        col_ws.cell(row=row, column=col_label_idx).value = "Certainement pas arrivé new"
+        break
+
+    ans_ws = wb[SBS_COLUMN_ANSWERS_SHEET]
+    ans_headers = [cell.value for cell in next(ans_ws.iter_rows(max_row=1))]
+    ans_qid_idx = ans_headers.index("QID") + 1
+    ans_col_idx = ans_headers.index("ColumnId") + 1
+    ans_id_idx = ans_headers.index("AnswerId") + 1
+    ans_label_idx = ans_headers.index("Label_fr_MD") + 1
+    for row in range(2, ans_ws.max_row + 1):
+        if str(ans_ws.cell(row=row, column=ans_qid_idx).value or "").strip() != "QID15":
+            continue
+        if str(ans_ws.cell(row=row, column=ans_col_idx).value or "").strip() != "2":
+            continue
+        if str(ans_ws.cell(row=row, column=ans_id_idx).value or "").strip() != "3":
+            continue
+        ans_ws.cell(row=row, column=ans_label_idx).value = "Réponse 3 col2 new"
+        break
+
+    wb.save(workbook_path)
+
+    changes = diff_workbook_vs_cache(payload, workbook_path, ["FR"])
+    assert any(
+        change.qid == "QID15#1" and change.field == "QuestionText" for change in changes
+    )
+    assert any(
+        change.qid == "QID15#2"
+        and change.field == "Answer"
+        and change.item_id == "3"
+        for change in changes
+    )

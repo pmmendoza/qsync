@@ -46,6 +46,8 @@ from .translations_language_blocks import (
     write_choice_display,
     write_label_display,
     write_question_text,
+    write_sbs_column_answer_display,
+    write_sbs_column_question_text,
 )
 from .translations_workbook_extract import (
     SURVEY_METADATA_QID,
@@ -1226,6 +1228,50 @@ def _collect_workbook_keys(wb, language: str) -> set[tuple[str, str, str | None]
                 field = _normalize_field(field_val)
                 keys.add((qid, field, answer_id))
 
+    if excel_io.SBS_COLUMNS_SHEET in wb.sheetnames:
+        ws = wb[excel_io.SBS_COLUMNS_SHEET]
+        headers, data_rows = excel_io._iter_sheet_rows(ws)
+        if (
+            headers
+            and "QID" in headers
+            and "ColumnId" in headers
+            and f"Label_{suffix}_MD" in headers
+        ):
+            qid_idx = headers.index("QID")
+            column_idx = headers.index("ColumnId")
+            for row in data_rows:
+                qid_val = row[qid_idx].value if qid_idx < len(row) else None
+                column_val = row[column_idx].value if column_idx < len(row) else None
+                qid = str(qid_val or "").strip()
+                column_id = str(column_val or "").strip()
+                scoped_qid = _make_sbs_scoped_qid(qid, column_id)
+                if scoped_qid:
+                    keys.add((scoped_qid, "QuestionText", None))
+
+    if excel_io.SBS_COLUMN_ANSWERS_SHEET in wb.sheetnames:
+        ws = wb[excel_io.SBS_COLUMN_ANSWERS_SHEET]
+        headers, data_rows = excel_io._iter_sheet_rows(ws)
+        if (
+            headers
+            and "QID" in headers
+            and "ColumnId" in headers
+            and "AnswerId" in headers
+            and f"Label_{suffix}_MD" in headers
+        ):
+            qid_idx = headers.index("QID")
+            column_idx = headers.index("ColumnId")
+            answer_idx = headers.index("AnswerId")
+            for row in data_rows:
+                qid_val = row[qid_idx].value if qid_idx < len(row) else None
+                column_val = row[column_idx].value if column_idx < len(row) else None
+                answer_val = row[answer_idx].value if answer_idx < len(row) else None
+                qid = str(qid_val or "").strip()
+                column_id = str(column_val or "").strip()
+                answer_id = str(answer_val or "").strip()
+                scoped_qid = _make_sbs_scoped_qid(qid, column_id)
+                if scoped_qid and answer_id:
+                    keys.add((scoped_qid, "Answer", answer_id))
+
     if excel_io.SURVEY_METADATA_SHEET in wb.sheetnames:
         ws = wb[excel_io.SURVEY_METADATA_SHEET]
         headers, data_rows = excel_io._iter_sheet_rows(ws)
@@ -1440,6 +1486,33 @@ def _normalize_metadata_key(key: str) -> str:
     return key
 
 
+def _split_sbs_scoped_qid(qid: str) -> tuple[str, str] | None:
+    raw = str(qid or "").strip()
+    if "#" not in raw:
+        return None
+    base_qid, column_id = raw.split("#", 1)
+    base_qid = base_qid.strip()
+    column_id = column_id.strip()
+    if not base_qid or not column_id:
+        return None
+    return base_qid, column_id
+
+
+def _canonical_question_qid(qid: str) -> str:
+    scoped = _split_sbs_scoped_qid(qid)
+    if scoped is None:
+        return str(qid or "").strip()
+    return scoped[0]
+
+
+def _make_sbs_scoped_qid(qid: str, column_id: str) -> str:
+    qid_s = str(qid or "").strip()
+    column_s = str(column_id or "").strip()
+    if not qid_s or not column_s:
+        return ""
+    return f"{qid_s}#{column_s}"
+
+
 def _parse_translation_map_key(key: str) -> tuple[str, str, str | None] | None:
     raw = str(key or "").strip()
     if not raw:
@@ -1538,10 +1611,26 @@ def _apply_translation_changes_to_payload(
             langs.add(lang)
             continue
 
-        question = questions.get(qid)
+        sbs_scope = _split_sbs_scoped_qid(qid)
+        base_qid = sbs_scope[0] if sbs_scope else qid
+        question = questions.get(base_qid)
         if not question:
             continue
-        if field == "QuestionText":
+        if sbs_scope and field == "QuestionText":
+            _base_qid, column_id = sbs_scope
+            write_sbs_column_question_text(question, lang, column_id, new_value)
+        elif sbs_scope and field == "Answer":
+            _base_qid, column_id = sbs_scope
+            if not item_id:
+                continue
+            write_sbs_column_answer_display(
+                question,
+                lang,
+                column_id,
+                item_id,
+                new_value,
+            )
+        elif field == "QuestionText":
             write_question_text(question, lang, new_value)
         elif field == "Choice":
             write_choice_display(question, lang, item_id, new_value)
@@ -1549,7 +1638,7 @@ def _apply_translation_changes_to_payload(
             write_answer_display(question, lang, item_id, new_value)
         else:
             write_label_display(question, lang, item_id, new_value)
-        qids.add(qid)
+        qids.add(base_qid)
         langs.add(lang)
 
     return qids, langs, metadata_keys
@@ -1771,7 +1860,13 @@ def apply_translations(
     for warning in warnings:
         warn("[qsync:translations]", warning)
 
-    qids = sorted({change.qid for change in changes if change.field != "Metadata"})
+    qids = sorted(
+        {
+            _canonical_question_qid(change.qid)
+            for change in changes
+            if change.field != "Metadata"
+        }
+    )
     langs = sorted({change.language for change in changes})
     metadata_keys = sorted(
         {
@@ -1948,7 +2043,13 @@ def push_translations(
             print("[sync:translations] No staged changes found.")
             return []
 
-    qids = sorted({qid for qid in (pending.payload.qids or []) if qid})
+    qids = sorted(
+        {
+            _canonical_question_qid(qid)
+            for qid in (pending.payload.qids or [])
+            if qid
+        }
+    )
     langs = sorted({lang for lang in (pending.payload.languages or []) if lang})
     metadata_keys = sorted(
         {key for key in (pending.payload.metadata_keys or []) if key}
