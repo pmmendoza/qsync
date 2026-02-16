@@ -7,7 +7,7 @@ Contract:
 - Interactive: allow browsing from inventory records with:
   - autocomplete-style filtering
   - optional regex/manual filter fallback
-  - disabled entries for locked/inactive/no-API-edit (when metadata exists)
+  - disabled entries for locked/no-API-edit (inactive is informational only)
   - on-demand "View details" table
   - optional multi-select for bulk flows
   - manual SurveyID entry escape hatch
@@ -68,11 +68,13 @@ def _format_survey_label(record: dict[str, Any]) -> str:
     sid = str(record.get("id") or "")
     name = str(record.get("name") or "Untitled")
     flags = []
-    if not _truthy(record.get("isActive")):
+    if record.get("isActive") is not None and not _truthy(record.get("isActive")):
         flags.append("inactive")
     if _truthy(record.get("locked")):
         flags.append("locked")
-    if not _truthy(record.get("editableViaApi")):
+    if record.get("editableViaApi") is not None and not _truthy(
+        record.get("editableViaApi")
+    ):
         flags.append("no-api-edit")
     suffix = f" ({', '.join(flags)})" if flags else ""
     return f"{sid} - {name}{suffix}"
