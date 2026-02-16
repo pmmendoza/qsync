@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import os
 import re
+import subprocess
+import sys
 from typing import Any
 
 
@@ -1352,7 +1354,7 @@ class StructuralSessionScreen(Screen):
         except Exception:
             pass
 
-        actions.add_option("➕ Add another edit (opens CLI wizard)")
+        actions.add_option("➕ Add another edit (external wizard)")
         actions.add_option("🔍 Review staged diffs")
         actions.add_option("🚀 Push staged edits now")
         actions.add_option("🧹 Revert staged edits (clear pending)")
@@ -1556,27 +1558,19 @@ class StructuralSessionScreen(Screen):
 
         if choice.startswith("➕"):
             try:
-                from qsync.dimensions.items_structural import interactive_choice_wizard
+                from pathlib import Path
+                from qsync.config import resolve_root
 
                 with self.app.suspend():  # type: ignore[attr-defined]
-                    prev_questionary = os.environ.get("QSYNC_USE_QUESTIONARY")
-                    # Textual runs its own event loop; force plain fallback prompts
-                    # for the suspended CLI wizard to avoid asyncio/questionary clashes.
-                    os.environ["QSYNC_USE_QUESTIONARY"] = "0"
-                    try:
-                        op = interactive_choice_wizard(
-                            survey_id=survey_id,
-                            qid=None,
-                            allow_delete=False,
-                            experimental_unsupported=False,
+                    cmd = [sys.executable, "-m", "qsync.cli"]
+                    root = resolve_root(required=False) or Path.cwd()
+                    cmd.extend(["--root", str(root)])
+                    cmd.extend(["items", "edit", "--survey-id", survey_id])
+                    result = subprocess.run(cmd, check=False)
+                    if result.returncode != 0:
+                        print(
+                            f"[qsync:tui] External edit wizard exited with code {result.returncode}."
                         )
-                    finally:
-                        if prev_questionary is None:
-                            os.environ.pop("QSYNC_USE_QUESTIONARY", None)
-                        else:
-                            os.environ["QSYNC_USE_QUESTIONARY"] = prev_questionary
-                if op:
-                    self._append_op_to_pending(survey_id=survey_id, op=op)
             except Exception as exc:
                 detail.update(f"{_format_ops_summary(state.ops)}\n\nERROR: {exc}")
             self.on_mount()
