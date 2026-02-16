@@ -1242,25 +1242,14 @@ def handle_menu(args: argparse.Namespace) -> None:
         def _call_interactive_choice_wizard(
             *, survey_id: str, qid: str | None
         ) -> dict[str, Any]:
-            try:
-                return interactive_choice_wizard(
-                    survey_id=survey_id,
-                    qid=qid,
-                    allow_delete=False,
-                    experimental_unsupported=False,
-                    env=selected_env,
-                    surveys_dir=surveys_dir,
-                )
-            except TypeError as exc:
-                msg = str(exc)
-                if "unexpected keyword argument" not in msg:
-                    raise
-                return interactive_choice_wizard(
-                    survey_id=survey_id,
-                    qid=qid,
-                    allow_delete=False,
-                    experimental_unsupported=False,
-                )
+            return interactive_choice_wizard(
+                survey_id=survey_id,
+                qid=qid,
+                allow_delete=False,
+                experimental_unsupported=False,
+                env=selected_env,
+                surveys_dir=surveys_dir,
+            )
 
         resolver = WorkbookResolver()
         xlsx_path = resolver.resolve(survey_id)
@@ -1410,7 +1399,18 @@ def handle_menu(args: argparse.Namespace) -> None:
                 continue
 
             if not op:
-                return
+                print(
+                    "[survey-menu] ERROR: structural editor returned no staged op."
+                )
+                if (
+                    select_from_list(
+                        "Retry same survey selection?",
+                        ["Yes", "No (back to survey menu)"],
+                    )
+                    != "Yes"
+                ):
+                    return
+                continue
             _stage_op(op)
             print(
                 f"[survey-menu] Staged: {op.get('op')} qid={op.get('qid')} id={op.get('choice_id') or op.get('answer_id') or ''}"
