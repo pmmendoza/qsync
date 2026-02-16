@@ -323,22 +323,31 @@ def _select_multiple_records(
     if len(choices) > 60:
         from .interactive_menu import autocomplete_from_list
 
+        show_all_sentinel = "→ Continue to multi-select (show full list)"
+        autocomplete_choices = [show_all_sentinel, *choices]
         narrowed = autocomplete_from_list(
             message=message,
-            choices=choices,
-            instruction="Type a filter first, then press Enter to proceed to multi-select",
+            choices=autocomplete_choices,
+            instruction="Type to filter, or press Enter to continue with the full list",
         )
         if narrowed is None:
             return None
 
-        narrowed_id = _strip_label_to_survey_id(narrowed)
-        if narrowed_id:
-            return [narrowed_id]
-        narrowed_records = _filter_records(enabled_records, narrowed)
-        if narrowed_records:
-            if len(narrowed_records) == 1:
-                return [_strip_label_to_survey_id(_format_survey_label(narrowed_records[0]))]
-            choices = [_format_survey_label(r) for r in narrowed_records]
+        if narrowed == show_all_sentinel:
+            narrowed_records = enabled_records
+        else:
+            narrowed_id = _strip_label_to_survey_id(narrowed)
+            if narrowed_id:
+                return [narrowed_id]
+            narrowed_records = _filter_records(enabled_records, narrowed)
+
+        if not narrowed_records:
+            print("[qsync] No surveys matched that filter.")
+            return []
+        if len(narrowed_records) == 1:
+            sid = _strip_label_to_survey_id(_format_survey_label(narrowed_records[0]))
+            return [sid] if sid is not None else []
+        choices = [_format_survey_label(r) for r in narrowed_records]
 
     selected = multi_select_from_list(
         message=message,

@@ -99,6 +99,22 @@ def _pick_survey_id_from_records(
     return pick_survey_id_from_records(message=message, records=records)
 
 
+def _pick_survey_ids_from_records(
+    message: str,
+    records: list[dict[str, Any]],
+) -> list[str] | None:
+    """Prompt interactively for one or more surveys from pre-fetched records."""
+
+    from .survey_selection import pick_survey_ids_from_records
+
+    return pick_survey_ids_from_records(
+        message=message,
+        records=records,
+        include_back=False,
+        allow_multiple=True,
+    )
+
+
 def _normalize_survey_ids(value: object) -> list[str]:
     ids: list[str] = []
 
@@ -531,6 +547,14 @@ def handle_menu(args: argparse.Namespace) -> None:
             return None
         return _pick_survey_id_from_records(message=message, records=surveys)
 
+    def _pick_survey_ids(*, message: str) -> list[str] | None:
+        try:
+            surveys = _get_surveys()
+        except Exception as exc:
+            print(f"[survey-menu] ERROR: unable to list surveys: {exc}")
+            return None
+        return _pick_survey_ids_from_records(message=message, records=surveys)
+
     def _run_action(func, ns: argparse.Namespace) -> None:
         try:
             func(ns)
@@ -674,18 +698,18 @@ def handle_menu(args: argparse.Namespace) -> None:
         )
 
     def _menu_activate(*, active: bool) -> None:
-        survey_id = _pick_survey_id(
-            message="Pick a survey to activate:"
+        survey_ids = _pick_survey_ids(
+            message="Pick survey(s) to activate:"
             if active
-            else "Pick a survey to deactivate:"
+            else "Pick survey(s) to deactivate:"
         )
-        if not survey_id:
+        if not survey_ids:
             return
         handler = handle_activate if active else handle_deactivate
         _run_action(
             handler,
             argparse.Namespace(
-                survey_id=survey_id,
+                survey_id=survey_ids,
                 survey_ids_file=None,
                 dry_run=False,
                 force_live=False,
@@ -700,8 +724,8 @@ def handle_menu(args: argparse.Namespace) -> None:
         )
 
     def _menu_publish() -> None:
-        survey_id = _pick_survey_id(message="Pick a survey to publish:")
-        if not survey_id:
+        survey_ids = _pick_survey_ids(message="Pick survey(s) to publish:")
+        if not survey_ids:
             return
         desc = input("Version description (max 140 chars): ").strip()
         if not desc:
@@ -709,7 +733,7 @@ def handle_menu(args: argparse.Namespace) -> None:
         _run_action(
             handle_publish,
             argparse.Namespace(
-                survey_id=survey_id,
+                survey_id=survey_ids,
                 description=desc,
                 dry_run=False,
                 retry_attempts=1,
@@ -936,12 +960,14 @@ def handle_menu(args: argparse.Namespace) -> None:
     def _menu_export_translation() -> None:
         if not _require_default_account(action="export-translation"):
             return
-        survey_id = _pick_survey_id(message="Pick a survey to export translation:")
-        if not survey_id:
+        survey_ids = _pick_survey_ids(
+            message="Pick survey(s) to export translation:"
+        )
+        if not survey_ids:
             return
         _run_action(
             handle_export_translation,
-            argparse.Namespace(survey_id=survey_id, skip_js_strings=False),
+            argparse.Namespace(survey_id=survey_ids, skip_js_strings=False),
         )
 
     def _menu_export_side_by_side() -> None:
@@ -5259,12 +5285,18 @@ def handle_prolific_auth(args: argparse.Namespace) -> None:
 
 
 def handle_publish(args: argparse.Namespace) -> None:
-    """Publish staged survey-definition changes by creating a new published version."""
-    survey_id = _prompt_for_survey_id_api_if_needed(
-        survey_id=getattr(args, "survey_id", None),
-        args=args,
-        message="Select a survey to publish:",
-    )
+    """Publish staged survey-definition changes by creating published version(s)."""
+    survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
+    if not survey_ids:
+        survey_ids = _prompt_for_survey_ids_api_if_needed(
+            survey_ids=None,
+            args=args,
+            message="Select survey(s) to publish:",
+            allow_multiple=True,
+        )
+    survey_ids = list(dict.fromkeys([sid.strip() for sid in survey_ids if sid.strip()]))
+    if not survey_ids:
+        raise SystemExit("[publish] Cancelled.")
 
     description = (args.description or "").strip()
     if not description:
@@ -5281,57 +5313,75 @@ def handle_publish(args: argparse.Namespace) -> None:
         raise SystemExit("[publish] ERROR: --retry-attempts must be >= 1")
 
     base_url, headers = _get_client_config_for_args(args)
+    batch_mode = len(survey_ids) > 1
+    failures: list[tuple[str, str]] = []
+    succeeded = 0
 
-    print(
-        f"[publish] POST survey-definitions/{survey_id}/versions "
-        f"json={{'Description': {description!r}, 'Published': True}}"
-    )
-    if dry_run:
-        print("[publish] DRY-RUN: not calling Qualtrics.")
-        return
-
-    payload = None
-    last_exc: Exception | None = None
-    for attempt in range(1, retry_attempts + 1):
-        try:
-            payload = publish_survey_definition(
-                survey_id,
-                description=description,
-                published=True,
-                context={"origin": "qsync.cli_survey.publish"},
-                base_url=base_url,
-                headers=headers,
-            )
-            last_exc = None
-            break
-        except Exception as exc:
-            last_exc = exc
-            if attempt >= retry_attempts:
-                break
-            print(
-                f"[publish] WARNING: publish failed on attempt {attempt}/{retry_attempts}: {exc}. "
-                "Next: verify credentials/permissions (run `qsync doctor --check-api`) and retry."
-            )
-            print("[publish] Retrying…")
-            time.sleep(2)
-
-    if payload is None:
-        raise SystemExit(
-            f"[publish] ERROR: publish failed after {retry_attempts} attempt(s): {last_exc}"
+    for survey_id in survey_ids:
+        print(
+            f"[publish] POST survey-definitions/{survey_id}/versions "
+            f"json={{'Description': {description!r}, 'Published': True}}"
         )
+        if dry_run:
+            print(f"[publish] {survey_id}: DRY-RUN: not calling Qualtrics.")
+            succeeded += 1
+            continue
 
-    metadata = (payload.get("result") or {}).get("metadata") or {}
-    version_id = metadata.get("versionID")
-    version_num = metadata.get("versionNumber")
-    if version_id or version_num:
-        extra = []
-        if version_num is not None:
-            extra.append(f"version={version_num}")
-        if version_id is not None:
-            extra.append(f"id={version_id}")
-        print("[publish] OK: " + " ".join(extra))
-    else:
-        print("[publish] OK")
+        payload = None
+        last_exc: Exception | None = None
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                payload = publish_survey_definition(
+                    survey_id,
+                    description=description,
+                    published=True,
+                    context={"origin": "qsync.cli_survey.publish"},
+                    base_url=base_url,
+                    headers=headers,
+                )
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= retry_attempts:
+                    break
+                print(
+                    f"[publish] {survey_id}: WARNING: publish failed on attempt {attempt}/{retry_attempts}: {exc}. "
+                    "Next: verify credentials/permissions (run `qsync doctor --check-api`) and retry."
+                )
+                print(f"[publish] {survey_id}: Retrying…")
+                time.sleep(2)
+
+        if payload is None:
+            message = (
+                f"publish failed after {retry_attempts} attempt(s): {last_exc}"
+            )
+            if not batch_mode:
+                raise SystemExit(f"[publish] ERROR: {message}")
+            failures.append((survey_id, message))
+            continue
+
+        metadata = (payload.get("result") or {}).get("metadata") or {}
+        version_id = metadata.get("versionID")
+        version_num = metadata.get("versionNumber")
+        if version_id or version_num:
+            extra = []
+            if version_num is not None:
+                extra.append(f"version={version_num}")
+            if version_id is not None:
+                extra.append(f"id={version_id}")
+            print(f"[publish] {survey_id}: OK: " + " ".join(extra))
+        else:
+            print(f"[publish] {survey_id}: OK")
+        succeeded += 1
+
+    if failures:
+        print(
+            f"[publish] Summary: {succeeded} succeeded, {len(failures)} failed."
+        )
+        for survey_id, message in failures:
+            print(f"[publish] {survey_id}: ERROR: {message}")
+        raise SystemExit(1)
 
     from .terminal_output import log_confirmation
 
@@ -6408,24 +6458,30 @@ def handle_export_responses(args: argparse.Namespace) -> None:
 
 
 def handle_export_translation(args: argparse.Namespace) -> None:
-    """Export a translation-review document for a survey (DOCX or PDF)."""
+    """Export translation-review document(s) for one or more surveys."""
 
+    from .interactive_menu import is_interactive
     from .terminal_output import error, info, success, warn
     from .translation_export import export_survey_to_pdf, export_survey_to_word
-    from .interactive_menu import is_interactive
 
-    survey_id = _prompt_for_survey_id_api_if_needed(
-        survey_id=getattr(args, "survey_id", None),
-        args=args,
-        message="Select a survey to export a translation document:",
-    )
+    survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
+    if not survey_ids:
+        survey_ids = _prompt_for_survey_ids_api_if_needed(
+            survey_ids=None,
+            args=args,
+            message="Select survey(s) to export translation document(s):",
+            allow_multiple=True,
+        )
+    survey_ids = list(dict.fromkeys([sid.strip() for sid in survey_ids if sid.strip()]))
+    if not survey_ids:
+        raise SystemExit("[qsync:export-translation] Cancelled.")
 
     output = getattr(args, "output", None)
     no_html = bool(getattr(args, "no_html", False))
     edf_args = getattr(args, "edf", None) or []
     edf_preset_names = getattr(args, "edf_preset", None) or []
     list_edf_presets = bool(getattr(args, "list_edf_presets", False))
-    edf_overrides = {}
+    base_edf_overrides: dict[str, str] = {}
     for raw in edf_args:
         s = str(raw or "").strip()
         if not s:
@@ -6445,7 +6501,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                 f"Invalid --edf value (empty key): {s}",
             )
             sys.exit(1)
-        edf_overrides[k] = v
+        base_edf_overrides[k] = v
 
     def _load_edf_presets_for_survey(
         survey_id: str,
@@ -6482,46 +6538,26 @@ def handle_export_translation(args: argparse.Namespace) -> None:
         return presets
 
     if list_edf_presets:
-        presets = _load_edf_presets_for_survey(str(survey_id))
-        if not presets:
-            info(
-                "[qsync:export-translation]",
-                "No EDF presets found. Add surveys/edf_presets.json to define them.",
-            )
-            return
-        info("[qsync:export-translation]", "Available EDF presets:")
-        for name in sorted(presets.keys()):
-            preset_vals = ", ".join(
-                f"{k}={v}" for k, v in sorted(presets[name].items())
-            )
-            info(None, f"  - {name}: {preset_vals}")
+        for idx, survey_id in enumerate(survey_ids):
+            if len(survey_ids) > 1:
+                info("[qsync:export-translation]", f"Survey {survey_id}:")
+            presets = _load_edf_presets_for_survey(str(survey_id))
+            if not presets:
+                info(
+                    "[qsync:export-translation]",
+                    "No EDF presets found. Add surveys/edf_presets.json to define them.",
+                )
+            else:
+                info("[qsync:export-translation]", "Available EDF presets:")
+                for name in sorted(presets.keys()):
+                    preset_vals = ", ".join(
+                        f"{k}={v}" for k, v in sorted(presets[name].items())
+                    )
+                    info(None, f"  - {name}: {preset_vals}")
+            if len(survey_ids) > 1 and idx < len(survey_ids) - 1:
+                print()
         return
 
-    if edf_preset_names:
-        presets = _load_edf_presets_for_survey(str(survey_id))
-        if not presets:
-            error(
-                "[qsync:export-translation]",
-                "No EDF presets found. Add surveys/edf_presets.json to define them.",
-            )
-            sys.exit(1)
-        for name in edf_preset_names:
-            preset = presets.get(str(name))
-            if not preset:
-                available = ", ".join(sorted(presets.keys()))
-                error(
-                    "[qsync:export-translation]",
-                    f"Unknown --edf-preset {name}. Available: {available}",
-                )
-                sys.exit(1)
-            for key, value in preset.items():
-                if key in edf_overrides:
-                    warn(
-                        "[qsync:export-translation]",
-                        f"EDF preset {name} set {key}={value}, but overridden by --edf {key}={edf_overrides[key]}",
-                    )
-                else:
-                    edf_overrides[key] = value
     smart_name = bool(getattr(args, "smart_name", False))
     do_open = bool(getattr(args, "open", False))
     compare_to_base = bool(getattr(args, "compare_to_base", False))
@@ -6555,88 +6591,89 @@ def handle_export_translation(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    output_suffix = getattr(output, "suffix", "").lower() if output is not None else ""
+
     # Validate format + output path combinations
-    if format == "both" and output is not None:
-        output_suffix = getattr(output, "suffix", "").lower()
-        if output_suffix in (".docx", ".pdf"):
-            error(
-                "[qsync:export-translation]",
-                "When using --format both, --output must be a directory (or omitted), not a file path.",
-            )
-            sys.exit(1)
+    if format == "both" and output is not None and output_suffix in (".docx", ".pdf"):
+        error(
+            "[qsync:export-translation]",
+            "When using --format both, --output must be a directory (or omitted), not a file path.",
+        )
+        sys.exit(1)
 
     # If multiple languages are requested, output must be a directory (or omitted).
-    if len([x for x in render_langs if x]) > 1 and output is not None:
-        output_suffix = getattr(output, "suffix", "").lower()
-        if output_suffix in (".docx", ".pdf"):
-            error(
-                "[qsync:export-translation]",
-                "When exporting multiple languages, --output must be a directory (or omitted).",
-            )
-            sys.exit(1)
+    if (
+        len([x for x in render_langs if x]) > 1
+        and output is not None
+        and output_suffix in (".docx", ".pdf")
+    ):
+        error(
+            "[qsync:export-translation]",
+            "When exporting multiple languages, --output must be a directory (or omitted).",
+        )
+        sys.exit(1)
+
     # If we're generating bilingual exports, we also regenerate the base-language export.
     # That means a single output file path is ambiguous (it would need to hold multiple files).
-    if compare_to_base and output is not None:
-        output_suffix = getattr(output, "suffix", "").lower()
-        if output_suffix in (".docx", ".pdf"):
-            error(
-                "[qsync:export-translation]",
-                "When using --compare-to-base, --output must be a directory (or omitted), not a file path.",
-            )
-            sys.exit(1)
+    if compare_to_base and output is not None and output_suffix in (".docx", ".pdf"):
+        error(
+            "[qsync:export-translation]",
+            "When using --compare-to-base, --output must be a directory (or omitted), not a file path.",
+        )
+        sys.exit(1)
 
-    try:
-        paths: list = []
+    # Multiple surveys also produce multiple files by definition.
+    if len(survey_ids) > 1 and output is not None and output_suffix in (".docx", ".pdf"):
+        error(
+            "[qsync:export-translation]",
+            "When exporting multiple surveys, --output must be a directory (or omitted), not a file path.",
+        )
+        sys.exit(1)
+
+    interactive = is_interactive()
+    all_paths: list[Path] = []
+    failures: list[tuple[str, str]] = []
+
+    for survey_id in survey_ids:
+        edf_overrides = dict(base_edf_overrides)
+
+        if edf_preset_names:
+            presets = _load_edf_presets_for_survey(str(survey_id))
+            if not presets:
+                msg = "No EDF presets found. Add surveys/edf_presets.json to define them."
+                error("[qsync:export-translation]", f"{survey_id}: {msg}")
+                failures.append((survey_id, msg))
+                continue
+            preset_error = False
+            for name in edf_preset_names:
+                preset = presets.get(str(name))
+                if not preset:
+                    available = ", ".join(sorted(presets.keys()))
+                    msg = f"Unknown --edf-preset {name}. Available: {available}"
+                    error("[qsync:export-translation]", f"{survey_id}: {msg}")
+                    failures.append((survey_id, msg))
+                    preset_error = True
+                    break
+                for key, value in preset.items():
+                    if key in edf_overrides:
+                        warn(
+                            "[qsync:export-translation]",
+                            f"{survey_id}: EDF preset {name} set {key}={value}, but overridden by --edf {key}={edf_overrides[key]}",
+                        )
+                    else:
+                        edf_overrides[key] = value
+            if preset_error:
+                continue
+
+        survey_paths: list[Path] = []
         exported_base = False
-        interactive = is_interactive()
-        for lang in render_langs:
-            # Determine which format(s) to export
-            formats_to_export = []
-            if format == "both":
-                formats_to_export = ["docx", "pdf"]
-            else:
-                formats_to_export = [format]
 
-            for fmt in formats_to_export:
-                if fmt == "docx":
-                    path = export_survey_to_word(
-                        str(survey_id),
-                        output_path=output,
-                        edf_overrides=edf_overrides or None,
-                        smart_name=smart_name,
-                        include_html_source=not no_html,
-                        layout_heuristics=layout_heuristics,
-                        render_language=lang,
-                        compare_to_base=compare_to_base,
-                        refresh=refresh,
-                        include_js_strings=not skip_js_strings,
-                        interactive=interactive,
-                        flow_trace=flow_trace_cb,
-                    )
-                    paths.append(path)
-                elif fmt == "pdf":
-                    path = export_survey_to_pdf(
-                        str(survey_id),
-                        output_path=output,
-                        edf_overrides=edf_overrides or None,
-                        smart_name=smart_name,
-                        include_html_source=not no_html,
-                        layout_heuristics=layout_heuristics,
-                        render_language=lang,
-                        compare_to_base=compare_to_base,
-                        refresh=refresh,
-                        include_js_strings=not skip_js_strings,
-                        interactive=interactive,
-                        flow_trace=flow_trace_cb,
-                    )
-                    paths.append(path)
-
-            # In bilingual mode, also regenerate the base-language export once per run.
-            if compare_to_base and not exported_base:
-                exported_base = True
+        try:
+            for lang in render_langs:
+                formats_to_export = ["docx", "pdf"] if format == "both" else [format]
                 for fmt in formats_to_export:
                     if fmt == "docx":
-                        paths.append(
+                        survey_paths.append(
                             export_survey_to_word(
                                 str(survey_id),
                                 output_path=output,
@@ -6644,16 +6681,16 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 smart_name=smart_name,
                                 include_html_source=not no_html,
                                 layout_heuristics=layout_heuristics,
-                                render_language=None,
-                                compare_to_base=False,
-                                refresh=False,
+                                render_language=lang,
+                                compare_to_base=compare_to_base,
+                                refresh=refresh,
                                 include_js_strings=not skip_js_strings,
                                 interactive=interactive,
                                 flow_trace=flow_trace_cb,
                             )
                         )
                     elif fmt == "pdf":
-                        paths.append(
+                        survey_paths.append(
                             export_survey_to_pdf(
                                 str(survey_id),
                                 output_path=output,
@@ -6661,33 +6698,85 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 smart_name=smart_name,
                                 include_html_source=not no_html,
                                 layout_heuristics=layout_heuristics,
-                                render_language=None,
-                                compare_to_base=False,
-                                refresh=False,
+                                render_language=lang,
+                                compare_to_base=compare_to_base,
+                                refresh=refresh,
                                 include_js_strings=not skip_js_strings,
                                 interactive=interactive,
                                 flow_trace=flow_trace_cb,
                             )
                         )
-    except Exception as e:
-        error("[qsync:export-translation]", f"ERROR: {e}")
-        sys.exit(1)
 
-    # Report all exported files with format indicator
-    for path in paths:
-        fmt_label = path.suffix.upper().lstrip(".")
-        success("[qsync:export-translation]", f"Exported ({fmt_label}): {path}")
+                # In bilingual mode, also regenerate the base-language export once per run.
+                if compare_to_base and not exported_base:
+                    exported_base = True
+                    for fmt in formats_to_export:
+                        if fmt == "docx":
+                            survey_paths.append(
+                                export_survey_to_word(
+                                    str(survey_id),
+                                    output_path=output,
+                                    edf_overrides=edf_overrides or None,
+                                    smart_name=smart_name,
+                                    include_html_source=not no_html,
+                                    layout_heuristics=layout_heuristics,
+                                    render_language=None,
+                                    compare_to_base=False,
+                                    refresh=False,
+                                    include_js_strings=not skip_js_strings,
+                                    interactive=interactive,
+                                    flow_trace=flow_trace_cb,
+                                )
+                            )
+                        elif fmt == "pdf":
+                            survey_paths.append(
+                                export_survey_to_pdf(
+                                    str(survey_id),
+                                    output_path=output,
+                                    edf_overrides=edf_overrides or None,
+                                    smart_name=smart_name,
+                                    include_html_source=not no_html,
+                                    layout_heuristics=layout_heuristics,
+                                    render_language=None,
+                                    compare_to_base=False,
+                                    refresh=False,
+                                    include_js_strings=not skip_js_strings,
+                                    interactive=interactive,
+                                    flow_trace=flow_trace_cb,
+                                )
+                            )
+        except Exception as exc:
+            failures.append((survey_id, str(exc)))
+            error("[qsync:export-translation]", f"{survey_id}: ERROR: {exc}")
+            continue
 
-    if do_open and len(paths) == 1:
+        for path in survey_paths:
+            fmt_label = path.suffix.upper().lstrip(".")
+            success(
+                "[qsync:export-translation]",
+                f"{survey_id}: Exported ({fmt_label}): {path}",
+            )
+        all_paths.extend(survey_paths)
+
+    if failures:
+        warn(
+            "[qsync:export-translation]",
+            f"Completed with failures: {len(failures)} survey(s) failed.",
+        )
+        for survey_id, msg in failures:
+            warn("[qsync:export-translation]", f"{survey_id}: {msg}")
+        raise SystemExit(1)
+
+    if do_open and len(all_paths) == 1:
         try:
             import subprocess
 
             if sys.platform == "darwin":
-                subprocess.run(["open", str(paths[0])], check=False)
+                subprocess.run(["open", str(all_paths[0])], check=False)
             elif os.name == "nt":
-                os.startfile(str(paths[0]))  # type: ignore[attr-defined]
+                os.startfile(str(all_paths[0]))  # type: ignore[attr-defined]
             else:
-                subprocess.run(["xdg-open", str(paths[0])], check=False)
+                subprocess.run(["xdg-open", str(all_paths[0])], check=False)
         except Exception:
             error(
                 "[qsync:export-translation]", "Could not open document automatically."
@@ -6697,8 +6786,9 @@ def handle_export_translation(args: argparse.Namespace) -> None:
 def _add_export_translation_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--survey-id",
+        action="append",
         dest="survey_id",
-        help="Qualtrics survey ID to export (omit to select interactively)",
+        help="Qualtrics survey ID(s) to export (repeatable/comma-separated; omit to select interactively)",
     )
     parser.add_argument(
         "--output",
@@ -8919,8 +9009,9 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_publish.add_argument(
         "--survey-id",
+        action="append",
         dest="survey_id",
-        help="Qualtrics survey ID to publish (omit to select interactively)",
+        help="Qualtrics survey ID(s) to publish (repeatable/comma-separated; omit to select interactively)",
     )
     p_publish.add_argument(
         "--description",
