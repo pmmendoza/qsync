@@ -1681,7 +1681,16 @@ def interactive_choice_wizard(
     def _extract_qid(selected: str | None) -> str:
         if not selected:
             raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
-        candidate = str(selected).strip().split()[0]
+        label = str(selected).strip()
+        if not label:
+            raise ItemsStructuralError("[qsync:items:edit] Invalid QID selection: empty.")
+        if set(label) <= {"─"}:
+            raise ItemsStructuralError("[qsync:items:edit] Invalid QID selection: separator.")
+        candidate = label.split()[0]
+        if candidate.startswith("Show"):
+            raise ItemsStructuralError(
+                f"[qsync:items:edit] Invalid QID selection: {selected!r}."
+            )
         if not candidate or candidate not in survey.questions:
             raise ItemsStructuralError(f"[qsync:items:edit] Invalid QID selection: {selected!r}.")
         return candidate

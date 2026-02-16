@@ -1377,20 +1377,39 @@ def handle_menu(args: argparse.Namespace) -> None:
             except ItemsStructuralError as exc:
                 if "Cancelled." in str(exc):
                     print(str(exc))
-                    return
+                    if (
+                        select_from_list(
+                            "No question selected. Choose another question for this survey?",
+                            ["Yes", "No (back to survey menu)"],
+                        )
+                        != "Yes"
+                    ):
+                        return
+                    continue
                 print(
                     "[survey-menu] ERROR while selecting QID: "
                     f"{exc!s}\n  Next: verify the survey was pulled for this account, or choose another survey."
                 )
-                if select_from_list(
-                    "Retry same survey selection?",
-                    ["Yes", "No (back to survey menu)"],
-                ) != "Yes":
+                if (
+                    select_from_list(
+                        "Retry same survey selection?",
+                        ["Yes", "No (back to survey menu)"],
+                    )
+                    != "Yes"
+                ):
                     return
                 continue
             except Exception as exc:
                 print(f"[survey-menu] ERROR: {exc}")
-                return
+                if (
+                    select_from_list(
+                        "Retry same survey selection?",
+                        ["Yes", "No (back to survey menu)"],
+                    )
+                    != "Yes"
+                ):
+                    return
+                continue
 
             if not op:
                 return
