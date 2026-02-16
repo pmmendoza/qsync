@@ -455,33 +455,43 @@ def handle_menu(args: argparse.Namespace) -> None:
     # Cache survey lists per base_url for responsiveness within a menu session.
     survey_cache: dict[str, list[dict[str, Any]]] = {}
 
-    def _account_label() -> str:
-        return selected_account or get_active_account() or "default"
-
-    def _resolve_base_url_for_display() -> str | None:
-        if selected_account:
-            try:
-                env = load_account_env(selected_account, root=root)
-                base = (env.get("QUALTRICS_BASE_URL") or "").strip()
-                return base or None
-            except Exception:
-                return None
-        # Default account: best-effort (avoid requiring token just to show base url).
+    def _resolve_menu_account() -> str | None:
+        if selected_account is not None:
+            return selected_account
         try:
+            return get_active_account()
+        except Exception:
+            return None
+
+    def _resolve_menu_client() -> tuple[str, dict]:
+        account_scope = _resolve_menu_account()
+        if account_scope:
+            env = load_account_env(account_scope, root=root)
+            return get_client_config(env)
+        return get_client_config()
+
+    def _menu_account_base() -> str | None:
+        try:
+            account_scope = _resolve_menu_account()
+            if account_scope:
+                env = load_account_env(account_scope, root=root)
+                return (env.get("QUALTRICS_BASE_URL") or "").strip() or None
             from .config import load_env, resolve_env_path
 
             env_path = resolve_env_path(root=root)
             env = load_env(env_path)
-            base = (env.get("QUALTRICS_BASE_URL") or "").strip()
-            return base or None
+            return (env.get("QUALTRICS_BASE_URL") or "").strip() or None
         except Exception:
             return None
 
+    def _account_label() -> str:
+        return _resolve_menu_account() or "default"
+
+    def _resolve_base_url_for_display() -> str | None:
+        return _menu_account_base()
+
     def _get_client() -> tuple[str, dict]:
-        if selected_account:
-            env = load_account_env(selected_account, root=root)
-            return get_client_config(env)
-        return get_client_config()
+        return _resolve_menu_client()
 
     def _get_surveys() -> list[dict[str, Any]]:
         base, headers = _get_client()
@@ -1164,26 +1174,93 @@ def handle_menu(args: argparse.Namespace) -> None:
         from .terminal_colors import colorize_unified_diff_lines
         import difflib
 
+        account_scope = _resolve_menu_account()
         selected_env = None
-        if selected_account:
+        if account_scope:
             try:
-                selected_env = load_account_env(selected_account, root=root)
+                selected_env = load_account_env(account_scope, root=root)
             except Exception as exc:
-                print(f"[survey-menu] ERROR: could not load account '{selected_account}': {exc}")
+                print(
+                    f"[survey-menu] ERROR: could not load account '{account_scope}': {exc}"
+                )
                 return
+        else:
+            selected_env = None
 
-        survey_id = _pick_survey_id(message="Pick a survey for structural edits:")
-        if not survey_id:
-            return
+        # Keep this menu anchored to one survey selection until user explicitly exits.
+        # On cache errors, let the operator re-try instead of silently returning
+        # to the parent menu.
+        class _AbortStructuralSelection(Exception):
+            """Used as a local control-flow escape from survey preflight selection."""
 
-        # Ensure cache exists and is fresh enough for safe structural editing.
+        def _select_survey_and_cache() -> tuple[str, Path]:
+            while True:
+                survey_id = _pick_survey_id(message="Pick a survey for structural edits:")
+                if not survey_id:
+                    raise _AbortStructuralSelection
+
+                surveys_dir = resolve_scoped_dir("surveys", root=root, account=account_scope)
+                try:
+                    refresh_survey_cache(
+                        survey_id,
+                        env=selected_env,
+                        surveys_dir=surveys_dir,
+                    )
+                    survey = load_cached_survey(
+                        survey_id,
+                        env=selected_env,
+                        surveys_dir=surveys_dir,
+                    )
+                    if len(survey.questions) == 0:
+                        print(
+                            f"[survey-menu] ERROR: cached survey {survey_id} has no questions."
+                        )
+                        print("  Next: run `qsync survey pull --survey-id <ID>` for this account and retry.")
+                        if select_from_list(
+                            "Retry with another survey?",
+                            ["Yes", "No (back to survey menu)"],
+                        ) != "Yes":
+                            raise _AbortStructuralSelection
+                        continue
+                    return survey_id, surveys_dir
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: could not load cache for {survey_id}: {exc}")
+                    print("  Next: run `qsync survey pull --survey-id <ID>` and retry.")
+                    if select_from_list(
+                        "Retry with another survey?",
+                        ["Yes", "No (back to survey menu)"],
+                    ) != "Yes":
+                        raise _AbortStructuralSelection
+
         try:
-            refresh_survey_cache(survey_id, env=selected_env)
-            survey = load_cached_survey(survey_id, env=selected_env)
-        except Exception as exc:
-            print(f"[survey-menu] ERROR: could not load cache for {survey_id}: {exc}")
-            print("  Next: run `qsync survey pull --survey-id <ID>` and retry.")
+            survey_id, surveys_dir = _select_survey_and_cache()
+        except _AbortStructuralSelection:
             return
+
+        # Keep current process deterministic across qsync installs with slightly
+        # different signatures for this helper.
+        def _call_interactive_choice_wizard(
+            *, survey_id: str, qid: str | None
+        ) -> dict[str, Any]:
+            try:
+                return interactive_choice_wizard(
+                    survey_id=survey_id,
+                    qid=qid,
+                    allow_delete=False,
+                    experimental_unsupported=False,
+                    env=selected_env,
+                    surveys_dir=surveys_dir,
+                )
+            except TypeError as exc:
+                msg = str(exc)
+                if "unexpected keyword argument" not in msg:
+                    raise
+                return interactive_choice_wizard(
+                    survey_id=survey_id,
+                    qid=qid,
+                    allow_delete=False,
+                    experimental_unsupported=False,
+                )
 
         resolver = WorkbookResolver()
         xlsx_path = resolver.resolve(survey_id)
@@ -1291,15 +1368,26 @@ def handle_menu(args: argparse.Namespace) -> None:
 
         while True:
             try:
-                op = interactive_choice_wizard(
+                op = _call_interactive_choice_wizard(
                     survey_id=survey_id,
                     qid=None,
                     allow_delete=False,
                     experimental_unsupported=False,
                 )
             except ItemsStructuralError as exc:
-                print(str(exc))
-                return
+                if "Cancelled." in str(exc):
+                    print(str(exc))
+                    return
+                print(
+                    "[survey-menu] ERROR while selecting QID: "
+                    f"{exc!s}\n  Next: verify the survey was pulled for this account, or choose another survey."
+                )
+                if select_from_list(
+                    "Retry same survey selection?",
+                    ["Yes", "No (back to survey menu)"],
+                ) != "Yes":
+                    return
+                continue
             except Exception as exc:
                 print(f"[survey-menu] ERROR: {exc}")
                 return
