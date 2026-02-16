@@ -124,6 +124,43 @@ def is_externally_managed(*, qid: str | None, data_export_tag: str | None) -> bo
     return external_owner_for(qid=qid, data_export_tag=data_export_tag) is not None
 
 
+def _require_external_override_if_needed(
+    *,
+    qid: str,
+    data_export_tag: str | None,
+    interactive: bool,
+    phase: str,
+) -> None:
+    """Guard externally managed QIDs.
+
+    Interactive flow:
+    - show a short warning
+    - require explicit confirmation to proceed
+
+    Non-interactive flow:
+    - remain strict and block
+    """
+
+    owner = external_owner_for(qid=qid, data_export_tag=data_export_tag)
+    if not owner:
+        return
+
+    prefix = f"[qsync:items:{phase}]"
+    if not interactive:
+        raise ItemsStructuralError(
+            f"{prefix} QID {qid} is externally managed (owner={owner}). "
+            "Non-interactive override is not supported here."
+        )
+
+    warn(prefix, f"QID {qid} is externally managed (owner={owner}).")
+    action = "editing" if phase == "edit" else phase
+    if not confirm(
+        f"Proceed {action} externally managed QID {qid} anyway?",
+        default=False,
+    ):
+        raise ItemsStructuralError(f"{prefix} Cancelled.")
+
+
 def iter_active_qids_in_flow(survey: SurveyCache) -> Iterable[str]:
     """Yield in-flow QuestionIDs (QIDs) in survey-flow order (non-Trash blocks)."""
 
@@ -678,11 +715,12 @@ def stage_choice_op(
         )
 
     tag = (question.get("DataExportTag") or "").strip() or None
-    owner = external_owner_for(qid=qid, data_export_tag=tag)
-    if owner:
-        raise ItemsStructuralError(
-            f"[qsync:items:edit] QID {qid} is externally managed (owner={owner})."
-        )
+    _require_external_override_if_needed(
+        qid=qid,
+        data_export_tag=tag,
+        interactive=interactive,
+        phase="edit",
+    )
 
     if experimental_unsupported:
         log_push_event(
@@ -852,11 +890,12 @@ def stage_answer_op(
         )
 
     tag = (question.get("DataExportTag") or "").strip() or None
-    owner = external_owner_for(qid=qid, data_export_tag=tag)
-    if owner:
-        raise ItemsStructuralError(
-            f"[qsync:items:edit] QID {qid} is externally managed (owner={owner})."
-        )
+    _require_external_override_if_needed(
+        qid=qid,
+        data_export_tag=tag,
+        interactive=interactive,
+        phase="edit",
+    )
 
     if experimental_unsupported:
         log_push_event(
@@ -986,11 +1025,12 @@ def stage_question_text_op(
         )
 
     tag = (question.get("DataExportTag") or "").strip() or None
-    owner = external_owner_for(qid=qid, data_export_tag=tag)
-    if owner:
-        raise ItemsStructuralError(
-            f"[qsync:items:edit] QID {qid} is externally managed (owner={owner})."
-        )
+    _require_external_override_if_needed(
+        qid=qid,
+        data_export_tag=tag,
+        interactive=interactive,
+        phase="edit",
+    )
 
     if experimental_unsupported:
         log_push_event(
@@ -1098,11 +1138,12 @@ def stage_sbs_column_op(
         )
 
     tag = (question.get("DataExportTag") or "").strip() or None
-    owner = external_owner_for(qid=qid, data_export_tag=tag)
-    if owner:
-        raise ItemsStructuralError(
-            f"[qsync:items:edit] QID {qid} is externally managed (owner={owner})."
-        )
+    _require_external_override_if_needed(
+        qid=qid,
+        data_export_tag=tag,
+        interactive=interactive,
+        phase="edit",
+    )
 
     additional = question.get("AdditionalQuestions") or {}
     if not isinstance(additional, dict):
@@ -1237,11 +1278,12 @@ def stage_sbs_column_answer_op(
         )
 
     tag = (question.get("DataExportTag") or "").strip() or None
-    owner = external_owner_for(qid=qid, data_export_tag=tag)
-    if owner:
-        raise ItemsStructuralError(
-            f"[qsync:items:edit] QID {qid} is externally managed (owner={owner})."
-        )
+    _require_external_override_if_needed(
+        qid=qid,
+        data_export_tag=tag,
+        interactive=interactive,
+        phase="edit",
+    )
 
     additional = question.get("AdditionalQuestions") or {}
     if not isinstance(additional, dict):
@@ -1711,11 +1753,12 @@ def interactive_choice_wizard(
                         f"[qsync:items:edit] QID {qid} not found."
                     )
                 tag = (question.get("DataExportTag") or "").strip() or None
-                owner = external_owner_for(qid=qid, data_export_tag=tag)
-                if owner:
-                    raise ItemsStructuralError(
-                        f"[qsync:items:edit] QID {qid} is externally managed (owner={owner})."
-                    )
+                _require_external_override_if_needed(
+                    qid=qid,
+                    data_export_tag=tag,
+                    interactive=True,
+                    phase="edit",
+                )
                 # Continue with target/action selection below.
             else:
                 if mode.startswith("Search active"):
@@ -1848,11 +1891,12 @@ def interactive_choice_wizard(
                 info("[qsync:items:edit]", line)
 
     tag = (question.get("DataExportTag") or "").strip() or None
-    owner = external_owner_for(qid=qid, data_export_tag=tag)
-    if owner:
-        raise ItemsStructuralError(
-            f"[qsync:items:edit] QID {qid} is externally managed (owner={owner})."
-        )
+    _require_external_override_if_needed(
+        qid=qid,
+        data_export_tag=tag,
+        interactive=True,
+        phase="edit",
+    )
 
     is_matrix = _is_matrix_question(question)
     is_sbs_matrix = _is_sbs_matrix_question(question)
@@ -2367,11 +2411,12 @@ def push_structural_ops(
             )
 
         tag = (question.get("DataExportTag") or "").strip() or None
-        owner = external_owner_for(qid=qid, data_export_tag=tag)
-        if owner:
-            raise ItemsStructuralError(
-                f"[qsync:items:push] QID {qid} is externally managed (owner={owner})."
-            )
+        _require_external_override_if_needed(
+            qid=qid,
+            data_export_tag=tag,
+            interactive=interactive,
+            phase="push",
+        )
 
         ops_for_qid = [
             op

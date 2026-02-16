@@ -499,54 +499,7 @@ def handle_menu(args: argparse.Namespace) -> None:
         except Exception as exc:
             print(f"[survey-menu] ERROR: unable to list surveys: {exc}")
             return None
-
-        from .input_validators import SurveyIdValidator
-        from .interactive_menu import text_input
-
-        # Keep arrow menus usable: require a filter when the list is large.
-        filtered = surveys
-        if len(filtered) > 60:
-            raw = input(
-                "Filter surveys by name/ID substring (blank to show all): "
-            ).strip()
-            if raw:
-                needle = raw.lower()
-                filtered = [
-                    s
-                    for s in surveys
-                    if needle in str(s.get("id") or "").lower()
-                    or needle in str(s.get("name") or "").lower()
-                ]
-                if not filtered:
-                    print("[survey-menu] No surveys matched that filter.")
-                    return None
-            else:
-                if not confirm(
-                    f"List all {len(filtered)} surveys in an interactive menu? (may be slow)",
-                    default=False,
-                ):
-                    return None
-
-        choices = [
-            f"{s.get('id')} - {s.get('name', 'Untitled')}"
-            for s in filtered
-            if s.get("id")
-        ]
-        choices.append("─" * 60)
-        choices.append("✎ Enter SurveyID manually")
-        choices.append("↩ Back")
-        selection = select_from_list(message=message, choices=choices)
-        if not selection or selection.endswith("Back"):
-            return None
-        if selection.startswith("✎"):
-            manual = text_input(
-                "Enter Qualtrics SurveyID",
-                instruction="Example: SV_...",
-                validator=SurveyIdValidator(),
-                validate_while_typing=True,
-            )
-            return (manual or "").strip() or None
-        return selection.split(" - ", 1)[0].strip()
+        return _pick_survey_id_from_records(message=message, records=surveys)
 
     def _run_action(func, ns: argparse.Namespace) -> None:
         try:

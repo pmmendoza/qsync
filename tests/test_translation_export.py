@@ -20,6 +20,80 @@ def _doc_text(doc) -> str:
     return "\n".join(parts)
 
 
+def _sbs_matrix_payload() -> dict:
+    return {
+        "result": {
+            "SurveyOptions": {"SurveyLanguage": "EN", "AvailableLanguages": ["EN", "FR"]},
+            "SurveyFlow": {"Flow": [{"Type": "Standard", "ID": "BL_1"}]},
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Default",
+                    "Description": "SBS Matrix",
+                    "BlockElements": [{"Type": "Question", "QuestionID": "QID15"}],
+                }
+            },
+            "Questions": {
+                "QID15": {
+                    "QuestionType": "SBS",
+                    "Selector": "SBSMatrix",
+                    "QuestionText": "How much do you remember?",
+                    "DataExportTag": "newsmem",
+                    "Choices": {
+                        "1": {"Display": "Statement 1"},
+                        "2": {"Display": "Statement 2"},
+                    },
+                    "ChoiceOrder": ["1", "2"],
+                    "Answers": {
+                        "1": {"Display": "Never"},
+                        "2": {"Display": "Sometimes"},
+                    },
+                    "AnswerOrder": ["1", "2"],
+                    "AdditionalQuestions": {
+                        "1": {
+                            "QuestionText": "Today",
+                            # Column answers omitted to force fallback via top-level Answers.
+                        },
+                        "2": {
+                            "QuestionText": "Yesterday",
+                            "Answers": {
+                                "1": {"Display": "Never"},
+                                "2": {"Display": "Sometimes"},
+                            },
+                            "AnswerOrder": ["1", "2"],
+                        },
+                    },
+                    "Language": {
+                        "FR": {
+                            "QuestionText": "De quelle façon vous en souvenez-vous ?",
+                            "Choices": {
+                                "1": {"Display": "Énoncé 1"},
+                                "2": {"Display": "Énoncé 2"},
+                            },
+                            "Answers": {
+                                "1": {"Display": "Jamais"},
+                                "2": {"Display": "Parfois"},
+                            },
+                            "AdditionalQuestions": {
+                                "1": {
+                                    "QuestionText": "Aujourd'hui",
+                                    # No column answers in FR either.
+                                },
+                                "2": {
+                                    "QuestionText": "Hier",
+                                    "Answers": {
+                                        "1": {"Display": "Jamais"},
+                                        "2": {"Display": "Parfois"},
+                                    },
+                                },
+                            },
+                        }
+                    },
+                }
+            },
+        }
+    }
+
+
 def test_translation_export_mvp(tmp_path: Path) -> None:
     from qsync.translation_export import export_survey_payload_to_word
 
@@ -598,6 +672,96 @@ def test_translation_export_render_language_overlays_choices_and_matrix_mapping(
     assert "Choisissez une option" in text
     assert "Un" in text
     assert "One" not in text
+
+
+def test_collect_expected_translation_keys_supports_sbs_matrix_fallback_answers() -> None:
+    from qsync.translation_export import _collect_expected_translation_keys
+
+    payload = _sbs_matrix_payload()
+    questions = payload["result"]["Questions"]
+    keys = set(
+        _collect_expected_translation_keys(questions, {"QID15"})
+    )
+
+    assert "QID15_QuestionText" in keys
+    assert "QID15_Choice1" in keys
+    assert "QID15_Choice2" in keys
+    # SBS column headers and answers are now expanded even when column-level answers are absent.
+    assert "QID15#1_QuestionText" in keys
+    assert "QID15#1_Answer1" in keys
+    assert "QID15#1_Answer2" in keys
+    assert "QID15#2_QuestionText" in keys
+    assert "QID15#2_Answer1" in keys
+    assert "QID15#2_Answer2" in keys
+
+
+def test_build_translation_map_from_cache_uses_sbs_matrix_fallback_answers() -> None:
+    from qsync.translation_export import build_translation_map_from_cache
+
+    payload = _sbs_matrix_payload()
+    fr_map = build_translation_map_from_cache(
+        payload,
+        language="FR",
+        base_language="EN",
+    )
+
+    # Column-level statements are present in both base and translated surfaces.
+    assert fr_map["QID15#1_QuestionText"] == "Aujourd'hui"
+    assert fr_map["QID15#2_QuestionText"] == "Hier"
+    # Missing column 1 answer values must still be emitted using base question-level answers.
+    assert fr_map["QID15#1_Answer1"] == "Jamais"
+    assert fr_map["QID15#1_Answer2"] == "Parfois"
+    # Column 2 keeps its own translated answers.
+    assert fr_map["QID15#2_Answer1"] == "Jamais"
+    assert fr_map["QID15#2_Answer2"] == "Parfois"
+
+
+def test_word_export_renders_sbs_matrix_with_fallbacked_answers(tmp_path: Path) -> None:
+    from qsync.translation_export import export_survey_payload_to_word
+
+    payload = _sbs_matrix_payload()
+    out_docx = tmp_path / "out.docx"
+    export_survey_payload_to_word(
+        "SV_TEST",
+        payload,
+        out_docx,
+        render_language="FR",
+    )
+
+    d = docx.Document(str(out_docx))
+    text = _doc_text(d)
+
+    assert "QID15" in text
+    assert "SBS Matrix" in text
+    assert "Column 1" in text
+    assert "Column 2" in text
+    assert "Aujourd'hui" in text
+    assert "Hier" in text
+    # Fallbacked column answers should render even when not present in Column block.
+    assert "Jamais" in text
+    assert "Parfois" in text
+
+
+def test_pdf_export_builds_sbs_matrix_sections(tmp_path: Path) -> None:
+    from qsync.translation_export import (
+        _build_pdf_html_template,
+        _prepare_export_content,
+    )
+
+    payload = _sbs_matrix_payload()
+    content = _prepare_export_content(
+        "SV_TEST",
+        payload,
+        output_path=tmp_path / "out.pdf",
+        render_language="FR",
+    )
+    html = _build_pdf_html_template(content)
+
+    assert "QID15" in html
+    assert "Aujourd'hui" in html
+    assert "Hier" in html
+    assert "Jamais" in html
+    assert "Parfois" in html
 
 
 def test_translation_export_logic_uses_language_blocks_when_single_language(

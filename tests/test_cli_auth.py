@@ -9,7 +9,7 @@ class _ExistsPath:
 
 
 class CliProlificAuthTests(unittest.TestCase):
-    @patch("qsync.cli_survey._prompt_for_any_survey_id")
+    @patch("qsync.cli_survey._prompt_for_survey_id_api_if_needed")
     @patch("qsync.qualtrics_client.refresh_survey_cache")
     @patch("qsync.qualtrics_client.ensure_backup")
     @patch("qsync.cli_survey.get_client_config")
@@ -20,9 +20,9 @@ class CliProlificAuthTests(unittest.TestCase):
         mock_config,
         mock_backup,
         mock_refresh,
-        mock_prompt_any,
+        mock_prompt_survey_id,
     ) -> None:
-        mock_prompt_any.side_effect = lambda sid: sid
+        mock_prompt_survey_id.return_value = "SV_DIRECT"
         mock_config.return_value = ("example.qualtrics.com", {"X-API-TOKEN": "x"})
         mock_backup.return_value = Path("surveys/backups/test.json")
 
@@ -55,7 +55,11 @@ class CliProlificAuthTests(unittest.TestCase):
 
         handle_prolific_auth(args)
 
-        mock_prompt_any.assert_called_once_with("SV_DIRECT")
+        mock_prompt_survey_id.assert_called_once_with(
+            survey_id="SV_DIRECT",
+            args=args,
+            message="Select a survey for prolific-auth:",
+        )
         first_call = mock_send.call_args_list[0]
         self.assertEqual(
             first_call.kwargs.get("path"),
@@ -314,79 +318,61 @@ class CliProlificAuthTests(unittest.TestCase):
         mock_backup.assert_called_once_with("SV_TEST")
         mock_refresh.assert_called_once_with("SV_TEST")
 
-    @patch("qsync.cli_survey.sys.stdin.isatty", return_value=True)
-    @patch("qsync.interactive_menu.autocomplete_from_list")
-    @patch("qsync.interactive_menu.select_from_list")
-    @patch("qsync.survey_inventory._load_all_survey_records")
-    @patch("qsync.survey_inventory.LEGACY_SURVEY_CACHE", new=_ExistsPath())
-    @patch("qsync.survey_inventory.INVENTORY_CSV", new=_ExistsPath())
+    @patch("qsync.cli_survey.get_client_config")
+    @patch("qsync.survey_selection.pick_survey_ids_from_api")
+    @patch("qsync.interactive_menu.is_interactive", return_value=True)
     def test_prompt_for_any_survey_id_resolves_partial_autocomplete_input(
-        self,
-        mock_records,
-        mock_select,
-        mock_autocomplete,
-        _mock_isatty,
+        self, mock_is_interactive, mock_pick, mock_client_config
     ) -> None:
-        from qsync.cli_survey import _prompt_for_any_survey_id
+        from qsync.cli_survey import _prompt_for_survey_id_api_if_needed
 
-        mock_records.return_value = [
-            {
-                "id": "SV_AAA",
-                "name": "BSKY_main_pre_iad",
-                "focal": True,
-                "lastModified": "",
-            },
-            {
-                "id": "SV_BBB",
-                "name": "Other Survey",
-                "focal": False,
-                "lastModified": "",
-            },
-        ]
-        mock_select.return_value = "Search by name/ID (autocomplete)"
-        mock_autocomplete.return_value = "BSKY_main_pre_i"
+        mock_client_config.return_value = ("iad1.qualtrics.com", {"X-API-TOKEN": "x"})
+        mock_pick.return_value = ["SV_AAA"]
+        args = MagicMock()
+        args.account = None
+        args.survey_id = None
 
-        selected = _prompt_for_any_survey_id(None)
+        selected = _prompt_for_survey_id_api_if_needed(
+            survey_id=None,
+            args=args,
+            message="Select a survey to pull (cache JSON):",
+        )
         self.assertEqual(selected, "SV_AAA")
+        mock_pick.assert_called_once_with(
+            message="Select a survey to pull (cache JSON):",
+            base_url="iad1.qualtrics.com",
+            headers={"X-API-TOKEN": "x"},
+            include_back=False,
+            allow_multiple=False,
+        )
 
-    @patch("qsync.cli_survey.sys.stdin.isatty", return_value=True)
-    @patch("qsync.interactive_menu.autocomplete_from_list")
-    @patch("qsync.interactive_menu.select_from_list")
-    @patch("qsync.survey_inventory._load_all_survey_records")
-    @patch("qsync.survey_inventory.LEGACY_SURVEY_CACHE", new=_ExistsPath())
-    @patch("qsync.survey_inventory.INVENTORY_CSV", new=_ExistsPath())
+    @patch("qsync.cli_survey.get_client_config")
+    @patch("qsync.survey_selection.pick_survey_ids_from_api")
+    @patch("qsync.interactive_menu.is_interactive", return_value=True)
     def test_prompt_for_any_survey_id_disambiguates_partial_input(
-        self,
-        mock_records,
-        mock_select,
-        mock_autocomplete,
-        _mock_isatty,
+        self, mock_is_interactive, mock_pick, mock_client_config
     ) -> None:
-        from qsync.cli_survey import _prompt_for_any_survey_id
+        from qsync.cli_survey import _prompt_for_survey_id_api_if_needed
 
-        mock_records.return_value = [
-            {
-                "id": "SV_AAA",
-                "name": "BSKY_main_pre_iad",
-                "focal": True,
-                "lastModified": "",
-            },
-            {
-                "id": "SV_BBB",
-                "name": "BSKY_main_pre_ireland",
-                "focal": False,
-                "lastModified": "",
-            },
-        ]
-        # First menu call chooses search mode; second call disambiguates.
-        mock_select.side_effect = [
-            "Search by name/ID (autocomplete)",
-            "SV_BBB - BSKY_main_pre_ireland",
-        ]
-        mock_autocomplete.return_value = "BSKY_main_pre_i"
+        mock_client_config.return_value = ("iad1.qualtrics.com", {"X-API-TOKEN": "x"})
+        mock_pick.return_value = ["SV_BBB"]
+        args = MagicMock()
+        args.account = None
+        args.survey_id = None
 
-        selected = _prompt_for_any_survey_id(None)
+        selected = _prompt_for_survey_id_api_if_needed(
+            survey_id=None,
+            args=args,
+            message="Select a survey to pull (cache JSON):",
+        )
         self.assertEqual(selected, "SV_BBB")
+        mock_pick.assert_called_once_with(
+            message="Select a survey to pull (cache JSON):",
+            base_url="iad1.qualtrics.com",
+            headers={"X-API-TOKEN": "x"},
+            include_back=False,
+            allow_multiple=False,
+        )
 
 
 if __name__ == "__main__":

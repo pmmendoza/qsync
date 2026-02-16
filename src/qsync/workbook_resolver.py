@@ -2,7 +2,7 @@
 Centralized workbook path resolution for qsync operations.
 
 Provides consistent logic for deriving default Excel workbook paths based
-on survey metadata (inventory CSV, cached survey, or survey ID fallback).
+on survey metadata (inventory CSV, live API listing, or survey ID fallback).
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import csv
 from pathlib import Path
 from typing import Optional
 
-from qsync.config import resolve_root, resolve_scoped_dir
+from qsync.config import get_client_config, resolve_root, resolve_scoped_dir
 
 
 def _slugify(value: str) -> str:
@@ -30,6 +30,7 @@ class WorkbookResolver:
             root: Workspace root directory. If None, resolves from config.
         """
         self.root = root or resolve_root(required=False) or Path.cwd()
+        self._live_survey_names_by_id: dict[str, str] | None = None
 
     def resolve(
         self,
@@ -116,7 +117,7 @@ class WorkbookResolver:
 
         Tries in order:
         1. 'name' from surveys/inventory.csv (legacy: surveys/qualtrics_surveys.csv)
-        2. SurveyTitle from cached survey payload
+        2. Live survey name from account API inventory
         3. Survey ID fallback
 
         Args:
@@ -143,23 +144,41 @@ class WorkbookResolver:
             except Exception:
                 pass
 
-        # 2) Try SurveyTitle from cached survey
-        try:
-            from qsync.qualtrics_client import load_cached_survey
-
-            survey = load_cached_survey(survey_id)
-            title = (
-                survey.payload.get("result", {})
-                .get("SurveyOptions", {})
-                .get("SurveyTitle")
-            )
-            if title:
-                return _slugify(title)
-        except Exception:
-            pass
+        # 2) Try live survey list for deterministic account-specific naming.
+        live_name = self._lookup_live_survey_name(survey_id)
+        if live_name:
+            return _slugify(live_name)
 
         # 3) Fallback to survey ID
         return _slugify(survey_id)
+
+    def _lookup_live_survey_name(self, survey_id: str) -> str | None:
+        """Best-effort lookup of survey display name from the active account API."""
+
+        if self._live_survey_names_by_id is None:
+            self._live_survey_names_by_id = {}
+            try:
+                from qsync.survey_selection import list_surveys_via_api
+
+                base_url, headers = get_client_config()
+                surveys = list_surveys_via_api(
+                    base_url=base_url,
+                    headers=headers,
+                    timeout=30,
+                )
+                for row in surveys:
+                    sid = str(row.get("id") or "").strip()
+                    name = str(row.get("name") or "").strip()
+                    if sid and name:
+                        self._live_survey_names_by_id[sid] = name
+            except Exception:
+                # Keep slug resolution resilient/offline-safe.
+                self._live_survey_names_by_id = {}
+
+        name = self._live_survey_names_by_id.get(survey_id)
+        if not name:
+            return None
+        return str(name).strip() or None
 
     def __repr__(self) -> str:
         """String representation."""

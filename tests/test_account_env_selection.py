@@ -414,10 +414,12 @@ def test_survey_pull_account_prompt_uses_account_live_inventory(
 
     captured: dict[str, str | None] = {}
 
-    def _fake_list_surveys(base: str, headers: dict[str, str]) -> list[dict]:
-        captured["base"] = base
+    def _fake_pick_surveys(
+        message: str, base_url: str, headers: dict[str, str], **kwargs
+    ) -> list[str]:
+        captured["base"] = base_url
         captured["token"] = str(headers.get("X-API-TOKEN") or "")
-        return [{"id": "SV_3", "name": "Damian Survey", "creationDate": "2026-01-01"}]
+        return ["SV_3"]
 
     def _fake_download_survey_definition(
         survey_id: str, *, target_dir: Path | None = None, env: dict[str, str] | None = None
@@ -426,15 +428,12 @@ def test_survey_pull_account_prompt_uses_account_live_inventory(
         captured["downloaded_dir"] = str(target_dir)
         return Path(target_dir or Path("surveys")) / f"{survey_id}.json"
 
-    monkeypatch.setattr(cli_survey, "list_surveys", _fake_list_surveys)
+    monkeypatch.setattr("qsync.survey_selection.pick_survey_ids_from_api", _fake_pick_surveys)
     monkeypatch.setattr(cli_survey, "download_survey_definition", _fake_download_survey_definition)
     monkeypatch.setattr(
         "qsync.cli_survey.sys.stdin.isatty", lambda: True
     )
-    monkeypatch.setattr(
-        "qsync.interactive_menu.select_from_list",
-        lambda message, choices: "SV_3 - Damian Survey",
-    )
+    monkeypatch.setattr("qsync.interactive_menu.is_interactive", lambda: True)
 
     main(
         [

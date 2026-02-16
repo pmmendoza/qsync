@@ -273,6 +273,59 @@ def _language_present_in_cache(payload: dict, language: str) -> bool:
     return False
 
 
+def _is_sbs_matrix_question(question: dict) -> bool:
+    """Return True for SBS side-by-side matrix questions."""
+
+    return (
+        str(question.get("QuestionType") or "").strip() == "SBS"
+        and str(question.get("Selector") or "").strip() == "SBSMatrix"
+    )
+
+
+def _ordered_numeric_string_ids(mapping: dict, order: object | None = None) -> list[str]:
+    """Return ordered IDs from a mapping, honoring an optional order list."""
+
+    if not isinstance(mapping, dict):
+        return []
+
+    ordered: list[str] = []
+    if isinstance(order, list) and order:
+        ordered.extend(str(item) for item in order if str(item) in mapping)
+    for item_id in mapping.keys():
+        item_id_s = str(item_id)
+        if item_id_s not in ordered:
+            ordered.append(item_id_s)
+    return ordered
+
+
+def _lookup_ordered_mapping_item(mapping: dict, item_id: str) -> Any | None:
+    """Lookup a mapping item by string key and common numeric fallback."""
+
+    if item_id in mapping:
+        return mapping[item_id]
+    if item_id.isdigit():
+        as_int = int(item_id)
+        if as_int in mapping:
+            return mapping[as_int]
+    return None
+
+
+def _read_lang_block(question: dict, lang: str) -> dict:
+    """Best-effort helper to read a language block from question payload."""
+
+    language_blocks = question.get("Language")
+    if not isinstance(language_blocks, dict):
+        return {}
+    lang_block = (
+        language_blocks.get(lang)
+        or language_blocks.get(lang.lower())
+        or language_blocks.get(lang.upper())
+    )
+    if isinstance(lang_block, dict):
+        return lang_block
+    return {}
+
+
 def build_translation_map_from_cache(
     payload: dict,
     *,
@@ -311,6 +364,8 @@ def build_translation_map_from_cache(
             q_text = read_question_text(question, lang)
         translation_map[f"{qid_s}_QuestionText"] = _coerce_display_text(q_text)
 
+        is_sbs_matrix = _is_sbs_matrix_question(question)
+
         choices = question.get("Choices") or {}
         if isinstance(choices, dict):
             for cid, choice in choices.items():
@@ -320,14 +375,96 @@ def build_translation_map_from_cache(
                     display = read_choice_display(question, lang, str(cid))
                 translation_map[f"{qid_s}_Choice{cid}"] = _coerce_display_text(display)
 
-        answers = question.get("Answers") or {}
-        if isinstance(answers, dict):
-            for aid, answer in answers.items():
-                if is_base:
-                    display = (answer or {}).get("Display")
-                else:
-                    display = read_answer_display(question, lang, str(aid))
-                translation_map[f"{qid_s}_Answer{aid}"] = _coerce_display_text(display)
+        if is_sbs_matrix:
+            additional = question.get("AdditionalQuestions") or {}
+            if isinstance(additional, dict) and additional:
+                lang_block = _read_lang_block(question, lang)
+                add_lang = (
+                    lang_block.get("AdditionalQuestions")
+                    if isinstance(lang_block.get("AdditionalQuestions"), dict)
+                    else {}
+                )
+                q_lang_answers = (
+                    lang_block.get("Answers")
+                    if isinstance(lang_block.get("Answers"), dict)
+                    else {}
+                )
+                q_answers = question.get("Answers") or {}
+                if not isinstance(q_answers, dict):
+                    q_answers = {}
+                for column_id in _ordered_numeric_string_ids(additional):
+                    column = additional.get(column_id)
+                    if not isinstance(column, dict):
+                        continue
+                    base_answers = column.get("Answers") or {}
+                    if not isinstance(base_answers, dict):
+                        base_answers = {}
+                    if not base_answers:
+                        base_answers = q_answers
+
+                    col_lang_block: dict[str, Any] = {}
+                    if is_base:
+                        col_text = column.get("QuestionText")
+                    else:
+                        maybe_block = (
+                            add_lang.get(str(column_id))
+                            if isinstance(add_lang, dict)
+                            else None
+                        )
+                        if isinstance(maybe_block, dict):
+                            col_lang_block = maybe_block
+                            col_text = maybe_block.get("QuestionText")
+                        else:
+                            col_text = None
+                    translation_map[
+                        f"{qid_s}#{column_id}_QuestionText"
+                    ] = _coerce_display_text(col_text)
+
+                    answers = base_answers
+                    answer_order = column.get("AnswerOrder")
+                    lang_answers = (
+                        col_lang_block.get("Answers")
+                        if isinstance(col_lang_block, dict)
+                        else None
+                    )
+                    if not isinstance(lang_answers, dict):
+                        lang_answers = {}
+                    column_answer_order = answer_order if isinstance(answer_order, list) else None
+                    if not answers:
+                        answers = q_answers
+                    for ans_id in _ordered_numeric_string_ids(answers, column_answer_order):
+                        answer = _lookup_ordered_mapping_item(answers, ans_id)
+                        if is_base:
+                            ans_text = (answer or {}).get("Display")
+                        else:
+                            ans_lang = _lookup_ordered_mapping_item(lang_answers, ans_id)
+                            if not isinstance(ans_lang, dict):
+                                ans_lang = {}
+                            if not ans_lang:
+                                ans_lang = _lookup_ordered_mapping_item(q_lang_answers, ans_id)
+                                if not isinstance(ans_lang, dict):
+                                    ans_lang = {}
+                            ans_text = (
+                                ans_lang.get("Display") if isinstance(ans_lang, dict) else None
+                            )
+                            if ans_text is None:
+                                ans_text = _coerce_display_text((answer or {}).get("Display"))
+                                if ans_text == "":
+                                    ans_text = None
+                        translation_map[
+                            f"{qid_s}#{column_id}_Answer{ans_id}"
+                        ] = _coerce_display_text(ans_text)
+            # SBSMatrix carries per-column answers in AdditionalQuestions.
+            # Keep this branch intentionally isolated from top-level Answers.
+        else:
+            answers = question.get("Answers") or {}
+            if isinstance(answers, dict):
+                for aid, answer in answers.items():
+                    if is_base:
+                        display = (answer or {}).get("Display")
+                    else:
+                        display = read_answer_display(question, lang, str(aid))
+                    translation_map[f"{qid_s}_Answer{aid}"] = _coerce_display_text(display)
 
         labels = question.get("Labels") or {}
         if isinstance(labels, dict):
@@ -394,6 +531,14 @@ class TranslationRenderContext:
 
     def key_for_answer(self, qid: str, answer_id: str) -> str:
         return f"{qid}_Answer{answer_id}"
+
+    def key_for_sbs_column_question_text(self, qid: str, column_id: str) -> str:
+        return f"{qid}#{column_id}_QuestionText"
+
+    def key_for_sbs_column_answer(
+        self, qid: str, column_id: str, answer_id: str
+    ) -> str:
+        return f"{qid}#{column_id}_Answer{answer_id}"
 
     def key_for_label(self, qid: str, label_id: str) -> str:
         return f"{qid}_Label{label_id}"
@@ -1372,15 +1517,39 @@ def _collect_expected_translation_keys(
         qid_s = str(qid)
         keys.add(f"{qid_s}_QuestionText")
 
+        qtype = str(q.get("QuestionType") or "").strip()
+        selector = str(q.get("Selector") or "").strip()
+        is_sbs_matrix = qtype == "SBS" and selector == "SBSMatrix"
+
         choices = q.get("Choices") or {}
         if isinstance(choices, dict):
             for cid in choices.keys():
                 keys.add(f"{qid_s}_Choice{cid}")
 
-        answers = q.get("Answers") or {}
-        if isinstance(answers, dict):
-            for aid in answers.keys():
-                keys.add(f"{qid_s}_Answer{aid}")
+        if is_sbs_matrix:
+            additional = q.get("AdditionalQuestions") or {}
+            if isinstance(additional, dict):
+                top_answers = q.get("Answers") or {}
+                if not isinstance(top_answers, dict):
+                    top_answers = {}
+                for column_id, column in additional.items():
+                    column_id_s = str(column_id)
+                    keys.add(f"{qid_s}#{column_id_s}_QuestionText")
+                    if not isinstance(column, dict):
+                        continue
+                    answers = column.get("Answers") or {}
+                    if not isinstance(answers, dict):
+                        answers = {}
+                    if not answers:
+                        answers = top_answers
+                    answer_order = column.get("AnswerOrder")
+                    for ans_id in _ordered_numeric_string_ids(answers, answer_order):
+                        keys.add(f"{qid_s}#{column_id_s}_Answer{ans_id}")
+        else:
+            answers = q.get("Answers") or {}
+            if isinstance(answers, dict):
+                for aid in answers.keys():
+                    keys.add(f"{qid_s}_Answer{aid}")
 
         labels = q.get("Labels") or {}
         if isinstance(labels, dict):
@@ -2185,15 +2354,24 @@ def _add_question(
     # - non-Matrix Answers -> QID_AnswerN
     # - Matrix rows (subitems) -> QID_ChoiceN
     # - Matrix cols (options) -> QID_AnswerN
+    # - SBSMatrix statements (Choices) -> QID_ChoiceN
+    # - SBSMatrix per-column headers -> QID#<col>_QuestionText
+    # - SBSMatrix per-column answers -> QID#<col>_AnswerN
     statement_items: list[tuple[str, str]] = []
     # (item_id, base_display, kind) where kind in {"choice","answer","label"}
     option_items: list[tuple[str, str, str]] = []
     label_items: list[tuple[str, str]] = []
     scale_info_lines: list[str] = []
+    sbs_columns: list[tuple[object, ...]] = []
 
     qtype_code = (question.get("QuestionType") or "").strip()
+    is_sbs_matrix = _is_sbs_matrix_question(question)
     slider_like = qtype_code in {"Slider", "CS"}
-    if qtype_code == "Matrix":
+    if is_sbs_matrix:
+        statement_items = list(
+            _iter_ordered_displays(question, question.get("Choices") or {}, order_key="ChoiceOrder")
+        )
+    elif qtype_code == "Matrix":
         rows = question.get("Choices") or {}
         cols = question.get("Answers") or {}
         statement_items = list(
@@ -2273,6 +2451,64 @@ def _add_question(
                 disp = _coerce_display_text(lab.get("Display"))
                 if disp.strip():
                     option_items.append((f"label {k}", _strip_html(disp), "label"))
+
+    if is_sbs_matrix:
+        additional = question.get("AdditionalQuestions") or {}
+        q_answers = question.get("Answers") or {}
+        if not isinstance(q_answers, dict):
+            q_answers = {}
+        if isinstance(additional, dict):
+            for col_id in _ordered_numeric_string_ids(additional):
+                column = additional.get(col_id) or {}
+                if not isinstance(column, dict):
+                    continue
+                col_base_text = _coerce_display_text(column.get("QuestionText"))
+                col_base_answers = column.get("Answers") or {}
+                if not isinstance(col_base_answers, dict):
+                    col_base_answers = {}
+                if not col_base_answers:
+                    col_base_answers = q_answers
+                col_key = (
+                    lang_ctx.key_for_sbs_column_question_text(qid, str(col_id))
+                    if lang_ctx
+                    else ""
+                )
+                col_target_text = (
+                    _resolve_translation(col_key, col_base_text) if col_key else col_base_text
+                )
+
+                answers = col_base_answers
+                answer_order = column.get("AnswerOrder")
+                translated_answers: list[tuple[str, str, str]] = []
+                if isinstance(answers, dict):
+                    for ans_id in _ordered_numeric_string_ids(answers, answer_order):
+                        ans_data = _lookup_ordered_mapping_item(answers, str(ans_id)) or {}
+                        if not isinstance(ans_data, dict):
+                            continue
+                        ans_base = _coerce_display_text(ans_data.get("Display"))
+                        ans_target = ans_base
+                        if lang_ctx:
+                            ans_key = lang_ctx.key_for_sbs_column_answer(
+                                qid, str(col_id), str(ans_id)
+                            )
+                            ans_target = _resolve_translation(ans_key, ans_base)
+                            if compare_to_base:
+                                translated_answers.append(
+                                    (str(ans_id), ans_base, ans_target)
+                                )
+                            else:
+                                translated_answers.append(
+                                    (str(ans_id), ans_target)
+                                )
+                        else:
+                            translated_answers.append((str(ans_id), ans_base))
+
+                if compare_to_base:
+                    sbs_columns.append(
+                        (str(col_id), col_base_text, col_target_text, translated_answers)
+                    )
+                else:
+                    sbs_columns.append((str(col_id), col_target_text, translated_answers))
 
     # Apply translation overlay (if requested).
     translated_statement_items: object = statement_items
@@ -2372,6 +2608,43 @@ def _add_question(
             if translated_label_items:
                 rows_to_render.append(("labels", translated_label_items))
 
+    if is_sbs_matrix:
+        filtered_sbs_columns: list[tuple[object, ...]] = []
+        for col_payload in sbs_columns:
+            if compare_to_base:
+                col_id, col_base_text, col_target_text, answers_payload = col_payload  # type: ignore[misc]
+                if answers_payload:
+                    answers_payload = [
+                        (aid, base_ans, target_ans)
+                        for aid, base_ans, target_ans in answers_payload  # type: ignore[assignment]
+                        if _renderable(str(base_ans)) or _renderable(str(target_ans))
+                    ]
+                if (
+                    _renderable(str(col_base_text))
+                    or _renderable(str(col_target_text))
+                    or bool(answers_payload)
+                ):
+                    filtered_sbs_columns.append(
+                        (str(col_id), str(col_base_text), str(col_target_text), answers_payload)
+                    )
+            else:
+                col_id, col_target_text, column_answers = col_payload  # type: ignore[misc]
+                column_answers = [
+                    (aid, disp)
+                    for aid, disp in column_answers  # type: ignore[assignment]
+                    if _renderable(str(disp))
+                ]
+                if _renderable(str(col_target_text)) or column_answers:
+                    filtered_sbs_columns.append(
+                        (str(col_id), str(col_target_text), column_answers)
+                    )
+
+        if filtered_sbs_columns:
+            if compare_to_base:
+                rows_to_render.append(("sbs_columns2", filtered_sbs_columns))
+            else:
+                rows_to_render.append(("sbs_columns", filtered_sbs_columns))
+
     if option_items:
         if bilingual:
             rows_to_render.append(("answers_bilingual", translated_option_items))
@@ -2404,6 +2677,8 @@ def _add_question(
         if label_items:
             if translated_label_items:
                 bilingual_rows.append(("labels2", translated_label_items))
+        if is_sbs_matrix and filtered_sbs_columns:
+            bilingual_rows.append(("sbs_columns2", filtered_sbs_columns))
         if option_items:
             bilingual_rows.append(("answers2", translated_option_items))
         elif scale_info_lines:
@@ -2481,6 +2756,40 @@ def _add_question(
                     _add_choice_line(
                         right, prefix=f"[{cid}]", display=target_disp, depth=0
                     )
+            elif kind == "sbs_columns2":
+                p = _container_add_paragraph(left)
+                _style_table_label_paragraph(p)
+                p.add_run("Columns").bold = True
+                p2 = _container_add_paragraph(right)
+                _style_table_label_paragraph(p2)
+                p2.add_run("Columns").bold = True
+                for col_id, base_col_text, target_col_text, answers_payload in payload:  # type: ignore[assignment]
+                    col_label = f"Column {str(col_id)}"
+                    _add_choice_line(
+                        left,
+                        prefix=col_label,
+                        display=base_col_text,
+                        depth=0,
+                    )
+                    _add_choice_line(
+                        right,
+                        prefix=col_label,
+                        display=target_col_text,
+                        depth=0,
+                    )
+                    for aid, base_ans, target_ans in answers_payload:  # type: ignore[assignment]
+                        _add_choice_line(
+                            left,
+                            prefix=f"[{col_id}.{aid}]",
+                            display=base_ans,
+                            depth=0,
+                        )
+                        _add_choice_line(
+                            right,
+                            prefix=f"[{col_id}.{aid}]",
+                            display=target_ans,
+                            depth=0,
+                        )
             elif kind == "labels2":
                 p = _container_add_paragraph(left)
                 _style_table_label_paragraph(p)
@@ -2591,6 +2900,18 @@ def _add_question(
                     display=target_disp,
                     depth=0,
                 )
+        elif kind == "sbs_columns":
+            p = _container_add_paragraph(cell)
+            _style_table_label_paragraph(p)
+            p.add_run("Columns").bold = True
+            for col_id, col_text, answers_payload in payload:  # type: ignore[assignment]
+                _add_choice_line(
+                    cell, prefix=f"Column {str(col_id)}", display=str(col_text), depth=0
+                )
+                for aid, disp in answers_payload:  # type: ignore[assignment]
+                    _add_choice_line(
+                        cell, prefix=f"[{col_id}.{aid}]", display=disp, depth=0
+                    )
         elif kind == "labels":
             p = _container_add_paragraph(cell)
             _style_table_label_paragraph(p)
@@ -5727,6 +6048,7 @@ def _render_question_html_full(
     choices = q.get("Choices", {}) or {}
     answers = q.get("Answers", {}) or {}
     slider_like = qtype in {"Slider", "CS"}
+    is_sbs_matrix = _is_sbs_matrix_question(q)
 
     def _ordered_ids(mapping: dict, *, order_key: str) -> list[str]:
         order = q.get(order_key) or []
@@ -5740,7 +6062,86 @@ def _render_question_html_full(
     def _renderable_html(s: str) -> bool:
         return _has_renderable_text(_trim_html_edges(s))
 
-    if isinstance(choices, dict) and choices:
+    if is_sbs_matrix:
+        ordered_choice_ids = _ordered_ids(choices, order_key="ChoiceOrder")
+
+        items = []
+        for choice_id in ordered_choice_ids:
+            choice_data = choices.get(choice_id)
+            if not isinstance(choice_data, dict):
+                continue
+            display = _coerce_display_text(choice_data.get("Display")).strip()
+            if content.translation_ctx:
+                key = content.translation_ctx.key_for_choice(qid, choice_id)
+                translated = content.translation_ctx.target_map.get(key)
+                if translated:
+                    display = translated
+            display = _sanitize_html_for_weasyprint(display)
+            if not _renderable_html(display):
+                continue
+            items.append(
+                f"<li><strong>[{_escape_html(choice_id)}]</strong> {display}</li>"
+            )
+        if items:
+            html += '<div class="choice-label"><strong>Statements:</strong></div>\n'
+            html += f'<ul class="choices">{"".join(items)}</ul>\n'
+
+        additional = q.get("AdditionalQuestions") or {}
+        if isinstance(additional, dict):
+            for column_id in _ordered_numeric_string_ids(additional):
+                column = additional.get(column_id)
+                if not isinstance(column, dict):
+                    continue
+                col_text = _coerce_display_text(column.get("QuestionText"))
+                if content.translation_ctx:
+                    col_key = content.translation_ctx.key_for_sbs_column_question_text(
+                        qid, str(column_id)
+                    )
+                    translated = content.translation_ctx.target_map.get(col_key)
+                    if translated:
+                        col_text = translated
+                col_text = _sanitize_html_for_weasyprint(str(col_text))
+
+                answer_map = column.get("Answers") or {}
+                if not isinstance(answer_map, dict) or not answer_map:
+                    answer_map = q.get("Answers") or {}
+                    if not isinstance(answer_map, dict) or not answer_map:
+                        continue
+                    answer_order = q.get("AnswerOrder")
+                else:
+                    answer_order = column.get("AnswerOrder")
+                ordered_answer_ids = _ordered_numeric_string_ids(
+                    answer_map, answer_order
+                )
+
+                col_items = []
+                for ans_id in ordered_answer_ids:
+                    ans_data = answer_map.get(ans_id) if isinstance(answer_map, dict) else None
+                    if not isinstance(ans_data, dict):
+                        continue
+                    ans_display = _coerce_display_text(ans_data.get("Display")).strip()
+                    if content.translation_ctx:
+                        ans_key = content.translation_ctx.key_for_sbs_column_answer(
+                            qid, str(column_id), str(ans_id)
+                        )
+                        translated = content.translation_ctx.target_map.get(ans_key)
+                        if translated:
+                            ans_display = translated
+                    ans_display = _sanitize_html_for_weasyprint(ans_display)
+                    if not _renderable_html(ans_display):
+                        continue
+                    col_items.append(
+                        f"<li><strong>[{_escape_html(str(column_id))}.{_escape_html(ans_id)}]</strong> {ans_display}</li>"
+                    )
+                if col_items:
+                    html += (
+                        f'<div class="choice-label"><strong>Column '
+                        f'{_escape_html(str(column_id))}:</strong></div>\n'
+                    )
+                    html += f'<div class="question-text">{col_text}</div>\n'
+                    html += f'<ul class="answers">{"".join(col_items)}</ul>\n'
+
+    elif isinstance(choices, dict) and choices:
         ordered_choice_ids = _ordered_ids(choices, order_key="ChoiceOrder")
 
         items = []
@@ -7780,6 +8181,7 @@ def _question_type_abbrev_and_label(
 
     # Abbrev should be short and consistent; label should be human-readable.
     base: dict[str, tuple[str, str]] = {
+        "SBS": ("SBS", "SBS Matrix"),
         "MC": ("MC", "Multiple Choice"),
         "TE": ("TE", "Text Entry"),
         "DB": ("DB", "Descriptive Text"),

@@ -4,7 +4,7 @@ Tests for workbook_resolver module.
 
 import csv
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 from qsync.workbook_resolver import WorkbookResolver, _slugify
@@ -86,8 +86,8 @@ class TestWorkbookResolver:
         # Should use slugified name (format: {slug}-{survey-id}.xlsx)
         assert result.name == "My_Test_Survey-SV_123.xlsx"
 
-    def test_slug_from_cached_survey_title(self, tmp_path):
-        """When survey not in inventory CSV, use cached survey title."""
+    def test_slug_from_live_api_name(self, tmp_path):
+        """When survey not in inventory CSV, use live API survey name."""
         # Create surveys directory but no matching CSV entry
         surveys_dir = tmp_path / "surveys"
         surveys_dir.mkdir()
@@ -98,20 +98,18 @@ class TestWorkbookResolver:
             writer.writeheader()
             writer.writerow({"id": "SV_999", "name": "Other Survey"})
 
-        # Mock load_cached_survey
-        mock_survey = MagicMock()
-        mock_survey.payload = {
-            "result": {"SurveyOptions": {"SurveyTitle": "Cached Survey Title"}}
-        }
-
         with patch(
-            "qsync.qualtrics_client.load_cached_survey", return_value=mock_survey
+            "qsync.workbook_resolver.get_client_config",
+            return_value=("iad1.qualtrics.com", {"X-API-TOKEN": "token"}),
+        ), patch(
+            "qsync.survey_selection.list_surveys_via_api",
+            return_value=[{"id": "SV_123", "name": "API Survey Name"}],
         ):
             resolver = WorkbookResolver(root=tmp_path)
             result = resolver.default_path("SV_123")
 
-        # Should use slugified title from cached survey (format: {slug}-{survey-id}.xlsx)
-        assert result.name == "Cached_Survey_Title-SV_123.xlsx"
+        # Should use slugified live API name (format: {slug}-{survey-id}.xlsx)
+        assert result.name == "API_Survey_Name-SV_123.xlsx"
 
     def test_slug_fallback_to_survey_id(self, tmp_path):
         """When survey not in CSV and cache fails, use survey ID as slug."""
@@ -125,10 +123,13 @@ class TestWorkbookResolver:
             writer.writeheader()
             writer.writerow({"id": "SV_999", "name": "Other Survey"})
 
-        # No CSV entry for SV_123, and mock load_cached_survey to fail
+        # No CSV entry for SV_123, and live API listing fails.
         with patch(
-            "qsync.qualtrics_client.load_cached_survey",
-            side_effect=Exception("No cache"),
+            "qsync.workbook_resolver.get_client_config",
+            return_value=("iad1.qualtrics.com", {"X-API-TOKEN": "token"}),
+        ), patch(
+            "qsync.survey_selection.list_surveys_via_api",
+            side_effect=Exception("No API"),
         ):
             resolver = WorkbookResolver(root=tmp_path)
             result = resolver.default_path("SV_123")
@@ -137,7 +138,7 @@ class TestWorkbookResolver:
         assert result.name == "SV_123-SV_123.xlsx"
 
     def test_slug_empty_name_falls_back(self, tmp_path):
-        """Empty 'name' in CSV falls back to next precedence."""
+        """Empty 'name' in CSV falls back to live API name."""
         surveys_dir = tmp_path / "surveys"
         surveys_dir.mkdir()
         csv_path = surveys_dir / "inventory.csv"
@@ -147,19 +148,18 @@ class TestWorkbookResolver:
             writer.writeheader()
             writer.writerow({"id": "SV_123", "name": ""})  # Empty name
 
-        mock_survey = MagicMock()
-        mock_survey.payload = {
-            "result": {"SurveyOptions": {"SurveyTitle": "Fallback Title"}}
-        }
-
         with patch(
-            "qsync.qualtrics_client.load_cached_survey", return_value=mock_survey
+            "qsync.workbook_resolver.get_client_config",
+            return_value=("iad1.qualtrics.com", {"X-API-TOKEN": "token"}),
+        ), patch(
+            "qsync.survey_selection.list_surveys_via_api",
+            return_value=[{"id": "SV_123", "name": "Fallback Name"}],
         ):
             resolver = WorkbookResolver(root=tmp_path)
             result = resolver.default_path("SV_123")
 
-        # Should fall back to cached title (format: {slug}-{survey-id}.xlsx)
-        assert result.name == "Fallback_Title-SV_123.xlsx"
+        # Should fall back to live API name (format: {slug}-{survey-id}.xlsx)
+        assert result.name == "Fallback_Name-SV_123.xlsx"
         resolver = WorkbookResolver(root=tmp_path)
 
         result = resolver.resolve("SV_123")
@@ -187,7 +187,10 @@ class TestWorkbookResolver:
 
         # Should not crash, should fall back
         with patch(
-            "qsync.qualtrics_client.load_cached_survey", side_effect=Exception()
+            "qsync.workbook_resolver.get_client_config",
+            return_value=("iad1.qualtrics.com", {"X-API-TOKEN": "token"}),
+        ), patch(
+            "qsync.survey_selection.list_surveys_via_api", side_effect=Exception()
         ):
             resolver = WorkbookResolver(root=tmp_path)
             result = resolver.default_path("SV_123")
@@ -199,7 +202,10 @@ class TestWorkbookResolver:
         """Missing CSV file is handled gracefully."""
         # Don't create surveys directory at all
         with patch(
-            "qsync.qualtrics_client.load_cached_survey", side_effect=Exception()
+            "qsync.workbook_resolver.get_client_config",
+            return_value=("iad1.qualtrics.com", {"X-API-TOKEN": "token"}),
+        ), patch(
+            "qsync.survey_selection.list_surveys_via_api", side_effect=Exception()
         ):
             resolver = WorkbookResolver(root=tmp_path)
             result = resolver.default_path("SV_123")
