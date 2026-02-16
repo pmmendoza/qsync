@@ -1247,7 +1247,9 @@ def handle_menu(args: argparse.Namespace) -> None:
         matches_path = (scoped_surveys_dir / "prolific" / "matches.csv").resolve()
 
         def _prompt_prefix_tokens(default: int = 5) -> int:
-            raw = input(f"Prefix token count for unique matching [{default}]: ").strip()
+            raw = input(
+                f"Minimum prefix token count for unique matching [{default}]: "
+            ).strip()
             if not raw:
                 return default
             try:

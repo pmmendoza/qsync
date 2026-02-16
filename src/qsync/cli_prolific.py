@@ -209,6 +209,64 @@ def prefix_key(value: str | None, *, prefix_tokens: int) -> str:
     return " ".join(tokens[:token_count])
 
 
+def _index_all_prefix_keys(
+    *,
+    mapping: dict[str, list[Any]],
+    value: str | None,
+    item: Any,
+) -> None:
+    tokens = normalize_name(value).split()
+    if not tokens:
+        return
+    for token_count in range(1, len(tokens) + 1):
+        key = " ".join(tokens[:token_count])
+        mapping.setdefault(key, []).append(item)
+
+
+def _resolve_prefix_candidates(
+    *,
+    value: str | None,
+    min_prefix_tokens: int,
+    source_prefix_map: dict[str, list[Any]],
+    target_prefix_map: dict[str, list[Any]],
+) -> tuple[str, list[Any], list[Any], bool]:
+    tokens = normalize_name(value).split()
+    if not tokens:
+        return "", [], [], False
+
+    start = max(int(min_prefix_tokens or 1), 1)
+    if start > len(tokens):
+        start = len(tokens)
+
+    best_key = ""
+    best_source_candidates: list[Any] = []
+    best_target_candidates: list[Any] = []
+
+    for token_count in range(start, len(tokens) + 1):
+        key = " ".join(tokens[:token_count])
+        source_candidates = source_prefix_map.get(key, [])
+        target_candidates = target_prefix_map.get(key, [])
+
+        if source_candidates and target_candidates:
+            best_key = key
+            best_source_candidates = source_candidates
+            best_target_candidates = target_candidates
+
+        if len(source_candidates) == 1 and len(target_candidates) == 1:
+            return key, source_candidates, target_candidates, True
+
+    if best_key:
+        return best_key, best_source_candidates, best_target_candidates, False
+
+    fallback_key = " ".join(tokens[:start])
+    return (
+        fallback_key,
+        source_prefix_map.get(fallback_key, []),
+        target_prefix_map.get(fallback_key, []),
+        False,
+    )
+
+
 def exact_name_key(
     value: str | None,
     *,
@@ -555,6 +613,8 @@ def build_match_rows(
     existing_rows: Sequence[dict[str, str]] | None = None,
     proposed_at: str | None = None,
 ) -> list[dict[str, str]]:
+    min_prefix_tokens = max(int(prefix_tokens or 1), 1)
+
     studies_normalized: list[MatchStudy] = []
     for row in studies:
         study_id = str(row.get("prolific_study_id") or "").strip()
@@ -575,24 +635,27 @@ def build_match_rows(
     study_key_map: dict[str, list[MatchStudy]] = {}
     study_title_key_map: dict[str, list[MatchStudy]] = {}
     for study in studies_normalized:
-        key = prefix_key(study.internal_name, prefix_tokens=prefix_tokens)
-        if not key:
-            key = ""
-        if key:
-            study_key_map.setdefault(key, []).append(study)
-        title_key = prefix_key(study.study_name, prefix_tokens=prefix_tokens)
-        if title_key:
-            study_title_key_map.setdefault(title_key, []).append(study)
+        _index_all_prefix_keys(
+            mapping=study_key_map,
+            value=study.internal_name,
+            item=study,
+        )
+        _index_all_prefix_keys(
+            mapping=study_title_key_map,
+            value=study.study_name,
+            item=study,
+        )
 
     survey_key_map: dict[str, list[MatchSurvey]] = {}
     survey_exact_map: dict[str, list[MatchSurvey]] = {}
     surveys_by_id: dict[str, MatchSurvey] = {}
     for survey in qualtrics_surveys:
         surveys_by_id[survey.survey_id] = survey
-        key = prefix_key(survey.name, prefix_tokens=prefix_tokens)
-        if not key:
-            continue
-        survey_key_map.setdefault(key, []).append(survey)
+        _index_all_prefix_keys(
+            mapping=survey_key_map,
+            value=survey.name,
+            item=survey,
+        )
         exact_key = exact_name_key(survey.name, drop_trailing_p=False)
         if exact_key:
             survey_exact_map.setdefault(exact_key, []).append(survey)
@@ -623,13 +686,26 @@ def build_match_rows(
 
     rows: list[dict[str, str]] = []
     for study in ordered:
-        key = prefix_key(study.internal_name, prefix_tokens=prefix_tokens)
+        key, study_candidates, survey_candidates, key_is_unique = _resolve_prefix_candidates(
+            value=study.internal_name,
+            min_prefix_tokens=min_prefix_tokens,
+            source_prefix_map=study_key_map,
+            target_prefix_map=survey_key_map,
+        )
         exact_key = exact_name_key(study.internal_name, drop_trailing_p=True)
         exact_survey_candidates = survey_exact_map.get(exact_key, []) if exact_key else []
         exact_study_candidates = study_exact_map.get(exact_key, []) if exact_key else []
-        survey_candidates = survey_key_map.get(key, []) if key else []
-        study_candidates = study_key_map.get(key, []) if key else []
-        title_key = prefix_key(study.study_name, prefix_tokens=prefix_tokens)
+        (
+            title_key,
+            title_study_candidates,
+            title_survey_candidates,
+            title_key_is_unique,
+        ) = _resolve_prefix_candidates(
+            value=study.study_name,
+            min_prefix_tokens=min_prefix_tokens,
+            source_prefix_map=study_title_key_map,
+            target_prefix_map=survey_key_map,
+        )
         title_exact_key = exact_name_key(study.study_name, drop_trailing_p=True)
         title_exact_survey_candidates = (
             survey_exact_map.get(title_exact_key, []) if title_exact_key else []
@@ -637,8 +713,6 @@ def build_match_rows(
         title_exact_study_candidates = (
             study_title_exact_map.get(title_exact_key, []) if title_exact_key else []
         )
-        title_survey_candidates = survey_key_map.get(title_key, []) if title_key else []
-        title_study_candidates = study_title_key_map.get(title_key, []) if title_key else []
 
         state = "REVIEW_REQUIRED"
         match_mode = "none"
@@ -646,6 +720,7 @@ def build_match_rows(
         survey_id = ""
         survey_name = ""
         notes = ""
+        selected_prefix_key = key
 
         if (
             exact_key
@@ -669,7 +744,8 @@ def build_match_rows(
             state = "PROPOSED"
             match_mode = "prefix_exact"
             confidence = "high"
-        elif key and len(study_candidates) == 1 and len(survey_candidates) == 1:
+            selected_prefix_key = title_key or key
+        elif key and key_is_unique:
             candidate = survey_candidates[0]
             survey_id = candidate.survey_id
             survey_name = candidate.name
@@ -680,17 +756,14 @@ def build_match_rows(
                 else "prefix_unique"
             )
             confidence = "high" if match_mode == "prefix_exact" else "medium"
-        elif (
-            title_key
-            and len(title_study_candidates) == 1
-            and len(title_survey_candidates) == 1
-        ):
+        elif title_key and title_key_is_unique:
             candidate = title_survey_candidates[0]
             survey_id = candidate.survey_id
             survey_name = candidate.name
             state = "PROPOSED"
             match_mode = "prefix_unique"
             confidence = "medium"
+            selected_prefix_key = title_key
         elif key and survey_candidates:
             match_mode = "ambiguous"
             candidate_desc = ", ".join(
@@ -709,9 +782,12 @@ def build_match_rows(
                 ]
             )
             notes = f"Ambiguous prefix '{title_key}' -> {candidate_desc}"
+            selected_prefix_key = title_key
         else:
             match_mode = "none"
             notes = f"No unique prefix match for '{key or title_key or '[empty]'}'"
+            if not selected_prefix_key:
+                selected_prefix_key = title_key
 
         desired_prolific_redirect_url = build_qualtrics_form_redirect_url(
             qualtrics_base_url,
@@ -733,7 +809,7 @@ def build_match_rows(
             "match_confidence": confidence,
             "notes": notes,
             "completion_code": study.completion_code,
-            "name_prefix_key": key,
+            "name_prefix_key": selected_prefix_key,
             "desired_prolific_redirect_url": desired_prolific_redirect_url,
             "desired_qualtrics_eos_redirect_url": desired_qualtrics_eos_redirect_url,
             "last_proposed_at": proposed_at_value,
@@ -1082,6 +1158,7 @@ def handle_propose_matches(args: argparse.Namespace) -> None:
                     "studies_csv": str(studies_path),
                     "matches_csv": str(matches_path),
                     "prefix_tokens": prefix_tokens,
+                    "min_prefix_tokens": prefix_tokens,
                     "summary": summary,
                 },
                 ensure_ascii=False,
@@ -1570,7 +1647,10 @@ def register_prolific_commands(
         "--prefix-tokens",
         type=int,
         default=2,
-        help="Number of normalized leading tokens used for unique prefix matching (default: 2).",
+        help=(
+            "Minimum number of normalized leading tokens required before unique-prefix matching "
+            "is attempted (default: 2). Matcher expands beyond this minimum until unique, when possible."
+        ),
     )
     propose.add_argument(
         "--pull-studies",

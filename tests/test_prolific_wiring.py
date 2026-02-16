@@ -66,6 +66,47 @@ def test_build_match_rows_unique_prefix_only() -> None:
     assert p3["match_mode"] in {"prefix_unique", "prefix_exact"}
 
 
+def test_build_match_rows_expands_prefix_beyond_minimum_when_needed() -> None:
+    studies = [
+        {
+            "prolific_study_id": "P10",
+            "prolific_internal_name": "BSKY_main_payout_10_CZ_p",
+            "prolific_study_name": "BSKY_main_payout_10_CZ_p",
+            "completion_code": "AAA010",
+        },
+        {
+            "prolific_study_id": "P20",
+            "prolific_internal_name": "BSKY_main_payout_20_CZ_p",
+            "prolific_study_name": "BSKY_main_payout_20_CZ_p",
+            "completion_code": "AAA020",
+        },
+    ]
+    surveys = [
+        MatchSurvey("SV_P10", "BSKY_main_payout_10_CZ"),
+        MatchSurvey("SV_P20", "BSKY_main_payout_20_CZ"),
+    ]
+
+    rows = build_match_rows(
+        studies=studies,
+        qualtrics_surveys=surveys,
+        qualtrics_base_url="example.qualtrics.com",
+        prefix_tokens=2,
+    )
+
+    p10 = _row_by_study(rows, "P10")
+    p20 = _row_by_study(rows, "P20")
+
+    assert p10["state"] == "PROPOSED"
+    assert p10["qualtrics_survey_id"] == "SV_P10"
+    assert p10["match_mode"] == "prefix_exact"
+    assert p10["name_prefix_key"] == "bsky main payout 10"
+
+    assert p20["state"] == "PROPOSED"
+    assert p20["qualtrics_survey_id"] == "SV_P20"
+    assert p20["match_mode"] == "prefix_exact"
+    assert p20["name_prefix_key"] == "bsky main payout 20"
+
+
 def test_build_match_rows_preserves_approved_manual_mapping() -> None:
     studies = [
         {
