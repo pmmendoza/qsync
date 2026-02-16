@@ -1671,10 +1671,20 @@ def interactive_choice_wizard(
     qid: str | None,
     allow_delete: bool,
     experimental_unsupported: bool,
+    env: dict[str, str] | None = None,
+    surveys_dir: Path | None = None,
 ) -> dict[str, Any]:
-    survey = load_cached_survey(survey_id)
+    survey = load_cached_survey(survey_id, env=env, surveys_dir=surveys_dir)
     active = list(iter_active_qids_in_flow(survey))
     all_qids = iter_all_qids(survey)
+
+    def _extract_qid(selected: str | None) -> str:
+        if not selected:
+            raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
+        candidate = str(selected).strip().split()[0]
+        if not candidate or candidate not in survey.questions:
+            raise ItemsStructuralError(f"[qsync:items:edit] Invalid QID selection: {selected!r}.")
+        return candidate
 
     def _filter_labels(labels: list[str], raw: str) -> list[str]:
         needle = (raw or "").strip()
@@ -1692,6 +1702,15 @@ def interactive_choice_wizard(
                 "[qsync:items:edit] No QIDs found in cached survey."
             )
         active_set = set(active)
+        all_labels = [
+            _format_qid_label(
+                survey=survey,
+                qid=aqid,
+                active_set=active_set,
+                include_flow_status=True,
+            )
+            for aqid in all_qids
+        ]
         labels = []
         if active:
             for aqid in active:
@@ -1720,16 +1739,7 @@ def interactive_choice_wizard(
             if not mode or "Cancel" in mode:
                 raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
             if mode.startswith("Show all questions"):
-                labels = []
-                for aqid in all_qids:
-                    labels.append(
-                        _format_qid_label(
-                            survey=survey,
-                            qid=aqid,
-                            active_set=active_set,
-                            include_flow_status=True,
-                        )
-                    )
+                labels = list(all_labels)
                 raw = text_input(
                     "Filter all questions by QID/tag/text (regex supported)"
                 )
@@ -1746,7 +1756,7 @@ def interactive_choice_wizard(
                     selected = select_from_list("Select a QID to edit", filtered)
                     if not selected:
                         raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
-                qid = selected.split()[0]
+                qid = _extract_qid(selected)
                 question = survey.questions.get(qid)
                 if not isinstance(question, dict):
                     raise ItemsStructuralError(
@@ -1811,29 +1821,23 @@ def interactive_choice_wizard(
                     selected = select_from_list("Select a QID to edit", labels)
                     if not selected:
                         raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
-                qid = selected.split()[0]
+                qid = _extract_qid(selected)
         else:
-            if all_qids and len(active) < len(all_qids):
-                labels.append("─" * 40)
-                labels.append("Show all questions (includes not-in-flow)")
+            if active:
+                if all_qids and len(active) < len(all_qids):
+                    labels.append("─" * 40)
+                    labels.append("Show all questions (includes not-in-flow)")
+            else:
+                labels = all_labels
             selected = select_from_list("Select a QID to edit", labels)
         if not selected:
             raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
         if selected.startswith("Show all questions"):
-            labels = []
-            for aqid in all_qids:
-                labels.append(
-                    _format_qid_label(
-                        survey=survey,
-                        qid=aqid,
-                        active_set=active_set,
-                        include_flow_status=True,
-                    )
-                )
+            labels = all_labels
             selected = select_from_list("Select a QID to edit", labels)
             if not selected:
                 raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
-        qid = selected.split()[0]
+        qid = _extract_qid(selected)
 
     question = survey.questions.get(qid)
     if not isinstance(question, dict):

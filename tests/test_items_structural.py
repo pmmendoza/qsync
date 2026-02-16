@@ -150,6 +150,65 @@ class TestItemsStructuralHelpers(unittest.TestCase):
                                 )
         self.assertIn("No active questions matched that filter.", str(excinfo.exception))
 
+    def test_wizard_uses_all_qids_when_no_active_flow(self):
+        qids = ["QID1", "QID2", "QID3"]
+        questions = {
+            qid: {
+                "QuestionText": f"<p>{qid} text</p>",
+                "DataExportTag": f"TAG_{qid}",
+                "Choices": {"1": {"Display": "A"}},
+            }
+            for qid in qids
+        }
+        survey = items_structural.SurveyCache(
+            survey_id="SV_TEST",
+            path=items_structural.Path("dummy.json"),
+            payload={"result": {"Questions": questions}},
+        )
+
+        def _select_from_list(message, choices, instruction=None, default=None):
+            if message.startswith("Select a QID to edit"):
+                for choice in choices:
+                    if str(choice).startswith("QID2 "):
+                        return choice
+                return choices[0]
+            raise AssertionError(f"Unexpected select prompt: {message}")
+
+        def _stop_on_qid(*, survey_id, qid):
+            self.assertEqual(survey_id, "SV_TEST")
+            self.assertEqual(qid, "QID2")
+            raise items_structural.ItemsStructuralError("STOP_AFTER_QID")
+
+        with mock.patch.object(items_structural, "load_cached_survey", return_value=survey):
+            with mock.patch.object(
+                items_structural,
+                "iter_active_qids_in_flow",
+                return_value=[],
+            ):
+                with mock.patch.object(
+                    items_structural,
+                    "iter_all_qids",
+                    return_value=qids,
+                ):
+                    with mock.patch.object(
+                        items_structural,
+                        "select_from_list",
+                        side_effect=_select_from_list,
+                    ):
+                        with mock.patch.object(
+                            items_structural,
+                            "_qid_workbook_diffs",
+                            side_effect=_stop_on_qid,
+                        ):
+                            with self.assertRaises(items_structural.ItemsStructuralError) as excinfo:
+                                items_structural.interactive_choice_wizard(
+                                    survey_id="SV_TEST",
+                                    qid=None,
+                                    allow_delete=False,
+                                    experimental_unsupported=False,
+                                )
+        self.assertIn("STOP_AFTER_QID", str(excinfo.exception))
+
     def test_allocate_choice_id_uses_nextchoiceid_and_bumps(self):
         q = {
             "Choices": {"1": {"Display": "A"}, "2": {"Display": "B"}},
