@@ -1259,11 +1259,12 @@ def handle_menu(args: argparse.Namespace) -> None:
         # Keep current process deterministic across qsync installs with slightly
         # different signatures for this helper.
         def _call_interactive_choice_wizard(
-            *, survey_id: str, qid: str | None
+            *, survey_id: str, qid: str | None, preferred_target: str | None
         ) -> dict[str, Any]:
             return interactive_choice_wizard(
                 survey_id=survey_id,
                 qid=qid,
+                preferred_target=preferred_target,
                 allow_delete=False,
                 experimental_unsupported=False,
                 env=selected_env,
@@ -1374,11 +1375,29 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _wipe_workbook_qid_cells(survey_id=survey_id, qid=q, dry_run=False)
             print("[survey-menu] Workbook patched for affected QIDs.")
 
+        def _normalize_op_target(op: dict[str, Any]) -> str | None:
+            raw = str(op.get("target") or op.get("surface") or "").strip().lower()
+            key = raw.replace(" ", "_")
+            if key in {"question", "question_text", "question-text"}:
+                return "question-text"
+            if key in {"options", "option"}:
+                return "options"
+            if key in {"subitems", "subitem", "answers", "answer"}:
+                return "subitems"
+            if key in {"sbs_columns", "sbs_column"}:
+                return "sbs_columns"
+            if key in {"sbs_column_answers", "sbs_column_answer"}:
+                return "sbs_column_answers"
+            return None
+
+        next_qid: str | None = None
+        next_target: str | None = None
         while True:
             try:
                 op = _call_interactive_choice_wizard(
                     survey_id=survey_id,
-                    qid=None,
+                    qid=next_qid,
+                    preferred_target=next_target,
                 )
             except ItemsStructuralError as exc:
                 if "Cancelled." in str(exc):
@@ -1431,12 +1450,32 @@ def handle_menu(args: argparse.Namespace) -> None:
                     return
                 continue
             _stage_op(op)
+            current_qid = str(op.get("qid") or "").strip() or None
+            current_target = _normalize_op_target(op)
             print(
                 f"[survey-menu] Staged: {op.get('op')} qid={op.get('qid')} id={op.get('choice_id') or op.get('answer_id') or ''}"
             )
-            again = select_from_list("Edit anything else?", ["Yes", "No (review)"])
-            if not again or again.startswith("No"):
+            again = select_from_list(
+                "What next?",
+                [
+                    "Continue in same target (same question)",
+                    "Continue in same question (choose target)",
+                    "Choose another question",
+                    "Review staged edits",
+                ],
+            )
+            if not again or again.startswith("Review"):
                 break
+            if again.startswith("Continue in same target"):
+                next_qid = current_qid
+                next_target = current_target
+                continue
+            if again.startswith("Continue in same question"):
+                next_qid = current_qid
+                next_target = None
+                continue
+            next_qid = None
+            next_target = None
 
         record = load_pending(survey_id, "items")
         ops: list[dict] = []

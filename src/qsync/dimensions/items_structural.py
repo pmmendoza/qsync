@@ -1670,6 +1670,7 @@ def interactive_choice_wizard(
     *,
     survey_id: str,
     qid: str | None,
+    preferred_target: str | None = None,
     allow_delete: bool,
     experimental_unsupported: bool,
     env: dict[str, str] | None = None,
@@ -1929,7 +1930,32 @@ def interactive_choice_wizard(
             supported_targets.append("Options")
         if isinstance(question.get("Answers"), dict):
             supported_targets.append("Subitems")
-    if len(supported_targets) == 1:
+    def _resolve_target_from_preference(pref: str | None) -> str | None:
+        if not pref:
+            return None
+        key = str(pref).strip().lower().replace(" ", "_")
+        want = None
+        if key in {"question", "question_text", "question-text"}:
+            want = "question"
+        elif key in {"options", "option"}:
+            want = "options"
+        elif key in {"subitems", "subitem", "answers", "answer"}:
+            want = "subitems"
+        elif key in {"sbs_columns", "sbs_column"}:
+            want = "sbs columns"
+        elif key in {"sbs_column_answers", "sbs_column_answer"}:
+            want = "sbs column answers"
+        if not want:
+            return None
+        for candidate in supported_targets:
+            if candidate.lower().startswith(want):
+                return candidate
+        return None
+
+    preferred_label = _resolve_target_from_preference(preferred_target)
+    if preferred_label:
+        target = preferred_label
+    elif len(supported_targets) == 1:
         target = supported_targets[0]
     else:
         target = select_from_list("Select edit target", supported_targets)
