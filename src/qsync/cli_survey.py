@@ -1371,8 +1371,6 @@ def handle_menu(args: argparse.Namespace) -> None:
                 op = _call_interactive_choice_wizard(
                     survey_id=survey_id,
                     qid=None,
-                    allow_delete=False,
-                    experimental_unsupported=False,
                 )
             except ItemsStructuralError as exc:
                 if "Cancelled." in str(exc):
@@ -1461,9 +1459,14 @@ def handle_menu(args: argparse.Namespace) -> None:
             save_pending(record)
 
         try:
+            survey_cache = load_cached_survey(
+                survey_id,
+                env=selected_env,
+                surveys_dir=surveys_dir,
+            )
             push_structural_ops(
                 survey_id=survey_id,
-                payload=survey.payload,
+                payload=survey_cache.payload,
                 structural_ops=ops,
                 push_journal=dict(payload.push_journal or {}),
                 interactive=True,
