@@ -438,7 +438,7 @@ def _typed_confirmation(
 def handle_menu(args: argparse.Namespace) -> None:
     """Interactive wizard for common `qsync survey ...` operations."""
 
-    from .interactive_menu import is_interactive, select_from_list, confirm
+    from .interactive_menu import is_interactive, select_from_list
 
     if not is_interactive():
         raise SystemExit("[survey-menu] ERROR: Interactive TTY required.")
@@ -1232,6 +1232,176 @@ def handle_menu(args: argparse.Namespace) -> None:
             ),
         )
 
+    def _menu_prolific_wiring() -> None:
+        from .cli_prolific import (
+            handle_propose_matches,
+            handle_pull_studies,
+            handle_wire_apply,
+            handle_wire_preview,
+            handle_wire_rollback,
+        )
+
+        account_scope = _resolve_menu_account()
+        scoped_surveys_dir = resolve_scoped_dir("surveys", root=root, account=account_scope)
+        studies_path = (scoped_surveys_dir / "prolific" / "studies.csv").resolve()
+        matches_path = (scoped_surveys_dir / "prolific" / "matches.csv").resolve()
+
+        def _prompt_prefix_tokens(default: int = 5) -> int:
+            raw = input(f"Prefix token count for unique matching [{default}]: ").strip()
+            if not raw:
+                return default
+            try:
+                value = int(raw)
+            except Exception:
+                print(f"[survey-menu] Invalid prefix token count '{raw}', using {default}.")
+                return default
+            return max(value, 1)
+
+        def _prompt_auth_file() -> str | None:
+            raw = input(
+                "Auth snippet file path (blank = configured default from env/token): "
+            ).strip()
+            return raw or None
+
+        while True:
+            choice = select_from_list(
+                "Prolific Wiring",
+                [
+                    "Pull Prolific studies cache",
+                    "Propose matches (refresh Qualtrics inventory)",
+                    "Show review guidance",
+                    "Preview wiring plan (APPROVED rows)",
+                    "Apply wiring (APPROVED rows)",
+                    "Rollback a previous apply",
+                    "↩ Back",
+                ],
+            )
+            if not choice or choice.endswith("Back"):
+                return
+
+            if choice.startswith("Pull Prolific"):
+                _run_action(
+                    handle_pull_studies,
+                    argparse.Namespace(
+                        state=None,
+                        studies=None,
+                        prolific_token=None,
+                        json=False,
+                        account=account_scope,
+                    ),
+                )
+                continue
+
+            if choice.startswith("Propose matches"):
+                prefix_tokens = _prompt_prefix_tokens()
+                _run_action(
+                    handle_propose_matches,
+                    argparse.Namespace(
+                        studies=None,
+                        matches=None,
+                        prefix_tokens=prefix_tokens,
+                        pull_studies=True,
+                        qualtrics_inventory_refresh=True,
+                        prolific_token=None,
+                        json=False,
+                        account=account_scope,
+                    ),
+                )
+                print(f"[survey-menu] Review matches in: {matches_path}")
+                print(
+                    "[survey-menu] Mark rows as APPROVED / SKIP / REVIEW_REQUIRED, then run preview/apply."
+                )
+                print(
+                    "[survey-menu] Quick skim column: match_formula (between Prolific internal and Qualtrics survey names)."
+                )
+                continue
+
+            if choice.startswith("Show review guidance"):
+                print(f"[survey-menu] Studies cache: {studies_path}")
+                print(f"[survey-menu] Match file:   {matches_path}")
+                print("[survey-menu] Review flow:")
+                print("  1) Confirm proposed pairing using match_formula + names.")
+                print("  2) Set state=APPROVED for rows to wire, state=SKIP for rows to ignore.")
+                print("  3) Keep uncertain rows as REVIEW_REQUIRED.")
+                print("  4) Run preview, then apply on APPROVED rows only.")
+                continue
+
+            if choice.startswith("Preview wiring"):
+                auth_file = _prompt_auth_file()
+                _run_action(
+                    handle_wire_preview,
+                    argparse.Namespace(
+                        matches=None,
+                        only_state="APPROVED",
+                        auth_snippet=None,
+                        auth_snippet_file=auth_file,
+                        auth_token=None,
+                        prolific_token=None,
+                        json=False,
+                        account=account_scope,
+                    ),
+                )
+                continue
+
+            if choice.startswith("Apply wiring"):
+                auth_file = _prompt_auth_file()
+                publish = (
+                    select_from_list("Publish surveys after options changes?", ["No", "Yes"])
+                    == "Yes"
+                )
+                activate = (
+                    select_from_list("Activate surveys after options changes?", ["No", "Yes"])
+                    == "Yes"
+                )
+                continue_on_error = (
+                    select_from_list("Continue when one row fails?", ["Yes", "No"]) == "Yes"
+                )
+                _run_action(
+                    handle_wire_apply,
+                    argparse.Namespace(
+                        matches=None,
+                        only_state="APPROVED",
+                        auth_snippet=None,
+                        auth_snippet_file=auth_file,
+                        auth_token=None,
+                        prolific_token=None,
+                        yes=False,
+                        publish=publish,
+                        activate=activate,
+                        publish_description="Prolific wiring update",
+                        continue_on_error=continue_on_error,
+                        json=False,
+                        account=account_scope,
+                    ),
+                )
+                continue
+
+            if choice.startswith("Rollback"):
+                op_id = input("Operation ID (or full journal path): ").strip()
+                if not op_id:
+                    continue
+                publish = (
+                    select_from_list("Publish surveys after rollback writes?", ["No", "Yes"])
+                    == "Yes"
+                )
+                activate = (
+                    select_from_list("Activate surveys after rollback writes?", ["No", "Yes"])
+                    == "Yes"
+                )
+                _run_action(
+                    handle_wire_rollback,
+                    argparse.Namespace(
+                        op_id=op_id,
+                        prolific_token=None,
+                        yes=False,
+                        publish=publish,
+                        activate=activate,
+                        publish_description="Prolific wiring rollback",
+                        json=False,
+                        account=account_scope,
+                    ),
+                )
+
     def _menu_items_structural_edits(*, preselected_survey_id: str | None = None) -> None:
         from .pending_stage import (
             ItemsPendingPayload,
@@ -1770,6 +1940,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Rename embedded field (stage)",
                     "Cleanup embedded data (apply)",
                     "Prolific authenticity snippet",
+                    "Prolific wiring (Prolific ↔ Qualtrics)",
                     "↩ Back",
                 ],
             )
@@ -1785,8 +1956,10 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_embedded_field("rename-embedded-field")
             elif choice.startswith("Cleanup embedded"):
                 _menu_cleanup_embedded_data()
-            else:
+            elif choice.startswith("Prolific authenticity"):
                 _menu_prolific_auth()
+            else:
+                _menu_prolific_wiring()
             continue
 
         if top == "Exports":
@@ -4358,7 +4531,6 @@ def handle_delete(args: argparse.Namespace) -> None:
     """Delete one or more surveys by SurveyID."""
     from .survey_ref import format_survey_ref
 
-    account = _resolve_account_from_args(args)
     base, headers = _get_client_config_for_args(args)
 
     for survey_id in args.survey_ids:
@@ -8070,6 +8242,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "  Inventory/cache: list, label, focal, inventory, pull, prepare\n"
             "  Copy/derive: copy, slice-language, copy-cross-account, slice-registry, parity-check\n"
             "  Embedded/options: items structural edits, add-embedded-field, remove-embedded-field, rename-embedded-field, cleanup-embedded-data, prolific-auth\n"
+            "  Prolific wiring: prolific-wiring (alias to qsync prolific)\n"
             "  Lifecycle/versions: publish, activate, deactivate, versions, version-fetch, rollback\n"
             "  Utilities: inspect-question, push-question\n"
             "  Exports: export-responses, export-translation, export-side-by-side\n"
@@ -8669,6 +8842,15 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Skip auto-activate after updating the header (by default, qsync sets isActive=true)",
     )
     p_prolific_auth.set_defaults(func=handle_prolific_auth)
+
+    # prolific-wiring (alias of qsync prolific ... for discoverability under survey)
+    from .cli_prolific import register_prolific_commands
+
+    register_prolific_commands(
+        survey_subs,
+        command_name="prolific-wiring",
+        help_text="Automate Prolific ↔ Qualtrics wiring workflows (alias of `qsync prolific`)",
+    )
 
     # publish
     p_publish = survey_subs.add_parser(
@@ -9380,6 +9562,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "rename-embedded-field",
             "cleanup-embedded-data",
             "prolific-auth",
+            "prolific-wiring",
             # Lifecycle / versions
             "publish",
             "activate",

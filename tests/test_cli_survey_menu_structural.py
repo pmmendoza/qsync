@@ -34,6 +34,10 @@ def test_embedded_options_menu_includes_structural_entry(
         "Items: structural edits (stage → preview → push)" in menu_choices
         for menu_choices in seen_embedded_choices
     )
+    assert any(
+        "Prolific wiring (Prolific ↔ Qualtrics)" in menu_choices
+        for menu_choices in seen_embedded_choices
+    )
 
 
 def test_embedded_options_structural_route_reaches_wizard(
@@ -103,11 +107,14 @@ def test_embedded_options_structural_route_reaches_wizard(
         _raise_stop,
     )
 
+    state_menu = {"top_visits": 0}
+
     def _select_from_list(message: str, choices, instruction=None, default=None):
         if message.startswith("Pick a survey for structural edits"):
             return "SV_0869BstwT0iWHwq - Survey One"
         if message.startswith("qsync survey menu"):
-            return "Embedded & Options"
+            state_menu["top_visits"] += 1
+            return "Embedded & Options" if state_menu["top_visits"] == 1 else "Exit"
         if message == "Embedded & Options":
             return "Items: structural edits (stage → preview → push)"
         if message == "Items: structural edits (stage → preview → push)":

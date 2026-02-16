@@ -2443,6 +2443,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
     register_survey_commands(subparsers)
 
+    # prolific command group
+    from .cli_prolific import register_prolific_commands
+
+    register_prolific_commands(subparsers)
+
     # logs command group
     from .cli_logs import register_logs_commands
 
@@ -3349,6 +3354,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "onboard",
             # Survey inventory + admin
             "survey",
+            "prolific",
             # Daily workflows
             "sync",
             "init",
