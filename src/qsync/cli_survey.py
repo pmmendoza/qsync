@@ -1808,6 +1808,458 @@ def handle_menu(args: argparse.Namespace) -> None:
         _clear_structural_pending()
         _offer_workbook_patch(ops)
 
+    def _truncate_menu_text(value: str, *, limit: int = 90) -> str:
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        if not text:
+            return "(no text)"
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)].rstrip() + "..."
+
+    def _fetch_definition_for_menu(survey_id: str) -> dict[str, Any] | None:
+        try:
+            base, headers = _get_client()
+            definition = fetch_survey_definition(base, headers, survey_id)
+        except Exception as exc:
+            print(
+                f"[survey-menu] ERROR: could not fetch survey definition for {survey_id}: {exc}"
+            )
+            return None
+        if not isinstance(definition, dict):
+            print("[survey-menu] ERROR: unexpected survey-definition payload shape.")
+            return None
+        return definition
+
+    def _question_labels_from_definition(
+        definition: Mapping[str, Any],
+        *,
+        exclude: set[str] | None = None,
+    ) -> list[str]:
+        questions = definition.get("Questions")
+        if not isinstance(questions, dict):
+            return []
+
+        exclude_set = {str(item).strip() for item in (exclude or set()) if str(item).strip()}
+
+        def _qid_sort_key(qid: str) -> tuple[int, str]:
+            token = str(qid).strip()
+            match = re.match(r"(?i)^qid(\d+)$", token)
+            if match:
+                return (int(match.group(1)), token)
+            return (10**9, token)
+
+        labels: list[str] = []
+        for qid in sorted((str(k).strip() for k in questions.keys() if str(k).strip()), key=_qid_sort_key):
+            if qid in exclude_set:
+                continue
+            payload = questions.get(qid)
+            text = ""
+            if isinstance(payload, dict):
+                text = (
+                    str(payload.get("QuestionText") or "").strip()
+                    or str(payload.get("QuestionDescription") or "").strip()
+                    or str(payload.get("DataExportTag") or "").strip()
+                )
+            labels.append(f"{qid} - {_truncate_menu_text(text)}")
+        return labels
+
+    def _block_labels_from_definition(definition: Mapping[str, Any]) -> list[str]:
+        blocks = definition.get("Blocks")
+        if not isinstance(blocks, dict):
+            return []
+
+        ordered: list[str] = []
+        for block_id in _flow_ordered_block_ids(definition):
+            if block_id in blocks:
+                ordered.append(block_id)
+        for block_id in sorted(str(k).strip() for k in blocks.keys() if str(k).strip()):
+            if block_id not in ordered:
+                ordered.append(block_id)
+
+        labels: list[str] = []
+        for block_id in ordered:
+            block = blocks.get(block_id)
+            if not isinstance(block, dict):
+                continue
+            if _is_trash_block(block):
+                continue
+            block_name = (
+                str(block.get("Description") or "").strip()
+                or str(block.get("BlockDescription") or "").strip()
+                or str(block.get("Type") or "").strip()
+                or "Block"
+            )
+            labels.append(f"{block_id} - {_truncate_menu_text(block_name, limit=80)}")
+        return labels
+
+    def _label_head(value: str) -> str:
+        return str(value or "").split(" - ", 1)[0].strip()
+
+    def _pick_question_id_from_definition(
+        definition: Mapping[str, Any],
+        *,
+        message: str,
+        exclude: set[str] | None = None,
+    ) -> str | None:
+        labels = _question_labels_from_definition(definition, exclude=exclude)
+        if not labels:
+            print("[survey-menu] No selectable questions found.")
+            return None
+
+        if len(labels) > 60:
+            from .interactive_menu import autocomplete_from_list
+
+            picked = autocomplete_from_list(
+                message=message,
+                choices=labels,
+                instruction="Type to filter, Enter to pick.",
+            )
+            if not picked:
+                return None
+            token = _label_head(picked)
+            return token or None
+
+        picked = select_from_list(
+            message,
+            [*labels, "↩ Back"],
+            instruction="Choose a question anchor.",
+        )
+        if not picked or picked.endswith("Back"):
+            return None
+        token = _label_head(picked)
+        return token or None
+
+    def _pick_question_ids_from_definition(
+        definition: Mapping[str, Any],
+        *,
+        message: str,
+    ) -> list[str] | None:
+        from .interactive_menu import autocomplete_from_list, multi_select_from_list
+
+        labels = _question_labels_from_definition(definition)
+        if not labels:
+            print("[survey-menu] No selectable questions found.")
+            return None
+        if len(labels) == 1:
+            token = _label_head(labels[0])
+            return [token] if token else []
+
+        narrowed_labels = list(labels)
+        if len(labels) > 60:
+            sentinel = "→ Continue to multi-select (show full list)"
+            narrowed = autocomplete_from_list(
+                message=message,
+                choices=[sentinel, *labels],
+                instruction="Type to filter; press Enter for full list.",
+            )
+            if narrowed is None:
+                return None
+            if narrowed != sentinel:
+                direct = _label_head(narrowed)
+                if direct:
+                    return [direct]
+                needle = str(narrowed).strip().lower()
+                narrowed_labels = [label for label in labels if needle in label.lower()]
+                if not narrowed_labels:
+                    print("[survey-menu] No questions matched that filter.")
+                    return []
+                if len(narrowed_labels) == 1:
+                    token = _label_head(narrowed_labels[0])
+                    return [token] if token else []
+
+        selected = multi_select_from_list(
+            message=message,
+            choices=narrowed_labels,
+            instruction="Space: toggle, Enter: confirm",
+        )
+        if selected is None:
+            return None
+        values = [_label_head(item) for item in selected]
+        out: list[str] = []
+        seen: set[str] = set()
+        for qid in values:
+            if not qid or qid in seen:
+                continue
+            seen.add(qid)
+            out.append(qid)
+        return out
+
+    def _pick_block_id_from_definition(
+        definition: Mapping[str, Any],
+        *,
+        message: str,
+    ) -> str | None:
+        labels = _block_labels_from_definition(definition)
+        if not labels:
+            print("[survey-menu] No eligible blocks found.")
+            return None
+        if len(labels) > 60:
+            from .interactive_menu import autocomplete_from_list
+
+            picked = autocomplete_from_list(
+                message=message,
+                choices=labels,
+                instruction="Type to filter, Enter to pick.",
+            )
+            if not picked:
+                return None
+            token = _label_head(picked)
+            return token or None
+
+        picked = select_from_list(
+            message,
+            [*labels, "↩ Back"],
+            instruction="Choose a target block.",
+        )
+        if not picked or picked.endswith("Back"):
+            return None
+        token = _label_head(picked)
+        return token or None
+
+    def _prompt_question_placement(
+        definition: Mapping[str, Any],
+        *,
+        title: str,
+        excluded_anchors: set[str] | None = None,
+    ) -> tuple[str | None, str | None, str | None, str] | None:
+        placement = select_from_list(
+            title,
+            [
+                "After existing question",
+                "Before existing question",
+                "Start of block (prepend)",
+                "End of block (append)",
+                "↩ Back",
+            ],
+        )
+        if not placement or placement.endswith("Back"):
+            return None
+        if placement.startswith("After"):
+            anchor = _pick_question_id_from_definition(
+                definition,
+                message="Choose anchor question (insert after):",
+                exclude=excluded_anchors,
+            )
+            if not anchor:
+                return None
+            return (None, anchor, None, "append")
+        if placement.startswith("Before"):
+            anchor = _pick_question_id_from_definition(
+                definition,
+                message="Choose anchor question (insert before):",
+                exclude=excluded_anchors,
+            )
+            if not anchor:
+                return None
+            return (None, None, anchor, "append")
+
+        mode = select_from_list(
+            "How should the target block be resolved?",
+            [
+                "Auto target block",
+                "Pick a target block",
+                "↩ Back",
+            ],
+            instruction="Auto uses template/anchor context when possible.",
+        )
+        if not mode or mode.endswith("Back"):
+            return None
+        block_id = None
+        if mode.startswith("Pick"):
+            block_id = _pick_block_id_from_definition(
+                definition,
+                message="Choose target block:",
+            )
+            if not block_id:
+                return None
+        position = "prepend" if placement.startswith("Start") else "append"
+        return (block_id, None, None, position)
+
+    def _menu_add_question() -> None:
+        survey_id = _pick_survey_id(message="Pick a survey to add question(s):")
+        if not survey_id:
+            return
+        definition = _fetch_definition_for_menu(survey_id)
+        if not definition:
+            return
+
+        source_choice = select_from_list(
+            "Question template source:",
+            [
+                "Clone an existing question in this survey",
+                "Load a question JSON file",
+                "↩ Back",
+            ],
+        )
+        if not source_choice or source_choice.endswith("Back"):
+            return
+
+        from_question_id = None
+        question_json = None
+        if source_choice.startswith("Clone"):
+            from_question_id = _pick_question_id_from_definition(
+                definition,
+                message="Choose template question:",
+            )
+            if not from_question_id:
+                return
+        else:
+            question_json = input("Path to question JSON file: ").strip() or None
+            if not question_json:
+                return
+
+        text_mode = select_from_list(
+            "How many questions should be created?",
+            [
+                "Use template text (create one question)",
+                "Enter one question text",
+                "Enter multiple question texts (one per line)",
+                "↩ Back",
+            ],
+        )
+        if not text_mode or text_mode.endswith("Back"):
+            return
+        question_texts: list[str] = []
+        if text_mode.startswith("Enter one"):
+            one_text = input("Question text: ").strip()
+            if not one_text:
+                return
+            question_texts = [one_text]
+        elif text_mode.startswith("Enter multiple"):
+            from .interactive_menu import edit_text_in_editor
+
+            blob = edit_text_in_editor(
+                "Enter one question text per line.",
+                initial_text="",
+                suffix=".txt",
+            )
+            if blob is None:
+                return
+            question_texts = [line.strip() for line in str(blob).splitlines() if line.strip()]
+            if not question_texts:
+                print("[survey-menu] No non-empty question lines were provided.")
+                return
+
+        placement = _prompt_question_placement(
+            definition,
+            title="Where should the new question(s) be inserted?",
+        )
+        if not placement:
+            return
+        target_block_id, after_qid, before_qid, position = placement
+
+        data_export_tag = input("Base DataExportTag (optional): ").strip() or None
+        allow_duplicate_tags = False
+        if data_export_tag:
+            allow_duplicate_tags = (
+                select_from_list(
+                    "Allow duplicate DataExportTag values?",
+                    ["No", "Yes"],
+                )
+                == "Yes"
+            )
+
+        dry_run = select_from_list("Dry run?", ["No", "Yes"]) == "Yes"
+        force_live = False
+        publish = False
+        publish_description = ""
+        if not dry_run:
+            force_live = (
+                select_from_list(
+                    "Allow writes if finished responses exist?",
+                    ["No", "Yes"],
+                )
+                == "Yes"
+            )
+            publish = select_from_list("Publish after add?", ["Yes", "No"]) == "Yes"
+            if publish:
+                publish_description = (
+                    input("Publish description (optional): ").strip() or ""
+                )
+
+        _run_action(
+            handle_add_question,
+            argparse.Namespace(
+                survey_id=survey_id,
+                from_question_id=from_question_id,
+                question_json=question_json,
+                question_text=question_texts or None,
+                question_text_file=None,
+                target_block_id=target_block_id,
+                after_qid=after_qid,
+                before_qid=before_qid,
+                position=position,
+                data_export_tag=data_export_tag,
+                allow_duplicate_tags=bool(allow_duplicate_tags),
+                dry_run=bool(dry_run),
+                force_live=bool(force_live),
+                yes=False,
+                no_publish=not bool(publish),
+                publish_description=publish_description,
+                account=selected_account,
+            ),
+        )
+
+    def _menu_move_question() -> None:
+        survey_id = _pick_survey_id(message="Pick a survey to move question(s):")
+        if not survey_id:
+            return
+        definition = _fetch_definition_for_menu(survey_id)
+        if not definition:
+            return
+
+        qids = _pick_question_ids_from_definition(
+            definition,
+            message="Choose question(s) to move:",
+        )
+        if not qids:
+            return
+
+        placement = _prompt_question_placement(
+            definition,
+            title="Where should selected question(s) be moved?",
+            excluded_anchors=set(qids),
+        )
+        if not placement:
+            return
+        target_block_id, after_qid, before_qid, position = placement
+
+        dry_run = select_from_list("Dry run?", ["No", "Yes"]) == "Yes"
+        force_live = False
+        publish = False
+        publish_description = ""
+        if not dry_run:
+            force_live = (
+                select_from_list(
+                    "Allow writes if finished responses exist?",
+                    ["No", "Yes"],
+                )
+                == "Yes"
+            )
+            publish = select_from_list("Publish after move?", ["Yes", "No"]) == "Yes"
+            if publish:
+                publish_description = (
+                    input("Publish description (optional): ").strip() or ""
+                )
+
+        _run_action(
+            handle_move_question,
+            argparse.Namespace(
+                survey_id=survey_id,
+                question_id=qids,
+                target_block_id=target_block_id,
+                after_qid=after_qid,
+                before_qid=before_qid,
+                position=position,
+                dry_run=bool(dry_run),
+                force_live=bool(force_live),
+                yes=False,
+                no_publish=not bool(publish),
+                publish_description=publish_description,
+                account=selected_account,
+            ),
+        )
+
     direct_structural = bool(getattr(args, "structural_edit", False))
     direct_survey_id = str(getattr(args, "survey_id", "") or "").strip() or None
     if direct_survey_id and not direct_structural:
@@ -1890,19 +2342,26 @@ def handle_menu(args: argparse.Namespace) -> None:
             _menu_context(
                 "Survey Menu > Edit Questions & Content",
                 "Question-level content edits (safe staged workflow).",
-                "Items structural edits (stage → preview → push)",
+                "Items structural edits, add-question (guided), move-question (guided)",
             )
             choice = select_from_list(
                 "Edit Questions & Content",
                 [
                     "Items: structural edits (stage → preview → push)",
+                    "Add question(s) (clone template, insert in flow)",
+                    "Move question(s) (reorder / move across blocks)",
                     "↩ Back",
                 ],
-                instruction="Use structural edits for question text/options/subitems edits.",
+                instruction="Use add/move for block placement; use structural edits for text/options/subitems.",
             )
             if not choice or choice.endswith("Back"):
                 continue
-            _menu_items_structural_edits()
+            if choice.startswith("Items:"):
+                _menu_items_structural_edits()
+            elif choice.startswith("Add question"):
+                _menu_add_question()
+            else:
+                _menu_move_question()
             continue
 
         if top.startswith("Flow, Embedded Data & Integrations"):
