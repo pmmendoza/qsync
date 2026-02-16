@@ -828,6 +828,39 @@ def _qsync_entrypoints_on_path() -> list[Path]:
     return found
 
 
+def _get_qsync_install_info(path: Path) -> dict[str, str]:
+    """Get information about a qsync installation."""
+    try:
+        result = subprocess.run(
+            [str(path), "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return {"path": str(path), "status": "error", "info": "Failed to get version"}
+
+        output = result.stdout.strip()
+        lines = output.split("\n")
+        info_dict = {"path": str(path)}
+
+        for line in lines:
+            if line.startswith("install:"):
+                install_type = line.split(":", 1)[1].strip().split()[0]
+                info_dict["install_type"] = install_type
+            elif line.startswith("python:"):
+                python_ver = line.split(":", 1)[1].strip().split()[0]
+                info_dict["python"] = python_ver
+            elif line.startswith("package:"):
+                pkg_path = line.split(":", 1)[1].strip()
+                info_dict["package"] = pkg_path
+
+        return info_dict
+    except Exception as e:
+        return {"path": str(path), "status": "error", "info": str(e)}
+
+
 def _parallel_install_warnings(installer: str) -> list[str]:
     warnings: list[str] = []
 
@@ -854,7 +887,91 @@ def _handle_self_update(args: argparse.Namespace) -> None:
         confirm,
         is_interactive,
         multi_select_from_list,
+        select_from_list,
     )
+
+    # Check for multiple installations
+    qsync_bins = _qsync_entrypoints_on_path()
+    if len(qsync_bins) > 1 and is_interactive() and not getattr(args, "yes", False):
+        info("[qsync:self-update]", f"Found {len(qsync_bins)} qsync installations:")
+        install_infos = []
+        for i, path in enumerate(qsync_bins, 1):
+            install_info = _get_qsync_install_info(path)
+            install_infos.append(install_info)
+            install_type = install_info.get("install_type", "unknown")
+            python_ver = install_info.get("python", "unknown")
+            active = " (active)" if i == 1 else ""
+            info(None, f"  {i}. {path}{active}")
+            info(None, f"     Type: {install_type}, Python: {python_ver}")
+
+        # Ask which installation to update
+        choices = [
+            f"{i}. {qsync_bins[i-1]} ({install_infos[i-1].get('install_type', 'unknown')})"
+            for i in range(1, len(qsync_bins) + 1)
+        ]
+        selection = select_from_list(
+            "Which qsync installation do you want to update?",
+            choices,
+            default=choices[0],
+        )
+        if selection is None:
+            info("[qsync:self-update]", "Cancelled.")
+            return
+
+        selected_idx = choices.index(selection)
+        selected_path = qsync_bins[selected_idx]
+        selected_info = install_infos[selected_idx]
+
+        # Update PATH to prioritize selected installation if not already first
+        if selected_idx != 0:
+            warn(
+                "[qsync:self-update]",
+                f"Selected installation is not first in PATH. Consider reordering PATH.",
+            )
+
+        # Ask about cleaning up other installations
+        other_installations = [
+            (i, path, install_infos[i])
+            for i, path in enumerate(qsync_bins)
+            if i != selected_idx
+        ]
+        if other_installations and confirm(
+            f"Remove {len(other_installations)} other qsync installation(s)?",
+            default=False,
+        ):
+            for idx, path, inst_info in other_installations:
+                install_type = inst_info.get("install_type", "unknown")
+                if install_type == "pipx":
+                    info("[qsync:self-update]", f"Removing pipx installation: {path}")
+                    subprocess.run(["pipx", "uninstall", "qsync"], check=False)
+                elif install_type == "system" or "pyenv" in str(path):
+                    # Try to find which Python owns this
+                    try:
+                        python_path = Path(path).parent.parent / "bin" / "python"
+                        if python_path.exists():
+                            info(
+                                "[qsync:self-update]",
+                                f"Removing pip installation: {path}",
+                            )
+                            subprocess.run(
+                                [str(python_path), "-m", "pip", "uninstall", "-y", "qsync"],
+                                check=False,
+                            )
+                        else:
+                            warn(
+                                "[qsync:self-update]",
+                                f"Could not auto-remove {path} - please remove manually",
+                            )
+                    except Exception as e:
+                        warn(
+                            "[qsync:self-update]",
+                            f"Failed to remove {path}: {e}",
+                        )
+                else:
+                    warn(
+                        "[qsync:self-update]",
+                        f"Unknown install type for {path} - please remove manually",
+                    )
 
     default_repo = (
         os.environ.get("QSYNC_UPDATE_REPO") or "https://github.com/pmmendoza/qsync.git"

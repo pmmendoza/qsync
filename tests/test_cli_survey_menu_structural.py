@@ -34,6 +34,159 @@ def test_embedded_options_menu_includes_structural_entry(
         "Items: structural edits (stage → preview → push)" in menu_choices
         for menu_choices in seen_edit_choices
     )
+    assert any(
+        "Add question(s) (clone template, insert in flow)" in menu_choices
+        for menu_choices in seen_edit_choices
+    )
+    assert any(
+        "Move question(s) (reorder / move across blocks)" in menu_choices
+        for menu_choices in seen_edit_choices
+    )
+
+
+def test_edit_menu_add_question_routes_to_handler(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.list_surveys",
+        lambda base, headers: [{"id": "SV_1", "name": "Survey One"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey._pick_survey_id_from_records",
+        lambda **kwargs: "SV_1",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.fetch_survey_definition",
+        lambda base, headers, survey_id: {
+            "Questions": {"QID1": {"QuestionText": "Intro"}},
+            "Blocks": {"BL_1": {"Type": "Standard", "BlockElements": []}},
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+        },
+    )
+
+    called = {}
+
+    def _capture(ns):
+        called["args"] = ns
+
+    monkeypatch.setattr("qsync.cli_survey.handle_add_question", _capture)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    state = {"top_visits": 0}
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message.startswith("qsync survey menu"):
+            state["top_visits"] += 1
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
+            return "Add question(s) (clone template, insert in flow)"
+        if message == "Question template source:":
+            return "Clone an existing question in this survey"
+        if message == "Choose template question:":
+            return "QID1 - Intro"
+        if message == "How many questions should be created?":
+            return "Use template text (create one question)"
+        if message == "Where should the new question(s) be inserted?":
+            return "After existing question"
+        if message == "Choose anchor question (insert after):":
+            return "QID1 - Intro"
+        if message == "Dry run?":
+            return "Yes"
+        return "Exit"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert "args" in called
+    ns = called["args"]
+    assert ns.survey_id == "SV_1"
+    assert ns.from_question_id == "QID1"
+    assert ns.after_qid == "QID1"
+    assert ns.dry_run is True
+
+
+def test_edit_menu_move_question_routes_to_handler(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.list_surveys",
+        lambda base, headers: [{"id": "SV_1", "name": "Survey One"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey._pick_survey_id_from_records",
+        lambda **kwargs: "SV_1",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.fetch_survey_definition",
+        lambda base, headers, survey_id: {
+            "Questions": {"QID1": {"QuestionText": "Only question"}},
+            "Blocks": {"BL_1": {"Type": "Standard", "BlockElements": []}},
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+        },
+    )
+
+    called = {}
+
+    def _capture(ns):
+        called["args"] = ns
+
+    monkeypatch.setattr("qsync.cli_survey.handle_move_question", _capture)
+
+    state = {"top_visits": 0}
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message.startswith("qsync survey menu"):
+            state["top_visits"] += 1
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
+            return "Move question(s) (reorder / move across blocks)"
+        if message == "Where should selected question(s) be moved?":
+            return "End of block (append)"
+        if message == "How should the target block be resolved?":
+            return "Auto target block"
+        if message == "Dry run?":
+            return "Yes"
+        return "Exit"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert "args" in called
+    ns = called["args"]
+    assert ns.survey_id == "SV_1"
+    assert ns.question_id == ["QID1"]
+    assert ns.position == "append"
+    assert ns.dry_run is True
 
 
 def test_flow_integrations_menu_includes_prolific_wiring(
