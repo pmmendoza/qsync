@@ -173,9 +173,6 @@ def pick_survey_id_from_records(
             if locked:
                 enabled = False
                 disabled_reason = "locked"
-            elif not active:
-                enabled = False
-                disabled_reason = "inactive"
             elif not editable:
                 enabled = False
                 disabled_reason = "no API edit"
