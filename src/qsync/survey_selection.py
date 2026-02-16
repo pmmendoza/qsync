@@ -23,13 +23,7 @@ def _is_valid_survey_id(value: str) -> bool:
     value = (value or "").strip()
     if not value:
         return False
-    try:
-        from .input_validators import SurveyIdValidator
-
-        SurveyIdValidator()(value)
-        return True
-    except Exception:
-        return False
+    return bool(re.fullmatch(r"SV_[A-Za-z0-9]+", value))
 
 
 def _compile_filter(raw: str) -> re.Pattern[str] | None:
