@@ -9,6 +9,9 @@ Design goals:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
+import re
+from typing import Any
 
 
 def _format_ops_summary(ops: list[dict]) -> str:
@@ -40,6 +43,25 @@ def _format_ops_summary(ops: list[dict]) -> str:
             tail = f" {aid}"
         lines.append(f"- {op_type} {qid}{tail}".strip())
     return "\n".join(lines)
+
+
+def _survey_filter_matches(row: dict[str, Any], query: str) -> bool:
+    raw = (query or "").strip()
+    if not raw:
+        return True
+    sid = str(row.get("id") or "").strip()
+    name = str(row.get("name") or "Untitled").strip()
+    try:
+        pattern = re.compile(raw, re.IGNORECASE)
+    except re.error:
+        pattern = re.compile(re.escape(raw), re.IGNORECASE)
+    return bool(pattern.search(sid) or pattern.search(name))
+
+
+def _survey_option_label(row: dict[str, Any]) -> str:
+    sid = str(row.get("id") or "").strip()
+    name = str(row.get("name") or "Untitled").strip()
+    return f"{sid} - {name}"
 
 def _account_context_lines() -> list[str]:
     """Return safe (non-secret) account context lines for display."""
@@ -78,9 +100,9 @@ def _account_context_lines() -> list[str]:
         return ["Account: (unknown)"]
 
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Footer, Header, OptionList, Static
+from textual.widgets import Footer, Header, Input, OptionList, Static
 
 
 @dataclass
@@ -446,7 +468,12 @@ class SyncSurveyScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            yield OptionList(id="surveys")
+            with Vertical():
+                yield Input(
+                    placeholder="Filter surveys by ID or name (regex/text)",
+                    id="survey_filter",
+                )
+                yield OptionList(id="surveys")
             yield Static(
                 "Loading surveys from inventory...\n\nIf this is empty, run `qsync survey inventory` first.",
                 id="detail",
@@ -454,8 +481,9 @@ class SyncSurveyScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        surveys = self.query_one("#surveys", OptionList)
+        surveys_widget = self.query_one("#surveys", OptionList)
         detail = self.query_one("#detail", Static)
+        surveys_widget.clear_options()
         try:
             from qsync.survey_inventory import load_cached_inventory_records
 
@@ -469,17 +497,52 @@ class SyncSurveyScreen(Screen):
                 )
                 return
             self._rows = rows[:400]
-            for r in self._rows:
-                sid = str(r.get("id") or "").strip()
-                name = str(r.get("name") or "Untitled").strip()
-                surveys.add_option(f"{sid} - {name}")
+            self._filtered_rows = list(self._rows)
+            self._apply_filter("")
             detail.update("Select a survey to continue.")
         except Exception as exc:
             detail.update(f"Failed to load inventory: {exc}\n\nRun: qsync survey inventory")
 
+    def _apply_filter(self, query: str) -> None:
+        rows = [r for r in getattr(self, "_rows", []) if _survey_filter_matches(r, query)]
+        self._filtered_rows = rows
+        surveys = self.query_one("#surveys", OptionList)
+        surveys.clear_options()
+        if not rows:
+            return
+        for row in rows:
+            surveys.add_option(_survey_option_label(row))
+
+    def on_input_changed(self, event: Input.Changed) -> None:  # type: ignore[name-defined]
+        if str(getattr(event, "input", None).id or "") != "survey_filter":
+            return
+        self._apply_filter(str(getattr(event, "value", "")))
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:  # type: ignore[name-defined]
+        if str(getattr(event, "input", None).id or "") != "survey_filter":
+            return
+        rows = getattr(self, "_filtered_rows", [])
+        if len(rows) == 1:
+            self._select_survey(rows[0])
+        else:
+            option_list = self.query_one("#surveys", OptionList)
+            if len(rows) > 1:
+                option_list.focus()
+
+    def on_key(self, event) -> None:  # type: ignore[override]
+        if (
+            str(getattr(event, "key", "")) == "down"
+            and str(getattr(self.app.focused, "id", "")) == "survey_filter"
+        ):
+            filtered = getattr(self, "_filtered_rows", [])
+            if filtered:
+                event.prevent_default()
+                self.query_one("#surveys", OptionList).focus()
+                return
+
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:  # type: ignore[name-defined]
         idx = getattr(event, "option_index", None)
-        rows = getattr(self, "_rows", None)
+        rows = getattr(self, "_filtered_rows", None)
         if idx is None or not rows or idx < 0 or idx >= len(rows):
             return
         r = rows[idx]
@@ -513,16 +576,19 @@ class SyncSurveyScreen(Screen):
         )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
-        option = getattr(event, "option", None)
-        if option is None:
+        idx = getattr(event, "option_index", None)
+        rows = getattr(self, "_filtered_rows", None)
+        if idx is None or rows is None or idx < 0 or idx >= len(rows):
             return
-        text = str(getattr(option, "prompt", "") or getattr(option, "text", "") or "")
-        sid = text.split(" - ", 1)[0].strip()
+        self._select_survey(rows[idx])
+
+    def _select_survey(self, row: dict[str, Any]) -> None:
+        sid = str(row.get("id") or "").strip()
         if not sid:
             return
         state: SyncWizardState = self.app.sync_state  # type: ignore[attr-defined]
         state.survey_id = sid
-        state.survey_name = text.split(" - ", 1)[1].strip() if " - " in text else None
+        state.survey_name = str(row.get("name") or "").strip() or None
         self.app.push_screen("sync_dims")  # type: ignore[attr-defined]
 
 
@@ -689,6 +755,7 @@ class QsyncTuiApp(App):
     CSS = """
     Screen { padding: 1; }
     #menu, #surveys, #dims, #actions { width: 50%; }
+    #survey_filter { width: 100%; }
     #detail { width: 50%; padding-left: 2; }
     #help_body { padding: 1; }
     """
@@ -947,7 +1014,12 @@ class PullSurveyScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            yield OptionList(id="surveys")
+            with Vertical():
+                yield Input(
+                    placeholder="Filter surveys by ID or name (regex/text)",
+                    id="survey_filter",
+                )
+                yield OptionList(id="surveys")
             yield Static("Loading surveys from API...", id="detail")
         yield Footer()
 
@@ -983,11 +1055,8 @@ class PullSurveyScreen(Screen):
             surveys = list_surveys_via_api(base_url=base, headers=headers)
             surveys.sort(key=lambda s: (s.get("lastModified") or s.get("creationDate") or ""), reverse=True)
             self._rows = surveys[:400]
-            for s in self._rows:
-                sid = str(s.get("id") or "").strip()
-                name = str(s.get("name") or "Untitled").strip()
-                if sid:
-                    surveys_widget.add_option(f"{sid} - {name}")
+            self._filtered_rows = list(self._rows)
+            self._apply_filter("")
 
             detail.update(
                 "\n".join(
@@ -1003,9 +1072,49 @@ class PullSurveyScreen(Screen):
         except Exception as exc:
             detail.update(f"Failed to list surveys via API: {exc}\n\n" + "\n".join(_account_context_lines()))
 
+    def _apply_filter(self, query: str) -> None:
+        rows = [r for r in getattr(self, "_rows", []) if _survey_filter_matches(r, query)]
+        self._filtered_rows = rows
+        surveys_widget = self.query_one("#surveys", OptionList)
+        surveys_widget.clear_options()
+        if not rows:
+            return
+        for row in rows:
+            sid = str(row.get("id") or "").strip()
+            if not sid:
+                continue
+            surveys_widget.add_option(_survey_option_label(row))
+
+    def on_input_changed(self, event: Input.Changed) -> None:  # type: ignore[name-defined]
+        if str(getattr(event, "input", None).id or "") != "survey_filter":
+            return
+        self._apply_filter(str(getattr(event, "value", "")))
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:  # type: ignore[name-defined]
+        if str(getattr(event, "input", None).id or "") != "survey_filter":
+            return
+        rows = getattr(self, "_filtered_rows", [])
+        if len(rows) == 1:
+            self._select_survey(rows[0])
+        else:
+            option_list = self.query_one("#surveys", OptionList)
+            if len(rows) > 1:
+                option_list.focus()
+
+    def on_key(self, event) -> None:  # type: ignore[override]
+        if (
+            str(getattr(event, "key", "")) == "down"
+            and str(getattr(self.app.focused, "id", "")) == "survey_filter"
+        ):
+            filtered = getattr(self, "_filtered_rows", [])
+            if filtered:
+                event.prevent_default()
+                self.query_one("#surveys", OptionList).focus()
+                return
+
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:  # type: ignore[name-defined]
         idx = getattr(event, "option_index", None)
-        rows = getattr(self, "_rows", None)
+        rows = getattr(self, "_filtered_rows", None)
         if idx is None or not rows or idx < 0 or idx >= len(rows):
             return
         s = rows[idx]
@@ -1032,11 +1141,14 @@ class PullSurveyScreen(Screen):
         )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
-        option = getattr(event, "option", None)
-        if option is None:
+        idx = getattr(event, "option_index", None)
+        rows = getattr(self, "_filtered_rows", None)
+        if idx is None or rows is None or idx < 0 or idx >= len(rows):
             return
-        text = str(getattr(option, "prompt", "") or getattr(option, "text", "") or "")
-        survey_id = text.split(" - ", 1)[0].strip()
+        self._select_survey(rows[idx])
+
+    def _select_survey(self, row: dict[str, Any]) -> None:
+        survey_id = str(row.get("id") or "").strip()
         if not survey_id:
             return
 
@@ -1084,7 +1196,12 @@ class StructuralSurveyScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            yield OptionList(id="surveys")
+            with Vertical():
+                yield Input(
+                    placeholder="Filter surveys by ID or name (regex/text)",
+                    id="survey_filter",
+                )
+                yield OptionList(id="surveys")
             yield Static(
                 "Loading surveys from inventory...\n\nIf empty, run `qsync survey inventory` first.",
                 id="detail",
@@ -1094,6 +1211,7 @@ class StructuralSurveyScreen(Screen):
     def on_mount(self) -> None:
         surveys = self.query_one("#surveys", OptionList)
         detail = self.query_one("#detail", Static)
+        surveys.clear_options()
         try:
             from qsync.survey_inventory import load_cached_inventory_records
 
@@ -1105,17 +1223,52 @@ class StructuralSurveyScreen(Screen):
                 detail.update("No inventory records found.\n\nRun: qsync survey inventory")
                 return
             self._rows = rows[:400]
-            for r in self._rows:
-                sid = str(r.get("id") or "").strip()
-                name = str(r.get("name") or "Untitled").strip()
-                surveys.add_option(f"{sid} - {name}")
+            self._filtered_rows = list(self._rows)
+            self._apply_filter("")
             detail.update("Select a survey for structural edits.")
         except Exception as exc:
             detail.update(f"Failed to load inventory: {exc}\n\nRun: qsync survey inventory")
 
+    def _apply_filter(self, query: str) -> None:
+        rows = [r for r in getattr(self, "_rows", []) if _survey_filter_matches(r, query)]
+        self._filtered_rows = rows
+        surveys = self.query_one("#surveys", OptionList)
+        surveys.clear_options()
+        if not rows:
+            return
+        for row in rows:
+            surveys.add_option(_survey_option_label(row))
+
+    def on_input_changed(self, event: Input.Changed) -> None:  # type: ignore[name-defined]
+        if str(getattr(event, "input", None).id or "") != "survey_filter":
+            return
+        self._apply_filter(str(getattr(event, "value", "")))
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:  # type: ignore[name-defined]
+        if str(getattr(event, "input", None).id or "") != "survey_filter":
+            return
+        rows = getattr(self, "_filtered_rows", [])
+        if len(rows) == 1:
+            self._select_survey(rows[0])
+        else:
+            option_list = self.query_one("#surveys", OptionList)
+            if len(rows) > 1:
+                option_list.focus()
+
+    def on_key(self, event) -> None:  # type: ignore[override]
+        if (
+            str(getattr(event, "key", "")) == "down"
+            and str(getattr(self.app.focused, "id", "")) == "survey_filter"
+        ):
+            filtered = getattr(self, "_filtered_rows", [])
+            if filtered:
+                event.prevent_default()
+                self.query_one("#surveys", OptionList).focus()
+                return
+
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:  # type: ignore[name-defined]
         idx = getattr(event, "option_index", None)
-        rows = getattr(self, "_rows", None)
+        rows = getattr(self, "_filtered_rows", None)
         if idx is None or not rows or idx < 0 or idx >= len(rows):
             return
         r = rows[idx]
@@ -1136,16 +1289,19 @@ class StructuralSurveyScreen(Screen):
         )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
-        option = getattr(event, "option", None)
-        if option is None:
+        idx = getattr(event, "option_index", None)
+        rows = getattr(self, "_filtered_rows", None)
+        if idx is None or rows is None or idx < 0 or idx >= len(rows):
             return
-        text = str(getattr(option, "prompt", "") or getattr(option, "text", "") or "")
-        sid = text.split(" - ", 1)[0].strip()
+        self._select_survey(rows[idx])
+
+    def _select_survey(self, row: dict[str, Any]) -> None:
+        sid = str(row.get("id") or "").strip()
         if not sid:
             return
         state: StructuralEditState = self.app.structural_state  # type: ignore[attr-defined]
         state.survey_id = sid
-        state.survey_name = text.split(" - ", 1)[1].strip() if " - " in text else None
+        state.survey_name = str(row.get("name") or "").strip() or None
         self.app.push_screen("struct_session")  # type: ignore[attr-defined]
 
 
@@ -1403,12 +1559,22 @@ class StructuralSessionScreen(Screen):
                 from qsync.dimensions.items_structural import interactive_choice_wizard
 
                 with self.app.suspend():  # type: ignore[attr-defined]
-                    op = interactive_choice_wizard(
-                        survey_id=survey_id,
-                        qid=None,
-                        allow_delete=False,
-                        experimental_unsupported=False,
-                    )
+                    prev_questionary = os.environ.get("QSYNC_USE_QUESTIONARY")
+                    # Textual runs its own event loop; force plain fallback prompts
+                    # for the suspended CLI wizard to avoid asyncio/questionary clashes.
+                    os.environ["QSYNC_USE_QUESTIONARY"] = "0"
+                    try:
+                        op = interactive_choice_wizard(
+                            survey_id=survey_id,
+                            qid=None,
+                            allow_delete=False,
+                            experimental_unsupported=False,
+                        )
+                    finally:
+                        if prev_questionary is None:
+                            os.environ.pop("QSYNC_USE_QUESTIONARY", None)
+                        else:
+                            os.environ["QSYNC_USE_QUESTIONARY"] = prev_questionary
                 if op:
                     self._append_op_to_pending(survey_id=survey_id, op=op)
             except Exception as exc:
@@ -1501,16 +1667,28 @@ class StructuralQidScreen(Screen):
             return
         try:
             from qsync.qualtrics_client import refresh_survey_cache, load_cached_survey
-            from qsync.dimensions.items_structural import iter_active_qids_in_flow, iter_all_qids
+            from qsync.dimensions.items_structural import (
+                _format_qid_label,
+                iter_active_qids_in_flow,
+                iter_all_qids,
+            )
 
             refresh_survey_cache(state.survey_id)
             survey = load_cached_survey(state.survey_id)
             active = list(iter_active_qids_in_flow(survey))
             self._survey = survey
             self._active_set = set(active)
+            self._label_to_qid = {}
             rows = active[:300]
             for qid in rows:
-                qids.add_option(qid)
+                label = _format_qid_label(
+                    survey=survey,
+                    qid=qid,
+                    active_set=self._active_set,
+                    include_flow_status=False,
+                )
+                self._label_to_qid[label] = qid
+                qids.add_option(label)
             qids.add_option("Show all questions")
             qids.add_option("← Back")
             detail.update(
@@ -1542,18 +1720,26 @@ class StructuralQidScreen(Screen):
         survey = getattr(self, "_survey", None)
         if survey is None:
             return
-        q = survey.questions.get(text) or {}
+        label_to_qid = getattr(self, "_label_to_qid", {}) or {}
+        qid = str(label_to_qid.get(text) or text.split()[0] or "").strip()
+        q = survey.questions.get(qid) or {}
         tag = str((q.get("DataExportTag") or "")).strip()
         qtype = str((q.get("QuestionType") or "")).strip()
         sel = str((q.get("Selector") or "")).strip()
+        preview = str(q.get("QuestionText") or "")
+        preview = re.sub(r"<[^>]+>", " ", preview)
+        preview = " ".join(preview.split())
+        if len(preview) > 140:
+            preview = preview[:139].rstrip() + "…"
         detail.update(
             "\n".join(
                 [
                     _format_ops_summary(state.ops),
                     "",
-                    f"QID: {text}",
+                    f"QID: {qid}",
                     f"Tag: {tag or '-'}",
                     f"Type: {qtype}{'/' + sel if sel else ''}",
+                    f"Text: {preview or '-'}",
                 ]
             )
         )
@@ -1569,22 +1755,32 @@ class StructuralQidScreen(Screen):
             return
         if text == "Show all questions":
             try:
-                from qsync.dimensions.items_structural import iter_all_qids
+                from qsync.dimensions.items_structural import _format_qid_label, iter_all_qids
 
                 survey = getattr(self, "_survey", None)
                 if survey is None:
                     return
                 qids = self.query_one("#qids", OptionList)
                 qids.clear_options()
+                active_set = getattr(self, "_active_set", set()) or set()
+                self._label_to_qid = {}
                 for qid in iter_all_qids(survey)[:600]:
-                    qids.add_option(qid)
+                    label = _format_qid_label(
+                        survey=survey,
+                        qid=qid,
+                        active_set=active_set,
+                        include_flow_status=True,
+                    )
+                    self._label_to_qid[label] = qid
+                    qids.add_option(label)
                 qids.add_option("← Back")
             except Exception:
                 return
             return
         if not text:
             return
-        state.qid = text
+        label_to_qid = getattr(self, "_label_to_qid", {}) or {}
+        state.qid = str(label_to_qid.get(text) or text.split()[0] or "").strip()
         self.app.push_screen("struct_surface")  # type: ignore[attr-defined]
 
 

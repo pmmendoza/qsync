@@ -124,22 +124,66 @@ def is_externally_managed(*, qid: str | None, data_export_tag: str | None) -> bo
 
 
 def iter_active_qids_in_flow(survey: SurveyCache) -> Iterable[str]:
-    """Yield Standard question IDs in the order they appear in SurveyFlow."""
+    """Yield in-flow QuestionIDs (QIDs) in survey-flow order (non-Trash blocks)."""
 
-    flow = survey.payload.get("result", {}).get("SurveyFlow", {}).get("Flow", []) or []
+    result = survey.payload.get("result", {}) or {}
+    blocks = result.get("Blocks", {}) or {}
+    questions = survey.questions or {}
+    flow_obj = result.get("SurveyFlow") or result.get("Flow") or {}
 
-    def _walk(node: Any) -> Iterable[str]:
-        if isinstance(node, dict):
-            if node.get("Type") == "Standard" and node.get("ID"):
-                yield str(node["ID"])
-            for child in node.get("Flow", []) or []:
-                yield from _walk(child)
-        elif isinstance(node, list):
-            for item in node:
-                yield from _walk(item)
+    ordered_block_ids: list[str] = []
 
-    for node in flow:
-        yield from _walk(node)
+    def _walk_flow(node: Any) -> None:
+        if node is None:
+            return
+        if isinstance(node, list):
+            for child in node:
+                _walk_flow(child)
+            return
+        if not isinstance(node, dict):
+            return
+
+        node_type = str(node.get("Type") or "").strip()
+        if node_type in {"Block", "Standard"} and node.get("ID"):
+            bid = str(node.get("ID") or "").strip()
+            if bid and bid not in ordered_block_ids:
+                ordered_block_ids.append(bid)
+
+        for key in ("Flow", "Then", "Else", "ElseFlow"):
+            if key in node:
+                _walk_flow(node.get(key))
+
+    if isinstance(flow_obj, dict):
+        _walk_flow(flow_obj.get("Flow"))
+    elif isinstance(flow_obj, list):
+        _walk_flow(flow_obj)
+
+    trash_blocks = {
+        str(bid).strip()
+        for bid, payload in blocks.items()
+        if str((payload or {}).get("Type") or "").strip() == "Trash"
+    }
+
+    seen_qids: set[str] = set()
+    for bid in ordered_block_ids:
+        if bid in trash_blocks:
+            continue
+        block = blocks.get(bid) or {}
+        elements = block.get("BlockElements") or block.get("Elements") or []
+        if not isinstance(elements, list):
+            continue
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            if str(elem.get("Type") or "").strip() not in {"", "Question"}:
+                continue
+            qid = str(elem.get("QuestionID") or "").strip()
+            if not qid or qid in seen_qids:
+                continue
+            if qid not in questions:
+                continue
+            seen_qids.add(qid)
+            yield qid
 
 
 def iter_all_qids(survey: SurveyCache) -> list[str]:
