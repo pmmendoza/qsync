@@ -451,6 +451,19 @@ def handle_menu(args: argparse.Namespace) -> None:
 
     root = _workspace_root()
     selected_account: str | None = None  # None = inherited default/ambient account
+    requested_account = str(getattr(args, "account", "") or "").strip()
+    if requested_account:
+        if requested_account.lower() == "default":
+            selected_account = None
+        else:
+            try:
+                # Validate account + ensure credentials resolve before opening the menu.
+                load_account_env(requested_account, root=root)
+            except Exception as exc:
+                raise SystemExit(
+                    f"[survey-menu] ERROR: invalid --account '{requested_account}': {exc}"
+                )
+            selected_account = requested_account
 
     # Cache survey lists per base_url for responsiveness within a menu session.
     survey_cache: dict[str, list[dict[str, Any]]] = {}
@@ -1155,7 +1168,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             ),
         )
 
-    def _menu_items_structural_edits() -> None:
+    def _menu_items_structural_edits(*, preselected_survey_id: str | None = None) -> None:
         from .pending_stage import (
             ItemsPendingPayload,
             PendingStagedChanges,
@@ -1194,8 +1207,14 @@ def handle_menu(args: argparse.Namespace) -> None:
             """Used as a local control-flow escape from survey preflight selection."""
 
         def _select_survey_and_cache() -> tuple[str, Path]:
+            pending_survey_id = (preselected_survey_id or "").strip() or None
             while True:
-                survey_id = _pick_survey_id(message="Pick a survey for structural edits:")
+                if pending_survey_id:
+                    survey_id = pending_survey_id
+                    pending_survey_id = None
+                    print(f"[survey-menu] Using --survey-id {survey_id}")
+                else:
+                    survey_id = _pick_survey_id(message="Pick a survey for structural edits:")
                 if not survey_id:
                     raise _AbortStructuralSelection
 
@@ -1484,6 +1503,16 @@ def handle_menu(args: argparse.Namespace) -> None:
 
         _clear_structural_pending()
         _offer_workbook_patch(ops)
+
+    direct_structural = bool(getattr(args, "structural_edit", False))
+    direct_survey_id = str(getattr(args, "survey_id", "") or "").strip() or None
+    if direct_survey_id and not direct_structural:
+        raise SystemExit(
+            "[survey-menu] ERROR: --survey-id requires --structural-edit."
+        )
+    if direct_structural:
+        _menu_items_structural_edits(preselected_survey_id=direct_survey_id)
+        return
 
     while True:
         base = _resolve_base_url_for_display() or "(base URL unknown)"
@@ -7950,6 +7979,20 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--tui",
         action="store_true",
         help="Launch Textual TUI survey menu (requires qsync[tui]; keeps default menu unchanged).",
+    )
+    p_menu.add_argument(
+        "--structural-edit",
+        action="store_true",
+        help="Jump directly to Items structural edits (skip category navigation).",
+    )
+    p_menu.add_argument(
+        "--survey-id",
+        dest="survey_id",
+        help="Preselect SurveyID for --structural-edit (skips survey picker).",
+    )
+    p_menu.add_argument(
+        "--account",
+        help="Use this account for the menu session (or 'default' for primary .env).",
     )
     p_menu.set_defaults(func=handle_menu)
 
