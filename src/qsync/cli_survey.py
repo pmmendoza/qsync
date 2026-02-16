@@ -1146,9 +1146,6 @@ def handle_menu(args: argparse.Namespace) -> None:
         )
 
     def _menu_items_structural_edits() -> None:
-        if not _require_default_account(action="items structural edits"):
-            return
-
         from .pending_stage import (
             ItemsPendingPayload,
             PendingStagedChanges,
@@ -1167,14 +1164,22 @@ def handle_menu(args: argparse.Namespace) -> None:
         from .terminal_colors import colorize_unified_diff_lines
         import difflib
 
+        selected_env = None
+        if selected_account:
+            try:
+                selected_env = load_account_env(selected_account, root=root)
+            except Exception as exc:
+                print(f"[survey-menu] ERROR: could not load account '{selected_account}': {exc}")
+                return
+
         survey_id = _pick_survey_id(message="Pick a survey for structural edits:")
         if not survey_id:
             return
 
         # Ensure cache exists and is fresh enough for safe structural editing.
         try:
-            refresh_survey_cache(survey_id)
-            survey = load_cached_survey(survey_id)
+            refresh_survey_cache(survey_id, env=selected_env)
+            survey = load_cached_survey(survey_id, env=selected_env)
         except Exception as exc:
             print(f"[survey-menu] ERROR: could not load cache for {survey_id}: {exc}")
             print("  Next: run `qsync survey pull --survey-id <ID>` and retry.")
