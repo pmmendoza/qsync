@@ -1089,8 +1089,6 @@ def stage_sbs_column_op(
         new_col["QuestionText"] = new_html
         if "QuestionText_Unsafe" in new_col:
             new_col["QuestionText_Unsafe"] = new_html
-        if "QuestionDescription" in new_col:
-            new_col["QuestionDescription"] = new_html
         additional[col_key] = new_col
         op_type = "sbs_column_add"
     elif action_norm == "remove":
@@ -1113,8 +1111,6 @@ def stage_sbs_column_op(
         aq["QuestionText"] = new_html
         if "QuestionText_Unsafe" in aq:
             aq["QuestionText_Unsafe"] = new_html
-        if "QuestionDescription" in aq:
-            aq["QuestionDescription"] = new_html
         op_type = "sbs_column_edit"
 
     op: dict[str, Any] = {
@@ -2496,8 +2492,8 @@ def push_structural_ops(
                         f"[qsync:items:push] ColumnId {cid} not found for {qid}."
                     )
                 aq["QuestionText"] = html
-                if "QuestionDescription" in aq:
-                    aq["QuestionDescription"] = html
+                if "QuestionText_Unsafe" in aq:
+                    aq["QuestionText_Unsafe"] = html
             elif op_type == "sbs_column_add":
                 html = str(op.get("html") or "")
                 if not cid or not html:
@@ -2530,8 +2526,6 @@ def push_structural_ops(
                 new_col["QuestionText"] = html
                 if "QuestionText_Unsafe" in new_col:
                     new_col["QuestionText_Unsafe"] = html
-                if "QuestionDescription" in new_col:
-                    new_col["QuestionDescription"] = html
                 additional[str(cid)] = new_col
                 order = question.get("AdditionalQuestionsOrder")
                 if isinstance(order, list) and str(cid) not in order:

@@ -2267,10 +2267,10 @@ def apply_changes(
                                 print(f"  - {err}")
                             print(
                                 "  Next: fix invalid HTML in the workbook cell (or switch to markdown mode) before pushing."
-                            )
+                    )
                     aq["QuestionText"] = new_html
-                    if "QuestionDescription" in aq:
-                        aq["QuestionDescription"] = new_html
+                    if "QuestionText_Unsafe" in aq:
+                        aq["QuestionText_Unsafe"] = new_html
                     changed_qids.add(qid)
 
             # Apply SBS column answer label changes into the survey payload
@@ -2557,8 +2557,8 @@ def _apply_pending_item_changes(
                 continue
             new_html = str(change.get("new_html") or "")
             aq["QuestionText"] = new_html
-            if "QuestionDescription" in aq:
-                aq["QuestionDescription"] = new_html
+            if "QuestionText_Unsafe" in aq:
+                aq["QuestionText_Unsafe"] = new_html
             changed_qids.add(qid)
             continue
 
