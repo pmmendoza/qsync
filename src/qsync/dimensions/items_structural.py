@@ -20,6 +20,7 @@ from ..translations import list_enabled_languages
 from ..survey_ref import format_survey_ref
 from ..workbook_resolver import WorkbookResolver
 from ..interactive_menu import (
+    autocomplete_from_list,
     confirm,
     select_from_list,
     text_input,
