@@ -4,8 +4,9 @@ This module is intentionally small and dependency-light so it can be used
 early in CLI startup (before importing modules that compute account-scoped
 paths at import time).
 
-Currently, the primary preference is `active_account`, which is managed via
-`qsync account use|clear` and used as a workspace-default account selector.
+Current preferences include:
+- `active_account` (managed via `qsync account use|clear`)
+- `survey_cache_subdir` (optional cache folder name under `surveys/`, e.g. `caches`)
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from .errors import QsyncConfigError
 _STATE_DIRNAME = ".qsync"
 _PREFS_FILENAME = "preferences.json"
 _ACTIVE_ACCOUNT_KEY = "active_account"
+_SURVEY_CACHE_SUBDIR_KEY = "survey_cache_subdir"
 
 
 def state_dir(root: Path) -> Path:
@@ -77,4 +79,32 @@ def set_workspace_active_account(root: Path, account: str | None) -> None:
         prefs.pop(_ACTIVE_ACCOUNT_KEY, None)
     else:
         prefs[_ACTIVE_ACCOUNT_KEY] = str(account)
+    save_prefs(root, prefs)
+
+
+def get_workspace_survey_cache_subdir(root: Path) -> str | None:
+    prefs, _err = load_prefs(root)
+    raw = prefs.get(_SURVEY_CACHE_SUBDIR_KEY)
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    return value or None
+
+
+def set_workspace_survey_cache_subdir(root: Path, subdir: str | None) -> None:
+    prefs, err = load_prefs(root)
+    if err:
+        raise QsyncConfigError(
+            error_id="QSYNC-CONFIG-PREFS-002",
+            problem="Workspace preferences file is not valid JSON.",
+            why="qsync stores workspace-local preferences under `.qsync/preferences.json`.",
+            impact="qsync cannot safely update workspace preferences without risking data loss.",
+            action=f"Fix or delete `{prefs_path(root)}`, then retry the command.",
+            context={"prefs_path": str(prefs_path(root)), "parse_error": err},
+            exit_code=1,
+        )
+    if subdir is None:
+        prefs.pop(_SURVEY_CACHE_SUBDIR_KEY, None)
+    else:
+        prefs[_SURVEY_CACHE_SUBDIR_KEY] = str(subdir)
     save_prefs(root, prefs)

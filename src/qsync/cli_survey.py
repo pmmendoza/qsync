@@ -16,7 +16,16 @@ from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
-from .config import get_active_account, get_client_config, load_account_env, resolve_root, resolve_scoped_dir
+from .config import (
+    get_active_account,
+    get_client_config,
+    load_account_env,
+    resolve_root,
+    resolve_scoped_dir,
+    resolve_survey_cache_dir,
+    resolve_survey_cache_subdir,
+    validate_survey_cache_subdir,
+)
 from .api_push import send_api_request
 from .survey_registry import ensure_unique_survey_name
 from .survey_inventory import refresh_inventory, SURVEY_CACHE
@@ -65,9 +74,7 @@ def _resolve_pull_dest(
         if path.is_absolute():
             return path
         return (root / path).resolve()
-    if account:
-        return resolve_scoped_dir("surveys", root=root, account=account)
-    return resolve_scoped_dir("surveys", root=root)
+    return resolve_survey_cache_dir(root=root, account=account)
 
 
 def _resolve_responses_output_dir(
@@ -1010,9 +1017,11 @@ def handle_menu(args: argparse.Namespace) -> None:
         survey_id = _pick_survey_id(message="Pick a survey to pull (cache JSON):")
         if not survey_id:
             return
-        default_dest = (
-            f"surveys/.{selected_account}/" if selected_account else "surveys/"
-        )
+        default_dest_path = resolve_survey_cache_dir(root=root, account=selected_account)
+        try:
+            default_dest = f"{default_dest_path.relative_to(root).as_posix()}/"
+        except ValueError:
+            default_dest = f"{default_dest_path.as_posix()}/"
         dest = (
             input(f"Destination directory (optional; default: {default_dest}): ").strip()
             or None
@@ -1021,6 +1030,61 @@ def handle_menu(args: argparse.Namespace) -> None:
             handle_pull,
             argparse.Namespace(survey_id=survey_id, dest=dest, account=selected_account),
         )
+
+    def _menu_configure_cache_folder() -> None:
+        from .workspace_prefs import (
+            get_workspace_survey_cache_subdir,
+            set_workspace_survey_cache_subdir,
+        )
+
+        while True:
+            account_scope = _resolve_menu_account()
+            surveys_dir = resolve_scoped_dir("surveys", root=root, account=account_scope)
+            pref = get_workspace_survey_cache_subdir(root)
+            resolved_subdir = resolve_survey_cache_subdir(root=root)
+            preferred_dir = (surveys_dir / resolved_subdir).resolve()
+            effective_dir = resolve_survey_cache_dir(root=root, account=account_scope)
+            source = "subdir" if effective_dir == preferred_dir else "surveys root fallback"
+
+            print("[survey-menu] Survey cache folder setting")
+            print(f"  account: {account_scope or 'default'}")
+            print(f"  pref: {pref or '(default)'}")
+            print(f"  resolved_subdir: {resolved_subdir}")
+            print(f"  preferred_cache_dir: {preferred_dir}")
+            print(f"  preferred_cache_dir_exists: {preferred_dir.exists() and preferred_dir.is_dir()}")
+            print(f"  effective_cache_dir: {effective_dir} ({source})")
+
+            choice = select_from_list(
+                "Survey cache folder settings",
+                [
+                    "Set cache subfolder name",
+                    "Clear preference (default: caches)",
+                    "Create preferred cache folder now",
+                    "↩ Back",
+                ],
+            )
+            if not choice or choice.endswith("Back"):
+                return
+            if choice.startswith("Set cache"):
+                raw = input("Cache subfolder name (e.g. caches or defs): ").strip()
+                if not raw:
+                    print("[survey-menu] No change.")
+                    continue
+                try:
+                    name = validate_survey_cache_subdir(raw)
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: {exc}")
+                    continue
+                set_workspace_survey_cache_subdir(root, name)
+                print(
+                    f"[survey-menu] Set workspace survey cache subfolder to `{name}`."
+                )
+            elif choice.startswith("Clear preference"):
+                set_workspace_survey_cache_subdir(root, None)
+                print("[survey-menu] Cleared workspace cache subfolder preference.")
+            else:
+                preferred_dir.mkdir(parents=True, exist_ok=True)
+                print(f"[survey-menu] Created: {preferred_dir}")
 
     def _menu_prepare() -> None:
         if not _require_default_account(action="survey prepare"):
@@ -1218,7 +1282,9 @@ def handle_menu(args: argparse.Namespace) -> None:
                 if not survey_id:
                     raise _AbortStructuralSelection
 
-                surveys_dir = resolve_scoped_dir("surveys", root=root, account=account_scope)
+                surveys_dir = resolve_survey_cache_dir(
+                    root=root, account=account_scope
+                )
                 try:
                     refresh_survey_cache(
                         survey_id,
@@ -1750,6 +1816,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Refresh inventory",
                     "Pull survey definition (cache)",
                     "Prepare surfaces",
+                    "Configure survey cache folder",
                     "↩ Back",
                 ],
             )
@@ -1759,8 +1826,10 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_inventory()
             elif choice.startswith("Pull"):
                 _menu_pull()
-            else:
+            elif choice.startswith("Prepare"):
                 _menu_prepare()
+            else:
+                _menu_configure_cache_folder()
 
 
 def handle_prepare(args: argparse.Namespace) -> None:
@@ -6653,7 +6722,9 @@ def handle_translations_pull(args: argparse.Namespace) -> None:
 
     if account:
         env = load_account_env(account, root=_workspace_root())
-        surveys_dir = resolve_scoped_dir("surveys", root=_workspace_root(), account=account)
+        surveys_dir = resolve_survey_cache_dir(
+            root=_workspace_root(), account=account
+        )
         cache, changed = refresh_survey_cache(survey_id, surveys_dir=surveys_dir, env=env)
     else:
         cache, changed = refresh_survey_cache(survey_id)

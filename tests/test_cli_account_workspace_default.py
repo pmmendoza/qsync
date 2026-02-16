@@ -212,3 +212,44 @@ def test_account_adopt_moves_allowlisted_artifacts_and_preserves_shared_mapping(
     prefs = json.loads((tmp_path / ".qsync" / "preferences.json").read_text(encoding="utf-8"))
     assert prefs.get("active_account") == "damian"
 
+
+def test_account_cache_dir_show_set_and_clear(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from qsync.cli import main
+
+    _touch_env_for_restore(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    ensure_qsync_workspace(tmp_path)
+
+    # Default behavior: resolved subdir is `caches`, but fallback is surveys/.
+    main(["--root", str(tmp_path), "account", "cache-dir", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["survey_cache_subdir_pref"] is None
+    assert payload["survey_cache_subdir_resolved"] == "caches"
+    assert payload["effective_source"] == "surveys_root_fallback"
+
+    # Set workspace preference.
+    main(["--root", str(tmp_path), "account", "cache-dir", "defs", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["survey_cache_subdir_pref"] == "defs"
+    assert payload["survey_cache_subdir_resolved"] == "defs"
+    assert payload["effective_source"] == "surveys_root_fallback"
+
+    prefs = json.loads((tmp_path / ".qsync" / "preferences.json").read_text(encoding="utf-8"))
+    assert prefs.get("survey_cache_subdir") == "defs"
+
+    # Once the folder exists, effective path flips to subdir mode.
+    (tmp_path / "surveys" / "defs").mkdir(parents=True, exist_ok=True)
+    main(["--root", str(tmp_path), "account", "cache-dir", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["effective_source"] == "subdir"
+    assert payload["effective_cache_dir"].endswith("/surveys/defs")
+
+    # Clear preference and return to default.
+    main(["--root", str(tmp_path), "account", "cache-dir", "--clear", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["survey_cache_subdir_pref"] is None

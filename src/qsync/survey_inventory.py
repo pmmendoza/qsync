@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import requests
 
-from .config import resolve_root, resolve_scoped_dir
+from .config import resolve_root, resolve_scoped_dir, resolve_survey_cache_dir
 from .api_push import send_api_request
 
 ROOT = resolve_root(required=False) or Path.cwd()
@@ -68,6 +68,10 @@ def resolve_inventory_csv_path(*, required: bool = False) -> Path:
             "(or legacy surveys/qualtrics_surveys.csv). Run `qsync survey inventory` first."
         )
     return INVENTORY_CSV
+
+
+def _survey_definition_cache_dir() -> Path:
+    return resolve_survey_cache_dir(root=ROOT)
 
 
 def _as_bool(value: Any) -> bool:
@@ -646,9 +650,10 @@ def archive_survey_assets(
             dest = EXCEL_ARCHIVE / f"{timestamp}__{path.name}"
             path.rename(dest)
             files_moved += 1
-    if SURVEYS_DIR.exists():
+    survey_cache_dir = _survey_definition_cache_dir()
+    if survey_cache_dir.exists():
         SURVEY_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-        for path in SURVEYS_DIR.glob(f"*{survey_id}.json"):
+        for path in survey_cache_dir.glob(f"*{survey_id}.json"):
             if path in {INVENTORY_CSV, LEGACY_SURVEY_CACHE} or path.is_dir():
                 continue
             dest = SURVEY_ARCHIVE_DIR / f"{timestamp}__{path.name}"

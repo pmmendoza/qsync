@@ -9,11 +9,10 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 from .argparse_support import QsyncArgumentParser
-from .config import resolve_root, resolve_scoped_dir
+from .config import resolve_root, resolve_scoped_dir, resolve_survey_cache_dir
 from .survey_inventory import _read_csv_rows
 
 ROOT = resolve_root(required=False) or Path.cwd()
-SURVEYS_DIR = resolve_scoped_dir("surveys", root=ROOT)
 CORE_DIR = ROOT / "survey_js" / "core"
 DEFAULT_MAPPING_PATH = resolve_scoped_dir("survey_js", root=ROOT) / "survey_qid_js_map.csv"
 
@@ -44,8 +43,9 @@ def _parse_survey_filename(path: Path) -> Tuple[str, str] | None:
 
 
 def _collect_surveys() -> List[Tuple[str, str, Path]]:
+    surveys_dir = resolve_survey_cache_dir(root=ROOT)
     latest: Dict[str, Tuple[str, Path, float]] = {}
-    for path in SURVEYS_DIR.glob("*SV*.json"):
+    for path in surveys_dir.glob("*SV*.json"):
         parsed = _parse_survey_filename(path)
         if not parsed:
             continue

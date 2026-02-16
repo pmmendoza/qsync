@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 
 from .api_push import send_api_request
-from .config import get_client_config, resolve_root, resolve_scoped_dir
+from .config import (
+    get_client_config,
+    resolve_root,
+    resolve_survey_cache_dir,
+)
 
 SURVEY_VERSION_DESCRIPTION_MAX_CHARS = 140
 
@@ -18,7 +22,7 @@ def _workspace_root() -> Path:
 
 
 def _surveys_dir() -> Path:
-    return resolve_scoped_dir("surveys", root=_workspace_root())
+    return resolve_survey_cache_dir(root=_workspace_root())
 
 
 def _backups_dir() -> Path:

@@ -14,6 +14,10 @@ from .errors import QsyncConfigError, QsyncValidationError
 
 _ROOT_ENV_KEYS = ("QSYNC_ROOT", "QSYNC_DATA_DIR")
 _ACCOUNT_ENV_KEY = "QSYNC_ACCOUNT"
+_SURVEY_CACHE_SUBDIR_ENV_KEY = "QSYNC_SURVEY_CACHE_SUBDIR"
+_SURVEY_CACHE_SUBDIR_PREF_KEY = "survey_cache_subdir"
+_DEFAULT_SURVEY_CACHE_SUBDIR = "caches"
+_SURVEY_CACHE_SUBDIR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 try:
@@ -270,6 +274,103 @@ def resolve_scoped_dir(
         scoped = validate_account_name(selected)
         return (base / f".{scoped}").resolve()
     return base
+
+
+def _normalize_survey_cache_subdir(value: str | None) -> str | None:
+    """Return a safe single-segment cache subdir name, or None if invalid/empty."""
+
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    name = raw.strip("/\\").strip()
+    if not name:
+        return None
+    if "/" in name or "\\" in name:
+        return None
+    if not _SURVEY_CACHE_SUBDIR_RE.fullmatch(name):
+        return None
+    return name
+
+
+def validate_survey_cache_subdir(value: str) -> str:
+    """Validate and normalize a survey-cache subdirectory name."""
+
+    name = _normalize_survey_cache_subdir(value)
+    if name:
+        return name
+    raw = str(value or "")
+    raise QsyncValidationError(
+        error_id="QSYNC-VALIDATION-SURVEYCACHE-001",
+        problem=f"Invalid survey cache subdirectory: {raw!r}.",
+        why=(
+            "qsync uses a single folder name under `surveys/` for optional "
+            "survey-definition caches."
+        ),
+        impact="The setting was rejected to prevent unsafe or ambiguous path resolution.",
+        action=(
+            "Use a simple folder name like `caches` or `defs` "
+            "(letters/numbers plus `.`, `_`, `-`; no slashes)."
+        ),
+        context={"value": raw},
+        exit_code=2,
+    )
+
+
+def resolve_survey_cache_subdir(
+    *,
+    root: Path | None = None,
+) -> str:
+    """Resolve the workspace survey cache subfolder name.
+
+    Precedence:
+    1) `QSYNC_SURVEY_CACHE_SUBDIR`
+    2) workspace preference `.qsync/preferences.json` key `survey_cache_subdir`
+    3) default: `caches`
+    """
+
+    env_value = _normalize_survey_cache_subdir(
+        os.environ.get(_SURVEY_CACHE_SUBDIR_ENV_KEY)
+    )
+    if env_value:
+        return env_value
+
+    root_path = root or resolve_root(required=False) or Path.cwd()
+    try:
+        from .workspace_prefs import load_prefs
+
+        prefs, _err = load_prefs(root_path)
+        pref_raw = prefs.get(_SURVEY_CACHE_SUBDIR_PREF_KEY)
+        if isinstance(pref_raw, str):
+            pref_value = _normalize_survey_cache_subdir(pref_raw)
+            if pref_value:
+                return pref_value
+    except Exception:
+        # Preferences are best-effort; fall back to default.
+        pass
+
+    return _DEFAULT_SURVEY_CACHE_SUBDIR
+
+
+def resolve_survey_cache_dir(
+    *,
+    root: Path | None = None,
+    account: str | None = None,
+) -> Path:
+    """Resolve where survey definition JSON cache files should live.
+
+    Behavior:
+    - Base path is account-scoped `surveys/` (or unscoped when no account).
+    - If `surveys/<cache_subdir>/` exists, return that directory.
+    - Otherwise, fall back to `surveys/`.
+    """
+
+    root_path = root or resolve_root(required=False) or Path.cwd()
+    surveys_dir = resolve_scoped_dir("surveys", root=root_path, account=account)
+    cache_subdir = resolve_survey_cache_subdir(root=root_path)
+    candidate = (surveys_dir / cache_subdir).resolve()
+    if candidate.exists() and candidate.is_dir():
+        return candidate
+    return surveys_dir
 
 
 def load_account_env(

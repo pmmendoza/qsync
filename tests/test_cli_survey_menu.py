@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -129,3 +130,33 @@ def test_survey_menu_check_api_includes_active_account(
 
     captured = capsys.readouterr().out
     assert "[survey-menu] whoami account=damian" in captured
+
+
+def test_survey_menu_workspace_can_set_cache_subfolder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.cli import main
+
+    _touch_env_for_restore(monkeypatch)
+    ensure_qsync_workspace(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    with (
+        patch("qsync.interactive_menu.is_interactive", return_value=True),
+        patch(
+            "qsync.interactive_menu.select_from_list",
+            side_effect=[
+                "Workspace",
+                "Configure survey cache folder",
+                "Set cache subfolder name",
+                "↩ Back",
+                "↩ Back",
+                "Exit",
+            ],
+        ),
+        patch("builtins.input", return_value="defs"),
+    ):
+        main(["--root", str(tmp_path), "survey", "menu"])
+
+    prefs = json.loads((tmp_path / ".qsync" / "preferences.json").read_text(encoding="utf-8"))
+    assert prefs.get("survey_cache_subdir") == "defs"

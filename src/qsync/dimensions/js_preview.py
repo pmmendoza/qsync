@@ -22,12 +22,11 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 from ..argparse_support import QsyncArgumentParser
-from ..config import resolve_root, resolve_scoped_dir
+from ..config import resolve_root, resolve_scoped_dir, resolve_survey_cache_dir
 from ..drift_check import check_drift as run_drift_check
 from ..scope_filter import ScopeFilter
 
 ROOT = resolve_root(required=False) or Path.cwd()
-SURVEYS_DIR = resolve_scoped_dir("surveys", root=ROOT)
 SURVEY_JS_CORE = ROOT / "survey_js" / "core"
 CORE_JS_FILES = {
     p.relative_to(SURVEY_JS_CORE).as_posix()
@@ -53,14 +52,15 @@ class JsDiffResult:
 def load_survey_json(survey_id: str) -> Tuple[Dict, Path]:
     """Load the most recent cached survey JSON for a given survey_id."""
 
+    surveys_dir = resolve_survey_cache_dir(root=ROOT)
     matches = sorted(
-        SURVEYS_DIR.glob(f"*{survey_id}.json"),
+        surveys_dir.glob(f"*{survey_id}.json"),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
     if not matches:
         raise FileNotFoundError(
-            f"No survey JSON found in {SURVEYS_DIR} for ID {survey_id}. "
+            f"No survey JSON found in {surveys_dir} for ID {survey_id}. "
             "Run qsync init or download_survey_definition.py first."
         )
     path = matches[0]

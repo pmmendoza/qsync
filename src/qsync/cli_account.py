@@ -29,14 +29,19 @@ from .config import (
     resolve_env_path,
     resolve_root,
     resolve_scoped_dir,
+    resolve_survey_cache_dir,
+    resolve_survey_cache_subdir,
+    validate_survey_cache_subdir,
     validate_account_name,
 )
 from .errors import QsyncConfigError
 from .workspace_prefs import (
     get_workspace_active_account,
+    get_workspace_survey_cache_subdir,
     load_prefs,
     prefs_path,
     set_workspace_active_account,
+    set_workspace_survey_cache_subdir,
 )
 
 
@@ -155,6 +160,11 @@ def handle_account_status(args) -> None:
         "env_path": str(env_path) if env_path else None,
         "env_ok": env_ok,
         "base_url": base_url,
+        "survey_cache_subdir_pref": get_workspace_survey_cache_subdir(root),
+        "survey_cache_subdir_resolved": resolve_survey_cache_subdir(root=root),
+        "survey_cache_dir_effective": str(
+            resolve_survey_cache_dir(root=root, account=active)
+        ),
         "scoped_dirs": {
             "surveys": str(resolve_scoped_dir("surveys", root=root, account=active)),
             "excel": str(resolve_scoped_dir("excel", root=root, account=active)),
@@ -184,6 +194,13 @@ def handle_account_status(args) -> None:
     if env_ok is False and env_error:
         print(f"  env_error: {env_error}", file=sys.stderr)
     print(f"  base_url: {base_url or '(missing)'}")
+    pref = payload.get("survey_cache_subdir_pref")
+    resolved_subdir = payload.get("survey_cache_subdir_resolved")
+    effective_dir = payload.get("survey_cache_dir_effective")
+    print(
+        f"  survey_cache_subdir: pref={pref or '(default)'} resolved={resolved_subdir}"
+    )
+    print(f"  survey_cache_dir: {effective_dir}")
     print("  dirs:")
     for k, v in (payload.get("scoped_dirs") or {}).items():
         print(f"    {k}: {v}")
@@ -245,6 +262,62 @@ def handle_account_clear(args) -> None:
     print("[qsync:account:clear] Cleared active workspace account (legacy default restored).")
 
 
+def handle_account_cache_dir(args) -> None:
+    root = _root()
+    value = getattr(args, "value", None)
+    clear = bool(getattr(args, "clear", False))
+
+    if clear and value:
+        raise SystemExit("[qsync:account:cache-dir] ERROR: provide either VALUE or --clear, not both.")
+
+    if clear:
+        set_workspace_survey_cache_subdir(root, None)
+    elif value is not None:
+        normalized = validate_survey_cache_subdir(str(value))
+        set_workspace_survey_cache_subdir(root, normalized)
+
+    pref = get_workspace_survey_cache_subdir(root)
+    resolved_subdir = resolve_survey_cache_subdir(root=root)
+    active = get_active_account()
+    surveys_dir = resolve_scoped_dir("surveys", root=root, account=active)
+    preferred_dir = (surveys_dir / resolved_subdir).resolve()
+    effective_dir = resolve_survey_cache_dir(root=root, account=active)
+    source = "subdir" if effective_dir == preferred_dir else "surveys_root_fallback"
+
+    payload = {
+        "ok": True,
+        "root": str(root),
+        "active_account": active,
+        "survey_cache_subdir_pref": pref,
+        "survey_cache_subdir_resolved": resolved_subdir,
+        "surveys_dir": str(surveys_dir),
+        "preferred_cache_dir": str(preferred_dir),
+        "preferred_cache_dir_exists": preferred_dir.exists() and preferred_dir.is_dir(),
+        "effective_cache_dir": str(effective_dir),
+        "effective_source": source,
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False))
+        return
+
+    print("[qsync:account:cache-dir]")
+    print(f"  active_account: {active or 'default'}")
+    print(f"  pref: {pref or '(default)'}")
+    print(f"  resolved_subdir: {resolved_subdir}")
+    print(f"  preferred_cache_dir: {preferred_dir}")
+    print(
+        "  preferred_cache_dir_exists: "
+        f"{payload['preferred_cache_dir_exists']}"
+    )
+    print(f"  effective_cache_dir: {effective_dir} ({source})")
+    if not payload["preferred_cache_dir_exists"]:
+        print(
+            "  note: create the preferred cache dir to activate subfolder caching "
+            f"(e.g. `mkdir -p {preferred_dir}`)."
+        )
+
+
 @dataclass(frozen=True)
 class MoveItem:
     src: Path
@@ -271,6 +344,19 @@ def _build_adopt_move_plan(root: Path, *, account: str) -> list[MoveItem]:
     # surveys/
     surveys_base = (root / "surveys").resolve()
     surveys_dst = resolve_scoped_dir("surveys", root=root, account=account)
+    cache_subdir = resolve_survey_cache_subdir(root=root)
+    cache_src_candidate = (surveys_base / cache_subdir).resolve()
+    surveys_cache_src = (
+        cache_src_candidate
+        if cache_src_candidate.exists() and cache_src_candidate.is_dir()
+        else surveys_base
+    )
+    # Preserve explicit cache-subdir layouts during account adoption.
+    surveys_cache_dst = (
+        (surveys_dst / cache_subdir).resolve()
+        if surveys_cache_src != surveys_base
+        else resolve_survey_cache_dir(root=root, account=account)
+    )
     if surveys_base.exists():
         # Files
         for name in (
@@ -284,15 +370,14 @@ def _build_adopt_move_plan(root: Path, *, account: str) -> list[MoveItem]:
                 moves.append(MoveItem(src=src, dst=surveys_dst / name))
 
         # Cached survey JSON: <Name>__SV_xxx.json
-        for src in sorted(surveys_base.glob("*__SV_*.json")):
+        for src in sorted(surveys_cache_src.glob("*__SV_*.json")):
             if src.is_file():
-                moves.append(MoveItem(src=src, dst=surveys_dst / src.name))
+                moves.append(MoveItem(src=src, dst=surveys_cache_dst / src.name))
 
         # Directories
         for name in (
             "pending",
             "archive",
-            "backups",
             "flow",
             "slices",
             "translation_key_snapshots",
@@ -302,6 +387,16 @@ def _build_adopt_move_plan(root: Path, *, account: str) -> list[MoveItem]:
             src = surveys_base / name
             if src.exists() and src.is_dir():
                 moves.append(MoveItem(src=src, dst=surveys_dst / name))
+        backups_src = surveys_cache_src / "backups"
+        if backups_src.exists() and backups_src.is_dir():
+            moves.append(MoveItem(src=backups_src, dst=surveys_cache_dst / "backups"))
+        legacy_backups_src = surveys_base / "backups"
+        if (
+            surveys_cache_src != surveys_base
+            and legacy_backups_src.exists()
+            and legacy_backups_src.is_dir()
+        ):
+            moves.append(MoveItem(src=legacy_backups_src, dst=surveys_dst / "backups"))
 
     # excel/
     excel_base = (root / "excel").resolve()

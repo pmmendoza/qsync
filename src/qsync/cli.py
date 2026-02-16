@@ -1722,6 +1722,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
     from .cli_account import (
         handle_account_adopt,
+        handle_account_cache_dir,
         handle_account_clear,
         handle_account_list,
         handle_account_status,
@@ -1814,6 +1815,30 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Emit machine-readable JSON to stdout (no other output)",
     )
     p_account_adopt.set_defaults(func=handle_account_adopt)
+
+    p_account_cache_dir = account_subs.add_parser(
+        "cache-dir",
+        help=(
+            "Show or set the workspace survey cache subfolder name "
+            "(used under surveys/, defaults to `caches` with fallback to surveys/)"
+        ),
+    )
+    p_account_cache_dir.add_argument(
+        "value",
+        nargs="?",
+        help="Set cache subfolder name (e.g. `caches` or `defs`).",
+    )
+    p_account_cache_dir.add_argument(
+        "--clear",
+        action="store_true",
+        help="Clear workspace preference and revert to default `caches` resolution.",
+    )
+    p_account_cache_dir.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON to stdout (no other output)",
+    )
+    p_account_cache_dir.set_defaults(func=handle_account_cache_dir)
 
     # help
     p_help = subparsers.add_parser(

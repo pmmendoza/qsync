@@ -1162,7 +1162,7 @@ class PullSurveyScreen(Screen):
                 get_client_config,
                 load_account_env,
                 resolve_root,
-                resolve_scoped_dir,
+                resolve_survey_cache_dir,
             )
             from qsync.qualtrics_client import download_survey_definition
 
@@ -1173,7 +1173,7 @@ class PullSurveyScreen(Screen):
             except Exception:
                 account = None
             env = load_account_env(account, root=root) if account else None
-            dest = resolve_scoped_dir("surveys", root=root, account=account) if account else resolve_scoped_dir("surveys", root=root)
+            dest = resolve_survey_cache_dir(root=root, account=account)
 
             with self.app.suspend():  # type: ignore[attr-defined]
                 print(f"\n[qsync:tui] Pulling survey definition {survey_id}...")

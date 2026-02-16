@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from ..api_push import send_api_request
-from ..config import get_client_config, resolve_root, resolve_scoped_dir
+from ..config import (
+    get_client_config,
+    resolve_root,
+    resolve_scoped_dir,
+    resolve_survey_cache_dir,
+)
 from ..pending_stage import (
     PendingStagedChanges,
     EosPendingPayload,
@@ -968,7 +973,7 @@ def detect_shared_messages(
     """Detect shared messages by scanning locally cached surveys (local-only)."""
 
     root = resolve_root(required=False) or Path.cwd()
-    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    surveys_dir = resolve_survey_cache_dir(root=root)
     candidates: list[Path] = []
     if surveys_dir.exists():
         candidates.extend(sorted(surveys_dir.glob("*.json")))
@@ -1065,7 +1070,7 @@ def find_message_contexts(
     """
 
     root = resolve_root(required=False) or Path.cwd()
-    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    surveys_dir = resolve_survey_cache_dir(root=root)
     candidates: list[Path] = []
     if surveys_dir.exists():
         candidates.extend(sorted(surveys_dir.glob("*.json")))
