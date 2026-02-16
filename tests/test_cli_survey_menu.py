@@ -122,7 +122,7 @@ def test_survey_menu_check_api_includes_active_account(
         ),
         patch(
             "qsync.interactive_menu.select_from_list",
-            side_effect=["Account & Diagnostics", "Check API (/whoami)", "Exit"],
+            side_effect=["Workspace & Account — account, API, inventory, prepare", "Check API (/whoami)", "Exit"],
         ),
         patch("qsync.cli_survey.send_api_request", return_value=_FakeResponse()),
     ):
@@ -146,7 +146,7 @@ def test_survey_menu_workspace_can_set_cache_subfolder(
         patch(
             "qsync.interactive_menu.select_from_list",
             side_effect=[
-                "Workspace",
+                "Workspace & Account — account, API, inventory, prepare",
                 "Configure survey cache folder",
                 "Set cache subfolder name",
                 "↩ Back",

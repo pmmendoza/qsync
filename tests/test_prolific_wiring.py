@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import argparse
+
 from qsync.cli_prolific import (
     MatchSurvey,
+    WirePlanRow,
+    _first_embedded_data_block,
+    _missing_required_prolific_embedded_fields,
     build_match_rows,
     build_match_formula,
     build_qualtrics_form_redirect_url,
     build_prolific_completion_url,
     exact_name_key,
     iter_rows_for_state,
+    handle_wire_apply,
 )
 
 
@@ -271,3 +277,126 @@ def test_build_match_formula_overlap_only() -> None:
         "BSKY_main_payout_10_CZ",
     )
     assert formula == "bsky main payout 10 cz"
+
+
+def test_first_embedded_data_block_uses_first_block_only() -> None:
+    survey_result = {
+        "SurveyFlow": {
+            "Flow": [
+                {
+                    "Type": "EmbeddedData",
+                    "FlowID": "FL_1",
+                    "EmbeddedData": [{"Field": "PROLIFIC_PID"}],
+                },
+                {
+                    "Type": "EmbeddedData",
+                    "FlowID": "FL_2",
+                    "EmbeddedData": [
+                        {"Field": "PROLIFIC_PID"},
+                        {"Field": "STUDY_ID"},
+                        {"Field": "SESSION_ID"},
+                    ],
+                },
+            ]
+        }
+    }
+
+    flow_id, fields = _first_embedded_data_block(survey_result)
+    assert flow_id == "FL_1"
+    assert fields == ["PROLIFIC_PID"]
+    assert _missing_required_prolific_embedded_fields(fields) == ["STUDY_ID", "SESSION_ID"]
+
+
+def test_missing_required_embedded_fields_is_case_insensitive() -> None:
+    missing = _missing_required_prolific_embedded_fields(
+        ["prolific_pid", "Study_ID", "SESSION_ID"]
+    )
+    assert missing == []
+
+
+def test_wire_apply_defaults_to_publish_and_activate(monkeypatch, tmp_path) -> None:
+    publish_calls: list[tuple[str, str]] = []
+    activate_calls: list[str] = []
+
+    def _fake_build_plan_rows(**kwargs):
+        return [
+            WirePlanRow(
+                row={
+                    "prolific_study_id": "P1",
+                    "qualtrics_survey_id": "SV_1",
+                    "state": "APPROVED",
+                },
+                blocked_reason=None,
+                prolific_current_redirect_url="https://x",
+                prolific_desired_redirect_url="https://x",
+                qualtrics_current_eos_redirect_url="https://e",
+                qualtrics_desired_eos_redirect_url="https://e",
+                qualtrics_current_header="<h1>x</h1>",
+                qualtrics_new_header="<h1>x</h1>",
+                qualtrics_first_embedded_flow_id="FL_1",
+                qualtrics_first_embedded_fields=["PROLIFIC_PID", "STUDY_ID", "SESSION_ID"],
+                qualtrics_missing_embedded_fields=[],
+                options_payload={},
+            )
+        ]
+
+    monkeypatch.setattr(
+        "qsync.cli_prolific._resolve_prolific_token",
+        lambda args, account: "tok",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._resolve_matches_csv_path",
+        lambda args, account: tmp_path / "matches.csv",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._read_csv_rows",
+        lambda path: [{"state": "APPROVED", "prolific_study_id": "P1", "qualtrics_survey_id": "SV_1"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._get_client_config_for_account",
+        lambda account: ("example.qualtrics.com", {"X-API-TOKEN": "t"}),
+    )
+    monkeypatch.setattr("qsync.cli_prolific._resolve_auth_snippet", lambda args, account: "<script></script>")
+    monkeypatch.setattr("qsync.cli_prolific._build_wire_plan_rows", _fake_build_plan_rows)
+    monkeypatch.setattr("qsync.cli_prolific._print_plan_summary", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "qsync.cli_prolific._write_journal",
+        lambda **kwargs: tmp_path / "journal.json",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific.publish_survey_definition",
+        lambda survey_id, description, base_url, headers: publish_calls.append((survey_id, description)),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._activate_survey",
+        lambda base_url, headers, survey_id: activate_calls.append(survey_id),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._write_prolific_study_redirect",
+        lambda token, study_id, redirect_url: {},
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._write_qualtrics_options",
+        lambda base_url, headers, survey_id, options_payload: None,
+    )
+
+    args = argparse.Namespace(
+        account=None,
+        prolific_token=None,
+        matches=None,
+        only_state="APPROVED",
+        auth_snippet=None,
+        auth_snippet_file=None,
+        auth_token=None,
+        yes=True,
+        publish=None,
+        activate=None,
+        publish_description="Prolific wiring update",
+        continue_on_error=False,
+        json=False,
+    )
+
+    handle_wire_apply(args)
+
+    assert publish_calls == [("SV_1", "Prolific wiring update")]
+    assert activate_calls == ["SV_1"]

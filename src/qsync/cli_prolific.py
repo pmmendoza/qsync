@@ -8,6 +8,7 @@ import json
 import os
 import re
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,7 @@ from .prolific_auth import (
     merge_header,
 )
 from .qualtrics_client import publish_survey_definition
+from .rich_support import progress_context, should_use_rich
 from .survey_inventory import refresh_inventory
 
 PROLIFIC_API_BASE_URL = "https://api.prolific.com/api/v1"
@@ -40,6 +42,7 @@ PROLIFIC_COMPLETION_BASE_URL = "https://app.prolific.com/submissions/complete"
 PROLIFIC_PID_PLACEHOLDER = "{{%PROLIFIC_PID%}}"
 PROLIFIC_STUDY_ID_PLACEHOLDER = "{{%STUDY_ID%}}"
 PROLIFIC_SESSION_ID_PLACEHOLDER = "{{%SESSION_ID%}}"
+REQUIRED_PROLIFIC_EMBEDDED_FIELDS = ("STUDY_ID", "SESSION_ID", "PROLIFIC_PID")
 
 STUDIES_FIELDNAMES = [
     "prolific_study_id",
@@ -98,6 +101,9 @@ class WirePlanRow:
     qualtrics_desired_eos_redirect_url: str
     qualtrics_current_header: str
     qualtrics_new_header: str
+    qualtrics_first_embedded_flow_id: str
+    qualtrics_first_embedded_fields: list[str]
+    qualtrics_missing_embedded_fields: list[str]
     options_payload: dict[str, Any] | None
 
 
@@ -542,6 +548,71 @@ def _fetch_qualtrics_options(
     return payload if isinstance(payload, dict) else {}
 
 
+def _fetch_qualtrics_definition(
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    survey_id: str,
+) -> dict[str, Any]:
+    response = send_api_request(
+        action="qsync.prolific.qualtrics.definition.fetch",
+        method="GET",
+        base_url=base_url,
+        headers=headers,
+        path=f"survey-definitions/{survey_id}",
+        survey_id=survey_id,
+        timeout=60,
+    )
+    payload = response.json().get("result")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _iter_flow_nodes(flow_list: Any) -> Sequence[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    if not isinstance(flow_list, list):
+        return nodes
+
+    for node in flow_list:
+        if not isinstance(node, dict):
+            continue
+        nodes.append(node)
+        for key in ("Flow", "Then", "Else", "ElseFlow"):
+            sub = node.get(key)
+            if isinstance(sub, list):
+                nodes.extend(_iter_flow_nodes(sub))
+    return nodes
+
+
+def _first_embedded_data_block(
+    survey_result: dict[str, Any],
+) -> tuple[str, list[str]]:
+    survey_flow = survey_result.get("SurveyFlow") or {}
+    for node in _iter_flow_nodes(survey_flow.get("Flow")):
+        if str(node.get("Type") or "").strip() != "EmbeddedData":
+            continue
+        flow_id = str(node.get("FlowID") or "").strip()
+        fields: list[str] = []
+        entries = node.get("EmbeddedData") or []
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                field = str(entry.get("Field") or "").strip()
+                if field:
+                    fields.append(field)
+        return flow_id, fields
+    return "", []
+
+
+def _missing_required_prolific_embedded_fields(fields: Sequence[str]) -> list[str]:
+    present = {str(field or "").strip().upper() for field in fields if str(field or "").strip()}
+    missing: list[str] = []
+    for required in REQUIRED_PROLIFIC_EMBEDDED_FIELDS:
+        if required not in present:
+            missing.append(required)
+    return missing
+
+
 def _write_qualtrics_options(
     *,
     base_url: str,
@@ -891,6 +962,7 @@ def _build_wire_plan_rows(
     auth_snippet: str | None,
 ) -> list[WirePlanRow]:
     plan_rows: list[WirePlanRow] = []
+    embedded_check_by_survey: dict[str, tuple[str, list[str], list[str]]] = {}
 
     for row in selected_rows:
         study_id = str(row.get("prolific_study_id") or "").strip()
@@ -911,6 +983,9 @@ def _build_wire_plan_rows(
                     ).strip(),
                     qualtrics_current_header="",
                     qualtrics_new_header="",
+                    qualtrics_first_embedded_flow_id="",
+                    qualtrics_first_embedded_fields=[],
+                    qualtrics_missing_embedded_fields=list(REQUIRED_PROLIFIC_EMBEDDED_FIELDS),
                     options_payload=None,
                 )
             )
@@ -922,6 +997,23 @@ def _build_wire_plan_rows(
             headers=headers,
             survey_id=survey_id,
         )
+        if survey_id in embedded_check_by_survey:
+            embedded_flow_id, embedded_fields, missing_embedded_fields = embedded_check_by_survey[
+                survey_id
+            ]
+        else:
+            survey_result = _fetch_qualtrics_definition(
+                base_url=base_url,
+                headers=headers,
+                survey_id=survey_id,
+            )
+            embedded_flow_id, embedded_fields = _first_embedded_data_block(survey_result)
+            missing_embedded_fields = _missing_required_prolific_embedded_fields(embedded_fields)
+            embedded_check_by_survey[survey_id] = (
+                embedded_flow_id,
+                embedded_fields,
+                missing_embedded_fields,
+            )
 
         prolific_current = str(study.get("external_study_url") or "").strip()
         prolific_desired = str(row.get("desired_prolific_redirect_url") or "").strip()
@@ -951,6 +1043,23 @@ def _build_wire_plan_rows(
                 "(--auth-snippet / --auth-snippet-file / PROLIFIC_AUTH_SNIPPET / --auth-token)"
             )
 
+        if missing_embedded_fields:
+            if embedded_flow_id:
+                embedded_reason = (
+                    f"first EmbeddedData block (FlowID={embedded_flow_id}) missing required fields: "
+                    f"{', '.join(missing_embedded_fields)}"
+                )
+            else:
+                embedded_reason = (
+                    "SurveyFlow has no EmbeddedData block; required first-block fields missing: "
+                    f"{', '.join(missing_embedded_fields)}"
+                )
+            blocked_reason = (
+                f"{blocked_reason}; {embedded_reason}"
+                if blocked_reason
+                else embedded_reason
+            )
+
         if not prolific_desired:
             blocked_reason = (
                 f"{blocked_reason}; missing desired Prolific redirect URL"
@@ -975,6 +1084,9 @@ def _build_wire_plan_rows(
                 qualtrics_desired_eos_redirect_url=eos_desired,
                 qualtrics_current_header=header_current,
                 qualtrics_new_header=header_new,
+                qualtrics_first_embedded_flow_id=embedded_flow_id,
+                qualtrics_first_embedded_fields=list(embedded_fields),
+                qualtrics_missing_embedded_fields=list(missing_embedded_fields),
                 options_payload=options_payload,
             )
         )
@@ -1007,14 +1119,24 @@ def _print_plan_summary(
             != plan.qualtrics_desired_eos_redirect_url
         )
         header_change = plan.qualtrics_current_header != plan.qualtrics_new_header
+        embedded_ok = not plan.qualtrics_missing_embedded_fields
+        embedded_status = "ok" if embedded_ok else "missing"
 
         print(
             f"  - {study_id} -> {survey_id} [{status}] "
             f"prolific_redirect={'change' if prolific_change else 'ok'} "
             f"eos_redirect={'change' if eos_change else 'ok'} "
-            f"header={'change' if header_change else 'ok'}"
+            f"header={'change' if header_change else 'ok'} "
+            f"embedded_first_block={embedded_status}"
         )
 
+        if plan.qualtrics_missing_embedded_fields:
+            flow_id = plan.qualtrics_first_embedded_flow_id or "(none)"
+            print(
+                "    embedded-missing: "
+                + ", ".join(plan.qualtrics_missing_embedded_fields)
+                + f" | first_flow_id={flow_id}"
+            )
         if plan.blocked_reason:
             print(f"    reason: {plan.blocked_reason}")
 
@@ -1229,6 +1351,9 @@ def handle_wire_preview(args: argparse.Namespace) -> None:
                     "qualtrics_current_eos_redirect_url": p.qualtrics_current_eos_redirect_url,
                     "qualtrics_desired_eos_redirect_url": p.qualtrics_desired_eos_redirect_url,
                     "header_change": p.qualtrics_current_header != p.qualtrics_new_header,
+                    "first_embedded_flow_id": p.qualtrics_first_embedded_flow_id,
+                    "first_embedded_fields": p.qualtrics_first_embedded_fields,
+                    "missing_embedded_fields": p.qualtrics_missing_embedded_fields,
                 }
                 for p in plan_rows
             ],
@@ -1269,8 +1394,10 @@ def handle_wire_apply(args: argparse.Namespace) -> None:
         if typed != "apply":
             raise SystemExit("[qsync:prolific] Aborted.")
 
-    publish = bool(getattr(args, "publish", False))
-    activate = bool(getattr(args, "activate", False))
+    publish_arg = getattr(args, "publish", None)
+    activate_arg = getattr(args, "activate", None)
+    publish = True if publish_arg is None else bool(publish_arg)
+    activate = True if activate_arg is None else bool(activate_arg)
     continue_on_error = bool(getattr(args, "continue_on_error", False))
     publish_description = (
         str(getattr(args, "publish_description", "") or "").strip()
@@ -1282,104 +1409,131 @@ def handle_wire_apply(args: argparse.Namespace) -> None:
     success_count = 0
     error_count = 0
     skipped_count = 0
+    show_progress = (
+        not bool(getattr(args, "json", False))
+        and len(plan_rows) > 1
+        and should_use_rich()
+    )
+    apply_progress_cm = (
+        progress_context("Applying Prolific wiring links", total=len(plan_rows))
+        if show_progress
+        else nullcontext(None)
+    )
 
-    for plan in plan_rows:
-        row = dict(plan.row)
-        study_id = str(row.get("prolific_study_id") or "").strip()
-        survey_id = str(row.get("qualtrics_survey_id") or "").strip()
+    with apply_progress_cm as progress_state:
+        for index, plan in enumerate(plan_rows, start=1):
+            row = dict(plan.row)
+            study_id = str(row.get("prolific_study_id") or "").strip()
+            survey_id = str(row.get("qualtrics_survey_id") or "").strip()
+            stop_after_iteration = False
 
-        before = {
-            "prolific_redirect_url": plan.prolific_current_redirect_url,
-            "qualtrics_eos_redirect_url": plan.qualtrics_current_eos_redirect_url,
-            "qualtrics_header": plan.qualtrics_current_header,
-        }
-
-        record: dict[str, Any] = {
-            "prolific_study_id": study_id,
-            "qualtrics_survey_id": survey_id,
-            "state": row.get("state"),
-            "before": before,
-            "desired": {
-                "prolific_redirect_url": plan.prolific_desired_redirect_url,
-                "qualtrics_eos_redirect_url": plan.qualtrics_desired_eos_redirect_url,
-                "qualtrics_header": plan.qualtrics_new_header,
-            },
-            "steps": {},
-        }
-
-        if plan.blocked_reason:
-            record["status"] = "skipped"
-            record["reason"] = plan.blocked_reason
-            journal_rows.append(record)
-            skipped_count += 1
-            continue
-
-        try:
-            prolific_changed = (
-                plan.prolific_current_redirect_url != plan.prolific_desired_redirect_url
-            )
-            if prolific_changed:
-                _write_prolific_study_redirect(
-                    token=prolific_token,
-                    study_id=study_id,
-                    redirect_url=plan.prolific_desired_redirect_url,
+            if progress_state is not None:
+                progress, task_id = progress_state
+                progress.update(
+                    task_id,
+                    description=(
+                        f"Linking studies {index}/{len(plan_rows)} "
+                        f"{study_id or '?'} -> {survey_id or '?'}"
+                    ),
                 )
-                record["steps"]["prolific_redirect"] = "updated"
+
+            before = {
+                "prolific_redirect_url": plan.prolific_current_redirect_url,
+                "qualtrics_eos_redirect_url": plan.qualtrics_current_eos_redirect_url,
+                "qualtrics_header": plan.qualtrics_current_header,
+            }
+
+            record: dict[str, Any] = {
+                "prolific_study_id": study_id,
+                "qualtrics_survey_id": survey_id,
+                "state": row.get("state"),
+                "before": before,
+                "desired": {
+                    "prolific_redirect_url": plan.prolific_desired_redirect_url,
+                    "qualtrics_eos_redirect_url": plan.qualtrics_desired_eos_redirect_url,
+                    "qualtrics_header": plan.qualtrics_new_header,
+                },
+                "steps": {},
+            }
+
+            if plan.blocked_reason:
+                record["status"] = "skipped"
+                record["reason"] = plan.blocked_reason
+                journal_rows.append(record)
+                skipped_count += 1
+                if progress_state is not None:
+                    progress, task_id = progress_state
+                    progress.advance(task_id)
+                continue
+
+            try:
+                prolific_changed = (
+                    plan.prolific_current_redirect_url != plan.prolific_desired_redirect_url
+                )
+                if prolific_changed:
+                    _write_prolific_study_redirect(
+                        token=prolific_token,
+                        study_id=study_id,
+                        redirect_url=plan.prolific_desired_redirect_url,
+                    )
+                    record["steps"]["prolific_redirect"] = "updated"
+                else:
+                    record["steps"]["prolific_redirect"] = "no-op"
+
+                options_payload = dict(plan.options_payload or {})
+                options_changed = False
+                if (
+                    plan.qualtrics_current_eos_redirect_url
+                    != plan.qualtrics_desired_eos_redirect_url
+                ):
+                    options_payload["EOSRedirectURL"] = plan.qualtrics_desired_eos_redirect_url
+                    options_changed = True
+
+                if plan.qualtrics_current_header != plan.qualtrics_new_header:
+                    options_payload["Header"] = plan.qualtrics_new_header
+                    options_changed = True
+
+                if options_changed:
+                    _write_qualtrics_options(
+                        base_url=base_url,
+                        headers=headers,
+                        survey_id=survey_id,
+                        options_payload=options_payload,
+                    )
+                    record["steps"]["qualtrics_options"] = "updated"
+                else:
+                    record["steps"]["qualtrics_options"] = "no-op"
+
+                if publish:
+                    publish_survey_definition(
+                        survey_id,
+                        description=publish_description,
+                        base_url=base_url,
+                        headers=headers,
+                    )
+                    record["steps"]["publish"] = "updated"
+
+                if activate:
+                    _activate_survey(base_url=base_url, headers=headers, survey_id=survey_id)
+                    record["steps"]["activate"] = "updated"
+
+                record["status"] = "success"
+                success_count += 1
+            except Exception as exc:  # noqa: BLE001
+                record["status"] = "error"
+                record["error"] = str(exc)
+                error_count += 1
+                journal_rows.append(record)
+                if not continue_on_error:
+                    stop_after_iteration = True
             else:
-                record["steps"]["prolific_redirect"] = "no-op"
+                journal_rows.append(record)
 
-            options_payload = dict(plan.options_payload or {})
-            options_changed = False
-            if (
-                plan.qualtrics_current_eos_redirect_url
-                != plan.qualtrics_desired_eos_redirect_url
-            ):
-                options_payload["EOSRedirectURL"] = plan.qualtrics_desired_eos_redirect_url
-                options_changed = True
-
-            if plan.qualtrics_current_header != plan.qualtrics_new_header:
-                options_payload["Header"] = plan.qualtrics_new_header
-                options_changed = True
-
-            if options_changed:
-                _write_qualtrics_options(
-                    base_url=base_url,
-                    headers=headers,
-                    survey_id=survey_id,
-                    options_payload=options_payload,
-                )
-                record["steps"]["qualtrics_options"] = "updated"
-            else:
-                record["steps"]["qualtrics_options"] = "no-op"
-
-            if publish and options_changed:
-                publish_survey_definition(
-                    survey_id,
-                    description=publish_description,
-                    base_url=base_url,
-                    headers=headers,
-                )
-                record["steps"]["publish"] = "updated"
-            elif publish:
-                record["steps"]["publish"] = "no-op"
-
-            if activate and options_changed:
-                _activate_survey(base_url=base_url, headers=headers, survey_id=survey_id)
-                record["steps"]["activate"] = "updated"
-            elif activate:
-                record["steps"]["activate"] = "no-op"
-
-            record["status"] = "success"
-            success_count += 1
-        except Exception as exc:  # noqa: BLE001
-            record["status"] = "error"
-            record["error"] = str(exc)
-            error_count += 1
-            journal_rows.append(record)
-            if not continue_on_error:
+            if progress_state is not None:
+                progress, task_id = progress_state
+                progress.advance(task_id)
+            if stop_after_iteration:
                 break
-        else:
-            journal_rows.append(record)
 
     journal_payload = {
         "op_id": op_id,
@@ -1451,71 +1605,95 @@ def handle_wire_rollback(args: argparse.Namespace) -> None:
     rollback_rows: list[dict[str, Any]] = []
     success_count = 0
     error_count = 0
+    show_progress = (
+        not bool(getattr(args, "json", False))
+        and len(rows) > 1
+        and should_use_rich()
+    )
+    rollback_progress_cm = (
+        progress_context("Rolling back Prolific wiring links", total=len(rows))
+        if show_progress
+        else nullcontext(None)
+    )
 
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        status = str(row.get("status") or "").strip().lower()
-        if status not in {"success", "error", "skipped"}:
-            continue
+    with rollback_progress_cm as progress_state:
+        for index, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                continue
+            status = str(row.get("status") or "").strip().lower()
+            if status not in {"success", "error", "skipped"}:
+                continue
 
-        study_id = str(row.get("prolific_study_id") or "").strip()
-        survey_id = str(row.get("qualtrics_survey_id") or "").strip()
-        before = row.get("before") or {}
+            study_id = str(row.get("prolific_study_id") or "").strip()
+            survey_id = str(row.get("qualtrics_survey_id") or "").strip()
+            before = row.get("before") or {}
 
-        record: dict[str, Any] = {
-            "prolific_study_id": study_id,
-            "qualtrics_survey_id": survey_id,
-            "steps": {},
-        }
-
-        try:
-            if study_id:
-                _write_prolific_study_redirect(
-                    token=prolific_token,
-                    study_id=study_id,
-                    redirect_url=str(before.get("prolific_redirect_url") or "").strip(),
+            if progress_state is not None:
+                progress, task_id = progress_state
+                progress.update(
+                    task_id,
+                    description=(
+                        f"Rollback links {index}/{len(rows)} "
+                        f"{study_id or '?'} -> {survey_id or '?'}"
+                    ),
                 )
-                record["steps"]["prolific_redirect"] = "restored"
 
-            if survey_id:
-                options_payload = _fetch_qualtrics_options(
-                    base_url=base_url,
-                    headers=headers,
-                    survey_id=survey_id,
-                )
-                options_payload["EOSRedirectURL"] = str(
-                    before.get("qualtrics_eos_redirect_url") or ""
-                ).strip()
-                options_payload["Header"] = str(before.get("qualtrics_header") or "")
-                _write_qualtrics_options(
-                    base_url=base_url,
-                    headers=headers,
-                    survey_id=survey_id,
-                    options_payload=options_payload,
-                )
-                record["steps"]["qualtrics_options"] = "restored"
+            record: dict[str, Any] = {
+                "prolific_study_id": study_id,
+                "qualtrics_survey_id": survey_id,
+                "steps": {},
+            }
 
-                if publish:
-                    publish_survey_definition(
-                        survey_id,
-                        description=publish_description,
+            try:
+                if study_id:
+                    _write_prolific_study_redirect(
+                        token=prolific_token,
+                        study_id=study_id,
+                        redirect_url=str(before.get("prolific_redirect_url") or "").strip(),
+                    )
+                    record["steps"]["prolific_redirect"] = "restored"
+
+                if survey_id:
+                    options_payload = _fetch_qualtrics_options(
                         base_url=base_url,
                         headers=headers,
+                        survey_id=survey_id,
                     )
-                    record["steps"]["publish"] = "updated"
-                if activate:
-                    _activate_survey(base_url=base_url, headers=headers, survey_id=survey_id)
-                    record["steps"]["activate"] = "updated"
+                    options_payload["EOSRedirectURL"] = str(
+                        before.get("qualtrics_eos_redirect_url") or ""
+                    ).strip()
+                    options_payload["Header"] = str(before.get("qualtrics_header") or "")
+                    _write_qualtrics_options(
+                        base_url=base_url,
+                        headers=headers,
+                        survey_id=survey_id,
+                        options_payload=options_payload,
+                    )
+                    record["steps"]["qualtrics_options"] = "restored"
 
-            record["status"] = "success"
-            success_count += 1
-        except Exception as exc:  # noqa: BLE001
-            record["status"] = "error"
-            record["error"] = str(exc)
-            error_count += 1
+                    if publish:
+                        publish_survey_definition(
+                            survey_id,
+                            description=publish_description,
+                            base_url=base_url,
+                            headers=headers,
+                        )
+                        record["steps"]["publish"] = "updated"
+                    if activate:
+                        _activate_survey(base_url=base_url, headers=headers, survey_id=survey_id)
+                        record["steps"]["activate"] = "updated"
 
-        rollback_rows.append(record)
+                record["status"] = "success"
+                success_count += 1
+            except Exception as exc:  # noqa: BLE001
+                record["status"] = "error"
+                record["error"] = str(exc)
+                error_count += 1
+
+            rollback_rows.append(record)
+            if progress_state is not None:
+                progress, task_id = progress_state
+                progress.advance(task_id)
 
     rollback_payload = {
         "source_journal": str(journal_path),
@@ -1698,20 +1876,38 @@ def register_prolific_commands(
         action="store_true",
         help="Skip typed confirmation prompt.",
     )
-    wire_apply.add_argument(
+    wire_apply_publish_group = wire_apply.add_mutually_exclusive_group()
+    wire_apply_publish_group.add_argument(
         "--publish",
         action="store_true",
-        help="Publish Qualtrics survey definitions after options changes.",
+        dest="publish",
+        default=None,
+        help="Publish Qualtrics survey definitions after wiring (default behavior).",
     )
-    wire_apply.add_argument(
+    wire_apply_publish_group.add_argument(
+        "--no-publish",
+        action="store_false",
+        dest="publish",
+        help="Skip publish after wiring (not recommended).",
+    )
+    wire_apply_activate_group = wire_apply.add_mutually_exclusive_group()
+    wire_apply_activate_group.add_argument(
         "--activate",
         action="store_true",
-        help="Activate Qualtrics surveys after options changes.",
+        dest="activate",
+        default=None,
+        help="Activate Qualtrics surveys after wiring (default behavior).",
+    )
+    wire_apply_activate_group.add_argument(
+        "--no-activate",
+        action="store_false",
+        dest="activate",
+        help="Skip activate after wiring (not recommended).",
     )
     wire_apply.add_argument(
         "--publish-description",
         default="Prolific wiring update",
-        help="Publish description when --publish is enabled.",
+        help="Publish description when publish step is enabled.",
     )
     wire_apply.add_argument(
         "--continue-on-error",

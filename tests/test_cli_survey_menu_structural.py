@@ -16,27 +16,59 @@ def test_embedded_options_menu_includes_structural_entry(
     monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
     monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
 
-    seen_embedded_choices: list[list[str]] = []
-    steps = iter(["Embedded & Options", "↩ Back", "Exit"])
+    seen_edit_choices: list[list[str]] = []
+    steps = iter(["Edit Questions & Content — structural item edits", "↩ Back", "Exit"])
 
     def _select_from_list(message: str, choices, instruction=None, default=None):
         normalized = [str(c) for c in choices]
-        if message == "Embedded & Options":
-            seen_embedded_choices.append(normalized)
+        if message == "Edit Questions & Content":
+            seen_edit_choices.append(normalized)
         return next(steps)
 
     monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
 
     handle_menu(argparse.Namespace(tui=False))
 
-    assert seen_embedded_choices, "Embedded & Options menu was not shown."
+    assert seen_edit_choices, "Edit Questions & Content menu was not shown."
     assert any(
         "Items: structural edits (stage → preview → push)" in menu_choices
-        for menu_choices in seen_embedded_choices
+        for menu_choices in seen_edit_choices
     )
+
+
+def test_flow_integrations_menu_includes_prolific_wiring(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+
+    seen_flow_choices: list[list[str]] = []
+    steps = iter(
+        [
+            "Flow, Embedded Data & Integrations — embedded fields + Prolific",
+            "↩ Back",
+            "Exit",
+        ]
+    )
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        normalized = [str(c) for c in choices]
+        if message == "Flow, Embedded Data & Integrations":
+            seen_flow_choices.append(normalized)
+        return next(steps)
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert seen_flow_choices, "Flow, Embedded Data & Integrations menu was not shown."
     assert any(
         "Prolific wiring (Prolific ↔ Qualtrics)" in menu_choices
-        for menu_choices in seen_embedded_choices
+        for menu_choices in seen_flow_choices
     )
 
 
@@ -114,8 +146,12 @@ def test_embedded_options_structural_route_reaches_wizard(
             return "SV_0869BstwT0iWHwq - Survey One"
         if message.startswith("qsync survey menu"):
             state_menu["top_visits"] += 1
-            return "Embedded & Options" if state_menu["top_visits"] == 1 else "Exit"
-        if message == "Embedded & Options":
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state_menu["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
             return "Items: structural edits (stage → preview → push)"
         if message == "Items: structural edits (stage → preview → push)":
             return "SV_0869BstwT0iWHwq - Survey One"

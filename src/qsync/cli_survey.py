@@ -1326,6 +1326,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                 print("  2) Set state=APPROVED for rows to wire, state=SKIP for rows to ignore.")
                 print("  3) Keep uncertain rows as REVIEW_REQUIRED.")
                 print("  4) Run preview, then apply on APPROVED rows only.")
+                print("  5) Apply step publishes and activates Qualtrics surveys by default.")
                 continue
 
             if choice.startswith("Preview wiring"):
@@ -1347,13 +1348,9 @@ def handle_menu(args: argparse.Namespace) -> None:
 
             if choice.startswith("Apply wiring"):
                 auth_file = _prompt_auth_file()
-                publish = (
-                    select_from_list("Publish surveys after options changes?", ["No", "Yes"])
-                    == "Yes"
-                )
-                activate = (
-                    select_from_list("Activate surveys after options changes?", ["No", "Yes"])
-                    == "Yes"
+                print(
+                    "[survey-menu] Finalization defaults: publish=Yes, activate=Yes "
+                    "(required so Prolific authenticity checks are live)."
                 )
                 continue_on_error = (
                     select_from_list("Continue when one row fails?", ["Yes", "No"]) == "Yes"
@@ -1368,8 +1365,8 @@ def handle_menu(args: argparse.Namespace) -> None:
                         auth_token=None,
                         prolific_token=None,
                         yes=False,
-                        publish=publish,
-                        activate=activate,
+                        publish=True,
+                        activate=True,
                         publish_description="Prolific wiring update",
                         continue_on_error=continue_on_error,
                         json=False,
@@ -1791,54 +1788,54 @@ def handle_menu(args: argparse.Namespace) -> None:
         _menu_items_structural_edits(preselected_survey_id=direct_survey_id)
         return
 
+    def _menu_context(path: str, summary: str, reachable: str) -> None:
+        print()
+        print(f"[survey-menu] Path: {path}")
+        print(f"[survey-menu] {summary}")
+        print(f"[survey-menu] Reachable: {reachable}")
+        print()
+
     while True:
         base = _resolve_base_url_for_display() or "(base URL unknown)"
+        _menu_context(
+            f"Survey Menu (account={_account_label()} base={base})",
+            "Choose the task type first; each submenu is organized by user intent.",
+            "Setup/Selection, Edit, Flow/Integrations, Publish/Versions, Copy/Compare, Exports, Workspace/Account, Danger Zone",
+        )
         top = select_from_list(
             message=f"qsync survey menu  (account: {_account_label()}  base: {base})",
             choices=[
-                "Account & Diagnostics",
-                "Browse",
-                "Lifecycle & Versions",
-                "Admin",
-                "Copy & Derive",
-                "Embedded & Options",
-                "Exports",
-                "Workspace",
+                "Survey Setup & Selection — list/label/focal/pull",
+                "Edit Questions & Content — structural item edits",
+                "Flow, Embedded Data & Integrations — embedded fields + Prolific",
+                "Publish, Activation & Versions — go live and rollback",
+                "Copy, Slice & Compare — derive and verify surveys",
+                "Exports — responses and docs",
+                "Workspace & Account — account, API, inventory, prepare",
+                "Danger Zone — rename/delete",
                 "Exit",
             ],
+            instruction="Pick a task group. You can always return with ↩ Back.",
         )
         if not top or top == "Exit":
             return
 
-        if top == "Account & Diagnostics":
-            choice = select_from_list(
-                "Account & Diagnostics",
-                [
-                    "Switch account",
-                    "Show account info",
-                    "Check API (/whoami)",
-                    "↩ Back",
-                ],
+        if top.startswith("Survey Setup & Selection"):
+            _menu_context(
+                "Survey Menu > Survey Setup & Selection",
+                "Find/select surveys and pull a local cache copy.",
+                "List surveys, label IDs, focal list, pull cache",
             )
-            if not choice or choice.endswith("Back"):
-                continue
-            if choice.startswith("Switch"):
-                _menu_switch_account()
-            elif choice.startswith("Show"):
-                _menu_show_account_info()
-            else:
-                _menu_check_api()
-            continue
-
-        if top == "Browse":
             choice = select_from_list(
-                "Browse",
+                "Survey Setup & Selection",
                 [
                     "List surveys",
                     "Label survey ID (inventory)",
                     "List focal survey IDs (inventory)",
+                    "Pull survey definition (cache)",
                     "↩ Back",
                 ],
+                instruction="Use this when you are trying to find/select the right survey first.",
             )
             if not choice or choice.endswith("Back"):
                 continue
@@ -1852,14 +1849,75 @@ def handle_menu(args: argparse.Namespace) -> None:
                 sid = _pick_survey_id(message="Pick a survey to label:")
                 if sid:
                     _run_action(handle_label, argparse.Namespace(survey_id=sid))
-            else:
+            elif choice.startswith("List focal"):
                 newline = select_from_list("One ID per line?", ["No", "Yes"]) == "Yes"
                 _run_action(handle_focal, argparse.Namespace(newline=bool(newline)))
+            else:
+                _menu_pull()
             continue
 
-        if top == "Lifecycle & Versions":
+        if top.startswith("Edit Questions & Content"):
+            _menu_context(
+                "Survey Menu > Edit Questions & Content",
+                "Question-level content edits (safe staged workflow).",
+                "Items structural edits (stage → preview → push)",
+            )
             choice = select_from_list(
-                "Lifecycle & Versions",
+                "Edit Questions & Content",
+                [
+                    "Items: structural edits (stage → preview → push)",
+                    "↩ Back",
+                ],
+                instruction="Use structural edits for question text/options/subitems edits.",
+            )
+            if not choice or choice.endswith("Back"):
+                continue
+            _menu_items_structural_edits()
+            continue
+
+        if top.startswith("Flow, Embedded Data & Integrations"):
+            _menu_context(
+                "Survey Menu > Flow, Embedded Data & Integrations",
+                "SurveyFlow and integration settings (embedded data + Prolific wiring).",
+                "Embedded field add/remove/rename, cleanup, Prolific snippet, Prolific wiring",
+            )
+            choice = select_from_list(
+                "Flow, Embedded Data & Integrations",
+                [
+                    "Add embedded field (stage)",
+                    "Remove embedded field (stage)",
+                    "Rename embedded field (stage)",
+                    "Cleanup embedded data (apply)",
+                    "Prolific authenticity snippet",
+                    "Prolific wiring (Prolific ↔ Qualtrics)",
+                    "↩ Back",
+                ],
+                instruction="Use Prolific wiring path for pull → propose → review → preview/apply.",
+            )
+            if not choice or choice.endswith("Back"):
+                continue
+            if choice.startswith("Add embedded"):
+                _menu_embedded_field("add-embedded-field")
+            elif choice.startswith("Remove embedded"):
+                _menu_embedded_field("remove-embedded-field")
+            elif choice.startswith("Rename embedded"):
+                _menu_embedded_field("rename-embedded-field")
+            elif choice.startswith("Cleanup embedded"):
+                _menu_cleanup_embedded_data()
+            elif choice.startswith("Prolific authenticity"):
+                _menu_prolific_auth()
+            else:
+                _menu_prolific_wiring()
+            continue
+
+        if top.startswith("Publish, Activation & Versions"):
+            _menu_context(
+                "Survey Menu > Publish, Activation & Versions",
+                "Go-live lifecycle operations and version recovery.",
+                "Publish, activate/deactivate, version list/fetch, rollback",
+            )
+            choice = select_from_list(
+                "Publish, Activation & Versions",
                 [
                     "Activate survey",
                     "Deactivate survey",
@@ -1869,6 +1927,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Rollback questions to a version",
                     "↩ Back",
                 ],
+                instruction="Typical path: edit → publish → activate. Use rollback for question restore.",
             )
             if not choice or choice.endswith("Back"):
                 continue
@@ -1886,29 +1945,14 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_rollback()
             continue
 
-        if top == "Admin":
-            choice = select_from_list(
-                "Admin",
-                [
-                    "Rename survey",
-                    "Delete survey(s) (type 'delete' to confirm)",
-                    "Items: structural edits (stage → preview → push)",
-                    "↩ Back",
-                ],
+        if top.startswith("Copy, Slice & Compare"):
+            _menu_context(
+                "Survey Menu > Copy, Slice & Compare",
+                "Derive new surveys and compare parity across copies/accounts.",
+                "Copy, slice-language, slice-registry, parity-check, copy-cross-account",
             )
-            if not choice or choice.endswith("Back"):
-                continue
-            if choice.startswith("Rename"):
-                _menu_rename()
-            elif choice.startswith("Delete"):
-                _menu_delete()
-            else:
-                _menu_items_structural_edits()
-            continue
-
-        if top == "Copy & Derive":
             choice = select_from_list(
-                "Copy & Derive",
+                "Copy, Slice & Compare",
                 [
                     "Copy survey",
                     "Slice language(s)",
@@ -1917,6 +1961,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Copy cross-account",
                     "↩ Back",
                 ],
+                instruction="Use parity check after copy/slice if you need verification.",
             )
             if not choice or choice.endswith("Back"):
                 continue
@@ -1932,39 +1977,12 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_copy_cross_account()
             continue
 
-        if top == "Embedded & Options":
-            choice = select_from_list(
-                "Embedded & Options",
-                [
-                    "Items: structural edits (stage → preview → push)",
-                    "Add embedded field (stage)",
-                    "Remove embedded field (stage)",
-                    "Rename embedded field (stage)",
-                    "Cleanup embedded data (apply)",
-                    "Prolific authenticity snippet",
-                    "Prolific wiring (Prolific ↔ Qualtrics)",
-                    "↩ Back",
-                ],
+        if top.startswith("Exports"):
+            _menu_context(
+                "Survey Menu > Exports",
+                "Generate response and document exports for review.",
+                "Export responses, translation doc, side-by-side doc",
             )
-            if not choice or choice.endswith("Back"):
-                continue
-            if choice.startswith("Items: structural edits"):
-                _menu_items_structural_edits()
-            elif choice.startswith("Add embedded"):
-                _menu_embedded_field("add-embedded-field")
-            elif choice.startswith("Remove embedded"):
-                _menu_embedded_field("remove-embedded-field")
-            elif choice.startswith("Rename embedded"):
-                _menu_embedded_field("rename-embedded-field")
-            elif choice.startswith("Cleanup embedded"):
-                _menu_cleanup_embedded_data()
-            elif choice.startswith("Prolific authenticity"):
-                _menu_prolific_auth()
-            else:
-                _menu_prolific_wiring()
-            continue
-
-        if top == "Exports":
             choice = select_from_list(
                 "Exports",
                 [
@@ -1973,6 +1991,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Export side-by-side document",
                     "↩ Back",
                 ],
+                instruction="Choose the document/export type needed for sharing or QA.",
             )
             if not choice or choice.endswith("Back"):
                 continue
@@ -1984,27 +2003,62 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_export_side_by_side()
             continue
 
-        if top == "Workspace":
+        if top.startswith("Workspace & Account"):
+            _menu_context(
+                "Survey Menu > Workspace & Account",
+                "Environment/account controls and local cache preparation.",
+                "Switch account, whoami/API checks, inventory refresh, prepare, cache folder",
+            )
             choice = select_from_list(
-                "Workspace",
+                "Workspace & Account",
                 [
+                    "Switch account",
+                    "Show account info",
+                    "Check API (/whoami)",
                     "Refresh inventory",
-                    "Pull survey definition (cache)",
                     "Prepare surfaces",
                     "Configure survey cache folder",
                     "↩ Back",
                 ],
+                instruction="Use this area before edits when account/workspace setup may be the issue.",
             )
             if not choice or choice.endswith("Back"):
                 continue
-            if choice.startswith("Refresh"):
+            if choice.startswith("Switch"):
+                _menu_switch_account()
+            elif choice.startswith("Show"):
+                _menu_show_account_info()
+            elif choice.startswith("Check API"):
+                _menu_check_api()
+            elif choice.startswith("Refresh"):
                 _menu_inventory()
-            elif choice.startswith("Pull"):
-                _menu_pull()
             elif choice.startswith("Prepare"):
                 _menu_prepare()
             else:
                 _menu_configure_cache_folder()
+            continue
+
+        if top.startswith("Danger Zone"):
+            _menu_context(
+                "Survey Menu > Danger Zone",
+                "Mutating admin operations with destructive risk.",
+                "Rename, delete (typed confirmation required)",
+            )
+            choice = select_from_list(
+                "Danger Zone",
+                [
+                    "Rename survey",
+                    "Delete survey(s) (type 'delete' to confirm)",
+                    "↩ Back",
+                ],
+                instruction="Use carefully; delete is permanent.",
+            )
+            if not choice or choice.endswith("Back"):
+                continue
+            if choice.startswith("Rename"):
+                _menu_rename()
+            else:
+                _menu_delete()
 
 
 def handle_prepare(args: argparse.Namespace) -> None:
