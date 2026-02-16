@@ -1946,8 +1946,22 @@ def interactive_choice_wizard(
     else:
         target_norm = "subitems"
 
+    def _print_current_rows(title: str, rows: list[str], *, limit: int = 20) -> None:
+        print(f"\n[qsync:items:edit] Current {title}:")
+        if not rows:
+            print("  (none)")
+            return
+        shown = rows[:limit]
+        for row in shown:
+            print(f"  - {row}")
+        if len(rows) > limit:
+            print(f"  ... and {len(rows) - limit} more")
+
     if target_norm == "question-text":
         current_html = normalize_text(str(question.get("QuestionText") or ""))
+        current_preview = _text_preview(current_html, max_len=180)
+        print("\n[qsync:items:edit] Current Question text:")
+        print(f"  {current_preview or '(empty)'}")
         default_fmt = "html" if should_treat_as_html(current_html) else "md"
         fmt_choices = (
             ["Markdown (recommended)", "HTML (advanced)"]
@@ -2019,6 +2033,7 @@ def interactive_choice_wizard(
             aq = additional.get(cid) or {}
             txt = _text_preview(str((aq.get("QuestionText") or "")), max_len=60) if isinstance(aq, dict) else ""
             labels.append(f"{cid}: {txt}".strip())
+        _print_current_rows("SBS columns", labels)
         action = select_from_list("Select an action", ["add", "edit", "remove"])
         if not action:
             raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
@@ -2108,6 +2123,7 @@ def interactive_choice_wizard(
                 "[qsync:items:edit] No AdditionalQuestions found for SBSMatrix question."
             )
         columns = sorted(str(k) for k in additional.keys())
+        _print_current_rows("SBS columns (pick one for answers)", columns)
         chosen_col = autocomplete_from_list(
             message="Select ColumnId",
             choices=columns,
@@ -2129,6 +2145,7 @@ def interactive_choice_wizard(
             if isinstance(entry, dict):
                 txt = _text_preview(str(entry.get("Display") or ""), max_len=60)
             labels.append(f"{aid}: {txt}".strip())
+        _print_current_rows(f"SBS column answers for column {chosen_col}", labels)
         action = select_from_list("Select an action", ["add", "edit", "remove"])
         if not action:
             raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
@@ -2226,6 +2243,17 @@ def interactive_choice_wizard(
         mapping_key = "Choices"
     existing_map = question.get(mapping_key) or {}
     existing_ids = list(existing_map.keys()) if isinstance(existing_map, dict) else []
+    existing_labels = []
+    for cid in existing_ids:
+        entry = existing_map.get(cid) or {}
+        display = ""
+        if isinstance(entry, dict):
+            display = _text_preview(str(entry.get("Display") or ""), max_len=60)
+        existing_labels.append(f"{cid}: {display}".strip())
+    if target_norm == "options":
+        _print_current_rows("Options", existing_labels)
+    else:
+        _print_current_rows("Subitems", existing_labels)
 
     if action == "add":
         html = text_input("Enter HTML for the new Display")
@@ -2250,14 +2278,7 @@ def interactive_choice_wizard(
             raise ItemsStructuralError(
                 "[qsync:items:edit] No existing entries to edit."
             )
-        labels = []
-        for cid in existing_ids:
-            entry = existing_map.get(cid) or {}
-            display = ""
-            if isinstance(entry, dict):
-                display = _text_preview(str(entry.get("Display") or ""), max_len=60)
-            labels.append(f"{cid}: {display}".strip())
-        sel = select_from_list("Select an ID to edit", labels)
+        sel = select_from_list("Select an ID to edit", existing_labels)
         if not sel:
             raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
         item_id = sel.split(":", 1)[0].strip()
@@ -2289,14 +2310,7 @@ def interactive_choice_wizard(
                 default=False,
             ):
                 raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
-        labels = []
-        for cid in existing_ids:
-            entry = existing_map.get(cid) or {}
-            display = ""
-            if isinstance(entry, dict):
-                display = _text_preview(str(entry.get("Display") or ""), max_len=60)
-            labels.append(f"{cid}: {display}".strip())
-        sel = select_from_list("Select an ID to remove", labels)
+        sel = select_from_list("Select an ID to remove", existing_labels)
         if not sel:
             raise ItemsStructuralError("[qsync:items:edit] Cancelled.")
         item_id = sel.split(":", 1)[0].strip()
