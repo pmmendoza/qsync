@@ -112,3 +112,50 @@ def test_export_translation_compare_to_base_exports_base_once_for_multiple_langu
     assert calls.count((None, False)) == 1
     assert ("FR", True) in calls
     assert ("NL", True) in calls
+
+
+def test_export_translation_defaults_skip_js_strings_when_missing(monkeypatch, tmp_path: Path) -> None:
+    from qsync.cli_survey import handle_export_translation
+
+    captured_kwargs: dict[str, bool] = {}
+
+    def fake_word(
+        survey_id: str,
+        output_path=None,
+        *,
+        render_language=None,
+        compare_to_base=False,
+        include_js_strings: bool = True,
+        **kwargs,
+    ):
+        captured_kwargs["include_js_strings"] = bool(include_js_strings)
+        return tmp_path / "out.docx"
+
+    monkeypatch.setattr("qsync.translation_export.export_survey_to_word", fake_word)
+    monkeypatch.setattr(
+        "qsync.translation_export.export_survey_to_pdf",
+        lambda *a, **k: tmp_path / "out.pdf",
+    )
+
+    # Simulate callsites that build a partial namespace (e.g., survey menu path).
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        output=None,
+        no_html=False,
+        edf=[],
+        smart_name=False,
+        open=False,
+        compare_to_base=False,
+        refresh=False,
+        layout_heuristics=False,
+        format="docx",
+        language=None,
+        languages=None,
+        edf_preset=None,
+        list_edf_presets=False,
+        flow_trace=False,
+    )
+
+    handle_export_translation(args)
+
+    assert captured_kwargs["include_js_strings"] is True

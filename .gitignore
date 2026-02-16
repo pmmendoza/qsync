@@ -59,6 +59,8 @@ contents/
 logs/
 export/
 responses/
-tmp/
+.tmp/
 /.qsync
 models/
+
+

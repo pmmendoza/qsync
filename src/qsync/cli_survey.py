@@ -939,7 +939,10 @@ def handle_menu(args: argparse.Namespace) -> None:
         survey_id = _pick_survey_id(message="Pick a survey to export translation:")
         if not survey_id:
             return
-        _run_action(handle_export_translation, argparse.Namespace(survey_id=survey_id))
+        _run_action(
+            handle_export_translation,
+            argparse.Namespace(survey_id=survey_id, skip_js_strings=False),
+        )
 
     def _menu_export_side_by_side() -> None:
         if not _require_default_account(action="export-side-by-side"):
@@ -6525,6 +6528,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
     refresh = bool(getattr(args, "refresh", False))
     layout_heuristics = bool(getattr(args, "layout_heuristics", False))
     format = getattr(args, "format", "docx")
+    skip_js_strings = bool(getattr(args, "skip_js_strings", False))
     flow_trace = bool(getattr(args, "flow_trace", False))
     flow_trace_cb = None
     if flow_trace:
@@ -6605,7 +6609,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                         render_language=lang,
                         compare_to_base=compare_to_base,
                         refresh=refresh,
-                        include_js_strings=not args.skip_js_strings,
+                        include_js_strings=not skip_js_strings,
                         interactive=interactive,
                         flow_trace=flow_trace_cb,
                     )
@@ -6621,7 +6625,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                         render_language=lang,
                         compare_to_base=compare_to_base,
                         refresh=refresh,
-                        include_js_strings=not args.skip_js_strings,
+                        include_js_strings=not skip_js_strings,
                         interactive=interactive,
                         flow_trace=flow_trace_cb,
                     )
@@ -6643,7 +6647,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 render_language=None,
                                 compare_to_base=False,
                                 refresh=False,
-                                include_js_strings=not args.skip_js_strings,
+                                include_js_strings=not skip_js_strings,
                                 interactive=interactive,
                                 flow_trace=flow_trace_cb,
                             )
@@ -6660,7 +6664,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 render_language=None,
                                 compare_to_base=False,
                                 refresh=False,
-                                include_js_strings=not args.skip_js_strings,
+                                include_js_strings=not skip_js_strings,
                                 interactive=interactive,
                                 flow_trace=flow_trace_cb,
                             )
