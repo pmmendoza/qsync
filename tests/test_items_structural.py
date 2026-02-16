@@ -6,6 +6,31 @@ from qsync.dimensions import items_structural
 
 
 class TestItemsStructuralHelpers(unittest.TestCase):
+    def test_external_override_prompt_cached_per_session(self):
+        items_structural._EXTERNAL_OVERRIDE_APPROVALS.clear()
+        with mock.patch.object(
+            items_structural,
+            "external_owner_for",
+            return_value="scripts/update_newsmem_recognition.py",
+        ):
+            with mock.patch.object(items_structural, "warn", return_value=None):
+                with mock.patch.object(
+                    items_structural, "confirm", return_value=True
+                ) as confirm_mock:
+                    items_structural._require_external_override_if_needed(
+                        qid="QID15",
+                        data_export_tag="newsmem_recognition",
+                        interactive=True,
+                        phase="edit",
+                    )
+                    items_structural._require_external_override_if_needed(
+                        qid="QID15",
+                        data_export_tag="newsmem_recognition",
+                        interactive=True,
+                        phase="edit",
+                    )
+        self.assertEqual(confirm_mock.call_count, 1)
+
     def test_iter_all_qids_sorted(self):
         survey = items_structural.SurveyCache(
             survey_id="SV_TEST",

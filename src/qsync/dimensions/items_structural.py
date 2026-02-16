@@ -33,6 +33,9 @@ from ..auto_publish import auto_publish_after_push
 from ..push_logger import log_push_event
 
 EXTERNALLY_MANAGED_REGISTRY_REL = Path("surveys/externally_managed_items.csv")
+# Session-local cache: once an externally managed override is accepted for a
+# specific phase+qid+tag+owner tuple, don't prompt again in the same process.
+_EXTERNAL_OVERRIDE_APPROVALS: set[tuple[str, str, str, str]] = set()
 
 
 @dataclass(frozen=True)
@@ -153,6 +156,15 @@ def _require_external_override_if_needed(
             "Non-interactive override is not supported here."
         )
 
+    cache_key = (
+        str(phase or "").strip().lower(),
+        str(qid or "").strip(),
+        str(data_export_tag or "").strip(),
+        str(owner or "").strip(),
+    )
+    if cache_key in _EXTERNAL_OVERRIDE_APPROVALS:
+        return
+
     warn(prefix, f"QID {qid} is externally managed (owner={owner}).")
     action = "editing" if phase == "edit" else phase
     if not confirm(
@@ -160,6 +172,7 @@ def _require_external_override_if_needed(
         default=False,
     ):
         raise ItemsStructuralError(f"{prefix} Cancelled.")
+    _EXTERNAL_OVERRIDE_APPROVALS.add(cache_key)
 
 
 def iter_active_qids_in_flow(survey: SurveyCache) -> Iterable[str]:
