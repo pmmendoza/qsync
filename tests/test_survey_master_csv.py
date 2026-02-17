@@ -1,10 +1,13 @@
 """Tests for survey master CSV generation and field extraction."""
 
 import csv
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from openpyxl import load_workbook
 
 
 class SurveyMasterCSVTests(unittest.TestCase):
@@ -316,6 +319,129 @@ class SurveyMasterCSVTests(unittest.TestCase):
 
             self.assertEqual(headers, ["SurveyID"])
             self.assertEqual(len(rows), 0)
+
+    def test_write_csv_also_writes_workbook_with_readonly_fill(self) -> None:
+        """Writing master CSV also writes workbook surface with read-only shading."""
+        from qsync.survey_master import write_master_csv
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            csv_path = root / "surveys" / "qualtrics_master.csv"
+            rows = [
+                ["SurveyID", "SurveyName", "SurveyStatus"],
+                ["SV_001", "Survey A", "Active"],
+            ]
+            mapping = {
+                "SurveyID": {
+                    "field_name": "SurveyID",
+                    "survey_master": "read",
+                    "description": "Survey id",
+                    "allowed_values": "",
+                    "format_notes": "",
+                },
+                "SurveyName": {
+                    "field_name": "SurveyName",
+                    "survey_master": "write",
+                    "description": "Survey name",
+                    "allowed_values": "",
+                    "format_notes": "",
+                },
+                "SurveyStatus": {
+                    "field_name": "SurveyStatus",
+                    "survey_master": "write",
+                    "description": "Status",
+                    "allowed_values": "Active; Inactive",
+                    "format_notes": "",
+                },
+            }
+
+            with (
+                patch("qsync.survey_master._master_csv_path", return_value=csv_path),
+                patch("qsync.survey_master._parse_mapping_csv", return_value=mapping),
+            ):
+                write_master_csv(rows)
+
+            workbook_path = csv_path.with_suffix(".xlsx")
+            self.assertTrue(workbook_path.exists())
+
+            wb = load_workbook(workbook_path)
+            self.assertIn("Survey_Master", wb.sheetnames)
+            self.assertIn("Survey_Master_Guide", wb.sheetnames)
+            ws = wb["Survey_Master"]
+            headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+            survey_id_idx = headers.index("SurveyID") + 1
+            survey_name_idx = headers.index("SurveyName") + 1
+            readonly_rgb = "FFECECEC"
+            self.assertEqual(
+                ws.cell(row=2, column=survey_id_idx).fill.fgColor.rgb,
+                readonly_rgb,
+            )
+            self.assertNotEqual(
+                ws.cell(row=2, column=survey_name_idx).fill.fgColor.rgb,
+                readonly_rgb,
+            )
+
+    def test_load_master_csv_prefers_newer_workbook_surface(self) -> None:
+        """When workbook is newer than CSV, load from workbook surface."""
+        from qsync.survey_master import load_master_csv, write_master_workbook
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            csv_path = root / "surveys" / "qualtrics_master.csv"
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            csv_path.write_text(
+                "SurveyID,SurveyName\nSV_001,From CSV\n",
+                encoding="utf-8-sig",
+            )
+            os.utime(csv_path, (1_000_000_000, 1_000_000_000))
+
+            mapping = {
+                "SurveyID": {"field_name": "SurveyID", "survey_master": "read"},
+                "SurveyName": {"field_name": "SurveyName", "survey_master": "write"},
+            }
+            rows = [["SurveyID", "SurveyName"], ["SV_001", "From Workbook"]]
+            with (
+                patch("qsync.survey_master._master_csv_path", return_value=csv_path),
+                patch("qsync.survey_master._parse_mapping_csv", return_value=mapping),
+            ):
+                write_master_workbook(rows)
+                workbook_path = csv_path.with_suffix(".xlsx")
+                os.utime(workbook_path, (1_000_000_100, 1_000_000_100))
+                headers, loaded_rows = load_master_csv()
+
+            self.assertEqual(headers, ["SurveyID", "SurveyName"])
+            self.assertEqual(loaded_rows[0]["SurveyName"], "From Workbook")
+
+    def test_load_master_csv_prefers_newer_csv_surface(self) -> None:
+        """When CSV is newer than workbook, load from CSV surface."""
+        from qsync.survey_master import load_master_csv, write_master_workbook
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            csv_path = root / "surveys" / "qualtrics_master.csv"
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+            mapping = {
+                "SurveyID": {"field_name": "SurveyID", "survey_master": "read"},
+                "SurveyName": {"field_name": "SurveyName", "survey_master": "write"},
+            }
+            rows = [["SurveyID", "SurveyName"], ["SV_001", "From Workbook"]]
+            with (
+                patch("qsync.survey_master._master_csv_path", return_value=csv_path),
+                patch("qsync.survey_master._parse_mapping_csv", return_value=mapping),
+            ):
+                write_master_workbook(rows)
+                workbook_path = csv_path.with_suffix(".xlsx")
+                os.utime(workbook_path, (1_000_000_000, 1_000_000_000))
+                csv_path.write_text(
+                    "SurveyID,SurveyName\nSV_001,From CSV\n",
+                    encoding="utf-8-sig",
+                )
+                os.utime(csv_path, (1_000_000_100, 1_000_000_100))
+                headers, loaded_rows = load_master_csv()
+
+            self.assertEqual(headers, ["SurveyID", "SurveyName"])
+            self.assertEqual(loaded_rows[0]["SurveyName"], "From CSV")
 
 
 if __name__ == "__main__":

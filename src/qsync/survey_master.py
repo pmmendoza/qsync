@@ -20,6 +20,12 @@ from pathlib import Path
 from importlib import resources
 from typing import Any, Dict, List, Optional, Tuple
 
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.table import Table, TableStyleInfo
+
 from .api_push import send_api_request
 from .config import get_active_account, get_client_config, resolve_root, resolve_scoped_dir
 from .rich_support import progress_context, should_use_rich
@@ -51,6 +57,10 @@ def _rollback_survey_dir(survey_id: str) -> Path:
 
 def _master_csv_path() -> Path:
     return _surveys_dir() / "qualtrics_master.csv"
+
+
+def _master_workbook_path() -> Path:
+    return _master_csv_path().with_suffix(".xlsx")
 
 
 def _mapping_csv_path() -> Path:
@@ -881,10 +891,283 @@ def generate_master_csv_from_snapshots(survey_ids: List[str]) -> List[List[str]]
     return rows
 
 
-def write_master_csv(rows: List[List[str]]) -> Path:
-    """Write master CSV rows to qualtrics_master.csv.
+_MASTER_MAIN_SHEET = "Survey_Master"
+_MASTER_GUIDE_SHEET = "Survey_Master_Guide"
+_MASTER_HEADER_FILL = PatternFill(fill_type="solid", fgColor="FFE8EEF7")
+_MASTER_READONLY_FILL = PatternFill(fill_type="solid", fgColor="FFECECEC")
 
-    Returns the path to the written file.
+
+def _is_master_editable(field_info: Dict[str, Any] | None) -> bool:
+    if not field_info:
+        return False
+    mode = str(field_info.get("survey_master") or "").strip().lower()
+    return mode == "write"
+
+
+def _master_allowed_values(field_info: Dict[str, Any] | None) -> List[str]:
+    if not field_info:
+        return []
+    raw = str(field_info.get("allowed_values") or "").strip()
+    if raw:
+        vals = [v.strip() for v in raw.split(";") if v.strip()]
+        if vals:
+            if {v.lower() for v in vals} == {"true", "false"}:
+                return ["true", "false"]
+            return vals
+    data_type = str(field_info.get("data_type") or "").strip().lower()
+    if data_type == "bool":
+        return ["true", "false"]
+    return []
+
+
+def _master_stringify_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _master_sheet_headers(ws) -> List[str]:
+    if ws.max_row < 1 or ws.max_column < 1:
+        return []
+    raw_headers = [
+        _master_stringify_cell(v) for v in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+    ]
+    last = 0
+    for idx, header in enumerate(raw_headers, start=1):
+        if header.strip():
+            last = idx
+    if last <= 0:
+        return []
+    return [raw_headers[idx - 1].strip() for idx in range(1, last + 1)]
+
+
+def _apply_master_list_validation(
+    ws,
+    column_idx: int,
+    allowed_values: List[str],
+) -> None:
+    if ws.max_row <= 1 or not allowed_values:
+        return
+    values = [str(v).strip() for v in allowed_values if str(v).strip()]
+    if not values:
+        return
+    if any("," in v or '"' in v for v in values):
+        return
+    formula = '"' + ",".join(values) + '"'
+    if len(formula) > 255:
+        return
+    dv = DataValidation(type="list", formula1=formula, allow_blank=True)
+    ws.add_data_validation(dv)
+    col_letter = get_column_letter(column_idx)
+    dv.add(f"{col_letter}2:{col_letter}{ws.max_row}")
+
+
+def _estimate_master_col_width(values: List[str]) -> float:
+    max_len = 0
+    for value in values:
+        max_len = max(max_len, len(str(value or "")))
+    if max_len <= 0:
+        return 12.0
+    return float(min(80, max(12, int(max_len * 1.08) + 2)))
+
+
+def write_master_workbook(rows: List[List[str]]) -> Path:
+    """Write survey-master workbook surface (`qualtrics_master.xlsx`)."""
+    workbook_path = _master_workbook_path()
+    workbook_path.parent.mkdir(parents=True, exist_ok=True)
+
+    mapping = _parse_mapping_csv()
+    if rows and rows[0]:
+        headers = [str(h or "").strip() for h in rows[0]]
+        data_rows = rows[1:]
+    else:
+        headers = _get_column_order()
+        data_rows = []
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = _MASTER_MAIN_SHEET
+    ws.append(headers)
+
+    for row in data_rows:
+        values = list(row)
+        if len(values) < len(headers):
+            values.extend([""] * (len(headers) - len(values)))
+        elif len(values) > len(headers):
+            values = values[: len(headers)]
+        ws.append([_master_stringify_cell(v) for v in values])
+
+    ws.freeze_panes = "A2"
+
+    editable_headers: set[str] = set()
+    for col_idx, header in enumerate(headers, start=1):
+        field_info = mapping.get(header)
+        if _is_master_editable(field_info):
+            editable_headers.add(header)
+        header_cell = ws.cell(row=1, column=col_idx)
+        header_cell.font = Font(bold=True)
+        header_cell.alignment = Alignment(
+            vertical="center",
+            horizontal="left",
+            wrap_text=True,
+        )
+        header_cell.fill = _MASTER_HEADER_FILL
+
+    for row_idx in range(2, ws.max_row + 1):
+        for col_idx, header in enumerate(headers, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            cell.alignment = Alignment(
+                vertical="top",
+                horizontal="left",
+                wrap_text=True,
+            )
+            if header not in editable_headers:
+                cell.fill = _MASTER_READONLY_FILL
+
+    for col_idx, header in enumerate(headers, start=1):
+        field_info = mapping.get(header)
+        if not _is_master_editable(field_info):
+            continue
+        _apply_master_list_validation(ws, col_idx, _master_allowed_values(field_info))
+
+    sample_rows = min(ws.max_row, 500)
+    for col_idx, header in enumerate(headers, start=1):
+        column_values = [header]
+        for row_idx in range(2, sample_rows + 1):
+            column_values.append(_master_stringify_cell(ws.cell(row=row_idx, column=col_idx).value))
+        ws.column_dimensions[get_column_letter(col_idx)].width = _estimate_master_col_width(column_values)
+
+    if headers:
+        table_last_col = get_column_letter(len(headers))
+        table_ref = f"A1:{table_last_col}{max(1, ws.max_row)}"
+        table = Table(displayName="SurveyMasterTable", ref=table_ref)
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        ws.add_table(table)
+
+    guide = wb.create_sheet(title=_MASTER_GUIDE_SHEET)
+    guide_headers = [
+        "Column",
+        "Editability",
+        "Description",
+        "AllowedValues",
+        "FormatNotes",
+    ]
+    guide.append(guide_headers)
+    for idx, header in enumerate(guide_headers, start=1):
+        cell = guide.cell(row=1, column=idx)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(vertical="center", horizontal="left", wrap_text=True)
+        cell.fill = _MASTER_HEADER_FILL
+
+    for header in headers:
+        field_info = mapping.get(header, {})
+        editability = "Editable" if _is_master_editable(field_info) else "Read-only"
+        allowed_values = "; ".join(_master_allowed_values(field_info))
+        description = str(field_info.get("description") or "").strip()
+        format_notes = str(field_info.get("format_notes") or "").strip()
+        guide.append([header, editability, description, allowed_values, format_notes])
+
+    for row_idx in range(2, guide.max_row + 1):
+        for col_idx in range(1, guide.max_column + 1):
+            cell = guide.cell(row=row_idx, column=col_idx)
+            cell.alignment = Alignment(vertical="top", horizontal="left", wrap_text=True)
+            cell.fill = _MASTER_READONLY_FILL
+
+    guide.column_dimensions["A"].width = 30.0
+    guide.column_dimensions["B"].width = 14.0
+    guide.column_dimensions["C"].width = 52.0
+    guide.column_dimensions["D"].width = 28.0
+    guide.column_dimensions["E"].width = 40.0
+    guide.freeze_panes = "A2"
+
+    wb.save(workbook_path)
+    return workbook_path
+
+
+def _load_master_csv_file() -> Tuple[List[str], List[Dict[str, str]]]:
+    csv_path = _master_csv_path()
+    if not csv_path.exists():
+        return [], []
+
+    rows: List[Dict[str, str]] = []
+    headers: List[str] = []
+    # Use utf-8-sig so files generated with a BOM are read correctly.
+    with csv_path.open(newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames:
+            headers = [str(h or "") for h in reader.fieldnames]
+        for row in reader:
+            rows.append({str(k or ""): _master_stringify_cell(v) for k, v in row.items()})
+
+    return headers, rows
+
+
+def load_master_workbook() -> Tuple[List[str], List[Dict[str, str]]]:
+    """Load survey-master rows from workbook surface (`qualtrics_master.xlsx`)."""
+    workbook_path = _master_workbook_path()
+    if not workbook_path.exists():
+        return [], []
+
+    wb = load_workbook(workbook_path, data_only=False)
+    sheet_name = _MASTER_MAIN_SHEET if _MASTER_MAIN_SHEET in wb.sheetnames else wb.sheetnames[0]
+    ws = wb[sheet_name]
+    headers = _master_sheet_headers(ws)
+    if not headers:
+        return [], []
+
+    rows: List[Dict[str, str]] = []
+    for values in ws.iter_rows(
+        min_row=2,
+        max_row=ws.max_row,
+        min_col=1,
+        max_col=len(headers),
+        values_only=True,
+    ):
+        values_list = list(values)
+        if not any(_master_stringify_cell(v).strip() for v in values_list):
+            continue
+        row = {
+            headers[idx]: _master_stringify_cell(values_list[idx] if idx < len(values_list) else "")
+            for idx in range(len(headers))
+        }
+        rows.append(row)
+
+    return headers, rows
+
+
+def _latest_master_surface() -> str | None:
+    csv_path = _master_csv_path()
+    workbook_path = _master_workbook_path()
+    has_csv = csv_path.exists()
+    has_xlsx = workbook_path.exists()
+    if not has_csv and not has_xlsx:
+        return None
+    if has_csv and not has_xlsx:
+        return "csv"
+    if has_xlsx and not has_csv:
+        return "workbook"
+    csv_mtime = csv_path.stat().st_mtime
+    xlsx_mtime = workbook_path.stat().st_mtime
+    return "workbook" if xlsx_mtime >= csv_mtime else "csv"
+
+
+def write_master_csv(rows: List[List[str]]) -> Path:
+    """Write survey-master rows to CSV + workbook surfaces.
+
+    Returns:
+        Path to the CSV surface for backwards compatibility.
     """
     csv_path = _master_csv_path()
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -896,30 +1179,23 @@ def write_master_csv(rows: List[List[str]]) -> Path:
         for row in rows:
             writer.writerow(row)
 
+    write_master_workbook(rows)
     return csv_path
 
 
 def load_master_csv() -> Tuple[List[str], List[Dict[str, str]]]:
-    """Load master CSV from disk.
+    """Load survey-master rows from the latest local editing surface.
 
-    Returns:
-        (column_headers, rows) where rows is list of {column: value} dicts
+    Source resolution:
+    - If only one of CSV/XLSX exists, load that file.
+    - If both exist, load the newer file by modification timestamp.
     """
-    csv_path = _master_csv_path()
-    if not csv_path.exists():
-        return [], []
-
-    rows = []
-    headers = []
-    # Use utf-8-sig so files generated with a BOM are read correctly.
-    with csv_path.open(newline="", encoding="utf-8-sig") as fh:
-        reader = csv.DictReader(fh)
-        if reader.fieldnames:
-            headers = list(reader.fieldnames)
-        for row in reader:
-            rows.append(dict(row))
-
-    return headers, rows
+    source = _latest_master_surface()
+    if source == "workbook":
+        return load_master_workbook()
+    if source == "csv":
+        return _load_master_csv_file()
+    return [], []
 
 
 def validate_master_csv(
@@ -1693,13 +1969,15 @@ def pull_master(
         if verbose:
             print("[qsync:master-pull] --force-overwrite: Discarding existing CSV")
 
-    # Write final CSV
+    # Write final CSV + workbook surfaces
     csv_path = write_master_csv(fresh_rows)
+    workbook_path = _master_workbook_path()
 
     if verbose:
         print(f"[qsync:master-pull] ✓ Master CSV written to {csv_path}")
+        print(f"[qsync:master-pull] ✓ Master workbook written to {workbook_path}")
         print(
-            f"[qsync:master-pull] Complete: {snapshots_created} snapshots, 1 CSV ({len(fresh_rows)-1} rows)"
+            f"[qsync:master-pull] Complete: {snapshots_created} snapshots, 1 CSV + 1 workbook ({len(fresh_rows)-1} rows)"
         )
 
     return snapshots_created, csv_path

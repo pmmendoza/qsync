@@ -364,6 +364,7 @@ def _build_adopt_move_plan(root: Path, *, account: str) -> list[MoveItem]:
             "qualtrics_surveys.csv",
             ".focal_snapshot.json",
             "qualtrics_master.csv",
+            "qualtrics_master.xlsx",
         ):
             src = surveys_base / name
             if src.exists() and src.is_file():

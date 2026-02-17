@@ -6,20 +6,20 @@ _Migrated from `appendices/survey_master_workflow.md` (monorepo) so the standalo
 > **Updated:** 2026-02-11
 > **Related:** [Survey Master Field Reference](../reference/survey-master-fields.md)
 
-Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, Survey Master artifacts (CSV, snapshots, pending, rollback) are written under `surveys/.<name>/...` (see `../reference/accounts.md`). The mapping file `surveys/qualtrics_api_key_mapping.csv` remains unscoped/shared across accounts.
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, Survey Master artifacts (workbook, CSV, snapshots, pending, rollback) are written under `surveys/.<name>/...` (see `../reference/accounts.md`). The mapping file `surveys/qualtrics_api_key_mapping.csv` remains unscoped/shared across accounts.
 
 ## Overview
 
-The **Survey Master** system allows you to bulk-edit survey metadata, options, and status across multiple focal surveys using a CSV-based workflow. It combines safety guardrails with flexibility for power users.
+The **Survey Master** system allows you to bulk-edit survey metadata, options, and status across multiple focal surveys using spreadsheet editing surfaces (`.xlsx` and `.csv`). It combines safety guardrails with flexibility for power users.
 
 ### The Standard Workflow
 
 ```
-PULL → EDIT CSV → PREVIEW → STAGE → PUSH
+PULL → EDIT WORKBOOK/CSV → PREVIEW → STAGE → PUSH
 ```
 
-1. **PULL**: Download survey definitions into CSV + snapshots (non-destructive merge preserves edits)
-2. **EDIT**: Modify field values in the CSV file
+1. **PULL**: Download survey definitions into spreadsheet surfaces + snapshots (non-destructive merge preserves edits)
+2. **EDIT**: Modify field values in the workbook or CSV file
 3. **PREVIEW**: See what would change before staging
 4. **STAGE**: Validate and write changes to pending (no API writes)
 5. **PUSH**: Apply staged changes to Qualtrics API + publish (with safeguards)
@@ -41,10 +41,11 @@ qsync survey master pull
   - **Options**: `GET /survey-definitions/{surveyId}/options` (button labels, styling, etc.)
   - **Versions**: `GET /survey-definitions/{surveyId}/versions` (latest published version info)
 - Saves **snapshots** to `surveys/qualtrics_master_snapshots/{survey_id}.json`
-- Generates **master CSV** at `surveys/qualtrics_master.csv` with:
+- Generates **master CSV** at `surveys/qualtrics_master.csv`
+- Generates **master workbook** at `surveys/qualtrics_master.xlsx` with:
   - 78 columns (schema-driven from `surveys/qualtrics_api_key_mapping.csv` or packaged defaults)
   - One row per focal survey
-  - Both read-only and editable fields
+  - Both read-only and editable fields (`read` columns are shaded light gray in the workbook)
 
 ### Pull-Specific Flags
 
@@ -60,7 +61,7 @@ qsync survey master pull --survey-id SV_abc123 --survey-id SV_def456
 ```bash
 qsync survey master pull --force-overwrite
 ```
-- **Default behavior**: Pull preserves user edits by merging overrides from existing CSV
+- **Default behavior**: Pull preserves user edits by merging overrides from the latest editing surface (workbook or CSV)
 - With `--force-overwrite`: Discard existing CSV and generate fresh from snapshots
 - Backup of existing CSV is written to `surveys/qualtrics_master.csv.bak` before merge
 
@@ -79,21 +80,26 @@ qsync survey master pull --force-overwrite
 ...
 [qsync:master-pull] Generating master CSV from 5 snapshots...
 [qsync:master-pull] ✓ Master CSV written to surveys/qualtrics_master.csv
-[qsync:master-pull] Complete: 5 snapshots, 1 CSV (5 rows)
+[qsync:master-pull] ✓ Master workbook written to surveys/qualtrics_master.xlsx
+[qsync:master-pull] Complete: 5 snapshots, 1 CSV + 1 workbook (5 rows)
 ```
 
 ---
 
-## Stage 2: Edit the CSV
+## Stage 2: Edit the workbook/CSV
 
 ### Where to Edit
-Open `surveys/qualtrics_master.csv` in a spreadsheet editor:
+Preferred: open `surveys/qualtrics_master.xlsx` in a spreadsheet editor.
+
+Alternative: edit `surveys/qualtrics_master.csv` directly.
+
+Supported editors:
 - **LibreOffice Calc** (recommended for large CSV files)
 - **Excel** (works well)
 - **Google Sheets** (acceptable, but watch for format conversions)
 
 ### What You Can Edit
-Only **writable** fields can be edited. Read-only fields (marked in column header or by convention with `_` prefix) are locked.
+Only **writable** fields can be edited. In the workbook surface, read-only fields are shaded light gray. Read-only fields are also generally prefixed with `_` or configured as `survey_master=read` in the mapping.
 
 **Datetime fields:** Use ISO 8601 (e.g., `2026-01-10` or `2026-01-10T14:00:00Z`). In spreadsheets, format the column as plain text to avoid auto-conversion.
 

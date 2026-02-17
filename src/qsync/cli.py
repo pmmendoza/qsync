@@ -1589,6 +1589,7 @@ def _enforce_push_safeguards(
 def _summarize_preview(changes: list[PreviewChange]) -> None:
     sheets = {
         "question": "Questions",
+        "question_setting": "Questions",
         "option": "Options",
         "subitem": "Subitems",
         "sbs_column": "SBS_Columns",
@@ -1618,6 +1619,9 @@ def _summarize_preview(changes: list[PreviewChange]) -> None:
         if change.kind == "question":
             target = "Text"
             desc = "Question wording"
+        elif change.kind == "question_setting":
+            target = "Validation"
+            desc = "Question response settings"
         elif change.kind == "option":
             target = f"Choice {change.choice_id}"
             desc = "Option label"

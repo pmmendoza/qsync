@@ -12,12 +12,12 @@ Where the mapping lives:
 If a workspace mapping is not present, `qsync` will use the packaged defaults. You can also
 override explicitly via `--mapping-csv` or `QSYNC_MAPPING_CSV`.
 
-Account scoping: the mapping file is intentionally unscoped (shared across accounts), but the generated Survey Master CSV and snapshots are scoped when an account is active (for example `surveys/.damian/qualtrics_master.csv`). See `accounts.md`.
+Account scoping: the mapping file is intentionally unscoped (shared across accounts), but generated Survey Master artifacts are scoped when an account is active (for example `surveys/.damian/qualtrics_master.csv` and `surveys/.damian/qualtrics_master.xlsx`). See `accounts.md`.
 
 ## Overview
 
 The mapping CSV controls:
-- Which fields appear in `surveys/qualtrics_master.csv` (or `surveys/.<account>/qualtrics_master.csv` when an account is active).
+- Which fields appear in Survey Master surfaces (`surveys/qualtrics_master.xlsx` and `surveys/qualtrics_master.csv`, account-scoped when active).
 - Which fields are writable vs read-only in Survey Master.
 - Validation rules (data type, allowed values, format notes).
 - Endpoint routing and write semantics for each field.
@@ -44,12 +44,12 @@ Required / commonly used columns:
 ## How Survey Master Uses the Mapping
 
 - `survey_master=write`:
-  - Column appears in `surveys/qualtrics_master.csv` (or `surveys/.<account>/qualtrics_master.csv` when an account is active) and is editable.
+  - Column appears in both Survey Master surfaces and is editable.
   - Validation uses `data_type`, `allowed_values`, and `format_notes`.
 - `survey_master=read`:
-  - Column appears in the CSV as read-only (prefixed with `_` in outputs).
+  - Column appears as read-only (in workbook it is shaded gray).
 - `survey_master=none` or blank:
-  - Column is excluded from the master CSV.
+  - Column is excluded from Survey Master surfaces.
 
 ### Column Ordering
 

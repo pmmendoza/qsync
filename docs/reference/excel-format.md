@@ -17,6 +17,7 @@ The per-survey workbook contains these relevant sheets for wording sync:
 - `Subitems` (1 row per matrix row/statement)
 - `SBS_Columns` (SBSMatrix only: 1 row per side-by-side column header)
 - `SBS_ColumnAnswers` (SBSMatrix only: 1 row per side-by-side column answer label)
+- `Survey_Metadata` (survey-level metadata text fields)
 - `Embedded_Data` (SurveyFlow embedded defaults)
 - `System` (read-only context: timing/meta)
 - `Instructions` (auto-generated guidance; regenerated on workbook refresh)
@@ -40,10 +41,12 @@ System-owned columns are populated and maintained by `qsync` and/or Qualtrics (I
 - `FlowID` / `FlowOrder`
 - `Code`
 - Preview columns like `OptionsPreview` and `SubitemsPreview`
+- Derived columns like `RequiredResponse`
 
 Formatting:
 
 - System headers (and their body cells) are bolded.
+- System/read-only body cells are shaded light grey to signal “not this sheet’s editing surface”.
 
 Behaviour:
 
@@ -53,8 +56,9 @@ Behaviour:
 
 Columns where you are expected to edit content:
 
-- `Questions`: `QuestionKey`, `Text_{base}_MD` (plus `Text_{base}_IsHTML` when you intentionally need raw HTML)
+- `Questions`: `QuestionKey`, `Text_{base}_MD` (plus `Text_{base}_IsHTML` when you intentionally need raw HTML), `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`
 - `Options`, `Subitems`, `SBS_Columns`, `SBS_ColumnAnswers`: `Label_{base}_MD` (plus `Label_{base}_IsHTML` when you intentionally need raw HTML)
+- `Survey_Metadata`: `*_MD` columns (plus `*_IsHTML` flags)
 - `Embedded_Data`: `Value`
 
 Translation columns:
@@ -72,6 +76,7 @@ Common flags include:
 
 - `Text_*_IsHTML`, `Label_*_IsHTML`
 - `InPre`, `InPost` (and similar survey-specific flags)
+- `RequiredResponse` (derived/read-only in `Questions`)
 
 Formatting:
 
@@ -89,6 +94,12 @@ Some sheets include `MetaComment` for notes/ownership:
 ## 3. HTML vs Markdown highlighting
 
 When a `*_IsHTML` flag is set to `TRUE`, `qsync` applies conditional formatting to highlight the corresponding `*_MD` cell (pale yellow/orange). This is a visual warning that the cell content is treated as raw HTML.
+
+## 3.1 Required-response highlighting
+
+`Questions.RequiredResponse` is a system-derived field (`TRUE` when `ForceResponseMode` is `ON` or `RequestResponse`).
+
+When `RequiredResponse=TRUE`, `qsync` highlights `Text_*_MD` cells (light red tint) so required questions are obvious during workbook review.
 
 ---
 
@@ -109,7 +120,7 @@ Behaviour:
 - Each preview run clears prior `Dirty` values and re-marks them based on current diffs.
 - When a row is dirty, its `Dirty` cell is set to `Y`.
 - Conditional formatting highlights the edited cell:
-  - `Questions`: `Text_{base}_MD`
+  - `Questions`: `Text_{base}_MD`, `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`
   - `Options`/`Subitems`/`SBS_*`: `Label_{base}_MD`
   - `Embedded_Data`: `Value`
 

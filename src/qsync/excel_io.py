@@ -22,6 +22,7 @@ the SBS sheets.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -60,6 +61,81 @@ SURVEY_METADATA_KEYS = [
     "SurveyDescription",
     "SurveyMetaDescription",
 ]
+_QUESTION_VALIDATION_CORE_KEYS = {"ForceResponse", "Type"}
+_QUESTION_VALIDATION_TYPE_DEFAULT = "None"
+
+
+def _normalize_force_response_mode(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "OFF"
+    folded = raw.replace("_", "").replace("-", "").replace(" ", "").lower()
+    if folded in {"on", "true", "1", "yes", "y"}:
+        return "ON"
+    if folded in {"off", "false", "0", "no", "n", "none"}:
+        return "OFF"
+    if folded == "requestresponse":
+        return "RequestResponse"
+    if raw.upper() in {"ON", "OFF"}:
+        return raw.upper()
+    if raw.lower() == "requestresponse":
+        return "RequestResponse"
+    return raw
+
+
+def _normalize_validation_type(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return _QUESTION_VALIDATION_TYPE_DEFAULT
+    if raw.lower() == "none":
+        return _QUESTION_VALIDATION_TYPE_DEFAULT
+    return raw
+
+
+def _is_required_response(force_response_mode: object) -> bool:
+    mode = _normalize_force_response_mode(force_response_mode)
+    return mode in {"ON", "RequestResponse"}
+
+
+def _validation_settings_dict(question: dict) -> dict[str, object]:
+    validation = question.get("Validation") or {}
+    if not isinstance(validation, dict):
+        return {}
+    settings = validation.get("Settings") or {}
+    if not isinstance(settings, dict):
+        return {}
+    return dict(settings)
+
+
+def _validation_settings_extra_dict(settings: dict[str, object]) -> dict[str, object]:
+    out: dict[str, object] = {}
+    for key, value in (settings or {}).items():
+        key_str = str(key or "").strip()
+        if not key_str or key_str in _QUESTION_VALIDATION_CORE_KEYS:
+            continue
+        if value is None:
+            continue
+        out[key_str] = value
+    return out
+
+
+def _dump_validation_settings_json(extras: dict[str, object]) -> str:
+    if not extras:
+        return ""
+    return json.dumps(extras, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _coerce_bool_cell(value: object, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y", "on"}:
+        return True
+    if text in {"false", "0", "no", "n", "off", ""}:
+        return False
+    return default
 
 
 def _normalize_language_code(lang: str) -> str:
@@ -194,6 +270,26 @@ def _column_guide(base_language: str = "EN") -> dict:
                 "QuestionKey",
                 "Editable",
                 "Optional human-friendly key for internal tracking.",
+            ),
+            (
+                "RequiredResponse",
+                "System",
+                "Read-only marker derived from ForceResponseMode (TRUE when required/requested).",
+            ),
+            (
+                "ForceResponseMode",
+                "Editable",
+                "Question-level response requirement mode (OFF, ON, RequestResponse).",
+            ),
+            (
+                "ValidationType",
+                "Editable",
+                "Question-level validation type (for example None, MinChoices, CustomValidation).",
+            ),
+            (
+                "ValidationSettingsJSON",
+                "Editable",
+                "JSON object for additional Validation.Settings keys (excluding ForceResponse and Type).",
             ),
             (text_md, "Editable", f"{base_upper} wording in restricted Markdown."),
             (
@@ -376,7 +472,7 @@ def _column_guide(base_language: str = "EN") -> dict:
             (
                 "SurveyDescription_IsHTML",
                 "Flag",
-                "TRUE when SurveyDescription_IsHTML should be treated as raw HTML.",
+                "TRUE when SurveyDescription_MD should be treated as raw HTML.",
             ),
             (
                 "SurveyMetaDescription_MD",
@@ -563,6 +659,7 @@ def _update_instructions_sheet(
             cell.alignment = Alignment(
                 vertical="center", horizontal="left", wrap_text=True
             )
+    _apply_readonly_fill(ws, ["Sheet", "Column", "Ownership", "Description"], set())
 
     # Set widths
     widths = {
@@ -721,6 +818,10 @@ class QuestionRow:
     question_type: str
     data_export_tag: str
     question_key: str | None
+    required_response: bool
+    force_response_mode: str
+    validation_type: str
+    validation_settings_json: str | None
     text_en_md: str | None
     text_en_is_html: bool
     in_pre: bool
@@ -1323,6 +1424,12 @@ def build_question_rows(
             qtype = q.get("QuestionType") or ""
             tag = q.get("DataExportTag") or ""
             text_html = q.get("QuestionText") or ""
+            settings = _validation_settings_dict(q)
+            force_mode = _normalize_force_response_mode(settings.get("ForceResponse"))
+            validation_type = _normalize_validation_type(settings.get("Type"))
+            validation_settings_json = _dump_validation_settings_json(
+                _validation_settings_extra_dict(settings)
+            )
 
             if is_markdown_safe_html(text_html):
                 text_md = html_to_md(text_html)
@@ -1342,6 +1449,10 @@ def build_question_rows(
                 question_type=qtype,
                 data_export_tag=tag,
                 question_key=None,
+                required_response=_is_required_response(force_mode),
+                force_response_mode=force_mode,
+                validation_type=validation_type,
+                validation_settings_json=validation_settings_json or None,
                 text_en_md=text_md,
                 text_en_is_html=is_html,
                 in_pre=False,
@@ -2084,6 +2195,10 @@ def _init_questions_sheet(
         "QuestionType",
         "DataExportTag",
         "QuestionKey",
+        "RequiredResponse",
+        "ForceResponseMode",
+        "ValidationType",
+        "ValidationSettingsJSON",
         *text_columns,
         "OptionsPreview",
         "SubitemsPreview",
@@ -2142,6 +2257,37 @@ def _init_questions_sheet(
                 row=row_idx,
                 column=col_index["DataExportTag"] + 1,
                 value=row_data.data_export_tag,
+            )
+            force_mode_cell = ws.cell(
+                row=row_idx, column=col_index["ForceResponseMode"] + 1
+            )
+            if force_mode_cell.value is None or str(force_mode_cell.value).strip() == "":
+                force_mode_cell.value = row_data.force_response_mode
+            validation_type_cell = ws.cell(
+                row=row_idx, column=col_index["ValidationType"] + 1
+            )
+            if (
+                validation_type_cell.value is None
+                or str(validation_type_cell.value).strip() == ""
+            ):
+                validation_type_cell.value = row_data.validation_type
+            validation_settings_cell = ws.cell(
+                row=row_idx, column=col_index["ValidationSettingsJSON"] + 1
+            )
+            if (
+                validation_settings_cell.value is None
+                or str(validation_settings_cell.value).strip() == ""
+            ) and row_data.validation_settings_json:
+                validation_settings_cell.value = row_data.validation_settings_json
+            effective_force_mode = (
+                force_mode_cell.value
+                if force_mode_cell.value is not None
+                else row_data.force_response_mode
+            )
+            ws.cell(
+                row=row_idx,
+                column=col_index["RequiredResponse"] + 1,
+                value=_is_required_response(effective_force_mode),
             )
 
             text_cell = ws.cell(row=row_idx, column=col_index[base_text_col] + 1)
@@ -2218,6 +2364,27 @@ def _init_questions_sheet(
                 column=col_index["DataExportTag"] + 1,
                 value=row_data.data_export_tag,
             )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["RequiredResponse"] + 1,
+                value=bool(row_data.required_response),
+            )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["ForceResponseMode"] + 1,
+                value=row_data.force_response_mode,
+            )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["ValidationType"] + 1,
+                value=row_data.validation_type,
+            )
+            if row_data.validation_settings_json:
+                ws.cell(
+                    row=new_row_idx,
+                    column=col_index["ValidationSettingsJSON"] + 1,
+                    value=row_data.validation_settings_json,
+                )
             # QuestionKey left blank by default
 
             text_cell = ws.cell(
@@ -3330,6 +3497,8 @@ def _init_embedded_data_sheet(wb: Workbook, rows: List[EmbeddedDataRow]) -> None
 
 _HTML_FILL = PatternFill(fill_type="solid", fgColor="FFFFF4B2")
 _DIRTY_FILL = PatternFill(fill_type="solid", fgColor="FFF4B084")
+_REQUIRED_FILL = PatternFill(fill_type="solid", fgColor="FFFFE2E2")
+_READONLY_FILL = PatternFill(fill_type="solid", fgColor="FFECECEC")
 
 
 def _make_bold(cell) -> None:
@@ -3362,17 +3531,45 @@ def _autofit_rows(ws: Worksheet) -> None:
 
 
 def _apply_boolean_validation(ws: Worksheet, header_name: str) -> None:
+    _apply_list_validation(ws, header_name, ["TRUE", "FALSE"])
+
+
+def _apply_list_validation(
+    ws: Worksheet, header_name: str, allowed_values: Sequence[str]
+) -> None:
     headers, _ = _iter_sheet_rows(ws)
     if not headers or header_name not in headers:
+        return
+    cleaned_values = [str(value).strip() for value in allowed_values if str(value).strip()]
+    if not cleaned_values:
         return
     col_idx = headers.index(header_name) + 1
     col_letter = get_column_letter(col_idx)
     max_row = ws.max_row
     if max_row <= 1:
         return
-    dv = DataValidation(type="list", formula1='"TRUE,FALSE"', allow_blank=True)
+    formula = '"' + ",".join(cleaned_values) + '"'
+    dv = DataValidation(type="list", formula1=formula, allow_blank=True)
     ws.add_data_validation(dv)
     dv.add(f"{col_letter}2:{col_letter}{max_row}")
+
+
+def _apply_readonly_fill(
+    ws: Worksheet, headers: Sequence[object], editable_headers: set[str]
+) -> None:
+    if ws.max_row <= 1:
+        return
+    read_only_indices = []
+    for idx, name in enumerate(headers, start=1):
+        header = str(name or "")
+        if header not in editable_headers:
+            read_only_indices.append(idx)
+    if not read_only_indices:
+        return
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        for idx in read_only_indices:
+            if idx <= len(row):
+                row[idx - 1].fill = _READONLY_FILL
 
 
 def _sort_sheet_by_qid_and_id(ws: Worksheet, id_header: str) -> None:
@@ -3529,6 +3726,7 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         "BlockName",
         "QuestionType",
         "DataExportTag",
+        "RequiredResponse",
         "OptionsPreview",
         "SubitemsPreview",
     }
@@ -3557,6 +3755,7 @@ def _format_questions_sheet(ws: Worksheet) -> None:
     for name in headers:
         if str(name).startswith("Text_") and str(name).endswith("_MD"):
             _wrap_column(ws, str(name))
+    _wrap_column(ws, "ValidationSettingsJSON")
     _wrap_column(ws, "OptionsPreview")
     _wrap_column(ws, "SubitemsPreview")
 
@@ -3569,6 +3768,21 @@ def _format_questions_sheet(ws: Worksheet) -> None:
             _apply_boolean_validation(ws, str(name))
     _apply_boolean_validation(ws, "InPre")
     _apply_boolean_validation(ws, "InPost")
+    _apply_list_validation(ws, "ForceResponseMode", ["OFF", "ON", "RequestResponse"])
+    _apply_list_validation(
+        ws,
+        "ValidationType",
+        ["None", "MinChoices", "CustomValidation", "ChoicesTotal"],
+    )
+
+    editable_headers = {"QuestionKey", "InPre", "InPost", "ForceResponseMode", "ValidationType", "ValidationSettingsJSON"}
+    for name in headers:
+        header = str(name or "")
+        if header.startswith("Text_") and (
+            header.endswith("_MD") or header.endswith("_IsHTML")
+        ):
+            editable_headers.add(header)
+    _apply_readonly_fill(ws, headers, editable_headers)
 
     # Clear any existing conditional formatting (we'll reapply ours)
     try:
@@ -3578,6 +3792,17 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         ws.conditional_formatting._cf_rules = {}
 
     max_row = ws.max_row
+    if "RequiredResponse" in headers and max_row >= 2:
+        required_idx = headers.index("RequiredResponse") + 1
+        required_col = get_column_letter(required_idx)
+        for name in headers:
+            if str(name).startswith("Text_") and str(name).endswith("_MD"):
+                text_idx = headers.index(name) + 1
+                text_col = get_column_letter(text_idx)
+                formula = f"=${required_col}2=TRUE"
+                rule = FormulaRule(formula=[formula], fill=_REQUIRED_FILL)
+                ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
+
     # Conditional formatting: highlight HTML question text when Text_*_IsHTML is TRUE
     for name in headers:
         if str(name).startswith("Text_") and str(name).endswith("_IsHTML"):
@@ -3634,6 +3859,10 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         "QuestionType": 14.5,
         "DataExportTag": 19.0,
         "QuestionKey": 14.0,
+        "RequiredResponse": 14.0,
+        "ForceResponseMode": 20.0,
+        "ValidationType": 18.0,
+        "ValidationSettingsJSON": 48.0,
         "OptionsPreview": 60.0,
         "SubitemsPreview": 60.0,
         "InPre": 8.0,
@@ -3694,6 +3923,15 @@ def _format_options_sheet(ws: Worksheet) -> None:
     for name in headers:
         if str(name).startswith("Label_") and str(name).endswith("_IsHTML"):
             _apply_boolean_validation(ws, str(name))
+
+    editable_headers: set[str] = set()
+    for name in headers:
+        header = str(name or "")
+        if header.startswith("Label_") and (
+            header.endswith("_MD") or header.endswith("_IsHTML")
+        ):
+            editable_headers.add(header)
+    _apply_readonly_fill(ws, headers, editable_headers)
 
     # Clear any existing conditional formatting
     try:
@@ -3813,6 +4051,15 @@ def _format_subitems_sheet(ws: Worksheet) -> None:
         if str(name).startswith("Label_") and str(name).endswith("_IsHTML"):
             _apply_boolean_validation(ws, str(name))
 
+    editable_headers: set[str] = set()
+    for name in headers:
+        header = str(name or "")
+        if header.startswith("Label_") and (
+            header.endswith("_MD") or header.endswith("_IsHTML")
+        ):
+            editable_headers.add(header)
+    _apply_readonly_fill(ws, headers, editable_headers)
+
     max_row = ws.max_row
     max_col = ws.max_column
     if max_row >= 2 and max_col >= 1:
@@ -3892,6 +4139,15 @@ def _format_sbs_columns_sheet(ws: Worksheet) -> None:
     for name in headers:
         if str(name).startswith("Label_") and str(name).endswith("_IsHTML"):
             _apply_boolean_validation(ws, str(name))
+
+    editable_headers: set[str] = set()
+    for name in headers:
+        header = str(name or "")
+        if header.startswith("Label_") and (
+            header.endswith("_MD") or header.endswith("_IsHTML")
+        ):
+            editable_headers.add(header)
+    _apply_readonly_fill(ws, headers, editable_headers)
 
     try:
         ws.conditional_formatting.clear()
@@ -4003,6 +4259,15 @@ def _format_sbs_column_answers_sheet(ws: Worksheet) -> None:
         if str(name).startswith("Label_") and str(name).endswith("_IsHTML"):
             _apply_boolean_validation(ws, str(name))
 
+    editable_headers: set[str] = set()
+    for name in headers:
+        header = str(name or "")
+        if header.startswith("Label_") and (
+            header.endswith("_MD") or header.endswith("_IsHTML")
+        ):
+            editable_headers.add(header)
+    _apply_readonly_fill(ws, headers, editable_headers)
+
     try:
         ws.conditional_formatting.clear()
     except AttributeError:
@@ -4107,6 +4372,13 @@ def _format_survey_metadata_sheet(ws: Worksheet) -> None:
         if str(name).endswith("_IsHTML"):
             _apply_boolean_validation(ws, str(name))
 
+    editable_headers: set[str] = set()
+    for name in headers:
+        header = str(name or "")
+        if header.endswith("_MD") or header.endswith("_IsHTML"):
+            editable_headers.add(header)
+    _apply_readonly_fill(ws, headers, editable_headers)
+
     max_row = ws.max_row
     max_col = ws.max_column
     if max_row >= 2 and max_col >= 1:
@@ -4175,6 +4447,7 @@ def _format_embedded_data_sheet(ws: Worksheet) -> None:
     _wrap_column(ws, "Value")
     _wrap_column(ws, "WrittenByQIDs")
     _autofit_rows(ws)
+    _apply_readonly_fill(ws, headers, {"Value"})
 
     # Clear any existing conditional formatting (we'll reapply ours)
     try:
@@ -4267,6 +4540,12 @@ def _populate_system_sheet(wb: Workbook, survey_id: str, survey_payload: dict) -
     header_row = next(ws.iter_rows(min_row=1, max_row=1))
     for cell in header_row:
         _make_bold(cell)
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+        for cell in row:
+            cell.alignment = Alignment(
+                vertical="center", horizontal="left", wrap_text=False
+            )
+    _apply_readonly_fill(ws, headers, set())
 
     max_row = ws.max_row
     max_col = ws.max_column
@@ -4322,6 +4601,10 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
         - `question_type`: Question type (MC, TE, Matrix, etc.).
         - `data_export_tag`: The DataExportTag / variable name.
         - `question_key`: Optional human-friendly key.
+        - `required_response`: Derived required-response marker.
+        - `force_response_mode`: Validation force mode (`OFF`, `ON`, `RequestResponse`).
+        - `validation_type`: Validation type (`None`, `MinChoices`, etc.).
+        - `validation_settings_json`: JSON payload for additional validation settings.
         - `text_en_md`: Base-language wording in Markdown or raw HTML.
         - `text_en_is_html`: True if `text_en_md` is raw HTML.
         - `in_pre`: True if included in pre-treatment survey.
@@ -4368,10 +4651,21 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
             question_type=str(_get(row, "QuestionType") or "").strip(),
             data_export_tag=str(_get(row, "DataExportTag") or "").strip(),
             question_key=str(_get(row, "QuestionKey") or "").strip() or None,
+            required_response=_coerce_bool_cell(
+                _get(row, "RequiredResponse"),
+                default=_is_required_response(_get(row, "ForceResponseMode")),
+            ),
+            force_response_mode=_normalize_force_response_mode(
+                _get(row, "ForceResponseMode")
+            ),
+            validation_type=_normalize_validation_type(_get(row, "ValidationType")),
+            validation_settings_json=(
+                str(_get(row, "ValidationSettingsJSON") or "").strip() or None
+            ),
             text_en_md=str(_get(row, text_md_col) or ""),
-            text_en_is_html=bool(_get(row, text_html_col) or False),
-            in_pre=bool(_get(row, "InPre") or False),
-            in_post=bool(_get(row, "InPost") or False),
+            text_en_is_html=_coerce_bool_cell(_get(row, text_html_col)),
+            in_pre=_coerce_bool_cell(_get(row, "InPre")),
+            in_post=_coerce_bool_cell(_get(row, "InPost")),
             # Question wording is always editable via Excel; only options/subitems
             # are treated as externally managed via EXTERNALLY_MANAGED_TAGS.
             externally_managed_by=None,

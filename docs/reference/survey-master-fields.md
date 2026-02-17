@@ -12,7 +12,7 @@ Account scoping: Survey Master artifacts (CSV, snapshots, pending, rollback) liv
 
 ## Overview
 
-This document lists all fields that can be edited via the survey master CSV workflow.
+This document lists all fields that can be edited via the survey master spreadsheet workflow (`qualtrics_master.xlsx` and `qualtrics_master.csv`).
 Fields are organized by endpoint and include type information and validation rules.
 Datetime fields use ISO 8601 (e.g., `2026-01-10` or `2026-01-10T14:00:00Z`).
 
@@ -147,8 +147,12 @@ The following fields require the `--allow-dangerous` flag to modify:
 qsync survey master pull
 ```
 
-### 2. Edit CSV
-Edit `surveys/qualtrics_master.csv` (or `surveys/.<account>/qualtrics_master.csv` when an account is active) with your spreadsheet application.
+### 2. Edit workbook or CSV
+Preferred: edit `surveys/qualtrics_master.xlsx` (or `surveys/.<account>/qualtrics_master.xlsx` when an account is active).
+
+Alternative: edit `surveys/qualtrics_master.csv` (or `surveys/.<account>/qualtrics_master.csv` when an account is active).
+
+In the workbook surface, non-editable fields are shaded light gray.
 
 ### 3. Preview Changes
 ```bash

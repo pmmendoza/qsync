@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import difflib
+import json
 import os
 from pathlib import Path
 import re
@@ -112,7 +113,7 @@ class PreviewChange:
     plain string values instead.
     """
 
-    kind: str  # "question", "option", "subitem", "sbs_column", "sbs_column_answer", or "embedded"
+    kind: str  # "question", "question_setting", "option", "subitem", "sbs_column", "sbs_column_answer", or "embedded"
     qid: str
     old_html: str
     new_html: str
@@ -156,6 +157,93 @@ def _display_to_str(obj: dict) -> str:
     if val is None:
         return ""
     return str(val)
+
+
+def _parse_validation_extras_json(
+    raw: object, *, qid: str, source: str
+) -> dict[str, object]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid ValidationSettingsJSON for {qid} ({source}): "
+            f"{exc.msg} at line {exc.lineno}, column {exc.colno}."
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"Invalid ValidationSettingsJSON for {qid} ({source}): expected a JSON object."
+        )
+    extras: dict[str, object] = {}
+    for key, value in parsed.items():
+        key_str = str(key or "").strip()
+        if not key_str or key_str in {"ForceResponse", "Type"}:
+            continue
+        if value is None:
+            continue
+        extras[key_str] = value
+    return extras
+
+
+def _question_validation_settings_from_question(question: dict) -> dict[str, object]:
+    settings = excel_io._validation_settings_dict(question)
+    normalized: dict[str, object] = {
+        "ForceResponse": excel_io._normalize_force_response_mode(
+            settings.get("ForceResponse")
+        ),
+        "Type": excel_io._normalize_validation_type(settings.get("Type")),
+    }
+    extras = excel_io._validation_settings_extra_dict(settings)
+    for key in sorted(extras.keys()):
+        normalized[key] = extras[key]
+    return normalized
+
+
+def _question_validation_settings_from_row(
+    row: excel_io.QuestionRow,
+) -> dict[str, object]:
+    normalized: dict[str, object] = {
+        "ForceResponse": excel_io._normalize_force_response_mode(
+            row.force_response_mode
+        ),
+        "Type": excel_io._normalize_validation_type(row.validation_type),
+    }
+    extras = _parse_validation_extras_json(
+        row.validation_settings_json or "",
+        qid=row.qid,
+        source="workbook",
+    )
+    for key in sorted(extras.keys()):
+        normalized[key] = extras[key]
+    return normalized
+
+
+def _settings_to_display_text(settings: dict[str, object]) -> str:
+    return json.dumps(settings, ensure_ascii=True, sort_keys=True, indent=2)
+
+
+def _apply_question_validation_settings(
+    question: dict, settings: dict[str, object]
+) -> None:
+    validation = question.get("Validation")
+    if not isinstance(validation, dict):
+        validation = {}
+        question["Validation"] = validation
+    payload: dict[str, object] = {}
+    force = excel_io._normalize_force_response_mode(settings.get("ForceResponse"))
+    validation_type = excel_io._normalize_validation_type(settings.get("Type"))
+    payload["ForceResponse"] = force
+    payload["Type"] = validation_type
+    for key, value in settings.items():
+        key_str = str(key or "").strip()
+        if not key_str or key_str in {"ForceResponse", "Type"}:
+            continue
+        if value is None:
+            continue
+        payload[key_str] = value
+    validation["Settings"] = payload
 
 
 def _diff_lines(old_html: str, new_html: str, context: str | None = None) -> List[str]:
@@ -864,7 +952,7 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
 
     - Adds/updates a `Dirty` column on relevant sheets.
     - Highlights the edited cell:
-      - Questions: Text_*_MD
+      - Questions: Text_*_MD and question-level settings columns
       - Options/Subitems/SBS_*: Label_*_MD
       - Embedded_Data: Value
     """
@@ -959,7 +1047,11 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
 
     # Apply new Dirty markers
     for change in changes:
-        if change.kind == "question" and ws_q is not None and dirty_col_q > 0:
+        if (
+            change.kind in {"question", "question_setting"}
+            and ws_q is not None
+            and dirty_col_q > 0
+        ):
             qid_idx = idx_q.get("QID")
             for row in ws_q.iter_rows(min_row=2, values_only=False):
                 if qid_idx is not None and row[qid_idx].value == change.qid:
@@ -1041,27 +1133,28 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
     # After marking, (re)attach conditional formatting for Dirty flags
     if ws_q is not None and idx_q and dirty_col_q > 0:
         headers, _ = excel_io._iter_sheet_rows(ws_q)
-        text_col_name = next(
-            (
-                h
-                for h in headers
-                if str(h).startswith("Text_") and str(h).endswith("_MD")
-            ),
-            None,
-        )
+        target_cols = [
+            str(h)
+            for h in headers
+            if str(h).startswith("Text_") and str(h).endswith("_MD")
+        ]
+        for name in ("ForceResponseMode", "ValidationType", "ValidationSettingsJSON"):
+            if name in headers:
+                target_cols.append(name)
         max_row_q = ws_q.max_row
-        if "Dirty" in headers and text_col_name and max_row_q >= 2:
+        if "Dirty" in headers and target_cols and max_row_q >= 2:
             dirty_idx = headers.index("Dirty") + 1
-            text_idx = headers.index(text_col_name) + 1
             dirty_col_letter = get_column_letter(dirty_idx)
-            text_col_letter = get_column_letter(text_idx)
-            formula = f'=${dirty_col_letter}2="Y"'
             from openpyxl.formatting.rule import FormulaRule
 
-            rule = FormulaRule(formula=[formula], fill=excel_io._DIRTY_FILL)
-            ws_q.conditional_formatting.add(
-                f"{text_col_letter}2:{text_col_letter}{max_row_q}", rule
-            )
+            for column_name in target_cols:
+                text_idx = headers.index(column_name) + 1
+                text_col_letter = get_column_letter(text_idx)
+                formula = f'=${dirty_col_letter}2="Y"'
+                rule = FormulaRule(formula=[formula], fill=excel_io._DIRTY_FILL)
+                ws_q.conditional_formatting.add(
+                    f"{text_col_letter}2:{text_col_letter}{max_row_q}", rule
+                )
 
     if ws_o is not None and idx_o and dirty_col_o > 0:
         headers_o, _ = excel_io._iter_sheet_rows(ws_o)
@@ -1220,6 +1313,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             expected_survey_id = survey.survey_id
             expected_qtype = q_json.get("QuestionType") or ""
             expected_tag = q_json.get("DataExportTag") or ""
+            expected_required = excel_io._is_required_response(
+                excel_io._validation_settings_dict(q_json).get("ForceResponse")
+            )
 
             if "SurveyID" in idx:
                 cell = row[idx["SurveyID"]]
@@ -1250,6 +1346,16 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_tag
+
+            if "RequiredResponse" in idx:
+                cell = row[idx["RequiredResponse"]]
+                if excel_io._coerce_bool_cell(cell.value) != bool(expected_required):
+                    print(
+                        f"[qsync] WARNING: System column RequiredResponse changed in Questions row "
+                        f"{cell.row} (QID={qid}); resetting to Qualtrics value. "
+                        "Next: avoid editing system columns in Excel."
+                    )
+                    cell.value = bool(expected_required)
 
     # Options sheet
     if excel_io.OPTIONS_SHEET in wb.sheetnames:
@@ -1634,7 +1740,7 @@ def preview_changes(
         scope_expr: Optional scope filter expression (e.g., 'qid:Q1 OR tag:baseline').
 
     Returns:
-        List of proposed changes (question text, option labels, subitem labels).
+        List of proposed changes (question text/settings, option labels, subitem labels).
 
     Example:
         >>> from pathlib import Path
@@ -1702,16 +1808,20 @@ def preview_changes(
         if not q_json:
             continue
         question_text_json = q_json.get("QuestionText") or ""
+        tag = (q_json.get("DataExportTag") or "").strip() or None
+        text_changed = False
         # For non-HTML questions, compare at the Markdown level.
         if not q_row.text_en_is_html:
             md_old = normalize_markdown_for_compare(html_to_md(question_text_json))
             md_new = normalize_markdown_for_compare(q_row.text_en_md or "")
-            if md_old == md_new:
-                continue
+            text_changed = md_old != md_new
+        else:
+            old_html = normalize_text(question_text_json)
+            new_html = normalize_text(excel_io.question_row_to_html(q_row))
+            text_changed = old_html != new_html
         old_html = normalize_text(question_text_json)
         new_html = normalize_text(excel_io.question_row_to_html(q_row))
-        if old_html != new_html:
-            tag = (q_json.get("DataExportTag") or "").strip() or None
+        if text_changed and old_html != new_html:
             changes.append(
                 PreviewChange(
                     kind="question",
@@ -1719,6 +1829,22 @@ def preview_changes(
                     old_html=old_html,
                     new_html=new_html,
                     diff_lines=_diff_lines(old_html, new_html),
+                    data_export_tag=tag,
+                )
+            )
+
+        old_settings = _question_validation_settings_from_question(q_json)
+        new_settings = _question_validation_settings_from_row(q_row)
+        if old_settings != new_settings:
+            old_text = _settings_to_display_text(old_settings)
+            new_text = _settings_to_display_text(new_settings)
+            changes.append(
+                PreviewChange(
+                    kind="question_setting",
+                    qid=qid,
+                    old_html=old_text,
+                    new_html=new_text,
+                    diff_lines=_diff_lines(old_text, new_text, context="Validation"),
                     data_export_tag=tag,
                 )
             )
@@ -2067,16 +2193,20 @@ def apply_changes(
                 if not q_json:
                     continue
                 question_text_json = q_json.get("QuestionText") or ""
+                text_changed = False
                 if not q_row.text_en_is_html:
                     md_old = normalize_markdown_for_compare(
                         html_to_md(question_text_json)
                     )
                     md_new = normalize_markdown_for_compare(q_row.text_en_md or "")
-                    if md_old == md_new:
-                        continue
+                    text_changed = md_old != md_new
+                else:
+                    old_html = normalize_text(question_text_json)
+                    new_html = normalize_text(excel_io.question_row_to_html(q_row))
+                    text_changed = old_html != new_html
                 old_html = normalize_text(question_text_json)
                 new_html = normalize_text(excel_io.question_row_to_html(q_row))
-                if old_html != new_html:
+                if text_changed and old_html != new_html:
                     # Lightweight HTML validation for raw HTML cells
                     if q_row.text_en_is_html:
                         errors = validate_html_fragment(new_html)
@@ -2093,6 +2223,12 @@ def apply_changes(
                     # Keep QuestionText_Unsafe in sync where present.
                     if "QuestionText_Unsafe" in q_json:
                         q_json["QuestionText_Unsafe"] = new_html
+                    changed_qids.add(qid)
+
+                old_settings = _question_validation_settings_from_question(q_json)
+                new_settings = _question_validation_settings_from_row(q_row)
+                if old_settings != new_settings:
+                    _apply_question_validation_settings(q_json, new_settings)
                     changed_qids.add(qid)
 
             # Apply option label changes into the survey payload
@@ -2486,6 +2622,19 @@ def _apply_pending_item_changes(
             question["QuestionText"] = new_html
             if "QuestionText_Unsafe" in question:
                 question["QuestionText_Unsafe"] = new_html
+            changed_qids.add(qid)
+            continue
+        if kind == "question_setting":
+            new_payload_raw = str(change.get("new_html") or "").strip()
+            if not new_payload_raw:
+                continue
+            try:
+                parsed_settings = json.loads(new_payload_raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed_settings, dict):
+                continue
+            _apply_question_validation_settings(question, parsed_settings)
             changed_qids.add(qid)
             continue
         qtype = (question.get("QuestionType") or "").strip()
