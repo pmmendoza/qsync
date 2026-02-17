@@ -2075,8 +2075,10 @@ def handle_menu(args: argparse.Namespace) -> None:
         position = "prepend" if placement.startswith("Start") else "append"
         return (block_id, None, None, position)
 
-    def _menu_add_question() -> None:
-        survey_id = _pick_survey_id(message="Pick a survey to add question(s):")
+    def _menu_add_question(*, preselected_survey_id: str | None = None) -> None:
+        survey_id = (preselected_survey_id or "").strip() or _pick_survey_id(
+            message="Pick a survey to add question(s):"
+        )
         if not survey_id:
             return
         definition = _fetch_definition_for_menu(survey_id)
@@ -2200,8 +2202,10 @@ def handle_menu(args: argparse.Namespace) -> None:
             ),
         )
 
-    def _menu_move_question() -> None:
-        survey_id = _pick_survey_id(message="Pick a survey to move question(s):")
+    def _menu_move_question(*, preselected_survey_id: str | None = None) -> None:
+        survey_id = (preselected_survey_id or "").strip() or _pick_survey_id(
+            message="Pick a survey to move question(s):"
+        )
         if not survey_id:
             return
         definition = _fetch_definition_for_menu(survey_id)
@@ -2261,13 +2265,32 @@ def handle_menu(args: argparse.Namespace) -> None:
         )
 
     direct_structural = bool(getattr(args, "structural_edit", False))
+    direct_add_question = bool(getattr(args, "add_question_interactive", False))
+    direct_move_question = bool(getattr(args, "move_question_interactive", False))
     direct_survey_id = str(getattr(args, "survey_id", "") or "").strip() or None
-    if direct_survey_id and not direct_structural:
+    if sum(
+        int(flag)
+        for flag in (direct_structural, direct_add_question, direct_move_question)
+    ) > 1:
         raise SystemExit(
-            "[survey-menu] ERROR: --survey-id requires --structural-edit."
+            "[survey-menu] ERROR: choose only one direct mode: "
+            "--structural-edit, --add-question-interactive, or --move-question-interactive."
+        )
+    if direct_survey_id and not (
+        direct_structural or direct_add_question or direct_move_question
+    ):
+        raise SystemExit(
+            "[survey-menu] ERROR: --survey-id requires one of "
+            "--structural-edit, --add-question-interactive, --move-question-interactive."
         )
     if direct_structural:
         _menu_items_structural_edits(preselected_survey_id=direct_survey_id)
+        return
+    if direct_add_question:
+        _menu_add_question(preselected_survey_id=direct_survey_id)
+        return
+    if direct_move_question:
+        _menu_move_question(preselected_survey_id=direct_survey_id)
         return
 
     def _menu_context(path: str, summary: str, reachable: str) -> None:
@@ -9723,9 +9746,22 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Jump directly to Items structural edits (skip category navigation).",
     )
     p_menu.add_argument(
+        "--add-question-interactive",
+        action="store_true",
+        help="Jump directly to guided add-question flow (skip category navigation).",
+    )
+    p_menu.add_argument(
+        "--move-question-interactive",
+        action="store_true",
+        help="Jump directly to guided move-question flow (skip category navigation).",
+    )
+    p_menu.add_argument(
         "--survey-id",
         dest="survey_id",
-        help="Preselect SurveyID for --structural-edit (skips survey picker).",
+        help=(
+            "Preselect SurveyID for direct interactive modes "
+            "(--structural-edit/--add-question-interactive/--move-question-interactive)."
+        ),
     )
     p_menu.add_argument(
         "--account",

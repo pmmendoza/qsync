@@ -8,6 +8,7 @@ Design goals:
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass, field
 import os
 import re
@@ -827,6 +828,8 @@ class SurveyMenuScreen(Screen):
                 "Refresh inventory (update surveys/inventory.csv)",
                 "List surveys (API top 30)",
                 "Items: structural edits (stage → preview → push)",
+                "Add question(s): guided wizard (CLI flow)",
+                "Move question(s): guided wizard (CLI flow)",
                 "← Back",
                 id="menu",
             )
@@ -835,6 +838,44 @@ class SurveyMenuScreen(Screen):
                 id="detail",
             )
         yield Footer()
+
+    def _run_cli_question_wizard(self, *, mode: str) -> None:
+        detail = self.query_one("#detail", Static)
+        try:
+            from qsync.cli_survey import handle_menu
+
+            mode_label = "add-question" if mode == "add" else "move-question"
+            with self.app.suspend():  # type: ignore[attr-defined]
+                print(
+                    f"\n[qsync:tui] Launching {mode_label} guided wizard "
+                    "(interactive CLI flow)..."
+                )
+                handle_menu(
+                    argparse.Namespace(
+                        tui=False,
+                        structural_edit=False,
+                        add_question_interactive=(mode == "add"),
+                        move_question_interactive=(mode == "move"),
+                        survey_id=None,
+                        account=None,
+                    )
+                )
+            detail.update(
+                "\n".join(
+                    [
+                        f"{mode_label} wizard completed.",
+                        "",
+                        *_account_context_lines(),
+                        "",
+                        "Select another action on the left.",
+                    ]
+                )
+            )
+        except Exception as exc:
+            detail.update(
+                f"ERROR launching guided question wizard: {exc}\n\n"
+                + "\n".join(_account_context_lines())
+            )
 
     def on_mount(self) -> None:
         detail = self.query_one("#detail", Static)
@@ -898,6 +939,32 @@ class SurveyMenuScreen(Screen):
                     [
                         "Items structural edits:",
                         "- Stage → review → push (uses existing CLI wizard in a suspended terminal)",
+                        "",
+                        *ctx,
+                    ]
+                )
+            )
+        elif idx == 4:
+            detail.update(
+                "\n".join(
+                    [
+                        "Add question(s) guided wizard:",
+                        "- Clone template question or load question JSON",
+                        "- Choose placement (after/before/prepend/append)",
+                        "- Supports dry-run/live/publish options",
+                        "",
+                        *ctx,
+                    ]
+                )
+            )
+        elif idx == 5:
+            detail.update(
+                "\n".join(
+                    [
+                        "Move question(s) guided wizard:",
+                        "- Select one or more QIDs",
+                        "- Choose placement (after/before/prepend/append)",
+                        "- Supports dry-run/live/publish options",
                         "",
                         *ctx,
                     ]
@@ -999,6 +1066,12 @@ class SurveyMenuScreen(Screen):
         if idx == 3:
             self.app.structural_state = StructuralEditState()  # type: ignore[attr-defined]
             self.app.push_screen("struct_survey")  # type: ignore[attr-defined]
+            return
+        if idx == 4:
+            self._run_cli_question_wizard(mode="add")
+            return
+        if idx == 5:
+            self._run_cli_question_wizard(mode="move")
             return
         else:
             self.app.pop_screen()  # type: ignore[attr-defined]
