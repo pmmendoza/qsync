@@ -554,10 +554,11 @@ def _condition_to_branch_logic(condition: dict) -> dict[str, Any]:
     if "expressions" in condition:
         # Multiple expressions with conjunction
         if_block: dict[str, Any] = {"Type": "If"}
+        conjunction = condition.get("conjunction") or "And"
         for i, expr in enumerate(condition["expressions"]):
             expr_dict = _expression_to_logic(expr)
-            if i > 0 and condition.get("conjunction"):
-                expr_dict["Conjuction"] = condition["conjunction"]
+            if i > 0:
+                expr_dict["Conjuction"] = conjunction
             if_block[str(i)] = expr_dict
 
         return {"Type": "BooleanExpression", "0": if_block}

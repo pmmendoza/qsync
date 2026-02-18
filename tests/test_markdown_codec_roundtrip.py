@@ -17,3 +17,8 @@ def test_md_to_html_does_not_turn_four_stars_into_emphasis() -> None:
     assert "<em>" not in html
     assert html == "****"
 
+
+def test_html_to_md_caps_excess_consecutive_newlines() -> None:
+    md = html_to_md("<p>Text</p><br><br><p>Text</p>")
+    assert md == "Text\n\nText"
+    assert "\n\n\n" not in md

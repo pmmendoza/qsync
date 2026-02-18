@@ -308,3 +308,58 @@ class TestComplexConditions:
         branch = restored["Flow"][0]
         assert branch["Type"] == "Branch"
         assert "BranchLogic" in branch
+
+    def test_multi_expression_condition_defaults_to_and(self):
+        """Missing conjunction in simplified condition should default to And."""
+        yaml_content = """
+version: 1
+survey_id: SV_test
+flow:
+  - type: Branch
+    id: FL_2
+    condition:
+      expressions:
+        - logic_type: EmbeddedField
+          field: flag_a
+          operator: EqualTo
+          value: "yes"
+        - logic_type: EmbeddedField
+          field: flag_b
+          operator: EqualTo
+          value: "yes"
+    then:
+      - type: Block
+        id: BL_then
+"""
+
+        restored = yaml_to_flow(yaml_content)
+        expr_1 = restored["Flow"][0]["BranchLogic"]["0"]["1"]
+        assert expr_1["Conjuction"] == "And"
+
+    def test_multi_expression_condition_honors_explicit_conjunction(self):
+        """Explicit conjunction should be preserved in BranchLogic."""
+        yaml_content = """
+version: 1
+survey_id: SV_test
+flow:
+  - type: Branch
+    id: FL_2
+    condition:
+      conjunction: Or
+      expressions:
+        - logic_type: EmbeddedField
+          field: flag_a
+          operator: EqualTo
+          value: "yes"
+        - logic_type: EmbeddedField
+          field: flag_b
+          operator: EqualTo
+          value: "yes"
+    then:
+      - type: Block
+        id: BL_then
+"""
+
+        restored = yaml_to_flow(yaml_content)
+        expr_1 = restored["Flow"][0]["BranchLogic"]["0"]["1"]
+        assert expr_1["Conjuction"] == "Or"

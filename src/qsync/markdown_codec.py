@@ -94,25 +94,49 @@ class _HTMLToMarkdown(HTMLParser):
             if 0 <= close_idx < len(self.parts):
                 self.parts[close_idx] = ""
 
+    def _trailing_newline_count(self) -> int:
+        """Count trailing newlines in current output across part boundaries."""
+        count = 0
+        for part in reversed(self.parts):
+            if not part:
+                continue
+            i = len(part) - 1
+            while i >= 0 and part[i] == "\n":
+                count += 1
+                i -= 1
+            if i >= 0:
+                break
+        return count
+
+    def _append_newlines(self, count: int) -> None:
+        """Append up to `count` newlines while capping runs at two."""
+        if count <= 0:
+            return
+        trailing = self._trailing_newline_count()
+        allowed = max(0, 2 - trailing)
+        emit = min(count, allowed)
+        if emit > 0:
+            self.parts.append("\n" * emit)
+
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
         if tag == "br":
             # Avoid turning `</ul><br>` into a blank line: our list items already end
             # with a newline from `</li>`.
-            if not (self._just_closed_list and self.parts and self.parts[-1].endswith("\n")):
-                self.parts.append("\n")
+            if not (self._just_closed_list and self._trailing_newline_count() > 0):
+                self._append_newlines(1)
             self._just_closed_list = False
         elif tag in {"p", "div"}:
             self._just_closed_list = False
             # Paragraphs become blank-line separated
-            if self.parts and not self.parts[-1].endswith("\n\n"):
-                self.parts.append("\n\n")
+            if self.parts:
+                self._append_newlines(2)
         elif tag == "li":
             self._just_closed_list = False
             self.in_li = True
             # Ensure list items start on a new line
-            if self.parts and not self.parts[-1].endswith("\n"):
-                self.parts.append("\n")
+            if self.parts and self._trailing_newline_count() == 0:
+                self._append_newlines(1)
             self.parts.append("- ")
         elif tag in {"strong", "b"}:
             self._just_closed_list = False
@@ -125,8 +149,8 @@ class _HTMLToMarkdown(HTMLParser):
         tag = tag.lower()
         if tag == "li":
             self.in_li = False
-            if not self.parts or not self.parts[-1].endswith("\n"):
-                self.parts.append("\n")
+            if self._trailing_newline_count() == 0:
+                self._append_newlines(1)
         elif tag in {"strong", "b"}:
             self._close_emphasis("**")
         elif tag in {"em", "i"}:
@@ -136,8 +160,8 @@ class _HTMLToMarkdown(HTMLParser):
             self._just_closed_list = True
         elif tag in {"p", "div"}:
             self._just_closed_list = False
-            if not self.parts or not self.parts[-1].endswith("\n\n"):
-                self.parts.append("\n\n")
+            if self.parts:
+                self._append_newlines(2)
 
     def handle_data(self, data):
         if not data:
