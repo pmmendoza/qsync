@@ -1,9 +1,17 @@
 """Test that Trash block questions are properly filtered from all Excel sheets."""
 
+from openpyxl import load_workbook
+
 from qsync.excel_io import (
+    OPTIONS_SHEET,
+    QUESTION_SHEET,
+    SBS_COLUMN_ANSWERS_SHEET,
+    SBS_COLUMNS_SHEET,
+    SUBITEMS_SHEET,
     build_option_rows,
     build_question_rows,
     build_subitem_rows,
+    init_workbook_from_survey,
 )
 
 
@@ -365,3 +373,101 @@ def test_questions_and_subitems_are_flow_scoped_and_flow_ordered():
     assert subitem_keys[0] == ("QID1", "Answer", "2")
     assert subitem_keys[1] == ("QID1", "Answer", "1")
     assert "QID_OUT" not in {qid for qid, _field, _aid in subitem_keys}
+
+
+def test_workbook_adds_flow_metadata_columns_on_item_sheets(tmp_path):
+    survey_payload = {
+        "result": {
+            "SurveyID": "SV_FLOW_COLS",
+            "Blocks": {
+                "BL_A": {
+                    "Type": "Standard",
+                    "Description": "Block A",
+                    "BlockElements": [{"Type": "Question", "QuestionID": "QID2"}],
+                },
+            },
+            "Questions": {
+                "QID2": {
+                    "QuestionType": "MC",
+                    "DataExportTag": "Q2",
+                    "QuestionText": "Question 2",
+                    "Choices": {"1": {"Display": "Yes"}},
+                }
+            },
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_A"}]},
+        }
+    }
+
+    xlsx_path = tmp_path / "SV_FLOW_COLS.xlsx"
+    init_workbook_from_survey("SV_FLOW_COLS", survey_payload, xlsx_path)
+    wb = load_workbook(xlsx_path)
+
+    for sheet_name in (
+        QUESTION_SHEET,
+        OPTIONS_SHEET,
+        SUBITEMS_SHEET,
+        SBS_COLUMNS_SHEET,
+        SBS_COLUMN_ANSWERS_SHEET,
+    ):
+        headers = [cell.value for cell in next(wb[sheet_name].iter_rows(max_row=1))]
+        assert "BlockID" in headers
+        assert "BlockOrder" in headers
+        assert "QuestionOrder" in headers
+        assert "QuestionOrderInBlock" in headers
+
+
+def test_workbook_orders_by_flow_question_order_not_lexical_qid(tmp_path):
+    survey_payload = {
+        "result": {
+            "SurveyID": "SV_FLOW_SORT",
+            "Blocks": {
+                "BL_A": {
+                    "Type": "Standard",
+                    "Description": "Block A",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": "QID2"},
+                        {"Type": "Question", "QuestionID": "QID100"},
+                    ],
+                },
+            },
+            "Questions": {
+                "QID2": {
+                    "QuestionType": "MC",
+                    "DataExportTag": "Q2",
+                    "QuestionText": "Question 2",
+                    "Choices": {"1": {"Display": "Yes"}},
+                },
+                "QID100": {
+                    "QuestionType": "MC",
+                    "DataExportTag": "Q100",
+                    "QuestionText": "Question 100",
+                    "Choices": {"1": {"Display": "No"}},
+                },
+            },
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_A"}]},
+        }
+    }
+
+    xlsx_path = tmp_path / "SV_FLOW_SORT.xlsx"
+    init_workbook_from_survey("SV_FLOW_SORT", survey_payload, xlsx_path)
+    wb = load_workbook(xlsx_path)
+
+    q_ws = wb[QUESTION_SHEET]
+    q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
+    qid_idx = q_headers.index("QID") + 1
+    q_qids = [
+        str(q_ws.cell(row=row, column=qid_idx).value or "").strip()
+        for row in range(2, q_ws.max_row + 1)
+        if str(q_ws.cell(row=row, column=qid_idx).value or "").strip()
+    ]
+    assert q_qids[:2] == ["QID2", "QID100"]
+
+    o_ws = wb[OPTIONS_SHEET]
+    o_headers = [cell.value for cell in next(o_ws.iter_rows(max_row=1))]
+    o_qid_idx = o_headers.index("QID") + 1
+    o_qids = [
+        str(o_ws.cell(row=row, column=o_qid_idx).value or "").strip()
+        for row in range(2, o_ws.max_row + 1)
+        if str(o_ws.cell(row=row, column=o_qid_idx).value or "").strip()
+    ]
+    assert o_qids[:2] == ["QID2", "QID100"]
