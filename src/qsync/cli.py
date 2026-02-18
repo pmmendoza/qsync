@@ -2558,7 +2558,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_sync.add_argument(
         "--survey-id",
-        help="Target survey ID (omit to scan all focal surveys)",
+        action="append",
+        help=(
+            "Target survey ID(s) (repeatable/comma-separated). "
+            "Omit to scan focal surveys."
+        ),
     )
     p_sync.add_argument(
         "--tui",
@@ -4991,6 +4995,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             from .terminal_output import info, error, dim, format_elapsed
 
             json_output = bool(getattr(args, "json", False))
+            survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
 
             # Parse scope filter if provided
             scope = None
@@ -4998,9 +5003,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 try:
                     scope = ScopeFilter.parse(
                         args.scope,
-                        survey_id=(
-                            args.survey_id if hasattr(args, "survey_id") else None
-                        ),
+                        survey_id=survey_ids[0] if len(survey_ids) == 1 else None,
                     )
                 except Exception as e:
                     error("[qsync:sync]", f"Invalid scope filter: {e}")
@@ -5043,49 +5046,82 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         "--skip-refresh overrides --refresh-workbooks; workbook refresh disabled.",
                     )
 
-            # Single survey or multi-survey?
-            if getattr(args, "survey_id", None):
+            # Single survey or explicit selected surveys?
+            if survey_ids:
                 from .survey_ref import format_survey_ref
 
-                if not json_output:
+                if len(survey_ids) > 1 and bool(getattr(args, "all", False)) and not json_output:
                     info(
                         "[qsync:sync]",
-                        f"Syncing survey {format_survey_ref(args.survey_id)}...",
+                        "--all is ignored when --survey-id values are provided.",
                     )
-                start_time = time.perf_counter()
-                summary = sync_survey(
-                    survey_id=args.survey_id,
-                    dimensions=dimensions,
-                    interactive=not bool(args.yes),
-                    force_live=bool(args.force_live),
-                    force_preview=bool(args.force_preview),
-                    auto_yes=bool(args.yes),
-                    pending_action=str(getattr(args, "pending_action", "abort")),
-                    scope=scope,
-                    per_dimension=bool(getattr(args, "per_dimension", False)),
-                    skip_publish=bool(getattr(args, "skip_publish", False)),
-                    refresh_workbooks=refresh_workbooks,
-                    allow_drift=bool(getattr(args, "allow_drift", False)),
-                    allow_skip_embedded=bool(
-                        getattr(args, "allow_skip_embedded", False)
-                    ),
-                    json_output=json_output,
-                    fix=getattr(args, "fix", None),
-                )
-                elapsed = time.perf_counter() - start_time
-                success = summary.success if summary else True
-                if summary and not summary.success and not json_output:
+
+                run_start = time.perf_counter()
+                failed_summaries = []
+                success = True
+
+                if len(survey_ids) > 1 and not json_output:
+                    info(
+                        "[qsync:sync]",
+                        f"Syncing selected surveys ({len(survey_ids)}): {', '.join(survey_ids)}",
+                    )
+
+                for survey_id in survey_ids:
+                    if not json_output:
+                        info(
+                            "[qsync:sync]",
+                            f"Syncing survey {format_survey_ref(survey_id)}...",
+                        )
+                    start_time = time.perf_counter()
+                    summary = sync_survey(
+                        survey_id=survey_id,
+                        dimensions=dimensions,
+                        interactive=not bool(args.yes),
+                        force_live=bool(args.force_live),
+                        force_preview=bool(args.force_preview),
+                        auto_yes=bool(args.yes),
+                        pending_action=str(getattr(args, "pending_action", "abort")),
+                        scope=scope,
+                        per_dimension=bool(getattr(args, "per_dimension", False)),
+                        skip_publish=bool(getattr(args, "skip_publish", False)),
+                        refresh_workbooks=refresh_workbooks,
+                        allow_drift=bool(getattr(args, "allow_drift", False)),
+                        allow_skip_embedded=bool(
+                            getattr(args, "allow_skip_embedded", False)
+                        ),
+                        json_output=json_output,
+                        fix=getattr(args, "fix", None),
+                    )
+                    elapsed = time.perf_counter() - start_time
+                    survey_success = summary.success if summary else True
+                    success = success and survey_success
+                    if summary and not summary.success:
+                        failed_summaries.append(summary)
+                    if not json_output:
+                        from .terminal_output import mark_timing_emitted
+
+                        dim(
+                            "[qsync:sync]",
+                            f"{survey_id}: completed in {format_elapsed(elapsed)}",
+                        )
+                        mark_timing_emitted()
+
+                if failed_summaries and not json_output:
                     display_recovery_instructions(
-                        [summary],
+                        failed_summaries,
                         force_live=bool(args.force_live),
                         force_preview=bool(args.force_preview),
                         scope_expr=getattr(args, "scope", None),
                         auto_yes=bool(args.yes),
                     )
+
                 if not json_output:
                     from .terminal_output import mark_timing_emitted
 
-                    dim("[qsync:sync]", f"Completed in {format_elapsed(elapsed)}")
+                    dim(
+                        "[qsync:sync]",
+                        f"Completed selected sync run in {format_elapsed(time.perf_counter() - run_start)}",
+                    )
                     mark_timing_emitted()
             else:
                 if not json_output:
