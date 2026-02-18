@@ -7,6 +7,7 @@ paths at import time).
 Current preferences include:
 - `active_account` (managed via `qsync account use|clear`)
 - `survey_cache_subdir` (optional cache folder name under `surveys/`, e.g. `caches`)
+- `items_allow_externally_managed_qids` (optional QID override tokens for items sync)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ _STATE_DIRNAME = ".qsync"
 _PREFS_FILENAME = "preferences.json"
 _ACTIVE_ACCOUNT_KEY = "active_account"
 _SURVEY_CACHE_SUBDIR_KEY = "survey_cache_subdir"
+_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS_KEY = "items_allow_externally_managed_qids"
 
 
 def state_dir(root: Path) -> Path:
@@ -107,4 +109,38 @@ def set_workspace_survey_cache_subdir(root: Path, subdir: str | None) -> None:
         prefs.pop(_SURVEY_CACHE_SUBDIR_KEY, None)
     else:
         prefs[_SURVEY_CACHE_SUBDIR_KEY] = str(subdir)
+    save_prefs(root, prefs)
+
+
+def get_workspace_items_allow_externally_managed_qids(root: Path) -> str | None:
+    prefs, _err = load_prefs(root)
+    raw = prefs.get(_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS_KEY)
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    return value or None
+
+
+def set_workspace_items_allow_externally_managed_qids(
+    root: Path, value: str | None
+) -> None:
+    prefs, err = load_prefs(root)
+    if err:
+        raise QsyncConfigError(
+            error_id="QSYNC-CONFIG-PREFS-003",
+            problem="Workspace preferences file is not valid JSON.",
+            why="qsync stores workspace-local preferences under `.qsync/preferences.json`.",
+            impact="qsync cannot safely update workspace preferences without risking data loss.",
+            action=f"Fix or delete `{prefs_path(root)}`, then retry the command.",
+            context={"prefs_path": str(prefs_path(root)), "parse_error": err},
+            exit_code=1,
+        )
+    if value is None:
+        prefs.pop(_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS_KEY, None)
+    else:
+        cleaned = str(value).strip()
+        if cleaned:
+            prefs[_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS_KEY] = cleaned
+        else:
+            prefs.pop(_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS_KEY, None)
     save_prefs(root, prefs)

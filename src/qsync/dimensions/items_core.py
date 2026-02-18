@@ -41,8 +41,11 @@ def _resolve_allow_externally_managed_qids(*, survey_id: str) -> set[str]:
     """
     Resolve QIDs that are allowed to override "externally managed" skips.
 
-    Reads `QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS` from the active env config
-    (shell env overrides `.env`), and returns QIDs that apply to this survey.
+    Reads `QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS` from:
+    1) shell env / CLI flag
+    2) active `.env`
+    3) workspace preferences (set via survey menu)
+    and returns QIDs that apply to this survey.
 
     Supported token formats (comma/whitespace separated):
     - `QID15`                  (applies to the current survey_id)
@@ -61,6 +64,19 @@ def _resolve_allow_externally_managed_qids(*, survey_id: str) -> set[str]:
         except Exception:
             env = {}
         raw = str(env.get(_ALLOW_EXTERNALLY_MANAGED_QIDS_ENV) or "")
+        if not raw.strip():
+            try:
+                from ..config import resolve_root
+                from ..workspace_prefs import (
+                    get_workspace_items_allow_externally_managed_qids,
+                )
+
+                root = resolve_root(required=False) or Path.cwd()
+                raw = str(
+                    get_workspace_items_allow_externally_managed_qids(root) or ""
+                )
+            except Exception:
+                raw = ""
 
     raw = raw.strip()
     if not raw:

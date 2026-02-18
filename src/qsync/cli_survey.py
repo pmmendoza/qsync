@@ -1197,6 +1197,93 @@ def handle_menu(args: argparse.Namespace) -> None:
                 preferred_dir.mkdir(parents=True, exist_ok=True)
                 print(f"[survey-menu] Created: {preferred_dir}")
 
+    def _menu_configure_externally_managed_overrides() -> None:
+        from .workspace_prefs import (
+            get_workspace_items_allow_externally_managed_qids,
+            set_workspace_items_allow_externally_managed_qids,
+        )
+
+        while True:
+            pref = get_workspace_items_allow_externally_managed_qids(root)
+            env_value = (
+                os.environ.get("QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS") or ""
+            ).strip()
+            effective = env_value or (pref or "")
+
+            print("[survey-menu] Externally managed items overrides")
+            print(
+                "  setting key: QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS "
+                "(same token syntax as CLI/env)"
+            )
+            print(f"  workspace_pref: {pref or '(unset)'}")
+            print(f"  shell_env: {env_value or '(unset)'}")
+            print(f"  effective_now: {effective or '(none)'}")
+            if env_value:
+                print("  note: shell env/CLI flag takes precedence over workspace preference.")
+
+            choice = select_from_list(
+                "Externally managed overrides",
+                [
+                    "Set override tokens (raw)",
+                    "Add QIDs for one survey",
+                    "Clear workspace preference",
+                    "↩ Back",
+                ],
+                instruction=(
+                    "Examples: QID15 QID20 SV_xxx:QID30. "
+                    "Used by items preview/stage/push/sync when env/CLI does not override."
+                ),
+            )
+            if not choice or choice.endswith("Back"):
+                return
+            if choice.startswith("Set override"):
+                raw = input(
+                    "Override tokens (comma/space separated; blank = no change): "
+                ).strip()
+                if not raw:
+                    print("[survey-menu] No change.")
+                    continue
+                set_workspace_items_allow_externally_managed_qids(root, raw)
+                print("[survey-menu] Updated workspace externally managed override tokens.")
+                continue
+            if choice.startswith("Add QIDs"):
+                survey_id = _pick_survey_id(
+                    message="Pick a survey for scoped overrides:"
+                )
+                if not survey_id:
+                    continue
+                qids_raw = input(
+                    "QIDs to allow for this survey (comma/space, e.g. QID15 QID22): "
+                ).strip()
+                if not qids_raw:
+                    print("[survey-menu] No change.")
+                    continue
+                new_qids = [
+                    tok
+                    for tok in re.split(r"[,\s]+", qids_raw)
+                    if tok and tok.strip()
+                ]
+                if not new_qids:
+                    print("[survey-menu] No valid QIDs entered.")
+                    continue
+                existing_tokens = [
+                    tok for tok in re.split(r"[,\s]+", (pref or "").strip()) if tok
+                ]
+                merged = list(existing_tokens)
+                for qid in new_qids:
+                    scoped = f"{survey_id}:{qid}"
+                    if scoped not in merged:
+                        merged.append(scoped)
+                set_workspace_items_allow_externally_managed_qids(
+                    root, " ".join(merged)
+                )
+                print(
+                    f"[survey-menu] Added {len(new_qids)} scoped override(s) for {survey_id}."
+                )
+                continue
+            set_workspace_items_allow_externally_managed_qids(root, None)
+            print("[survey-menu] Cleared workspace externally managed override tokens.")
+
     def _menu_prepare() -> None:
         if not _require_default_account(action="survey prepare"):
             return
@@ -3324,6 +3411,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             "workspace-refresh-question-bank": _menu_refresh_question_bank_index,
             "workspace-prepare": _menu_prepare,
             "workspace-configure-cache": _menu_configure_cache_folder,
+            "workspace-configure-externally-managed": _menu_configure_externally_managed_overrides,
             # Danger zone
             "danger-rename": _menu_rename,
             "danger-delete": _menu_delete,
@@ -3565,7 +3653,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             _menu_context(
                 "Survey Menu > Workspace & Account",
                 "Environment/account controls and local cache preparation.",
-                "Switch account, whoami/API checks, inventory refresh, question-bank index refresh, prepare, cache folder",
+                "Switch account, whoami/API checks, inventory refresh, question-bank index refresh, prepare, cache folder, externally managed overrides",
             )
             choice = select_from_list(
                 "Workspace & Account",
@@ -3577,6 +3665,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Refresh question-bank index",
                     "Prepare surfaces",
                     "Configure survey cache folder",
+                    "Configure externally managed item overrides",
                     "↩ Back",
                 ],
                 instruction="Use this area before edits when account/workspace setup may be the issue.",
@@ -3595,6 +3684,8 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_refresh_question_bank_index()
             elif choice.startswith("Prepare"):
                 _menu_prepare()
+            elif choice.startswith("Configure externally managed"):
+                _menu_configure_externally_managed_overrides()
             else:
                 _menu_configure_cache_folder()
             continue
