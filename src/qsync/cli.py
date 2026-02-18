@@ -230,10 +230,21 @@ def _print_version() -> None:
         print(line)
 
 
-def _add_common_args(parser: argparse.ArgumentParser, *, include_xlsx: bool) -> None:
+def _add_common_args(
+    parser: argparse.ArgumentParser,
+    *,
+    include_xlsx: bool,
+    survey_id_action: str | None = None,
+    survey_id_help: str | None = None,
+) -> None:
+    survey_kwargs: dict[str, object] = {}
+    if survey_id_action:
+        survey_kwargs["action"] = survey_id_action
     parser.add_argument(
         "--survey-id",
-        help="Target Qualtrics Survey ID (omit to select interactively)",
+        help=survey_id_help
+        or "Target Qualtrics Survey ID (omit to select interactively)",
+        **survey_kwargs,
     )
     if include_xlsx:
         parser.add_argument(
@@ -252,7 +263,12 @@ def _add_common_args(parser: argparse.ArgumentParser, *, include_xlsx: bool) -> 
     _add_include_args(parser, include_js=False)
 
 
-def _add_js_common_args(parser: argparse.ArgumentParser) -> None:
+def _add_js_common_args(
+    parser: argparse.ArgumentParser,
+    *,
+    survey_id_action: str | None = None,
+    survey_id_help: str | None = None,
+) -> None:
     def _default_mapping_path() -> Path:
         # Account-aware default: survey_js/.<account>/survey_qid_js_map.csv when selected.
         from .config import resolve_root, resolve_scoped_dir
@@ -260,9 +276,14 @@ def _add_js_common_args(parser: argparse.ArgumentParser) -> None:
         root = resolve_root(required=False) or Path.cwd()
         return resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
 
+    survey_kwargs: dict[str, object] = {}
+    if survey_id_action:
+        survey_kwargs["action"] = survey_id_action
     parser.add_argument(
         "--survey-id",
-        help="Target Qualtrics Survey ID (omit to select interactively)",
+        help=survey_id_help
+        or "Target Qualtrics Survey ID (omit to select interactively)",
+        **survey_kwargs,
     )
     parser.add_argument(
         "--mapping",
@@ -378,8 +399,49 @@ def _format_counts(ctx: PushContext) -> str:
     )
 
 
+def _normalize_survey_ids(value: object) -> list[str]:
+    ids: list[str] = []
+    if value is None:
+        return ids
+    values = value if isinstance(value, list) else [value]
+    for item in values:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        ids.extend(part.strip() for part in text.split(",") if part.strip())
+    # Deduplicate while preserving order.
+    return list(dict.fromkeys(ids))
+
+
+def _prompt_for_survey_ids_if_needed(
+    survey_ids: object,
+    *,
+    allow_all_surveys: bool = False,
+) -> list[str]:
+    ids = _normalize_survey_ids(survey_ids)
+    if ids:
+        return ids
+
+    # Import here to avoid circular dependency
+    from .survey_inventory import prompt_for_survey_ids
+
+    prompted = prompt_for_survey_ids(
+        allow_all_surveys=allow_all_surveys,
+        interactive=sys.stdin.isatty(),
+    )
+    if not prompted:
+        if sys.stdin.isatty():
+            print("[qsync] Operation cancelled.")
+        else:
+            print("[qsync] ERROR: --survey-id required in non-interactive mode")
+        raise SystemExit(1)
+    return prompted
+
+
 def _prompt_for_survey_id_if_needed(
-    survey_id: str | None,
+    survey_id: object,
     *,
     allow_all_surveys: bool = False,
 ) -> str:
@@ -395,25 +457,15 @@ def _prompt_for_survey_id_if_needed(
     Raises:
         SystemExit: If no survey ID provided and prompt cancelled/non-interactive
     """
-    if survey_id:
-        return survey_id
-
-    # Import here to avoid circular dependency
-    from .survey_inventory import prompt_for_survey_id
-
-    prompted_id = prompt_for_survey_id(
+    ids = _prompt_for_survey_ids_if_needed(
+        survey_id,
         allow_all_surveys=allow_all_surveys,
-        interactive=sys.stdin.isatty(),
     )
-
-    if not prompted_id:
-        if sys.stdin.isatty():
-            print("[qsync] Operation cancelled.")
-        else:
-            print("[qsync] ERROR: --survey-id required in non-interactive mode")
-        raise SystemExit(1)
-
-    return prompted_id
+    if len(ids) > 1:
+        raise SystemExit(
+            "[qsync] ERROR: This command accepts only one --survey-id value."
+        )
+    return ids[0]
 
 
 def _prompt_confirmation(message: str) -> bool:
@@ -2290,7 +2342,14 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "pull",
         help="Pull survey to Excel workbook",
     )
-    _add_common_args(p_items_pull, include_xlsx=False)
+    _add_common_args(
+        p_items_pull,
+        include_xlsx=False,
+        survey_id_action="append",
+        survey_id_help=(
+            "Target survey ID(s) (repeatable/comma-separated; omit to select interactively)"
+        ),
+    )
     p_items_pull.add_argument("--xlsx", type=Path, help="Path to Excel workbook")
     p_items_pull.add_argument(
         "--language", action="append", dest="language", help="Add translation columns"
@@ -2641,7 +2700,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "pull",
         help="Rebuild survey_qid_js_map.csv and ensure mappings exist",
     )
-    _add_js_common_args(p_js_pull)
+    _add_js_common_args(
+        p_js_pull,
+        survey_id_action="append",
+        survey_id_help=(
+            "Target Qualtrics Survey ID(s) (repeatable/comma-separated; omit to select interactively)"
+        ),
+    )
     p_js_pull.add_argument(
         "--dry-run",
         action="store_true",
@@ -2804,11 +2869,21 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         metavar="COMMAND",
     )
 
-    def _add_eos_common_args(parser: argparse.ArgumentParser) -> None:
+    def _add_eos_common_args(
+        parser: argparse.ArgumentParser,
+        *,
+        survey_id_action: str | None = None,
+        survey_id_help: str | None = None,
+    ) -> None:
+        survey_kwargs: dict[str, object] = {}
+        if survey_id_action:
+            survey_kwargs["action"] = survey_id_action
         parser.add_argument(
             "--survey-id",
             dest="survey_id",
-            help="Target survey ID (omit to select interactively)",
+            help=survey_id_help
+            or "Target survey ID (omit to select interactively)",
+            **survey_kwargs,
         )
         parser.add_argument(
             "--allow-shared-message-edit",
@@ -2831,7 +2906,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "pull",
         help="Pull EOS library messages referenced by a survey into contents/",
     )
-    _add_eos_common_args(p_eos_pull)
+    _add_eos_common_args(
+        p_eos_pull,
+        survey_id_action="append",
+        survey_id_help=(
+            "Target survey ID(s) (repeatable/comma-separated; omit to select interactively)"
+        ),
+    )
 
     # eos preview
     p_eos_preview = eos_subparsers.add_parser(
@@ -2977,11 +3058,21 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     flow_subparsers = p_flow.add_subparsers(dest="flow_command", required=True)
 
-    def _add_flow_common_args(parser: argparse.ArgumentParser) -> None:
+    def _add_flow_common_args(
+        parser: argparse.ArgumentParser,
+        *,
+        survey_id_action: str | None = None,
+        survey_id_help: str | None = None,
+    ) -> None:
+        survey_kwargs: dict[str, object] = {}
+        if survey_id_action:
+            survey_kwargs["action"] = survey_id_action
         parser.add_argument(
             "--survey-id",
             dest="survey_id",
-            help="Target survey ID (omit to select interactively)",
+            help=survey_id_help
+            or "Target survey ID (omit to select interactively)",
+            **survey_kwargs,
         )
         parser.add_argument(
             "--yes",
@@ -2994,7 +3085,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "pull",
         help="Pull survey flow from Qualtrics and save as YAML",
     )
-    _add_flow_common_args(p_flow_pull)
+    _add_flow_common_args(
+        p_flow_pull,
+        survey_id_action="append",
+        survey_id_help=(
+            "Target survey ID(s) (repeatable/comma-separated; omit to select interactively)"
+        ),
+    )
     p_flow_pull.add_argument(
         "--force",
         action="store_true",
@@ -3179,8 +3276,9 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_trans_pull.add_argument(
         "--survey-id",
+        action="append",
         dest="survey_id",
-        help="Target survey ID (omit to select interactively)",
+        help="Target survey ID(s) (repeatable/comma-separated; omit to select interactively)",
     )
     p_trans_pull.add_argument(
         "--language",
@@ -4024,14 +4122,60 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     print(f"- survey_id={sid}{flow_part} source={ctx.get('source')}")
                 return
 
-            survey_id = getattr(args, "survey_id", None)
-            if not survey_id:
-                error("[qsync:eos]", "Missing --survey-id")
-                raise SystemExit(2)
-
             allow_shared = bool(getattr(args, "allow_shared_message_edit", False))
             include_backups_scan = bool(getattr(args, "include_backups_scan", False))
             yes = bool(getattr(args, "yes", False))
+
+            if args.eos_command == "pull":
+                survey_ids = _prompt_for_survey_ids_if_needed(
+                    getattr(args, "survey_id", None),
+                    allow_all_surveys=True,
+                )
+                header("[qsync:eos]", "Pulling EOS messages...")
+                failures = 0
+                for survey_id in survey_ids:
+                    try:
+                        cache = load_cached_survey(survey_id)
+                        refs = extract_eos_message_refs(survey_id, cache.payload)
+                        shared = detect_shared_messages(
+                            survey_id=survey_id,
+                            refs={(r.library_id, r.message_id) for r in refs},
+                            include_backups=include_backups_scan,
+                        )
+                        if shared and not allow_shared:
+                            warn(
+                                "[qsync:eos]",
+                                f"{survey_id}: shared library message detected (local scan only). "
+                                "Continuing for inspection only; apply/push will require "
+                                "--allow-shared-message-edit.",
+                            )
+                        if allow_shared:
+                            confirm_shared_override(shared=shared, yes=yes)
+                        paths = pull_eos_messages(
+                            survey_id=survey_id,
+                            allow_shared=allow_shared,
+                            include_backups_scan=include_backups_scan,
+                        )
+                    except Exception as e:
+                        failures += 1
+                        error("[qsync:eos]", f"{survey_id}: ERROR: {e}")
+                        continue
+                    if not paths:
+                        info(
+                            "[qsync:eos]",
+                            f"{survey_id}: no EndSurvey DisplayMessage references found.",
+                        )
+                        continue
+                    for p in paths:
+                        success("[qsync:eos]", f"{survey_id}: pulled {p}")
+                if failures:
+                    raise SystemExit(2)
+                return
+
+            survey_id = _prompt_for_survey_id_if_needed(
+                getattr(args, "survey_id", None),
+                allow_all_surveys=False,
+            )
 
             cache = load_cached_survey(survey_id)
             refs = extract_eos_message_refs(survey_id, cache.payload)
@@ -4091,28 +4235,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         f"Updated FlowID(s): {', '.join(result.updated_flow_ids)}",
                     )
                 for p in result.pulled_paths:
-                    success("[qsync:eos]", f"Pulled: {p}")
-                return
-
-            if args.eos_command == "pull":
-                header("[qsync:eos]", "Pulling EOS messages...")
-                survey_id = _prompt_for_survey_id_if_needed(
-                    getattr(args, "survey_id", None),
-                    allow_all_surveys=True,
-                )
-                try:
-                    paths = pull_eos_messages(
-                        survey_id=survey_id,
-                        allow_shared=allow_shared,
-                        include_backups_scan=include_backups_scan,
-                    )
-                except Exception as e:
-                    error("[qsync:eos]", f"ERROR: {e}")
-                    raise SystemExit(2)
-                if not paths:
-                    info("[qsync:eos]", "No EndSurvey DisplayMessage references found.")
-                    return
-                for p in paths:
                     success("[qsync:eos]", f"Pulled: {p}")
                 return
 
@@ -4276,34 +4398,42 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             from .terminal_output import error, header, info, success, warn
             from .dimensions import flow as flow_dimension
 
-            survey_id = getattr(args, "survey_id", None)
-            if not survey_id:
-                survey_id = _prompt_for_survey_id_if_needed(
-                    None,
-                    allow_all_surveys=False,
-                )
-            if not survey_id:
-                error("[qsync:flow]", "Missing --survey-id")
-                raise SystemExit(2)
-
             yes = bool(getattr(args, "yes", False))
             interactive = sys.stdin.isatty() and not yes
 
             if args.flow_command == "pull":
+                survey_ids = _prompt_for_survey_ids_if_needed(
+                    getattr(args, "survey_id", None),
+                    allow_all_surveys=True,
+                )
                 header("[qsync:flow]", "Pulling survey flow...")
-                try:
-                    yaml_path = flow_dimension.pull(
-                        survey_id,
-                        force=bool(getattr(args, "force", False)),
-                    )
-                    success("[qsync:flow]", f"Pulled flow to {yaml_path}")
-                except FileExistsError as e:
-                    warn("[qsync:flow]", str(e))
-                    raise SystemExit(1)
-                except Exception as e:
-                    error("[qsync:flow]", f"ERROR: {e}")
-                    raise SystemExit(2)
+                failures = 0
+                exit_code = 1
+                for survey_id in survey_ids:
+                    try:
+                        yaml_path = flow_dimension.pull(
+                            survey_id,
+                            force=bool(getattr(args, "force", False)),
+                        )
+                        success(
+                            "[qsync:flow]",
+                            f"{survey_id}: pulled flow to {yaml_path}",
+                        )
+                    except FileExistsError as e:
+                        failures += 1
+                        warn("[qsync:flow]", f"{survey_id}: {e}")
+                    except Exception as e:
+                        failures += 1
+                        exit_code = 2
+                        error("[qsync:flow]", f"{survey_id}: ERROR: {e}")
+                if failures:
+                    raise SystemExit(exit_code)
                 return
+
+            survey_id = _prompt_for_survey_id_if_needed(
+                getattr(args, "survey_id", None),
+                allow_all_surveys=False,
+            )
 
             if args.flow_command == "preview":
                 header("[qsync:flow]", "Previewing flow changes...")
@@ -4386,10 +4516,20 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
             args.legacy_translations = False
 
+            if args.translations_command == "pull":
+                args.survey_id = _prompt_for_survey_ids_if_needed(
+                    getattr(args, "survey_id", None),
+                    allow_all_surveys=True,
+                )
+                handle_translations_pull(args)
+                return
+
             if hasattr(args, "survey_id"):
                 args.survey_id = _prompt_for_survey_id_if_needed(
                     getattr(args, "survey_id", None),
-                    allow_all_surveys=False,
+                    allow_all_surveys=bool(
+                        args.translations_command == "check-language"
+                    ),
                 )
 
             if args.translations_command == "languages":
@@ -4405,10 +4545,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
             if args.translations_command == "preview":
                 handle_translations_preview(args)
-                return
-
-            if args.translations_command == "pull":
-                handle_translations_pull(args)
                 return
 
             if args.translations_command == "apply":
@@ -4436,10 +4572,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 return
 
             if args.translations_command == "check-language":
-                args.survey_id = _prompt_for_survey_id_if_needed(
-                    getattr(args, "survey_id", None),
-                    allow_all_surveys=True,
-                )
                 handle_translations_check_language(args)
                 return
 
@@ -4475,14 +4607,16 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             from .terminal_output import error, info, success, warn
 
             if args.js_command == "pull":
+                survey_ids: list[str] = []
                 if not args.dry_run:
-                    args.survey_id = _prompt_for_survey_id_if_needed(
+                    survey_ids = _prompt_for_survey_ids_if_needed(
                         getattr(args, "survey_id", None),
                         allow_all_surveys=True,
                     )
                 rebuild_js_mapping(args.mapping, dry_run=bool(args.dry_run))
                 if not args.dry_run:
-                    _ensure_mapping_column(args.mapping, args.survey_id)
+                    for survey_id in survey_ids:
+                        _ensure_mapping_column(args.mapping, survey_id)
                 return
 
             _ensure_mapping_column(args.mapping, args.survey_id)
@@ -4987,20 +5121,27 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         # items command dispatcher
         if args.command == "items":
             if args.items_command == "pull":
-                from .terminal_output import info
+                from .terminal_output import error, info
 
-                survey_id = _prompt_for_survey_id_if_needed(
+                survey_ids = _prompt_for_survey_ids_if_needed(
                     getattr(args, "survey_id", None),
                     allow_all_surveys=True,
                 )
-                xlsx_path = args.xlsx or _default_xlsx_path(survey_id)
+                if args.xlsx is not None and len(survey_ids) > 1:
+                    error(
+                        "[qsync:items]",
+                        "--xlsx supports only one survey at a time. Omit --xlsx for multi-survey pulls.",
+                    )
+                    raise SystemExit(2)
                 languages = _collect_languages_from_args(args)
-                init_survey_to_excel(
-                    survey_id,
-                    xlsx_path,
-                    languages=languages,
-                )
-                info("[qsync:items]", f"Survey pulled to {xlsx_path}")
+                for survey_id in survey_ids:
+                    xlsx_path = args.xlsx or _default_xlsx_path(survey_id)
+                    init_survey_to_excel(
+                        survey_id,
+                        xlsx_path,
+                        languages=languages,
+                    )
+                    info("[qsync:items]", f"{survey_id}: survey pulled to {xlsx_path}")
                 return
 
             if args.items_command == "preview":

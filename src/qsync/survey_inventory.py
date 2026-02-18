@@ -1012,6 +1012,131 @@ def _select_from_records(
     return picked
 
 
+def _select_many_from_records(
+    records: List[Dict[str, str]],
+    *,
+    message: str,
+    include_focal_tag: bool,
+    include_back: bool = False,
+) -> List[str] | None:
+    if not records:
+        return None
+
+    shaped = []
+    for record in records:
+        sid = (record.get("id") or "").strip()
+        if not sid:
+            continue
+        name = record.get("name", "Untitled")
+        if include_focal_tag and record.get("focal"):
+            name = f"{name} (focal)"
+        shaped.append(
+            {
+                "id": sid,
+                "name": name,
+                "lastModified": record.get("lastModified", ""),
+                "focal": record.get("focal"),
+            }
+        )
+
+    from .survey_selection import pick_survey_ids_from_records
+
+    picked = pick_survey_ids_from_records(
+        message=message,
+        records=shaped,
+        include_back=include_back,
+        back_label="Back" if include_back else "↩ Back",
+        include_manual=True,
+        manual_label="✎ Enter SurveyID manually",
+        include_details=True,
+        details_label="🔍 View details (top 30)",
+        allow_multiple=True,
+    )
+    if picked is None:
+        return None
+    return list(dict.fromkeys([sid.strip() for sid in picked if sid and sid.strip()]))
+
+
+def prompt_for_survey_ids(
+    *,
+    allow_all_surveys: bool = False,
+    interactive: bool = True,
+) -> List[str] | None:
+    """Prompt user to select one or more surveys from inventory records."""
+    if not interactive:
+        return None
+
+    has_inventory = INVENTORY_CSV.exists() or LEGACY_SURVEY_CACHE.exists()
+    if not has_inventory:
+        from .interactive_menu import select_from_list
+
+        selection = select_from_list(
+            message="Inventory file missing. What do you want to do?",
+            choices=[
+                "✓ Run `qsync survey inventory` now",
+                "✗ Cancel",
+            ],
+        )
+        if selection is None or "Cancel" in selection:
+            print(
+                "[qsync] Inventory file missing. Next: run `qsync survey inventory` "
+                "or pass --survey-id."
+            )
+            return None
+        if not _refresh_inventory_for_prompt():
+            print(
+                "[qsync] Could not refresh inventory. Next: verify credentials (run `qsync doctor --check-api`) "
+                "and retry, or pass --survey-id."
+            )
+            return None
+
+    focal_records = _load_focal_survey_records()
+    all_records = _load_all_survey_records()
+    if not all_records:
+        print("[qsync] No surveys found in inventory.")
+        return None
+
+    if focal_records:
+        from .interactive_menu import select_from_list
+
+        scope_choices = ["Focal surveys"]
+        if allow_all_surveys:
+            scope_choices.append("All surveys")
+        scope_choices.append("✗ Cancel")
+
+        scope = select_from_list(
+            message="Select survey scope:",
+            choices=scope_choices,
+            default="Focal surveys",
+        )
+        if scope is None or "Cancel" in scope:
+            return None
+        target = focal_records if scope.startswith("Focal") else all_records
+        picked = _select_many_from_records(
+            target,
+            message="Select survey(s):",
+            include_focal_tag=True,
+            include_back=False,
+        )
+        if not picked:
+            return None
+        return picked
+
+    if not allow_all_surveys:
+        print("[qsync] No focal surveys found in inventory.csv.")
+        return None
+
+    picked = _select_many_from_records(
+        all_records,
+        message="Select survey(s):",
+        include_focal_tag=True,
+        include_back=False,
+    )
+    if not picked:
+        return None
+    return picked
+
+
 def prompt_for_survey_id(
     *,
     allow_all_surveys: bool = False,

@@ -95,14 +95,29 @@ def ensure_inventory_exists(
 
 def resolve_target_surveys(
     *,
-    survey_id: str | None,
+    survey_id: object | None,
     focal: bool,
     all_surveys: bool,
     interactive: bool,
     yes: bool,
 ) -> list[str]:
-    if survey_id:
-        return [survey_id]
+    def _normalize_survey_ids(value: object | None) -> list[str]:
+        if value is None:
+            return []
+        values = value if isinstance(value, list) else [value]
+        out: list[str] = []
+        for raw in values:
+            if raw is None:
+                continue
+            text = str(raw).strip()
+            if not text:
+                continue
+            out.extend(part.strip() for part in text.split(",") if part.strip())
+        return list(dict.fromkeys(out))
+
+    explicit_ids = _normalize_survey_ids(survey_id)
+    if explicit_ids:
+        return explicit_ids
 
     if focal or all_surveys or interactive:
         ok, _ = ensure_inventory_exists(yes=yes, interactive=interactive)
@@ -130,12 +145,12 @@ def resolve_target_surveys(
             "Provide --survey-id (or use --focal/--all in an interactive terminal)."
         )
 
-    from .survey_inventory import prompt_for_survey_id
+    from .survey_inventory import prompt_for_survey_ids
 
-    selected = prompt_for_survey_id(allow_all_surveys=True, interactive=True)
+    selected = prompt_for_survey_ids(allow_all_surveys=True, interactive=True)
     if not selected:
-        raise RuntimeError("No survey selected.")
-    return [selected]
+        raise RuntimeError("No surveys selected.")
+    return selected
 
 
 def _is_active_qid(payload: Mapping[str, Any], qid: str) -> bool:

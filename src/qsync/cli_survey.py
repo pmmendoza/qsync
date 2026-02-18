@@ -6669,21 +6669,33 @@ def handle_pull(args: argparse.Namespace) -> None:
 
     from .survey_ref import format_survey_ref
 
-    survey_id = _prompt_for_survey_id_api_if_needed(
-        survey_id=getattr(args, "survey_id", None),
-        args=args,
-        message="Pick a survey to pull (cache JSON):",
-    )
-
-    print(f"[pull] Downloading survey definition for {format_survey_ref(survey_id)}...")
-
-    try:
-        saved_path = download_survey_definition(survey_id, target_dir=dest_dir, env=env)
-        print(f"[pull] Saved to: {saved_path}")
-    except Exception as e:
-        print(
-            f"[pull] ERROR: Failed to download survey {format_survey_ref(survey_id)}: {e}"
+    survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
+    if not survey_ids:
+        survey_ids = _prompt_for_survey_ids_api_if_needed(
+            survey_ids=None,
+            args=args,
+            message="Pick survey(s) to pull (cache JSON):",
+            allow_multiple=True,
         )
+    survey_ids = list(dict.fromkeys([sid.strip() for sid in survey_ids if sid.strip()]))
+
+    failures: list[tuple[str, str]] = []
+    for survey_id in survey_ids:
+        print(
+            f"[pull] Downloading survey definition for {format_survey_ref(survey_id)}..."
+        )
+        try:
+            saved_path = download_survey_definition(
+                survey_id, target_dir=dest_dir, env=env
+            )
+            print(f"[pull] {survey_id}: Saved to: {saved_path}")
+        except Exception as e:
+            failures.append((survey_id, str(e)))
+            print(
+                f"[pull] ERROR: Failed to download survey {format_survey_ref(survey_id)}: {e}"
+            )
+
+    if failures:
         sys.exit(1)
 
 
@@ -9863,119 +9875,126 @@ def handle_push_question(args: argparse.Namespace) -> None:
 
 
 def handle_export_responses(args: argparse.Namespace) -> None:
-    """Export survey responses to CSV."""
+    """Export survey responses to CSV (supports one or more surveys)."""
     root = _workspace_root()
     account = _resolve_account_from_args(args)
     env = load_account_env(account, root=root) if account else None
 
-    survey_id = _prompt_for_survey_id_api_if_needed(
-        survey_id=getattr(args, "survey_id", None),
-        args=args,
-        message="Pick a survey to export responses:",
-    )
+    survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
+    if not survey_ids:
+        survey_ids = _prompt_for_survey_ids_api_if_needed(
+            survey_ids=None,
+            args=args,
+            message="Pick survey(s) to export responses:",
+            allow_multiple=True,
+        )
+    survey_ids = list(dict.fromkeys([sid.strip() for sid in survey_ids if sid.strip()]))
+    if not survey_ids:
+        raise SystemExit("[export-responses] Cancelled.")
 
     output_dir = _resolve_responses_output_dir(
         root, account, getattr(args, "output", None)
     )
 
     base_url, headers = get_client_config(env) if env else get_client_config()
+    surveys_lookup: dict[str, str] = {}
+    try:
+        surveys_lookup = {s["id"]: s["name"] for s in list_surveys(base_url, headers)}
+    except Exception:
+        surveys_lookup = {}
 
-    # Start export
     from .survey_ref import format_survey_ref
 
-    print(f"[export-responses] Starting export for {format_survey_ref(survey_id)}...")
-    payload = {
-        "format": "csv",
-        "useLabels": True,
-        "seenUnansweredRecode": 999,
-        "timeZone": "UTC",
-    }
-
-    response = send_api_request(
-        action="qsync.survey.export.responses.start",
-        method="POST",
-        base_url=base_url,
-        headers=headers,
-        path=f"surveys/{survey_id}/export-responses",
-        log_event=False,
-        json=payload,
-        timeout=60,
-    )
-    progress_id = response.json()["result"]["progressId"]
-    print(f"[export-responses] Export started. Progress ID: {progress_id}")
-
-    # Poll for completion
-    progress_status = "inProgress"
-    file_id = None
-
-    while progress_status not in ("complete", "failed"):
-        print("[export-responses] Checking progress...")
-        check_response = send_api_request(
-            action="qsync.survey.export.responses.poll",
-            method="GET",
-            base_url=base_url,
-            headers=headers,
-            path=f"surveys/{survey_id}/export-responses/{progress_id}",
-            log_event=False,
-            timeout=60,
-        )
-        result = check_response.json()["result"]
-        progress_status = result["status"]
-
-        if progress_status == "failed":
-            print("[export-responses] ERROR: Export failed")
-            sys.exit(1)
-
-        if progress_status == "complete":
-            file_id = result["fileId"]
-        else:
-            time.sleep(2)
-
-    print(f"[export-responses] Export complete. File ID: {file_id}")
-
-    # Download file
-    print("[export-responses] Downloading file...")
-    download_response = send_api_request(
-        action="qsync.survey.export.responses.download",
-        method="GET",
-        base_url=base_url,
-        headers=headers,
-        path=f"surveys/{survey_id}/export-responses/{file_id}/file",
-        log_event=False,
-        stream=True,
-        timeout=120,
-    )
-
-    # Save and extract
     output_dir.mkdir(parents=True, exist_ok=True)
+    failures: list[tuple[str, str]] = []
+    for survey_id in survey_ids:
+        try:
+            print(
+                f"[export-responses] Starting export for {format_survey_ref(survey_id)}..."
+            )
+            payload = {
+                "format": "csv",
+                "useLabels": True,
+                "seenUnansweredRecode": 999,
+                "timeZone": "UTC",
+            }
 
-    # Get survey name for filename
-    try:
-        surveys = list_surveys(base_url, headers)
-        survey_name = next(
-            (s["name"] for s in surveys if s["id"] == survey_id), survey_id
-        )
-        # Sanitize filename
-        safe_name = "".join(
-            c if c.isalnum() or c in " -_" else "_" for c in survey_name
-        ).strip()
-    except Exception:
-        safe_name = survey_id
+            response = send_api_request(
+                action="qsync.survey.export.responses.start",
+                method="POST",
+                base_url=base_url,
+                headers=headers,
+                path=f"surveys/{survey_id}/export-responses",
+                log_event=False,
+                json=payload,
+                timeout=60,
+            )
+            progress_id = response.json()["result"]["progressId"]
+            print(
+                f"[export-responses] {survey_id}: Export started. Progress ID: {progress_id}"
+            )
 
-    zip_path = output_dir / f"{safe_name}_{survey_id}.zip"
+            progress_status = "inProgress"
+            file_id = None
+            while progress_status not in ("complete", "failed"):
+                print(f"[export-responses] {survey_id}: Checking progress...")
+                check_response = send_api_request(
+                    action="qsync.survey.export.responses.poll",
+                    method="GET",
+                    base_url=base_url,
+                    headers=headers,
+                    path=f"surveys/{survey_id}/export-responses/{progress_id}",
+                    log_event=False,
+                    timeout=60,
+                )
+                result = check_response.json()["result"]
+                progress_status = result["status"]
 
-    with open(zip_path, "wb") as f:
-        for chunk in download_response.iter_content(chunk_size=8192):
-            f.write(chunk)
+                if progress_status == "failed":
+                    raise RuntimeError("Export failed")
 
-    print(f"[export-responses] Saved zip to {zip_path}")
+                if progress_status == "complete":
+                    file_id = result["fileId"]
+                else:
+                    time.sleep(2)
 
-    # Extract CSV
-    with zipfile.ZipFile(zip_path, "r") as zip_ref:
-        zip_ref.extractall(output_dir)
-        for file in zip_ref.namelist():
-            print(f"  - {file}")
-    print(f"[export-responses] Extracted to {output_dir}")
+            print(f"[export-responses] {survey_id}: Export complete. File ID: {file_id}")
+
+            print(f"[export-responses] {survey_id}: Downloading file...")
+            download_response = send_api_request(
+                action="qsync.survey.export.responses.download",
+                method="GET",
+                base_url=base_url,
+                headers=headers,
+                path=f"surveys/{survey_id}/export-responses/{file_id}/file",
+                log_event=False,
+                stream=True,
+                timeout=120,
+            )
+
+            survey_name = surveys_lookup.get(survey_id, survey_id)
+            safe_name = "".join(
+                c if c.isalnum() or c in " -_" else "_" for c in survey_name
+            ).strip()
+            zip_path = output_dir / f"{safe_name}_{survey_id}.zip"
+
+            with open(zip_path, "wb") as f:
+                for chunk in download_response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            print(f"[export-responses] {survey_id}: Saved zip to {zip_path}")
+
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(output_dir)
+                for file in zip_ref.namelist():
+                    print(f"  - {file}")
+            print(f"[export-responses] {survey_id}: Extracted to {output_dir}")
+        except Exception as exc:
+            failures.append((survey_id, str(exc)))
+            print(f"[export-responses] {survey_id}: ERROR: {exc}")
+
+    if failures:
+        raise SystemExit(1)
 
 
 def handle_export_translation(args: argparse.Namespace) -> None:
@@ -10553,7 +10572,10 @@ def handle_translations_pull(args: argparse.Namespace) -> None:
     from .terminal_output import info, success, warn
     from .qualtrics_client import refresh_survey_cache
 
-    survey_id = args.survey_id
+    survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
+    if not survey_ids:
+        raise SystemExit("[qsync:translations] ERROR: Missing --survey-id")
+    survey_ids = list(dict.fromkeys([sid.strip() for sid in survey_ids if sid.strip()]))
     account = _resolve_account_from_args(args)
     languages = _collect_languages_from_args(args)
     if languages:
@@ -10563,18 +10585,33 @@ def handle_translations_pull(args: argparse.Namespace) -> None:
             "(translations live in the survey definition).",
         )
 
-    if account:
-        env = load_account_env(account, root=_workspace_root())
-        surveys_dir = resolve_survey_cache_dir(
-            root=_workspace_root(), account=account
-        )
-        cache, changed = refresh_survey_cache(survey_id, surveys_dir=surveys_dir, env=env)
-    else:
-        cache, changed = refresh_survey_cache(survey_id)
-    if changed:
-        success("[qsync:translations]", f"Pulled: {cache.path}")
-    else:
-        info("[qsync:translations]", f"Cache already up to date: {cache.path}")
+    env = load_account_env(account, root=_workspace_root()) if account else None
+    surveys_dir = (
+        resolve_survey_cache_dir(root=_workspace_root(), account=account)
+        if account
+        else None
+    )
+    failures: list[tuple[str, str]] = []
+    for survey_id in survey_ids:
+        try:
+            if account:
+                cache, changed = refresh_survey_cache(
+                    survey_id,
+                    surveys_dir=surveys_dir,
+                    env=env,
+                )
+            else:
+                cache, changed = refresh_survey_cache(survey_id)
+        except Exception as exc:
+            failures.append((survey_id, str(exc)))
+            warn("[qsync:translations]", f"{survey_id}: {exc}")
+            continue
+        if changed:
+            success("[qsync:translations]", f"{survey_id}: Pulled {cache.path}")
+        else:
+            info("[qsync:translations]", f"{survey_id}: Cache already up to date: {cache.path}")
+    if failures:
+        raise SystemExit(1)
 
 
 def _warn_legacy_translations(args: argparse.Namespace) -> None:
@@ -12284,8 +12321,9 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_prepare.add_argument(
         "--survey-id",
+        action="append",
         dest="survey_id",
-        help="Qualtrics survey ID (omit to select interactively)",
+        help="Qualtrics survey ID(s) (repeatable/comma-separated; omit to select interactively)",
     )
     sel = p_prepare.add_mutually_exclusive_group()
     sel.add_argument(
@@ -12439,8 +12477,9 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_pull.add_argument(
         "--survey-id",
+        action="append",
         dest="survey_id",
-        help="Qualtrics survey ID to download (omit to select interactively)",
+        help="Qualtrics survey ID(s) to download (repeatable/comma-separated; omit to select interactively)",
     )
     p_pull.add_argument(
         "--dest",
@@ -13276,8 +13315,9 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_export.add_argument(
         "--survey-id",
+        action="append",
         dest="survey_id",
-        help="Qualtrics survey ID to export responses from (omit to select interactively)",
+        help="Qualtrics survey ID(s) to export responses from (repeatable/comma-separated; omit to select interactively)",
     )
     p_export.add_argument(
         "--output",
