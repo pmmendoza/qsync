@@ -46,6 +46,28 @@ def _payload_with_single_mc() -> dict:
     }
 
 
+def _payload_with_out_of_flow_slider_labels() -> dict:
+    payload = _payload_with_single_mc()
+    questions = payload["result"]["Questions"]
+    questions["QID13"] = {
+        "QuestionText": "Left-right ideology",
+        "QuestionType": "Slider",
+        "Selector": "HSLIDER",
+        "SubSelector": "TX",
+        "DataExportTag": "sd_lr",
+        "QuestionDescription": "sd_lr",
+        "Configuration": {},
+        "Choices": {},
+        "Answers": {str(i): {"Display": str(i)} for i in range(1, 12)},
+        "AnswerOrder": [str(i) for i in range(1, 12)],
+        "Labels": {
+            "1": {"Display": "left"},
+            "2": {"Display": "right"},
+        },
+    }
+    return payload
+
+
 def _write_cached_survey(root: Path, survey_id: str, payload: dict) -> None:
     surveys_dir = root / "surveys"
     backups_dir = surveys_dir / "backups"
@@ -131,3 +153,16 @@ def test_items_detect_changes_reports_fixable_orphan_warning(
 def test_items_autofix_command_uses_prune_orphans() -> None:
     command = _autofix_command("items", "SV_TEST")
     assert command == "qsync items pull --survey-id SV_TEST --prune-orphans"
+
+
+def test_init_does_not_create_orphans_for_out_of_flow_slider_labels(
+    tmp_path: Path,
+) -> None:
+    payload = _payload_with_out_of_flow_slider_labels()
+    survey_id = "SV_TEST"
+    xlsx_path = WorkbookResolver(root=tmp_path).resolve(survey_id)
+
+    excel_io.init_workbook_from_survey(survey_id, payload, xlsx_path)
+    report = excel_io.inspect_workbook_orphan_rows(survey_id, payload, xlsx_path)
+
+    assert report.total_rows == 0

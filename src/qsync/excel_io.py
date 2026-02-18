@@ -3364,8 +3364,13 @@ def _init_subitems_sheet(
                     value=bool(is_html),
                 )
 
-    # Backfill label endpoints for slider/scale questions (Field=Label)
-    for qid, q in questions.items():
+    # Backfill label endpoints for slider/scale questions (Field=Label).
+    # Keep this aligned with the rest of the workbook surfaces by restricting
+    # to QIDs present in SurveyFlow (ordered_qids_in_flow).
+    for qid in _ordered_qids_in_flow(survey_payload):
+        q = questions.get(qid)
+        if not isinstance(q, dict):
+            continue
         labels = q.get("Labels") or {}
         if not labels:
             continue

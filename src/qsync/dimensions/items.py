@@ -35,7 +35,7 @@ def _orphan_warning_detail(
 ) -> str:
     return (
         f"Workbook has orphan item rows for {survey_id} "
-        f"({report.counts_text()}; unknown QIDs: {report.unknown_qids_text()}). "
+        f"({report.counts_text()}; affected QIDs: {report.unknown_qids_text()}). "
         f"Run: qsync items pull --survey-id {survey_id} --prune-orphans"
     )
 
