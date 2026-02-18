@@ -1071,7 +1071,8 @@ _HELP_TOPICS: dict[str, tuple[str, str]] = {
                 "",
                 "Start here:",
                 "- qsync sync --survey-id SV_...              (guided sync for one survey)",
-                "- qsync tui --sync                           (optional TUI wizard; requires qsync[tui])",
+                "- qsync sync --tui                           (same sync entrypoint, TUI mode)",
+                "- qsync tui --sync                           (direct TUI entrypoint)",
                 "",
                 "Dimension workflows (manual control):",
                 "- qsync items preview|stage|push --survey-id SV_...",
@@ -1179,6 +1180,7 @@ _HELP_TOPICS: dict[str, tuple[str, str]] = {
                 "",
                 "Optional TUI settings screen (requires qsync[tui]):",
                 "- qsync settings --tui",
+                "- qsync survey menu --tui",
             ]
         )
         + "\n",
@@ -1233,7 +1235,9 @@ def _handle_tui(args: argparse.Namespace) -> None:
         info(None, "If using pipx: pipx install --force 'qsync[tui] @ <git-ref>'")
         raise SystemExit(1)
 
-    start_screen = "sync" if bool(getattr(args, "sync", False)) else None
+    start_screen = None
+    if bool(getattr(args, "sync", False)) or str(getattr(args, "command", "") or "") == "sync":
+        start_screen = "sync"
     QsyncTuiApp(start_screen=start_screen).run()
 
 
@@ -2493,6 +2497,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_sync.add_argument(
         "--survey-id",
         help="Target survey ID (omit to scan all focal surveys)",
+    )
+    p_sync.add_argument(
+        "--tui",
+        action="store_true",
+        help="Launch Textual sync wizard (requires TUI dependencies; keeps default sync flow unchanged).",
     )
     p_sync.add_argument(
         "--all",
@@ -4829,6 +4838,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
         # sync command (orchestrator)
         if args.command == "sync":
+            if bool(getattr(args, "tui", False)):
+                _handle_tui(args)
+                return
+
             from .sync_orchestrator import (
                 sync_survey,
                 sync_focal_surveys,
