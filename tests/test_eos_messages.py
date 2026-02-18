@@ -532,14 +532,17 @@ def test_cross_account_eos_repair_rewrites_flow(
     )
     monkeypatch.setattr(
         eos_core,
-        "pull_eos_messages",
-        lambda **kwargs: [
-            tmp_path
-            / "contents"
-            / "qualtrics_library_messages"
-            / "UR_SRC"
-            / "MS_NEW"
-        ],
+        "pull_eos_messages_best_effort",
+        lambda **kwargs: eos_core.EosBestEffortPullResult(
+            pulled_paths=[
+                tmp_path
+                / "contents"
+                / "qualtrics_library_messages"
+                / "UR_SRC"
+                / "MS_NEW"
+            ],
+            warnings=[],
+        ),
     )
     monkeypatch.setattr(
         eos_core,
@@ -762,14 +765,17 @@ def test_auto_source_eos_repair_rewrites_flow(
     )
     monkeypatch.setattr(
         eos_core,
-        "pull_eos_messages",
-        lambda **kwargs: [
-            tmp_path
-            / "contents"
-            / "qualtrics_library_messages"
-            / "UR_X"
-            / "MS_NEW"
-        ],
+        "pull_eos_messages_best_effort",
+        lambda **kwargs: eos_core.EosBestEffortPullResult(
+            pulled_paths=[
+                tmp_path
+                / "contents"
+                / "qualtrics_library_messages"
+                / "UR_X"
+                / "MS_NEW"
+            ],
+            warnings=[],
+        ),
     )
     monkeypatch.setattr(
         eos_core,
@@ -802,3 +808,88 @@ def test_auto_source_eos_repair_rewrites_flow(
     assert result.updated_flow_ids == ["FL_1"]
     assert pushed_flow["Flow"][0]["Options"]["EOSMessageLibrary"] == "UR_X"
     assert pushed_flow["Flow"][0]["Options"]["EOSMessage"] == "MS_NEW"
+
+
+def test_auto_source_eos_repair_apply_skips_inaccessible_refs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync.dimensions import eos_core
+
+    ensure_qsync_workspace(tmp_path)
+    monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
+
+    class _Resp:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    target_payload = {
+        "result": {
+            "SurveyFlow": {
+                "Flow": [
+                    {
+                        "Type": "EndSurvey",
+                        "FlowID": "FL_1",
+                        "Options": {
+                            "SurveyTermination": "DisplayMessage",
+                            "EOSMessageLibrary": "UR_X",
+                            "EOSMessage": "MS_X",
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    def fake_send_api_request(**kwargs):
+        key = (kwargs.get("method"), kwargs.get("base_url"), kwargs.get("path"))
+        if key == ("GET", "target.qualtrics.test", "survey-definitions/SV_TGT"):
+            return _Resp(target_payload)
+        if key == ("GET", "target.qualtrics.test", "libraries/UR_X/messages/MS_X"):
+            response = Mock(status_code=403)
+            raise requests.HTTPError("forbidden", response=response)
+        if key == ("GET", "acc1.qualtrics.test", "libraries/UR_X/messages/MS_X"):
+            response = Mock(status_code=404)
+            raise requests.HTTPError("not found", response=response)
+        raise AssertionError(f"Unexpected API call: {kwargs}")
+
+    monkeypatch.setattr(eos_core, "send_api_request", fake_send_api_request)
+    monkeypatch.setattr(
+        eos_core,
+        "refresh_survey_cache",
+        lambda survey_id: (
+            Mock(survey_id=survey_id, payload={"result": {}}, path=tmp_path / "surveys"),
+            False,
+        ),
+    )
+
+    result = eos_core.repair_eos_messages_from_source_accounts(
+        target_survey_id="SV_TGT",
+        target_base_url="target.qualtrics.test",
+        target_headers={"X-API-TOKEN": "target-token"},
+        source_accounts=[
+            eos_core.EosSourceAccount(
+                label="acc1",
+                base_url="acc1.qualtrics.test",
+                headers={"X-API-TOKEN": "acc1-token"},
+            )
+        ],
+        include_backups_scan=False,
+        dry_run=False,
+        publish=False,
+    )
+
+    assert result.dry_run is False
+    assert result.missing_refs == 1
+    assert result.replacements == {}
+    assert result.pulled_paths == []
+    assert any(
+        "Missing EOS reference not found in any source account: UR_X/MS_X" in w
+        for w in result.warnings
+    )
+    assert any(
+        "Skipped inaccessible EOS message UR_X/MS_X" in w for w in result.warnings
+    )

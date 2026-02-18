@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,14 +29,21 @@ def test_eos_repair_batch_defaults_to_focal(
     def _fake_pull_eos_messages(
         *,
         survey_id: str,
-        allow_shared: bool,
+        base_url: str,
+        headers: dict[str, str],
         include_backups_scan: bool,
-        check_drift: bool = True,
+        check_drift: bool = False,
+        refs=None,
+        action: str = "",
     ):
+        del base_url, headers, refs, action
         called.append(survey_id)
-        return []
+        return SimpleNamespace(pulled_paths=[], warnings=[])
 
-    monkeypatch.setattr("qsync.eos_messages.pull_eos_messages", _fake_pull_eos_messages)
+    monkeypatch.setattr(
+        "qsync.eos_messages.pull_eos_messages_best_effort",
+        _fake_pull_eos_messages,
+    )
 
     main(["--root", str(tmp_path), "eos", "repair", "--batch"])
 
@@ -70,14 +78,21 @@ def test_eos_repair_batch_all_surveys_uses_api_list(
     def _fake_pull_eos_messages(
         *,
         survey_id: str,
-        allow_shared: bool,
+        base_url: str,
+        headers: dict[str, str],
         include_backups_scan: bool,
-        check_drift: bool = True,
+        check_drift: bool = False,
+        refs=None,
+        action: str = "",
     ):
+        del base_url, headers, refs, action
         called.append(survey_id)
-        return []
+        return SimpleNamespace(pulled_paths=[], warnings=[])
 
-    monkeypatch.setattr("qsync.eos_messages.pull_eos_messages", _fake_pull_eos_messages)
+    monkeypatch.setattr(
+        "qsync.eos_messages.pull_eos_messages_best_effort",
+        _fake_pull_eos_messages,
+    )
 
     main(["--root", str(tmp_path), "eos", "repair", "--batch", "--all-surveys"])
 

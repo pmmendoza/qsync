@@ -4151,6 +4151,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 get_eos_message_references,
                 preview_eos_messages,
                 pull_eos_messages,
+                pull_eos_messages_best_effort,
                 push_eos_messages,
                 repair_eos_messages_from_source_account,
                 repair_eos_messages_from_source_accounts,
@@ -4371,22 +4372,35 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     failures = 0
                     for target_survey_id in survey_ids:
                         try:
-                            paths = pull_eos_messages(
+                            pull_result = pull_eos_messages_best_effort(
                                 survey_id=target_survey_id,
-                                allow_shared=allow_shared,
+                                base_url=target_base_url,
+                                headers=target_headers,
                                 include_backups_scan=include_backups_scan,
+                                check_drift=True,
+                                action="qsync.eos.repair.refresh.pull",
                             )
                         except Exception as e:
                             failures += 1
                             error("[qsync:eos]", f"{target_survey_id}: ERROR: {e}")
                             continue
-                        if not paths:
+                        for warning_line in pull_result.warnings:
+                            warn("[qsync:eos]", f"{target_survey_id}: {warning_line}")
+                        if pull_result.warnings:
+                            warn(
+                                "[qsync:eos]",
+                                f"{target_survey_id}: Some EOS references are inaccessible in this account. "
+                                "If this survey was copied across accounts, run "
+                                f"'qsync eos repair --survey-id {target_survey_id} --auto-source --dry-run' "
+                                "to discover repair candidates.",
+                            )
+                        if not pull_result.pulled_paths and not pull_result.warnings:
                             info(
                                 "[qsync:eos]",
                                 f"{target_survey_id}: no EndSurvey DisplayMessage references found.",
                             )
                             continue
-                        for p in paths:
+                        for p in pull_result.pulled_paths:
                             success("[qsync:eos]", f"{target_survey_id}: repaired {p}")
                     if failures:
                         raise SystemExit(2)

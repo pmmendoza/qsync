@@ -99,6 +99,12 @@ class EosSourceAccount:
     headers: dict[str, str]
 
 
+@dataclass(frozen=True)
+class EosBestEffortPullResult:
+    pulled_paths: list[Path]
+    warnings: list[str]
+
+
 def extract_eos_message_refs(
     survey_id: str, survey_payload: dict
 ) -> list[EndSurveyMessageRef]:
@@ -210,6 +216,76 @@ def pull_eos_messages(
         )
         written.append(target)
     return written
+
+
+def pull_eos_messages_best_effort(
+    *,
+    survey_id: str,
+    base_url: str,
+    headers: dict[str, str],
+    include_backups_scan: bool = False,
+    check_drift: bool = False,
+    refs: list[EndSurveyMessageRef] | None = None,
+    action: str = "qsync.eos.pull.best_effort.message",
+) -> EosBestEffortPullResult:
+    """Pull EOS messages while skipping inaccessible refs (400/403/404)."""
+
+    if check_drift:
+        drift_report = run_drift_check(survey_id, dimension="eos", interactive=True)
+        if drift_report.has_drift:
+            drift_report.display(interactive=False)
+
+    effective_refs = refs
+    if effective_refs is None:
+        cache = load_cached_survey(survey_id)
+        effective_refs = extract_eos_message_refs(survey_id, cache.payload)
+    deduped_refs: list[EndSurveyMessageRef] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for ref in effective_refs or []:
+        pair = (ref.library_id, ref.message_id)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        deduped_refs.append(ref)
+    effective_refs = deduped_refs
+    if not effective_refs:
+        return EosBestEffortPullResult(pulled_paths=[], warnings=[])
+
+    contexts_by_ref = find_message_contexts(
+        refs={(r.library_id, r.message_id) for r in effective_refs},
+        include_backups=include_backups_scan,
+    )
+    written: list[Path] = []
+    warnings: list[str] = []
+    for ref in effective_refs:
+        try:
+            payload = _fetch_library_message(
+                base_url=base_url,
+                headers=headers,
+                survey_id=survey_id,
+                library_id=ref.library_id,
+                message_id=ref.message_id,
+                action=action,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if _is_missing_library_message_error(exc):
+                warnings.append(
+                    "Skipped inaccessible EOS message "
+                    f"{ref.library_id}/{ref.message_id}: {exc}"
+                )
+                continue
+            raise
+
+        target = write_library_message_to_disk(
+            library_id=ref.library_id,
+            message_id=ref.message_id,
+            api_payload=payload,
+            contexts=contexts_by_ref.get((ref.library_id, ref.message_id))
+            or [ref.to_context_dict()],
+        )
+        written.append(target)
+
+    return EosBestEffortPullResult(pulled_paths=written, warnings=warnings)
 
 
 def preview_eos_messages(
@@ -1044,12 +1120,21 @@ def repair_eos_messages_from_source_account(
             )
 
     refresh_survey_cache(target_survey_id)
-    pulled_paths = pull_eos_messages(
+    rewritten_refs = _apply_replacements_to_refs(
         survey_id=target_survey_id,
-        allow_shared=True,
+        refs=target_refs,
+        replacements=replacements,
+    )
+    pull_result = pull_eos_messages_best_effort(
+        survey_id=target_survey_id,
+        base_url=target_base_url,
+        headers=target_headers,
         include_backups_scan=include_backups_scan,
         check_drift=False,
+        refs=rewritten_refs,
+        action="qsync.eos.repair.cross_account.pull",
     )
+    warnings.extend(pull_result.warnings)
 
     return CrossAccountEosRepairResult(
         source_survey_id=source_survey_id,
@@ -1062,7 +1147,7 @@ def repair_eos_messages_from_source_account(
         created_pairs=created_by_source,
         replacements=replacements,
         updated_flow_ids=sorted(set(updated_flow_ids)),
-        pulled_paths=pulled_paths,
+        pulled_paths=pull_result.pulled_paths,
         warnings=warnings,
         dry_run=False,
     )
@@ -1343,12 +1428,21 @@ def repair_eos_messages_from_source_accounts(
             )
 
     refresh_survey_cache(target_survey_id)
-    pulled_paths = pull_eos_messages(
+    rewritten_refs = _apply_replacements_to_refs(
         survey_id=target_survey_id,
-        allow_shared=True,
+        refs=target_refs,
+        replacements=replacements,
+    )
+    pull_result = pull_eos_messages_best_effort(
+        survey_id=target_survey_id,
+        base_url=target_base_url,
+        headers=target_headers,
         include_backups_scan=include_backups_scan,
         check_drift=False,
+        refs=rewritten_refs,
+        action="qsync.eos.repair.auto_source.pull",
     )
+    warnings.extend(pull_result.warnings)
 
     # created_pairs currently keyed by source-account+source-ref; flatten for display.
     flattened_created: dict[tuple[str, str], tuple[str, str]] = {}
@@ -1366,7 +1460,7 @@ def repair_eos_messages_from_source_accounts(
         created_pairs=flattened_created,
         replacements=replacements,
         updated_flow_ids=sorted(set(updated_flow_ids)),
-        pulled_paths=pulled_paths,
+        pulled_paths=pull_result.pulled_paths,
         warnings=warnings,
         dry_run=False,
     )
@@ -1530,6 +1624,34 @@ def _rewrite_end_survey_refs_in_flow(
 
     walk(flow.get("Flow"))
     return updated_flow_ids, updated_count
+
+
+def _apply_replacements_to_refs(
+    *,
+    survey_id: str,
+    refs: list[EndSurveyMessageRef],
+    replacements: dict[tuple[str, str], tuple[str, str]],
+) -> list[EndSurveyMessageRef]:
+    rewritten: list[EndSurveyMessageRef] = []
+    seen: set[tuple[str, str]] = set()
+    for ref in refs:
+        new_library_id, new_message_id = replacements.get(
+            (ref.library_id, ref.message_id),
+            (ref.library_id, ref.message_id),
+        )
+        pair = (new_library_id, new_message_id)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        rewritten.append(
+            EndSurveyMessageRef(
+                survey_id=survey_id,
+                flow_id=ref.flow_id,
+                library_id=new_library_id,
+                message_id=new_message_id,
+            )
+        )
+    return rewritten
 
 
 def _messages_equal(a: dict, b: dict) -> bool:
