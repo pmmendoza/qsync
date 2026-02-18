@@ -383,6 +383,63 @@ class SurveyMasterCSVTests(unittest.TestCase):
             self.assertIsNot(ws.cell(row=1, column=survey_name_idx).alignment.wrap_text, True)
             self.assertIsNot(ws.cell(row=2, column=survey_name_idx).alignment.wrap_text, True)
 
+    def test_workbook_header_comments_include_docs_and_allowed_values(self) -> None:
+        """Header comments include field help text and options docs links."""
+        from qsync.survey_master import write_master_workbook
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            csv_path = root / "surveys" / "qualtrics_master.csv"
+            rows = [
+                ["SurveyID", "SurveyProtection"],
+                ["SV_001", "PublicSurvey"],
+            ]
+            mapping = {
+                "SurveyID": {
+                    "field_name": "SurveyID",
+                    "survey_master": "read",
+                    "description": "Survey id",
+                    "allowed_values": "",
+                    "format_notes": "",
+                    "domain": "survey_metadata",
+                },
+                "SurveyProtection": {
+                    "field_name": "SurveyProtection",
+                    "survey_master": "write",
+                    "description": "Survey protection mode",
+                    "allowed_values": "PublicSurvey; ByInvitation; PasswordProtected",
+                    "format_notes": "",
+                    "domain": "survey_options",
+                },
+            }
+
+            with (
+                patch("qsync.survey_master._master_csv_path", return_value=csv_path),
+                patch("qsync.survey_master._parse_mapping_csv", return_value=mapping),
+            ):
+                write_master_workbook(rows)
+
+            wb = load_workbook(csv_path.with_suffix(".xlsx"))
+            ws = wb["Survey_Master"]
+            header_values = [
+                cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))
+            ]
+            target_idx = header_values.index("SurveyProtection") + 1
+            comment = ws.cell(row=1, column=target_idx).comment
+            self.assertIsNotNone(comment)
+            text = comment.text
+            self.assertIn("What it controls: Survey protection mode", text)
+            self.assertIn("Allowed values:", text)
+            self.assertIn("- PublicSurvey", text)
+            self.assertIn(
+                "https://api.qualtrics.com/021740be5b5b6-get-options#response-body",
+                text,
+            )
+            self.assertIn(
+                "https://api.qualtrics.com/5d9e865296ce5-update-options",
+                text,
+            )
+
     def test_load_master_csv_prefers_newer_workbook_surface(self) -> None:
         """When workbook is newer than CSV, load from workbook surface."""
         from qsync.survey_master import load_master_csv, write_master_workbook

@@ -15,12 +15,14 @@ import hashlib
 import json
 import os
 import io
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 from importlib import resources
 from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -930,6 +932,19 @@ _MASTER_MAIN_SHEET = "Survey_Master"
 _MASTER_GUIDE_SHEET = "Survey_Master_Guide"
 _MASTER_HEADER_FILL = PatternFill(fill_type="solid", fgColor="FFE8EEF7")
 _MASTER_READONLY_FILL = PatternFill(fill_type="solid", fgColor="FFECECEC")
+_MASTER_COMMENT_AUTHOR = "qsync"
+_MASTER_HEADER_DOCS_RESOURCE = "resources/survey_master_header_docs.json"
+_MASTER_COMMENT_MAX_LENGTH = 32000
+_DEFAULT_OPTIONS_DOC_LINKS: list[dict[str, str]] = [
+    {
+        "label": "Get options (response body)",
+        "url": "https://api.qualtrics.com/021740be5b5b6-get-options#response-body",
+    },
+    {
+        "label": "Update options (request body)",
+        "url": "https://api.qualtrics.com/5d9e865296ce5-update-options",
+    },
+]
 
 
 def _is_master_editable(field_info: Dict[str, Any] | None) -> bool:
@@ -953,6 +968,122 @@ def _master_allowed_values(field_info: Dict[str, Any] | None) -> List[str]:
     if data_type == "bool":
         return ["true", "false"]
     return []
+
+
+@lru_cache(maxsize=1)
+def _load_master_header_docs() -> Dict[str, Any]:
+    """Load optional packaged docs links used for header comments."""
+
+    try:
+        packaged = resources.files("qsync").joinpath(_MASTER_HEADER_DOCS_RESOURCE)
+        data = json.loads(packaged.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _normalize_comment_links(raw: Any) -> List[tuple[str, str]]:
+    """Normalize docs link objects from config into (label, url) tuples."""
+
+    if not isinstance(raw, list):
+        return []
+
+    links: List[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for item in raw:
+        label = ""
+        url = ""
+        if isinstance(item, str):
+            url = item.strip()
+            label = "Documentation"
+        elif isinstance(item, dict):
+            label = str(item.get("label") or "").strip() or "Documentation"
+            url = str(item.get("url") or "").strip()
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        links.append((label, url))
+    return links
+
+
+def _master_comment_doc_links(
+    field_name: str, field_info: Dict[str, Any] | None
+) -> List[tuple[str, str]]:
+    docs_config = _load_master_header_docs()
+    links: List[tuple[str, str]] = []
+
+    if isinstance(docs_config, dict):
+        # Field-level links override and extend domain defaults.
+        field_cfg = (docs_config.get("fields") or {}).get(field_name)
+        if isinstance(field_cfg, dict):
+            links.extend(_normalize_comment_links(field_cfg.get("links")))
+
+        domain = str((field_info or {}).get("domain") or "").strip().lower()
+        domain_cfg = (docs_config.get("domains") or {}).get(domain)
+        if isinstance(domain_cfg, dict):
+            links.extend(_normalize_comment_links(domain_cfg.get("links")))
+
+    # Always provide Options docs for survey_options fields if absent from config.
+    domain = str((field_info or {}).get("domain") or "").strip().lower()
+    if domain == "survey_options" and not links:
+        links.extend(_normalize_comment_links(_DEFAULT_OPTIONS_DOC_LINKS))
+
+    deduped: List[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for label, url in links:
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        deduped.append((label, url))
+    return deduped
+
+
+def _build_master_header_comment(
+    field_name: str, field_info: Dict[str, Any] | None
+) -> str | None:
+    """Build a compact per-column help comment shown on the header cell."""
+
+    if not field_info:
+        return None
+
+    lines: List[str] = [field_name]
+    lines.append(
+        "Editable in Survey Master: "
+        + ("Yes" if _is_master_editable(field_info) else "No (read-only)")
+    )
+
+    description = str(field_info.get("description") or "").strip()
+    if description:
+        lines.append(f"What it controls: {description}")
+
+    allowed_values = _master_allowed_values(field_info)
+    if allowed_values:
+        lines.append("Allowed values:")
+        for value in allowed_values:
+            lines.append(f"- {value}")
+    else:
+        data_type = str(field_info.get("data_type") or "").strip()
+        if data_type:
+            lines.append(f"Expected type: {data_type}")
+
+    format_notes = str(field_info.get("format_notes") or "").strip()
+    if format_notes:
+        lines.append(f"Format notes: {format_notes}")
+
+    doc_links = _master_comment_doc_links(field_name, field_info)
+    if doc_links:
+        lines.append("Documentation:")
+        for label, url in doc_links:
+            lines.append(f"- {label}: {url}")
+
+    text = "\n".join(line for line in lines if line.strip()).strip()
+    if not text:
+        return None
+    if len(text) > _MASTER_COMMENT_MAX_LENGTH:
+        return text[: _MASTER_COMMENT_MAX_LENGTH - 3].rstrip() + "..."
+    return text
 
 
 def _master_stringify_cell(value: Any) -> str:
@@ -1053,6 +1184,9 @@ def write_master_workbook(rows: List[List[str]]) -> Path:
             wrap_text=False,
         )
         header_cell.fill = _MASTER_HEADER_FILL
+        header_comment = _build_master_header_comment(header, field_info)
+        if header_comment:
+            header_cell.comment = Comment(header_comment, _MASTER_COMMENT_AUTHOR)
 
     for row_idx in range(2, ws.max_row + 1):
         for col_idx, header in enumerate(headers, start=1):
