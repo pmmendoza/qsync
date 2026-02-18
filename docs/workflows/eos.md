@@ -111,6 +111,52 @@ qsync eos repair --survey-id SV_TARGET \
   --dry-run
 ```
 
+Fully automatic source lookup across accounts (no source survey needed):
+
+```bash
+qsync eos repair --survey-id SV_TARGET \
+  --account damian \
+  --auto-source \
+  --dry-run
+```
+
+Apply:
+
+```bash
+qsync eos repair --survey-id SV_TARGET \
+  --account damian \
+  --auto-source \
+  --yes
+```
+
+Batch mode (single target account):
+
+```bash
+# default batch scope: focal surveys from inventory.csv
+qsync eos repair --account damian --batch --auto-source --dry-run
+```
+
+Target account resolution for batch is the standard qsync behavior:
+- `--account <name>` when provided
+- otherwise workspace active account (`qsync account use <name>`)
+- otherwise default `.env` credentials
+
+To include all surveys in the target account:
+
+```bash
+qsync eos repair --account damian --batch --all-surveys --auto-source --dry-run
+```
+
+Optional: constrain auto-source to one account:
+
+```bash
+qsync eos repair --survey-id SV_TARGET \
+  --account damian \
+  --auto-source \
+  --source-account default \
+  --dry-run
+```
+
 Cross-account repair behavior:
 - reads EndSurvey `DisplayMessage` refs from source + target survey flows
 - detects target refs that are missing in target account

@@ -2975,6 +2975,30 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Source Qualtrics API token for cross-account EOS repair.",
     )
     p_eos_repair.add_argument(
+        "--auto-source",
+        action="store_true",
+        help=(
+            "Automatically detect missing EOS refs and search matching "
+            "library/message IDs in other configured accounts."
+        ),
+    )
+    p_eos_repair.add_argument(
+        "--batch",
+        action="store_true",
+        help=(
+            "Process multiple surveys in one run. "
+            "Default batch scope is focal surveys from inventory."
+        ),
+    )
+    p_eos_repair.add_argument(
+        "--all-surveys",
+        action="store_true",
+        help=(
+            "Batch mode scope override: include all surveys in the target account "
+            "(instead of focal-only)."
+        ),
+    )
+    p_eos_repair.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview cross-account EOS repair actions without writing to Qualtrics.",
@@ -4120,6 +4144,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 clone_shared_eos_messages,
                 confirm_shared_override,
                 CrossAccountEosRepairResult,
+                EosSourceAccount,
                 detect_shared_messages,
                 extract_eos_message_refs,
                 CloneSharedEosResult,
@@ -4128,6 +4153,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 pull_eos_messages,
                 push_eos_messages,
                 repair_eos_messages_from_source_account,
+                repair_eos_messages_from_source_accounts,
             )
             from .qualtrics_client import load_cached_survey
 
@@ -4218,6 +4244,418 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         continue
                     for p in paths:
                         success("[qsync:eos]", f"{survey_id}: pulled {p}")
+                if failures:
+                    raise SystemExit(2)
+                return
+
+            if args.eos_command == "repair":
+                auto_source = bool(getattr(args, "auto_source", False))
+                batch_mode = bool(
+                    getattr(args, "batch", False) or getattr(args, "all_surveys", False)
+                )
+                batch_all_surveys = bool(getattr(args, "all_surveys", False))
+                source_survey_id_raw = str(
+                    getattr(args, "source_survey_id", "") or ""
+                ).strip()
+                source_account_raw = str(
+                    getattr(args, "source_account", "") or ""
+                ).strip()
+                source_base_url_raw = str(
+                    getattr(args, "source_base_url", "") or ""
+                ).strip()
+                source_api_key_raw = str(
+                    getattr(args, "source_api_key", "") or ""
+                ).strip()
+                dry_run = bool(getattr(args, "dry_run", False))
+                cross_account_mode = bool(
+                    auto_source
+                    or source_survey_id_raw
+                    or source_account_raw
+                    or source_base_url_raw
+                    or source_api_key_raw
+                )
+
+                if batch_all_surveys and _normalize_survey_ids(getattr(args, "survey_id", None)):
+                    error(
+                        "[qsync:eos]",
+                        "--all-surveys cannot be combined with --survey-id.",
+                    )
+                    raise SystemExit(2)
+
+                if auto_source and (
+                    source_survey_id_raw or source_base_url_raw or source_api_key_raw
+                ):
+                    error(
+                        "[qsync:eos]",
+                        "--auto-source only supports optional --source-account filtering. "
+                        "Do not combine with --source-survey-id or --source-base-url/--source-api-key.",
+                    )
+                    raise SystemExit(2)
+
+                from .config import (
+                    get_active_account,
+                    get_client_config,
+                    load_account_env,
+                    load_env,
+                    resolve_env_path,
+                    resolve_root,
+                )
+
+                root = resolve_root(required=False) or Path.cwd()
+                try:
+                    target_base_url, target_headers = get_client_config()
+                except Exception as exc:
+                    error(
+                        "[qsync:eos]",
+                        f"ERROR: failed to resolve target credentials: {exc}",
+                    )
+                    raise SystemExit(2)
+
+                if batch_mode:
+                    explicit_batch_ids = _normalize_survey_ids(
+                        getattr(args, "survey_id", None)
+                    )
+                    survey_ids = list(explicit_batch_ids)
+                    if explicit_batch_ids:
+                        batch_scope_label = "explicit survey IDs"
+                    elif not survey_ids:
+                        if batch_all_surveys:
+                            from .survey_inventory import fetch_surveys
+
+                            records = fetch_surveys(target_base_url, target_headers)
+                            survey_ids = list(
+                                dict.fromkeys(
+                                    sid
+                                    for sid in (
+                                        str(r.get("id") or "").strip()
+                                        for r in records
+                                        if isinstance(r, dict)
+                                    )
+                                    if sid
+                                )
+                            )
+                            if not survey_ids:
+                                raise SystemExit(
+                                    "[qsync:eos] No surveys found for --all-surveys."
+                                )
+                            batch_scope_label = "all surveys"
+                        else:
+                            from .survey_inventory import get_focal_survey_ids
+
+                            survey_ids = get_focal_survey_ids()
+                            if not survey_ids:
+                                raise SystemExit(
+                                    "[qsync:eos] No focal surveys found in inventory."
+                                )
+                            batch_scope_label = "focal surveys"
+                else:
+                    survey_ids = [
+                        _prompt_for_survey_id_if_needed(
+                            getattr(args, "survey_id", None),
+                            allow_all_surveys=False,
+                        )
+                    ]
+
+                if not cross_account_mode:
+                    title = (
+                        "Repairing (re-fetching) EOS messages in batch..."
+                        if batch_mode
+                        else "Repairing (re-fetching) EOS messages..."
+                    )
+                    header("[qsync:eos]", title)
+                    if batch_mode:
+                        info(
+                            "[qsync:eos]",
+                            f"Batch target scope: {batch_scope_label} ({len(survey_ids)} survey(s))",
+                        )
+                    failures = 0
+                    for target_survey_id in survey_ids:
+                        try:
+                            paths = pull_eos_messages(
+                                survey_id=target_survey_id,
+                                allow_shared=allow_shared,
+                                include_backups_scan=include_backups_scan,
+                            )
+                        except Exception as e:
+                            failures += 1
+                            error("[qsync:eos]", f"{target_survey_id}: ERROR: {e}")
+                            continue
+                        if not paths:
+                            info(
+                                "[qsync:eos]",
+                                f"{target_survey_id}: no EndSurvey DisplayMessage references found.",
+                            )
+                            continue
+                        for p in paths:
+                            success("[qsync:eos]", f"{target_survey_id}: repaired {p}")
+                    if failures:
+                        raise SystemExit(2)
+                    return
+
+                if not dry_run and not yes:
+                    error(
+                        "[qsync:eos]",
+                        "Cross-account EOS repair performs API writes. "
+                        "Re-run with --yes or --dry-run.",
+                    )
+                    raise SystemExit(2)
+
+                source_candidates: list[EosSourceAccount] = []
+                if auto_source:
+                    target_account = get_active_account()
+                    explicit_source_account = source_account_raw or None
+                    source_account_names: list[str] = []
+                    if explicit_source_account:
+                        if explicit_source_account.lower() == "default":
+                            source_account_names = ["default"]
+                        else:
+                            source_account_names = [explicit_source_account]
+                    else:
+                        if target_account:
+                            source_account_names.append("default")
+                        for path in sorted(root.glob(".env.*")):
+                            if not path.is_file():
+                                continue
+                            if path.name in {".env.example", ".env.template"}:
+                                continue
+                            account_name = path.name.split(".env.", 1)[-1].strip()
+                            if not account_name or account_name == path.name:
+                                continue
+                            if target_account and account_name == target_account:
+                                continue
+                            source_account_names.append(account_name)
+
+                    deduped_names: list[str] = []
+                    seen_names: set[str] = set()
+                    for raw_name in source_account_names:
+                        cleaned = str(raw_name or "").strip()
+                        if not cleaned or cleaned in seen_names:
+                            continue
+                        seen_names.add(cleaned)
+                        deduped_names.append(cleaned)
+
+                    source_candidate_errors: list[str] = []
+                    for account_name in deduped_names:
+                        try:
+                            if account_name == "default":
+                                env = load_env(path=resolve_env_path(root=root))
+                                label = "default"
+                            else:
+                                env = load_account_env(account_name, root=root)
+                                label = account_name
+                            base_url, headers = get_client_config(env)
+                            source_candidates.append(
+                                EosSourceAccount(
+                                    label=label,
+                                    base_url=base_url,
+                                    headers=headers,
+                                )
+                            )
+                        except Exception as exc:
+                            source_candidate_errors.append(f"{account_name}: {exc}")
+
+                    if not source_candidates:
+                        details = (
+                            f" Details: {' | '.join(source_candidate_errors)}"
+                            if source_candidate_errors
+                            else ""
+                        )
+                        error(
+                            "[qsync:eos]",
+                            "No usable source accounts found for --auto-source." + details,
+                        )
+                        raise SystemExit(2)
+
+                else:
+                    source_account = source_account_raw or None
+                    source_is_default = bool(
+                        source_account and source_account.lower() == "default"
+                    )
+                    if source_is_default:
+                        source_account = None
+                    source_base_url = source_base_url_raw
+                    source_api_key = source_api_key_raw
+                    source_env = None
+
+                    if source_is_default:
+                        source_env_path = resolve_env_path(root=root)
+                        source_env = load_env(path=source_env_path)
+                        if not source_base_url:
+                            source_base_url = str(
+                                source_env.get("QUALTRICS_BASE_URL") or ""
+                            ).strip()
+                        if not source_api_key:
+                            source_api_key = (
+                                str(source_env.get("X-API-TOKEN") or "").strip()
+                                or str(source_env.get("QUALTRICS_API_KEY") or "").strip()
+                            )
+
+                    if source_account and (not source_base_url or not source_api_key):
+                        source_env = load_account_env(source_account, root=root)
+                        if not source_base_url:
+                            source_base_url = str(
+                                source_env.get("QUALTRICS_BASE_URL") or ""
+                            ).strip()
+                        if not source_api_key:
+                            source_api_key = (
+                                str(source_env.get("X-API-TOKEN") or "").strip()
+                                or str(source_env.get("QUALTRICS_API_KEY") or "").strip()
+                            )
+
+                    if bool(source_base_url) ^ bool(source_api_key):
+                        error(
+                            "[qsync:eos]",
+                            "Provide both --source-base-url and --source-api-key together, "
+                            "or omit both.",
+                        )
+                        raise SystemExit(2)
+
+                    try:
+                        if source_base_url:
+                            source_base_url, source_headers = get_client_config(
+                                {
+                                    "QUALTRICS_BASE_URL": source_base_url,
+                                    "X-API-TOKEN": source_api_key,
+                                }
+                            )
+                        elif source_account:
+                            source_base_url, source_headers = get_client_config(source_env)
+                        elif source_is_default and source_env:
+                            source_base_url, source_headers = get_client_config(source_env)
+                        else:
+                            source_base_url, source_headers = get_client_config()
+                    except Exception as exc:
+                        error(
+                            "[qsync:eos]",
+                            f"ERROR: failed to resolve account credentials: {exc}",
+                        )
+                        raise SystemExit(2)
+
+                if batch_mode:
+                    title = (
+                        "Previewing cross-account EOS batch repair..."
+                        if dry_run
+                        else "Repairing EOS in cross-account batch mode..."
+                    )
+                    if auto_source:
+                        title = (
+                            "Previewing auto-source EOS batch repair..."
+                            if dry_run
+                            else "Repairing EOS via auto-source batch mode..."
+                        )
+                    header("[qsync:eos]", title)
+                    info(
+                        "[qsync:eos]",
+                        f"Batch target scope: {batch_scope_label} ({len(survey_ids)} survey(s))",
+                    )
+                    info("[qsync:eos]", f"Target account: {target_base_url}")
+                    if auto_source:
+                        info(
+                            "[qsync:eos]",
+                            "Source account candidates: "
+                            + ", ".join(
+                                f"{c.label}@{c.base_url}" for c in source_candidates
+                            ),
+                        )
+                    elif source_survey_id_raw:
+                        warn(
+                            "[qsync:eos]",
+                            "Batch mode with explicit --source-survey-id reuses the same source "
+                            "survey for each target survey.",
+                        )
+
+                failures = 0
+                for target_survey_id in survey_ids:
+                    try:
+                        if auto_source:
+                            result: CrossAccountEosRepairResult = (
+                                repair_eos_messages_from_source_accounts(
+                                    target_survey_id=target_survey_id,
+                                    target_base_url=target_base_url,
+                                    target_headers=target_headers,
+                                    source_accounts=source_candidates,
+                                    include_backups_scan=include_backups_scan,
+                                    dry_run=dry_run,
+                                    publish=not bool(getattr(args, "no_publish", False)),
+                                )
+                            )
+                        else:
+                            source_survey_id = source_survey_id_raw or target_survey_id
+                            result = repair_eos_messages_from_source_account(
+                                target_survey_id=target_survey_id,
+                                source_survey_id=source_survey_id,
+                                target_base_url=target_base_url,
+                                target_headers=target_headers,
+                                source_base_url=source_base_url,
+                                source_headers=source_headers,
+                                include_backups_scan=include_backups_scan,
+                                dry_run=dry_run,
+                                publish=not bool(getattr(args, "no_publish", False)),
+                            )
+                    except Exception as e:
+                        failures += 1
+                        error("[qsync:eos]", f"{target_survey_id}: ERROR: {e}")
+                        continue
+
+                    for warning_line in result.warnings:
+                        warn("[qsync:eos]", f"{target_survey_id}: {warning_line}")
+
+                    info(
+                        "[qsync:eos]",
+                        f"{target_survey_id}: Reference summary: "
+                        f"target={result.target_refs_total} "
+                        f"source={result.source_refs_total} "
+                        f"missing_in_target={result.missing_refs}",
+                    )
+
+                    if result.dry_run:
+                        if not result.planned_imports:
+                            success(
+                                "[qsync:eos]",
+                                f"{target_survey_id}: Dry run: no missing EOS references found; nothing to repair.",
+                            )
+                            continue
+                        info(
+                            "[qsync:eos]",
+                            f"{target_survey_id}: Dry run: would import/rewire "
+                            f"{result.planned_rewire_count} reference(s):",
+                        )
+                        for planned in result.planned_imports:
+                            source_prefix = (
+                                f"{planned.source_account_label}:"
+                                if planned.source_account_label
+                                else ""
+                            )
+                            print(
+                                "- "
+                                f"{target_survey_id}: target "
+                                f"{planned.target_library_id}/{planned.target_message_id} "
+                                f"<= source {source_prefix}{planned.source_library_id}/{planned.source_message_id} "
+                                f"(create in {planned.target_create_library_id})"
+                            )
+                        continue
+
+                    if not result.replacements:
+                        success(
+                            "[qsync:eos]",
+                            f"{target_survey_id}: No missing EOS references detected; no SurveyFlow rewiring needed.",
+                        )
+                        continue
+
+                    success(
+                        "[qsync:eos]",
+                        f"{target_survey_id}: Imported {len(result.created_pairs)} EOS message(s) "
+                        f"and rewired {len(result.replacements)} reference(s).",
+                    )
+                    if result.updated_flow_ids:
+                        info(
+                            "[qsync:eos]",
+                            f"{target_survey_id}: Updated FlowID(s): "
+                            f"{', '.join(result.updated_flow_ids)}",
+                        )
+                    for p in result.pulled_paths:
+                        success("[qsync:eos]", f"{target_survey_id}: Pulled {p}")
+
                 if failures:
                     raise SystemExit(2)
                 return
@@ -4322,202 +4760,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     raise SystemExit(2)
                 for ln in lines:
                     print(ln)
-                return
-
-            if args.eos_command == "repair":
-                source_survey_id_raw = str(
-                    getattr(args, "source_survey_id", "") or ""
-                ).strip()
-                source_account_raw = str(
-                    getattr(args, "source_account", "") or ""
-                ).strip()
-                source_base_url_raw = str(
-                    getattr(args, "source_base_url", "") or ""
-                ).strip()
-                source_api_key_raw = str(
-                    getattr(args, "source_api_key", "") or ""
-                ).strip()
-                dry_run = bool(getattr(args, "dry_run", False))
-                cross_account_mode = bool(
-                    source_survey_id_raw
-                    or source_account_raw
-                    or source_base_url_raw
-                    or source_api_key_raw
-                )
-
-                if not cross_account_mode:
-                    header("[qsync:eos]", "Repairing (re-fetching) EOS messages...")
-                    try:
-                        paths = pull_eos_messages(
-                            survey_id=survey_id,
-                            allow_shared=allow_shared,
-                            include_backups_scan=include_backups_scan,
-                        )
-                    except Exception as e:
-                        error("[qsync:eos]", f"ERROR: {e}")
-                        raise SystemExit(2)
-                    if not paths:
-                        info("[qsync:eos]", "No EndSurvey DisplayMessage references found.")
-                        return
-                    for p in paths:
-                        success("[qsync:eos]", f"Repaired: {p}")
-                    return
-
-                if not dry_run and not yes:
-                    error(
-                        "[qsync:eos]",
-                        "Cross-account EOS repair performs API writes. "
-                        "Re-run with --yes or --dry-run.",
-                    )
-                    raise SystemExit(2)
-
-                from .config import (
-                    get_client_config,
-                    load_account_env,
-                    load_env,
-                    resolve_env_path,
-                    resolve_root,
-                )
-
-                source_account = source_account_raw or None
-                source_is_default = bool(
-                    source_account and source_account.lower() == "default"
-                )
-                if source_is_default:
-                    source_account = None
-                source_base_url = source_base_url_raw
-                source_api_key = source_api_key_raw
-                source_env = None
-                root = resolve_root(required=False) or Path.cwd()
-
-                if source_is_default:
-                    source_env_path = resolve_env_path(root=root)
-                    source_env = load_env(path=source_env_path)
-                    if not source_base_url:
-                        source_base_url = str(
-                            source_env.get("QUALTRICS_BASE_URL") or ""
-                        ).strip()
-                    if not source_api_key:
-                        source_api_key = (
-                            str(source_env.get("X-API-TOKEN") or "").strip()
-                            or str(source_env.get("QUALTRICS_API_KEY") or "").strip()
-                        )
-
-                if source_account and (not source_base_url or not source_api_key):
-                    source_env = load_account_env(source_account, root=root)
-                    if not source_base_url:
-                        source_base_url = str(
-                            source_env.get("QUALTRICS_BASE_URL") or ""
-                        ).strip()
-                    if not source_api_key:
-                        source_api_key = (
-                            str(source_env.get("X-API-TOKEN") or "").strip()
-                            or str(source_env.get("QUALTRICS_API_KEY") or "").strip()
-                        )
-
-                if bool(source_base_url) ^ bool(source_api_key):
-                    error(
-                        "[qsync:eos]",
-                        "Provide both --source-base-url and --source-api-key together, "
-                        "or omit both.",
-                    )
-                    raise SystemExit(2)
-
-                try:
-                    target_base_url, target_headers = get_client_config()
-                    if source_base_url:
-                        source_base_url, source_headers = get_client_config(
-                            {
-                                "QUALTRICS_BASE_URL": source_base_url,
-                                "X-API-TOKEN": source_api_key,
-                            }
-                        )
-                    elif source_account:
-                        source_base_url, source_headers = get_client_config(source_env)
-                    elif source_is_default and source_env:
-                        source_base_url, source_headers = get_client_config(source_env)
-                    else:
-                        source_base_url, source_headers = get_client_config()
-                except Exception as exc:
-                    error("[qsync:eos]", f"ERROR: failed to resolve account credentials: {exc}")
-                    raise SystemExit(2)
-
-                source_survey_id = source_survey_id_raw or survey_id
-                title = (
-                    "Previewing cross-account EOS repair..."
-                    if dry_run
-                    else "Repairing EOS via cross-account import..."
-                )
-                header("[qsync:eos]", title)
-                info("[qsync:eos]", f"Target survey: {survey_id} @ {target_base_url}")
-                info("[qsync:eos]", f"Source survey: {source_survey_id} @ {source_base_url}")
-                try:
-                    result: CrossAccountEosRepairResult = (
-                        repair_eos_messages_from_source_account(
-                            target_survey_id=survey_id,
-                            source_survey_id=source_survey_id,
-                            target_base_url=target_base_url,
-                            target_headers=target_headers,
-                            source_base_url=source_base_url,
-                            source_headers=source_headers,
-                            include_backups_scan=include_backups_scan,
-                            dry_run=dry_run,
-                            publish=not bool(getattr(args, "no_publish", False)),
-                        )
-                    )
-                except Exception as e:
-                    error("[qsync:eos]", f"ERROR: {e}")
-                    raise SystemExit(2)
-
-                for warning_line in result.warnings:
-                    warn("[qsync:eos]", warning_line)
-
-                info(
-                    "[qsync:eos]",
-                    "Reference summary: "
-                    f"target={result.target_refs_total} "
-                    f"source={result.source_refs_total} missing_in_target={result.missing_refs}",
-                )
-
-                if result.dry_run:
-                    if not result.planned_imports:
-                        success(
-                            "[qsync:eos]",
-                            "Dry run: no missing EOS references found; nothing to repair.",
-                        )
-                        return
-                    info(
-                        "[qsync:eos]",
-                        f"Dry run: would import/rewire {result.planned_rewire_count} reference(s):",
-                    )
-                    for planned in result.planned_imports:
-                        print(
-                            "- "
-                            f"target {planned.target_library_id}/{planned.target_message_id} "
-                            f"<= source {planned.source_library_id}/{planned.source_message_id} "
-                            f"(create in {planned.target_create_library_id})"
-                        )
-                    return
-
-                if not result.replacements:
-                    success(
-                        "[qsync:eos]",
-                        "No missing EOS references detected; no SurveyFlow rewiring needed.",
-                    )
-                    return
-
-                success(
-                    "[qsync:eos]",
-                    f"Imported {len(result.created_pairs)} EOS message(s) "
-                    f"and rewired {len(result.replacements)} reference(s).",
-                )
-                if result.updated_flow_ids:
-                    info(
-                        "[qsync:eos]",
-                        f"Updated FlowID(s): {', '.join(result.updated_flow_ids)}",
-                    )
-                for p in result.pulled_paths:
-                    success("[qsync:eos]", f"Pulled: {p}")
                 return
 
             if args.eos_command in ("stage", "apply"):

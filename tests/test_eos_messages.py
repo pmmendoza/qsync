@@ -569,3 +569,236 @@ def test_cross_account_eos_repair_rewrites_flow(
     assert len(result.pulled_paths) == 1
     assert pushed_flow["Flow"][0]["Options"]["EOSMessageLibrary"] == "UR_SRC"
     assert pushed_flow["Flow"][0]["Options"]["EOSMessage"] == "MS_NEW"
+
+
+def test_auto_source_eos_repair_dry_run_finds_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync.dimensions import eos_core
+
+    class _Resp:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    target_payload = {
+        "result": {
+            "SurveyFlow": {
+                "Flow": [
+                    {
+                        "Type": "EndSurvey",
+                        "FlowID": "FL_1",
+                        "Options": {
+                            "SurveyTermination": "DisplayMessage",
+                            "EOSMessageLibrary": "UR_X",
+                            "EOSMessage": "MS_X",
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    def fake_send_api_request(**kwargs):
+        key = (kwargs.get("method"), kwargs.get("base_url"), kwargs.get("path"))
+        if key == ("GET", "target.qualtrics.test", "survey-definitions/SV_TGT"):
+            return _Resp(target_payload)
+        if key == ("GET", "target.qualtrics.test", "libraries/UR_X/messages/MS_X"):
+            response = Mock(status_code=404)
+            raise requests.HTTPError("not found", response=response)
+        if key == ("GET", "acc1.qualtrics.test", "libraries/UR_X/messages/MS_X"):
+            response = Mock(status_code=404)
+            raise requests.HTTPError("not found", response=response)
+        if key == ("GET", "acc2.qualtrics.test", "libraries/UR_X/messages/MS_X"):
+            return _Resp(
+                {
+                    "result": {
+                        "category": "endOfSurvey",
+                        "description": "from acc2",
+                        "messages": {"en": "<p>ok</p>"},
+                    }
+                }
+            )
+        raise AssertionError(f"Unexpected API call: {kwargs}")
+
+    monkeypatch.setattr(eos_core, "send_api_request", fake_send_api_request)
+
+    result = eos_core.repair_eos_messages_from_source_accounts(
+        target_survey_id="SV_TGT",
+        target_base_url="target.qualtrics.test",
+        target_headers={"X-API-TOKEN": "target-token"},
+        source_accounts=[
+            eos_core.EosSourceAccount(
+                label="acc1",
+                base_url="acc1.qualtrics.test",
+                headers={"X-API-TOKEN": "acc1-token"},
+            ),
+            eos_core.EosSourceAccount(
+                label="acc2",
+                base_url="acc2.qualtrics.test",
+                headers={"X-API-TOKEN": "acc2-token"},
+            ),
+        ],
+        include_backups_scan=False,
+        dry_run=True,
+        publish=False,
+    )
+
+    assert result.dry_run is True
+    assert result.target_refs_total == 1
+    assert result.missing_refs == 1
+    assert result.source_refs_total == 1
+    assert result.planned_rewire_count == 1
+    assert len(result.planned_imports) == 1
+    planned = result.planned_imports[0]
+    assert planned.source_account_label == "acc2"
+    assert planned.target_library_id == "UR_X"
+    assert planned.target_message_id == "MS_X"
+
+
+def test_auto_source_eos_repair_rewrites_flow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync.dimensions import eos_core
+
+    ensure_qsync_workspace(tmp_path)
+    monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
+
+    pushed_flow: dict = {}
+
+    class _Resp:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    target_payload = {
+        "result": {
+            "SurveyFlow": {
+                "Flow": [
+                    {
+                        "Type": "EndSurvey",
+                        "FlowID": "FL_1",
+                        "Options": {
+                            "SurveyTermination": "DisplayMessage",
+                            "EOSMessageLibrary": "UR_X",
+                            "EOSMessage": "MS_X",
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    def fake_send_api_request(**kwargs):
+        method = kwargs.get("method")
+        base_url = kwargs.get("base_url")
+        path = kwargs.get("path")
+        if (method, base_url, path) == (
+            "GET",
+            "target.qualtrics.test",
+            "survey-definitions/SV_TGT",
+        ):
+            return _Resp(target_payload)
+        if (method, base_url, path) == (
+            "GET",
+            "target.qualtrics.test",
+            "libraries/UR_X/messages/MS_X",
+        ):
+            response = Mock(status_code=404)
+            raise requests.HTTPError("not found", response=response)
+        if (method, base_url, path) == (
+            "GET",
+            "acc2.qualtrics.test",
+            "libraries/UR_X/messages/MS_X",
+        ):
+            return _Resp(
+                {
+                    "result": {
+                        "category": "endOfSurvey",
+                        "description": "from acc2",
+                        "messages": {"en": "<p>ok</p>"},
+                    }
+                }
+            )
+        if (method, base_url, path) == ("GET", "target.qualtrics.test", "whoami"):
+            return _Resp({"result": {"userId": "UR_TARGET"}})
+        if (method, base_url, path) == (
+            "POST",
+            "target.qualtrics.test",
+            "libraries/UR_X/messages",
+        ):
+            return _Resp({"result": {"messageId": "MS_NEW"}})
+        if (method, base_url, path) == (
+            "PUT",
+            "target.qualtrics.test",
+            "libraries/UR_X/messages/MS_NEW",
+        ):
+            return _Resp({"result": {}})
+        if (method, base_url, path) == (
+            "PUT",
+            "target.qualtrics.test",
+            "survey-definitions/SV_TGT/flow",
+        ):
+            pushed_flow.update(kwargs.get("json") or {})
+            return _Resp({"result": {}})
+        raise AssertionError(f"Unexpected API call: {kwargs}")
+
+    monkeypatch.setattr(eos_core, "send_api_request", fake_send_api_request)
+    monkeypatch.setattr(
+        eos_core, "ensure_backup", lambda survey_id: tmp_path / "surveys" / "backups"
+    )
+    monkeypatch.setattr(
+        eos_core,
+        "refresh_survey_cache",
+        lambda survey_id: (
+            Mock(survey_id=survey_id, payload={"result": {}}, path=tmp_path / "surveys"),
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        eos_core,
+        "pull_eos_messages",
+        lambda **kwargs: [
+            tmp_path
+            / "contents"
+            / "qualtrics_library_messages"
+            / "UR_X"
+            / "MS_NEW"
+        ],
+    )
+    monkeypatch.setattr(
+        eos_core,
+        "publish_survey_definition",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("publish should not be called")
+        ),
+    )
+
+    result = eos_core.repair_eos_messages_from_source_accounts(
+        target_survey_id="SV_TGT",
+        target_base_url="target.qualtrics.test",
+        target_headers={"X-API-TOKEN": "target-token"},
+        source_accounts=[
+            eos_core.EosSourceAccount(
+                label="acc2",
+                base_url="acc2.qualtrics.test",
+                headers={"X-API-TOKEN": "acc2-token"},
+            )
+        ],
+        include_backups_scan=False,
+        dry_run=False,
+        publish=False,
+    )
+
+    assert result.dry_run is False
+    assert result.missing_refs == 1
+    assert result.source_refs_total == 1
+    assert result.replacements == {("UR_X", "MS_X"): ("UR_X", "MS_NEW")}
+    assert result.updated_flow_ids == ["FL_1"]
+    assert pushed_flow["Flow"][0]["Options"]["EOSMessageLibrary"] == "UR_X"
+    assert pushed_flow["Flow"][0]["Options"]["EOSMessage"] == "MS_NEW"

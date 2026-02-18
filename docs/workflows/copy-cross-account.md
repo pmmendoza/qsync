@@ -21,6 +21,21 @@ qsync eos repair --survey-id SV_TARGET \
   --yes
 ```
 
+Or let qsync auto-detect source account(s) for missing EOS IDs:
+
+```bash
+qsync eos repair --survey-id SV_TARGET \
+  --account <target-account> \
+  --auto-source \
+  --yes
+```
+
+Batch repair for the target account (defaults to focal surveys):
+
+```bash
+qsync eos repair --account <target-account> --batch --auto-source --yes
+```
+
 ## Prerequisites
 
 - API access for both accounts (valid API tokens).

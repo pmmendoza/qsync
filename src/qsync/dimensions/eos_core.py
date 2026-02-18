@@ -72,6 +72,7 @@ class CrossAccountPlannedImport:
     source_library_id: str
     source_message_id: str
     target_create_library_id: str
+    source_account_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,13 @@ class CrossAccountEosRepairResult:
     pulled_paths: list[Path]
     warnings: list[str]
     dry_run: bool
+
+
+@dataclass(frozen=True)
+class EosSourceAccount:
+    label: str
+    base_url: str
+    headers: dict[str, str]
 
 
 def extract_eos_message_refs(
@@ -1052,6 +1060,310 @@ def repair_eos_messages_from_source_account(
         planned_rewire_count=0,
         planned_imports=[],
         created_pairs=created_by_source,
+        replacements=replacements,
+        updated_flow_ids=sorted(set(updated_flow_ids)),
+        pulled_paths=pulled_paths,
+        warnings=warnings,
+        dry_run=False,
+    )
+
+
+def repair_eos_messages_from_source_accounts(
+    *,
+    target_survey_id: str,
+    target_base_url: str,
+    target_headers: dict[str, str],
+    source_accounts: list[EosSourceAccount],
+    include_backups_scan: bool,
+    dry_run: bool,
+    publish: bool,
+    publish_description: str | None = None,
+) -> CrossAccountEosRepairResult:
+    """Repair missing EOS refs by probing multiple source accounts for matching IDs."""
+
+    target_payload = _fetch_survey_definition_for_account(
+        base_url=target_base_url,
+        headers=target_headers,
+        survey_id=target_survey_id,
+        action="qsync.eos.repair.auto_source.fetch_target",
+    )
+    target_refs = extract_eos_message_refs(target_survey_id, target_payload)
+    if not target_refs:
+        return CrossAccountEosRepairResult(
+            source_survey_id="auto-source",
+            target_survey_id=target_survey_id,
+            target_refs_total=0,
+            source_refs_total=0,
+            missing_refs=0,
+            planned_rewire_count=0,
+            planned_imports=[],
+            created_pairs={},
+            replacements={},
+            updated_flow_ids=[],
+            pulled_paths=[],
+            warnings=[],
+            dry_run=dry_run,
+        )
+
+    if not source_accounts:
+        raise RuntimeError(
+            "No source accounts available for auto-source EOS repair."
+        )
+
+    warnings: list[str] = []
+    fallback_library_id: str | None = None
+    fallback_library_resolved = False
+
+    source_messages: dict[tuple[str, str, str], dict] = {}
+    created_by_source: dict[tuple[str, str, str], tuple[str, str]] = {}
+    replacements: dict[tuple[str, str], tuple[str, str]] = {}
+    planned_imports: list[CrossAccountPlannedImport] = []
+    missing_refs = 0
+    matched_refs = 0
+
+    def _fetch_from_any_source(
+        library_id: str, message_id: str
+    ) -> tuple[str, dict] | None:
+        for source in source_accounts:
+            try:
+                payload = _fetch_library_message(
+                    base_url=source.base_url,
+                    headers=source.headers,
+                    survey_id=target_survey_id,
+                    library_id=library_id,
+                    message_id=message_id,
+                    action="qsync.eos.repair.auto_source.get_source",
+                )
+                return source.label, payload
+            except Exception as exc:  # noqa: BLE001
+                if _is_missing_library_message_error(exc):
+                    continue
+                warnings.append(
+                    f"Source account '{source.label}' lookup failed for "
+                    f"{library_id}/{message_id}: {exc}"
+                )
+        return None
+
+    for target_ref in target_refs:
+        target_pair = (target_ref.library_id, target_ref.message_id)
+        try:
+            _fetch_library_message(
+                base_url=target_base_url,
+                headers=target_headers,
+                survey_id=target_survey_id,
+                library_id=target_ref.library_id,
+                message_id=target_ref.message_id,
+                action="qsync.eos.repair.auto_source.target_get",
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001
+            if not _is_missing_library_message_error(exc):
+                raise
+
+        missing_refs += 1
+        source_hit = _fetch_from_any_source(
+            library_id=target_ref.library_id,
+            message_id=target_ref.message_id,
+        )
+        if source_hit is None:
+            warnings.append(
+                "Missing EOS reference not found in any source account: "
+                f"{target_ref.library_id}/{target_ref.message_id}"
+            )
+            continue
+
+        source_label, source_payload = source_hit
+        matched_refs += 1
+
+        if dry_run:
+            planned_imports.append(
+                CrossAccountPlannedImport(
+                    target_library_id=target_ref.library_id,
+                    target_message_id=target_ref.message_id,
+                    source_library_id=target_ref.library_id,
+                    source_message_id=target_ref.message_id,
+                    target_create_library_id=target_ref.library_id,
+                    source_account_label=source_label,
+                )
+            )
+            continue
+
+        source_key = (source_label, target_ref.library_id, target_ref.message_id)
+        source_messages[source_key] = source_payload
+
+        existing = created_by_source.get(source_key)
+        if existing:
+            replacements[target_pair] = existing
+            continue
+
+        if not fallback_library_resolved:
+            fallback_library_resolved = True
+            fallback_library_id = _fetch_whoami_user_id(
+                base_url=target_base_url,
+                headers=target_headers,
+                survey_id=target_survey_id,
+            )
+
+        candidate_libraries: list[str] = []
+        for lib_candidate in (target_ref.library_id, fallback_library_id):
+            cleaned = str(lib_candidate or "").strip()
+            if cleaned and cleaned not in candidate_libraries:
+                candidate_libraries.append(cleaned)
+        if not candidate_libraries:
+            raise RuntimeError(
+                "Unable to determine target library for auto-source EOS repair."
+            )
+
+        category = str(source_payload.get("category") or "endOfSurvey").strip() or "endOfSurvey"
+        description = str(source_payload.get("description") or "").strip()
+        messages = dict(source_payload.get("messages") or {})
+        create_payload = {
+            "category": category,
+            "description": description or "EOS message (auto-repaired by qsync)",
+            "messages": messages,
+        }
+
+        created_pair: tuple[str, str] | None = None
+        create_errors: list[str] = []
+        for target_library_id in candidate_libraries:
+            try:
+                create_resp = send_api_request(
+                    action="qsync.eos.repair.auto_source.create",
+                    method="POST",
+                    base_url=target_base_url,
+                    headers=target_headers,
+                    path=f"libraries/{target_library_id}/messages",
+                    survey_id=target_survey_id,
+                    json=create_payload,
+                    timeout=60,
+                )
+                created_raw = create_resp.json() if hasattr(create_resp, "json") else {}
+                created_result = (
+                    created_raw.get("result") if isinstance(created_raw, dict) else None
+                ) or {}
+                created_message_id = _parse_created_message_id(
+                    created_result=created_result,
+                    library_id=target_library_id,
+                    source_ref=(target_ref.library_id, target_ref.message_id),
+                )
+                send_api_request(
+                    action="qsync.eos.repair.auto_source.put",
+                    method="PUT",
+                    base_url=target_base_url,
+                    headers=target_headers,
+                    path=f"libraries/{target_library_id}/messages/{created_message_id}",
+                    survey_id=target_survey_id,
+                    json=_build_put_payload({"messages": messages}),
+                    timeout=60,
+                )
+                created_pair = (target_library_id, created_message_id)
+                break
+            except Exception as create_exc:  # noqa: BLE001
+                create_errors.append(f"{target_library_id}: {create_exc}")
+
+        if created_pair is None:
+            raise RuntimeError(
+                "Failed to create EOS message in target account for "
+                f"{target_ref.library_id}/{target_ref.message_id}. "
+                f"Tried libraries: {', '.join(candidate_libraries)}. "
+                f"Errors: {' | '.join(create_errors)}"
+            )
+
+        created_by_source[source_key] = created_pair
+        replacements[target_pair] = created_pair
+
+    if dry_run:
+        return CrossAccountEosRepairResult(
+            source_survey_id="auto-source",
+            target_survey_id=target_survey_id,
+            target_refs_total=len(target_refs),
+            source_refs_total=matched_refs,
+            missing_refs=missing_refs,
+            planned_rewire_count=len(planned_imports),
+            planned_imports=planned_imports,
+            created_pairs={},
+            replacements={},
+            updated_flow_ids=[],
+            pulled_paths=[],
+            warnings=warnings,
+            dry_run=True,
+        )
+
+    target_result = target_payload.get("result") or {}
+    flow = target_result.get("SurveyFlow") or target_result.get("Flow") or {}
+    if not isinstance(flow, dict):
+        raise RuntimeError(
+            f"Target survey {target_survey_id} has invalid SurveyFlow payload."
+        )
+
+    updated_flow_ids, updated_count = _rewrite_end_survey_refs_in_flow(
+        flow=flow,
+        replacements=replacements,
+    )
+
+    if updated_count > 0:
+        ensure_backup(target_survey_id)
+        send_api_request(
+            action="qsync.eos.repair.auto_source.push_flow",
+            method="PUT",
+            base_url=target_base_url,
+            headers=target_headers,
+            path=f"survey-definitions/{target_survey_id}/flow",
+            survey_id=target_survey_id,
+            json=flow,
+            timeout=60,
+            log_meta={
+                "context": {
+                    "origin": "qsync.eos.repair.auto_source",
+                    "replacements": [
+                        {
+                            "from_library_id": old_lib,
+                            "from_message_id": old_msg,
+                            "to_library_id": new_lib,
+                            "to_message_id": new_msg,
+                        }
+                        for (old_lib, old_msg), (new_lib, new_msg) in sorted(
+                            replacements.items()
+                        )
+                    ],
+                }
+            },
+        )
+
+        if publish:
+            description = publish_description or "qsync eos repair auto-source"
+            if len(description) > 140:
+                description = description[:140]
+            publish_survey_definition(
+                target_survey_id,
+                description=description,
+                base_url=target_base_url,
+                headers=target_headers,
+                context={"origin": "qsync.eos.repair.auto_source"},
+            )
+
+    refresh_survey_cache(target_survey_id)
+    pulled_paths = pull_eos_messages(
+        survey_id=target_survey_id,
+        allow_shared=True,
+        include_backups_scan=include_backups_scan,
+        check_drift=False,
+    )
+
+    # created_pairs currently keyed by source-account+source-ref; flatten for display.
+    flattened_created: dict[tuple[str, str], tuple[str, str]] = {}
+    for (_label, src_lib, src_msg), created_pair in created_by_source.items():
+        flattened_created[(src_lib, src_msg)] = created_pair
+
+    return CrossAccountEosRepairResult(
+        source_survey_id="auto-source",
+        target_survey_id=target_survey_id,
+        target_refs_total=len(target_refs),
+        source_refs_total=matched_refs,
+        missing_refs=missing_refs,
+        planned_rewire_count=0,
+        planned_imports=[],
+        created_pairs=flattened_created,
         replacements=replacements,
         updated_flow_ids=sorted(set(updated_flow_ids)),
         pulled_paths=pulled_paths,
