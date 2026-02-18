@@ -422,7 +422,11 @@ def push(
 
         # Keep the existing unified diff output as the default (high signal, easy to copy/paste),
         # but offer an optional side-by-side "before/after" view in interactive Rich terminals.
-        view_mode = "diff"
+        detailed_choice = "Detailed diffs (unified; cached vs Excel)"
+        summary_choice = "Before/after panels (summary; cached vs Excel)"
+        both_choice = "Both"
+        skip_choice = "↩ Continue without showing diffs"
+        view_mode = detailed_choice
         try:
             from ..rich_support import should_use_rich
 
@@ -432,18 +436,18 @@ def push(
                 view_mode = select_from_list(
                     message="How do you want to view workbook diffs?",
                     choices=[
-                        "Detailed diffs (unified; cached vs Excel)",
-                        "Before/after panels (summary; cached vs Excel)",
-                        "Both",
-                        "↩ Continue without showing diffs",
+                        detailed_choice,
+                        summary_choice,
+                        both_choice,
+                        skip_choice,
                     ],
-                    default="Detailed diffs (unified; cached vs Excel)",
-                ) or "diff"
+                    default=detailed_choice,
+                ) or detailed_choice
         except Exception:
-            view_mode = "diff"
+            view_mode = detailed_choice
 
         if view_mode.startswith("↩") or "Continue without" in view_mode:
-            return []
+            view_mode = skip_choice
 
         def _before_after_from_unified(diff_lines: list[str] | None) -> tuple[str, str]:
             removed: list[str] = []
@@ -462,7 +466,7 @@ def push(
             after = "\n".join(added).strip()
             return before or "(no removed lines)", after or "(no added lines)"
 
-        if view_mode.startswith("Before/after") or view_mode == "Both":
+        if view_mode.startswith("Before/after") or view_mode == both_choice:
             try:
                 from ..terminal_output import print_panels_in_columns
 
@@ -490,33 +494,34 @@ def push(
                 # Fall back to unified diffs below.
                 pass
 
-        if not (view_mode.startswith("Detailed diffs") or view_mode == "Both"):
-            return []
+        if not (view_mode.startswith("Detailed diffs") or view_mode == both_choice):
+            view_mode = skip_choice
 
-        print("[sync:items] Detailed diffs (cached vs Excel):")
-        for change in workbook_diffs:
-            print("-" * 80)
-            if change.kind == "embedded":
-                flow = f", flow_id={change.flow_id}" if change.flow_id else ""
-                header = (
-                    f"{change.kind.upper()} field={change.field or change.qid}{flow}"
-                )
-            else:
-                header = f"{change.kind.upper()} qid={change.qid}"
-            if change.choice_id is not None:
-                header += f", choice_id={change.choice_id}"
-            if change.answer_id is not None:
-                header += f", answer_id={change.answer_id}"
-            print(header)
-            diff_lines = change.diff_lines or []
-            if diff_lines:
-                for line in colorize_unified_diff_lines(diff_lines):
-                    print("  " + line)
-            else:
-                old_html = (change.old_html or "").strip()
-                new_html = (change.new_html or "").strip()
-                print("  OLD:", old_html)
-                print("  NEW:", new_html)
+        if view_mode != skip_choice:
+            print("[sync:items] Detailed diffs (cached vs Excel):")
+            for change in workbook_diffs:
+                print("-" * 80)
+                if change.kind == "embedded":
+                    flow = f", flow_id={change.flow_id}" if change.flow_id else ""
+                    header = (
+                        f"{change.kind.upper()} field={change.field or change.qid}{flow}"
+                    )
+                else:
+                    header = f"{change.kind.upper()} qid={change.qid}"
+                if change.choice_id is not None:
+                    header += f", choice_id={change.choice_id}"
+                if change.answer_id is not None:
+                    header += f", answer_id={change.answer_id}"
+                print(header)
+                diff_lines = change.diff_lines or []
+                if diff_lines:
+                    for line in colorize_unified_diff_lines(diff_lines):
+                        print("  " + line)
+                else:
+                    old_html = (change.old_html or "").strip()
+                    new_html = (change.new_html or "").strip()
+                    print("  OLD:", old_html)
+                    print("  NEW:", new_html)
 
         print(f"[sync:items] Staging {len(workbook_diffs)} change(s) from Excel...")
         existing_payload = (

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import time
 from pathlib import Path
 
 import pytest
@@ -98,6 +100,8 @@ def test_edit_menu_add_question_routes_to_handler(
             return "Clone existing question(s) from question bank"
         if message == "Clone source account:":
             return "Current account (default)"
+        if message == "Question bank lookup mode:":
+            return "Live survey definitions (default)"
         if message == "Question text behavior:":
             return "Keep source question text(s)"
         if message == "Where should the new question(s) be inserted?":
@@ -240,6 +244,7 @@ def test_edit_menu_add_question_clone_uses_flow_order_and_explicit_clone_order(
     monkeypatch.setattr("qsync.cli_survey.handle_add_question", _capture)
 
     seen_choices: list[str] = []
+    seen_order_choices: list[str] = []
 
     def _multi_select(message: str, choices, instruction=None, default=None):
         seen_choices[:] = list(choices)
@@ -265,10 +270,19 @@ def test_edit_menu_add_question_clone_uses_flow_order_and_explicit_clone_order(
             return "Clone existing question(s) from question bank"
         if message == "Clone source account:":
             return "Current account (default)"
+        if message == "Question bank lookup mode:":
+            return "Live survey definitions (default)"
         if message.startswith("Pick clone order position 1"):
-            return "QID1 - First"
+            seen_order_choices[:] = [str(choice) for choice in choices]
+            return next(
+                (choice for choice in choices if "QID1 - First" in str(choice)),
+                str(choices[0]),
+            )
         if message.startswith("Pick clone order position 2"):
-            return "QID2 - Second"
+            return next(
+                (choice for choice in choices if "QID2 - Second" in str(choice)),
+                str(choices[0]),
+            )
         if message == "Question text behavior:":
             return "Keep source question text(s)"
         if message == "Where should the new question(s) be inserted?":
@@ -284,6 +298,7 @@ def test_edit_menu_add_question_clone_uses_flow_order_and_explicit_clone_order(
     handle_menu(argparse.Namespace(tui=False))
 
     assert seen_choices == ["QID2 - Second", "QID1 - First"]
+    assert any(choice.startswith("[ ] ") for choice in seen_order_choices)
     assert "args" in called
     ns = called["args"]
     assert ns.source_question_id == ["QID1", "QID2"]
@@ -325,6 +340,8 @@ def test_direct_add_question_mode_accepts_preselected_survey(
             return "Clone existing question(s) from question bank"
         if message == "Clone source account:":
             return "Current account (default)"
+        if message == "Question bank lookup mode:":
+            return "Live survey definitions (default)"
         if message == "Question text behavior:":
             return "Keep source question text(s)"
         if message == "Where should the new question(s) be inserted?":
@@ -355,6 +372,133 @@ def test_direct_add_question_mode_accepts_preselected_survey(
     assert ns.source_survey_id == "SV_1"
     assert ns.source_question_id == ["QID1"]
     assert ns.after_qid == "QID1"
+    assert ns.dry_run is True
+
+
+def test_edit_menu_add_question_clone_indexed_uses_cached_question_bank(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.list_surveys",
+        lambda base, headers: [
+            {"id": "SV_TARGET", "name": "Target Survey"},
+            {"id": "SV_SOURCE", "name": "Source Survey"},
+        ],
+    )
+
+    def _pick_from_records(message: str, records):
+        if "source survey" in message.lower():
+            return "SV_SOURCE"
+        return "SV_TARGET"
+
+    monkeypatch.setattr(
+        "qsync.cli_survey._pick_survey_id_from_records",
+        _pick_from_records,
+    )
+
+    def _fetch_definition(base, headers, survey_id):
+        if survey_id != "SV_TARGET":
+            raise AssertionError("source definition should come from indexed cache")
+        return {
+            "Questions": {"QID1": {"QuestionText": "Target Intro"}},
+            "Blocks": {"BL_1": {"Type": "Standard", "BlockElements": []}},
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+        }
+
+    monkeypatch.setattr("qsync.cli_survey.fetch_survey_definition", _fetch_definition)
+
+    index_path = tmp_path / ".qsync" / "question_bank_index__default.json"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "account": "default",
+                "generated_at_epoch": time.time(),
+                "surveys": [
+                    {
+                        "id": "SV_SOURCE",
+                        "name": "Source Survey",
+                        "question_labels": [
+                            "QID9 - Indexed source one",
+                            "QID10 - Indexed source two",
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    called = {}
+
+    def _capture(ns):
+        called["args"] = ns
+
+    monkeypatch.setattr("qsync.cli_survey.handle_add_question", _capture)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+    monkeypatch.setattr(
+        interactive_menu,
+        "multi_select_from_list",
+        lambda message, choices, instruction=None, default=None: list(choices),
+    )
+
+    state = {"top_visits": 0}
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message.startswith("qsync survey menu"):
+            state["top_visits"] += 1
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
+            return "Add question(s) (clone template, insert in flow)"
+        if message == "Question template source:":
+            return "Clone existing question(s) from question bank"
+        if message == "Clone source account:":
+            return "Current account (default)"
+        if message == "Question bank lookup mode:":
+            return "Indexed local question bank cache (fast, uses pulled files)"
+        if message.startswith("Pick clone order position 1"):
+            return next(
+                (choice for choice in choices if "QID9 - Indexed source one" in str(choice)),
+                str(choices[0]),
+            )
+        if message.startswith("Pick clone order position 2"):
+            return next(
+                (choice for choice in choices if "QID10 - Indexed source two" in str(choice)),
+                str(choices[0]),
+            )
+        if message == "Question text behavior:":
+            return "Keep source question text(s)"
+        if message == "Where should the new question(s) be inserted?":
+            return "After existing question"
+        if message == "Choose anchor question (insert after):":
+            return "QID1 - Target Intro"
+        if message == "Dry run?":
+            return "Yes"
+        return "Exit"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert "args" in called
+    ns = called["args"]
+    assert ns.source_survey_id == "SV_SOURCE"
+    assert ns.source_question_id == ["QID9", "QID10"]
     assert ns.dry_run is True
 
 

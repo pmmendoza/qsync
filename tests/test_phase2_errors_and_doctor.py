@@ -17,10 +17,17 @@ def test_config_missing_base_url_raises_structured_error() -> None:
     assert excinfo.value.error_id == "QSYNC-CONFIG-BASEURL-001"
 
 
-def test_config_missing_token_raises_structured_error() -> None:
+def test_config_missing_token_raises_structured_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from qsync.config import get_client_config
     from qsync.errors import QsyncConfigError
 
+    monkeypatch.setattr(
+        "qsync.secrets.get_qualtrics_api_token_from_keyring",
+        lambda _env: None,
+        raising=False,
+    )
     with pytest.raises(QsyncConfigError) as excinfo:
         get_client_config(env={"QUALTRICS_BASE_URL": "iad1.qualtrics.com"})
     assert excinfo.value.error_id == "QSYNC-CONFIG-TOKEN-001"

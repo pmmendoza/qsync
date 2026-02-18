@@ -647,6 +647,132 @@ def test_add_question_from_scratch_mcq_dry_run(monkeypatch) -> None:
     assert writes == []
 
 
+def test_add_question_from_scratch_te_dry_run(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(cli_survey, "ensure_unlocked", lambda _sid: None)
+    monkeypatch.setattr(cli_survey, "load_push_context", lambda *_a, **_k: _PushCtx())
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda *_a, **_k: _base_definition(),
+    )
+
+    writes: list[str] = []
+    monkeypatch.setattr(
+        cli_survey,
+        "send_api_request",
+        lambda *_a, **_k: writes.append("write") or _Resp({"result": {}}),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        from_question_id=None,
+        question_json=None,
+        source_account=None,
+        source_survey_id=None,
+        source_question_id=None,
+        from_scratch_mcq=False,
+        from_scratch_type="te",
+        choice_text=None,
+        choice_text_file=None,
+        statement_text=None,
+        statement_text_file=None,
+        mc_multi_response=False,
+        question_text=["Please describe your experience."],
+        question_text_file=None,
+        target_block_id=None,
+        after_qid="QID15",
+        before_qid=None,
+        position="append",
+        data_export_tag=None,
+        allow_duplicate_tags=False,
+        dry_run=True,
+        force_live=False,
+        yes=False,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_add_question(args)
+    assert writes == []
+
+
+def test_add_question_from_scratch_matrix_dry_run(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(cli_survey, "ensure_unlocked", lambda _sid: None)
+    monkeypatch.setattr(cli_survey, "load_push_context", lambda *_a, **_k: _PushCtx())
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda *_a, **_k: _base_definition(),
+    )
+
+    writes: list[str] = []
+    monkeypatch.setattr(
+        cli_survey,
+        "send_api_request",
+        lambda *_a, **_k: writes.append("write") or _Resp({"result": {}}),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        from_question_id=None,
+        question_json=None,
+        source_account=None,
+        source_survey_id=None,
+        source_question_id=None,
+        from_scratch_mcq=False,
+        from_scratch_type="matrix",
+        choice_text=["Strongly disagree", "Disagree", "Agree", "Strongly agree"],
+        choice_text_file=None,
+        statement_text=["Statement A", "Statement B"],
+        statement_text_file=None,
+        mc_multi_response=False,
+        question_text=["How much do you agree with these statements?"],
+        question_text_file=None,
+        target_block_id=None,
+        after_qid="QID15",
+        before_qid=None,
+        position="append",
+        data_export_tag=None,
+        allow_duplicate_tags=False,
+        dry_run=True,
+        force_live=False,
+        yes=False,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_add_question(args)
+    assert writes == []
+
+
 def test_add_question_interactive_force_live_override(monkeypatch) -> None:
     from qsync import cli_survey
 

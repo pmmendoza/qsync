@@ -2170,7 +2170,14 @@ def sync_dimension(
                 )
                 errors = list(push_result.get("errors") or [])
                 surveys_failed = int(push_result.get("surveys_failed") or 0)
-                surveys_pushed = int(push_result.get("surveys_pushed") or 0)
+                surveys_pushed_raw = push_result.get("surveys_pushed")
+                if surveys_pushed_raw is None:
+                    details = list(push_result.get("details") or [])
+                    surveys_pushed = sum(
+                        1 for detail in details if bool((detail or {}).get("pushed"))
+                    )
+                else:
+                    surveys_pushed = int(surveys_pushed_raw or 0)
                 ok = (not errors) and surveys_failed == 0
                 # Use actual push outcome to drive publish behavior.
                 has_changes_to_apply = bool(surveys_pushed)

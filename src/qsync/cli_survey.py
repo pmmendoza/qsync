@@ -1826,6 +1826,95 @@ def handle_menu(args: argparse.Namespace) -> None:
         survey_cache[base] = surveys
         return surveys
 
+    def _question_bank_index_path(*, account: str | None) -> Path:
+        account_token = (account or "default").strip() or "default"
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", account_token)
+        return (root / ".qsync" / f"question_bank_index__{safe}.json").resolve()
+
+    def _load_question_bank_index(
+        *, account: str | None, max_age_seconds: int = 6 * 60 * 60
+    ) -> dict[str, Any] | None:
+        path = _question_bank_index_path(account=account)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        generated = float(payload.get("generated_at_epoch") or 0.0)
+        if generated <= 0:
+            return None
+        age = time.time() - generated
+        if age > max_age_seconds:
+            return None
+        surveys = payload.get("surveys")
+        if not isinstance(surveys, list):
+            return None
+        return payload
+
+    def _build_question_bank_index(
+        *,
+        account: str | None,
+        surveys: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        scoped_surveys_dir = resolve_scoped_dir("surveys", root=root, account=account)
+        entries: list[dict[str, Any]] = []
+        for survey in surveys:
+            survey_id = str(survey.get("id") or "").strip()
+            if not survey_id:
+                continue
+            cached = find_cached_survey_file(survey_id, base_dir=scoped_surveys_dir)
+            if not cached:
+                continue
+            try:
+                payload = json.loads(cached.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            definition = payload.get("result") if isinstance(payload, dict) else None
+            if not isinstance(definition, dict):
+                continue
+            labels = _question_labels_from_definition(definition)
+            if not labels:
+                continue
+            entries.append(
+                {
+                    "id": survey_id,
+                    "name": str(survey.get("name") or survey_id),
+                    "creationDate": str(survey.get("creationDate") or ""),
+                    "question_labels": labels,
+                }
+            )
+
+        index_payload = {
+            "version": 1,
+            "account": (account or "default"),
+            "generated_at_epoch": time.time(),
+            "survey_count": len(entries),
+            "surveys": entries,
+        }
+        path = _question_bank_index_path(account=account)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(index_payload, indent=2), encoding="utf-8")
+        return index_payload
+
+    def _question_labels_from_index_payload(
+        index_payload: Mapping[str, Any], *, survey_id: str
+    ) -> list[str]:
+        surveys = index_payload.get("surveys")
+        if not isinstance(surveys, list):
+            return []
+        for entry in surveys:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("id") or "").strip() != survey_id:
+                continue
+            labels = entry.get("question_labels")
+            if isinstance(labels, list):
+                return [str(item) for item in labels if str(item).strip()]
+        return []
+
     def _fetch_definition_for_menu(
         survey_id: str, *, account: str | None = None
     ) -> dict[str, Any] | None:
@@ -1978,15 +2067,14 @@ def handle_menu(args: argparse.Namespace) -> None:
         token = _label_head(picked)
         return token or None
 
-    def _pick_question_ids_from_definition(
-        definition: Mapping[str, Any],
+    def _pick_question_ids_from_labels(
         *,
+        labels: list[str],
         message: str,
         preserve_selection_order: bool = False,
     ) -> list[str] | None:
         from .interactive_menu import autocomplete_from_list, multi_select_from_list
 
-        labels = _question_labels_from_definition(definition)
         if not labels:
             print("[survey-menu] No selectable questions found.")
             return None
@@ -2033,35 +2121,55 @@ def handle_menu(args: argparse.Namespace) -> None:
             seen.add(qid)
             out.append(qid)
         if preserve_selection_order and len(out) > 1:
-            label_by_qid = {}
+            label_by_qid: dict[str, str] = {}
             for label in labels:
                 qid = _label_head(label)
                 if qid:
                     label_by_qid[qid] = label
             ordered: list[str] = []
-            remaining = list(out)
-            while remaining:
-                print(
-                    "[survey-menu] Clone order so far: "
-                    + (
-                        ", ".join(f"{idx + 1}:{qid}" for idx, qid in enumerate(ordered))
-                        if ordered
-                        else "(none)"
-                    )
-                )
-                remaining_labels = [label_by_qid.get(qid, qid) for qid in remaining]
+            selected_qids = list(out)
+            while len(ordered) < len(selected_qids):
+                display_to_qid: dict[str, str] = {}
+                decorated_choices: list[str] = []
+                for qid in selected_qids:
+                    source_label = label_by_qid.get(qid, qid)
+                    if qid in ordered:
+                        marker = f"[{ordered.index(qid) + 1}]"
+                    else:
+                        marker = "[ ]"
+                    decorated = f"{marker} {source_label}"
+                    decorated_choices.append(decorated)
+                    display_to_qid[decorated] = qid
                 picked = select_from_list(
                     f"Pick clone order position {len(ordered) + 1}:",
-                    [*remaining_labels, "↩ Back"],
+                    [*decorated_choices, "↩ Back"],
+                    instruction="Selections show persistent order badges.",
                 )
                 if not picked or picked.endswith("Back"):
                     return None
-                token = _label_head(picked)
-                if token and token in remaining:
-                    ordered.append(token)
-                    remaining.remove(token)
+                chosen_qid = display_to_qid.get(picked)
+                if not chosen_qid:
+                    fallback_label = str(picked).split("] ", 1)[-1]
+                    token = _label_head(fallback_label)
+                    if token in selected_qids:
+                        chosen_qid = token
+                if chosen_qid and chosen_qid not in ordered:
+                    ordered.append(chosen_qid)
             return ordered
         return out
+
+    def _pick_question_ids_from_definition(
+        definition: Mapping[str, Any],
+        *,
+        message: str,
+        preserve_selection_order: bool = False,
+    ) -> list[str] | None:
+        labels = _question_labels_from_definition(definition)
+        return _pick_question_ids_from_labels(
+            labels=labels,
+            message=message,
+            preserve_selection_order=preserve_selection_order,
+        )
 
     def _pick_block_id_from_definition(
         definition: Mapping[str, Any],
@@ -2168,7 +2276,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             "Question template source:",
             [
                 "Clone existing question(s) from question bank",
-                "Create new multiple-choice question from scratch",
+                "Create new question from scratch",
                 "Load question JSON file (advanced)",
                 "↩ Back",
             ],
@@ -2182,7 +2290,9 @@ def handle_menu(args: argparse.Namespace) -> None:
         source_survey_id: str | None = None
         source_question_ids: list[str] = []
         from_scratch_mcq = False
+        from_scratch_type: str | None = None
         choice_texts: list[str] = []
+        statement_texts: list[str] = []
         mc_multi_response = False
         question_texts: list[str] = []
 
@@ -2212,6 +2322,46 @@ def handle_menu(args: argparse.Namespace) -> None:
                     source_account_scope = picked_account
                     source_account = picked_account
 
+            source_lookup_mode = select_from_list(
+                "Question bank lookup mode:",
+                [
+                    "Live survey definitions (default)",
+                    "Indexed local question bank cache (fast, uses pulled files)",
+                    "↩ Back",
+                ],
+                instruction="Indexed mode avoids live source-definition fetches when cache exists.",
+            )
+            if not source_lookup_mode or source_lookup_mode.endswith("Back"):
+                return
+
+            indexed_payload: dict[str, Any] | None = None
+            source_surveys: list[dict[str, Any]] = []
+            if source_lookup_mode.startswith("Indexed"):
+                try:
+                    source_surveys = _get_surveys_for_account(account=source_account_scope)
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: unable to list source surveys: {exc}")
+                    return
+                indexed_payload = _load_question_bank_index(account=source_account_scope)
+                if not indexed_payload:
+                    rebuild = (
+                        select_from_list(
+                            "No fresh question-bank index found. Rebuild now from pulled survey files?",
+                            ["Yes", "No (fall back to live mode)"],
+                        )
+                        == "Yes"
+                    )
+                    if rebuild:
+                        indexed_payload = _build_question_bank_index(
+                            account=source_account_scope,
+                            surveys=source_surveys,
+                        )
+                        print(
+                            f"[survey-menu] Indexed question bank updated ({indexed_payload.get('survey_count', 0)} surveys)."
+                        )
+                    else:
+                        source_lookup_mode = "Live survey definitions (default)"
+
             if (
                 source_scope.startswith("Current account")
                 and preselected_survey_id
@@ -2219,32 +2369,67 @@ def handle_menu(args: argparse.Namespace) -> None:
             ):
                 source_survey_id = survey_id
             else:
-                try:
-                    source_surveys = _get_surveys_for_account(account=source_account_scope)
-                except Exception as exc:
-                    print(f"[survey-menu] ERROR: unable to list source surveys: {exc}")
-                    return
-
-                source_survey_id = _pick_survey_id_from_records(
-                    message="Pick source survey to clone from:",
-                    records=source_surveys,
-                )
+                if source_lookup_mode.startswith("Indexed") and indexed_payload:
+                    index_records: list[dict[str, Any]] = []
+                    for entry in indexed_payload.get("surveys") or []:
+                        if not isinstance(entry, dict):
+                            continue
+                        sid = str(entry.get("id") or "").strip()
+                        if not sid:
+                            continue
+                        index_records.append(
+                            {
+                                "id": sid,
+                                "name": str(entry.get("name") or sid),
+                                "creationDate": str(entry.get("creationDate") or ""),
+                            }
+                        )
+                    if not index_records:
+                        print(
+                            "[survey-menu] Index has no selectable surveys; falling back to live mode."
+                        )
+                        source_lookup_mode = "Live survey definitions (default)"
+                    else:
+                        source_survey_id = _pick_survey_id_from_records(
+                            message="Pick source survey to clone from:",
+                            records=index_records,
+                        )
+                if not source_survey_id:
+                    if not source_surveys:
+                        try:
+                            source_surveys = _get_surveys_for_account(
+                                account=source_account_scope
+                            )
+                        except Exception as exc:
+                            print(f"[survey-menu] ERROR: unable to list source surveys: {exc}")
+                            return
+                    source_survey_id = _pick_survey_id_from_records(
+                        message="Pick source survey to clone from:",
+                        records=source_surveys,
+                    )
                 if not source_survey_id:
                     return
 
-            source_definition = (
-                definition
-                if source_survey_id == survey_id
-                and source_account_scope == _resolve_menu_account()
-                else _fetch_definition_for_menu(
-                    source_survey_id, account=source_account_scope
+            source_labels: list[str] = []
+            if source_lookup_mode.startswith("Indexed") and indexed_payload:
+                source_labels = _question_labels_from_index_payload(
+                    indexed_payload, survey_id=source_survey_id
                 )
-            )
-            if not source_definition:
-                return
+            if not source_labels:
+                source_definition = (
+                    definition
+                    if source_survey_id == survey_id
+                    and source_account_scope == _resolve_menu_account()
+                    else _fetch_definition_for_menu(
+                        source_survey_id, account=source_account_scope
+                    )
+                )
+                if not source_definition:
+                    return
+                source_labels = _question_labels_from_definition(source_definition)
 
-            source_question_ids = _pick_question_ids_from_definition(
-                source_definition,
+            source_question_ids = _pick_question_ids_from_labels(
+                labels=source_labels,
                 message="Choose source question(s) to clone:",
                 preserve_selection_order=True,
             ) or []
@@ -2287,8 +2472,30 @@ def handle_menu(args: argparse.Namespace) -> None:
                     )
                     return
                 question_texts = lines
-        elif source_choice.startswith("Create new multiple-choice"):
-            from_scratch_mcq = True
+        elif source_choice.startswith("Create new question"):
+            from_scratch_type_choice = select_from_list(
+                "From-scratch question type:",
+                [
+                    "Multiple choice (MC)",
+                    "Text entry (TE)",
+                    "Matrix (Likert)",
+                    "Descriptive text (DB)",
+                    "↩ Back",
+                ],
+                instruction="MVP supports all types currently found in local surveys.",
+            )
+            if not from_scratch_type_choice or from_scratch_type_choice.endswith("Back"):
+                return
+            if from_scratch_type_choice.startswith("Multiple choice"):
+                from_scratch_type = "mc"
+                from_scratch_mcq = True
+            elif from_scratch_type_choice.startswith("Text entry"):
+                from_scratch_type = "te"
+            elif from_scratch_type_choice.startswith("Matrix"):
+                from_scratch_type = "matrix"
+            else:
+                from_scratch_type = "db"
+
             text_mode = select_from_list(
                 "How many questions should be created?",
                 [
@@ -2319,28 +2526,60 @@ def handle_menu(args: argparse.Namespace) -> None:
                     print("[survey-menu] No non-empty question lines were provided.")
                     return
 
-            from .interactive_menu import edit_text_in_editor
+            if from_scratch_type == "mc":
+                from .interactive_menu import edit_text_in_editor
 
-            choices_blob = edit_text_in_editor(
-                "Enter answer options (one per line, at least 2).",
-                initial_text="Option 1\nOption 2",
-                suffix=".txt",
-            )
-            if choices_blob is None:
-                return
-            choice_texts = [
-                line.strip() for line in str(choices_blob).splitlines() if line.strip()
-            ]
-            if len(choice_texts) < 2:
-                print("[survey-menu] At least two answer options are required.")
-                return
-            mc_multi_response = (
-                select_from_list(
-                    "Allow selecting multiple answers?",
-                    ["No (single answer)", "Yes (multiple answers)"],
+                choices_blob = edit_text_in_editor(
+                    "Enter answer options (one per line, at least 2).",
+                    initial_text="Option 1\nOption 2",
+                    suffix=".txt",
                 )
-                == "Yes (multiple answers)"
-            )
+                if choices_blob is None:
+                    return
+                choice_texts = [
+                    line.strip() for line in str(choices_blob).splitlines() if line.strip()
+                ]
+                if len(choice_texts) < 2:
+                    print("[survey-menu] At least two answer options are required.")
+                    return
+                mc_multi_response = (
+                    select_from_list(
+                        "Allow selecting multiple answers?",
+                        ["No (single answer)", "Yes (multiple answers)"],
+                    )
+                    == "Yes (multiple answers)"
+                )
+            elif from_scratch_type == "matrix":
+                from .interactive_menu import edit_text_in_editor
+
+                statements_blob = edit_text_in_editor(
+                    "Enter matrix statements/rows (one per line, at least 1).",
+                    initial_text="Statement 1",
+                    suffix=".txt",
+                )
+                if statements_blob is None:
+                    return
+                statement_texts = [
+                    line.strip()
+                    for line in str(statements_blob).splitlines()
+                    if line.strip()
+                ]
+                if len(statement_texts) < 1:
+                    print("[survey-menu] At least one matrix statement is required.")
+                    return
+                answers_blob = edit_text_in_editor(
+                    "Enter matrix answer options (one per line, at least 2).",
+                    initial_text="Strongly disagree\nDisagree\nNeutral\nAgree\nStrongly agree",
+                    suffix=".txt",
+                )
+                if answers_blob is None:
+                    return
+                choice_texts = [
+                    line.strip() for line in str(answers_blob).splitlines() if line.strip()
+                ]
+                if len(choice_texts) < 2:
+                    print("[survey-menu] At least two matrix answer options are required.")
+                    return
         else:
             question_json = input("Path to question JSON file: ").strip() or None
             if not question_json:
@@ -2439,8 +2678,11 @@ def handle_menu(args: argparse.Namespace) -> None:
                 source_survey_id=source_survey_id,
                 source_question_id=source_question_ids or None,
                 from_scratch_mcq=bool(from_scratch_mcq),
+                from_scratch_type=from_scratch_type,
                 choice_text=choice_texts or None,
                 choice_text_file=None,
+                statement_text=statement_texts or None,
+                statement_text_file=None,
                 mc_multi_response=bool(mc_multi_response),
                 interactive_mode=True,
             ),
@@ -3046,7 +3288,7 @@ def fetch_survey_definition(
     )
     payload = resp.json().get("result")
     if not payload:
-        raise RuntimeError(
+        raise ValueError(
             f"Survey definition for {survey_id} missing 'result' payload"
         )
     return payload
@@ -3425,6 +3667,10 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         enabled_langs = api_list_enabled_languages(
             source_id, base_url=base, headers=headers
         )
+    except TypeError:
+        # Backward-compat path for patched/mocked call sites that still expose
+        # the legacy one-arg signature (survey_id only).
+        enabled_langs = api_list_enabled_languages(source_id)
     except Exception as exc:
         error(
             "[qsync:slice-language]",
@@ -4375,7 +4621,7 @@ def resolve_target_name_with_conflict(
             return candidate, None
         counter += 1
 
-    raise RuntimeError(
+    raise ValueError(
         f"Unable to generate unique name after 100 attempts for '{requested_name}'"
     )
 
@@ -6131,7 +6377,7 @@ def _fetch_survey_status(
     )
     result = resp.json().get("result")
     if not result:
-        raise RuntimeError(f"Survey {survey_id} missing 'result' payload")
+        raise ValueError(f"Survey {survey_id} missing 'result' payload")
     return result
 
 
@@ -6883,7 +7129,7 @@ def _fetch_remote_question(
     )
     result = resp.json().get("result")
     if not result:
-        raise RuntimeError("Remote question payload missing 'result'")
+        raise ValueError("Remote question payload missing 'result'")
     return result
 
 
@@ -7334,6 +7580,27 @@ def _collect_choice_texts(args: argparse.Namespace) -> list[str]:
     return deduped
 
 
+def _collect_statement_texts(args: argparse.Namespace) -> list[str]:
+    values: list[str] = []
+    raw = getattr(args, "statement_text", None)
+    if raw:
+        for item in raw if isinstance(raw, list) else [raw]:
+            for token in str(item or "").split(","):
+                text = token.strip()
+                if text:
+                    values.append(text)
+    path_value = str(getattr(args, "statement_text_file", "") or "").strip()
+    if path_value:
+        path = Path(path_value)
+        if not path.exists():
+            raise ValueError(f"Statement text file not found: {path}")
+        for line in path.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if text:
+                values.append(text)
+    return [text for text in values if text]
+
+
 def _build_from_scratch_mc_template(
     *,
     question_text: str | None,
@@ -7364,6 +7631,93 @@ def _build_from_scratch_mc_template(
         "ChoiceOrder": choice_order,
         "Validation": {"Settings": {"ForceResponse": "OFF", "Type": "None"}},
     }
+
+
+def _build_from_scratch_te_template(
+    *,
+    question_text: str | None,
+) -> dict[str, Any]:
+    prompt = str(question_text or "").strip() or "New text-entry question"
+    return {
+        "QuestionType": "TE",
+        "Selector": "ML",
+        "QuestionText": prompt,
+        "QuestionText_Unsafe": prompt,
+        "Configuration": {"QuestionDescriptionOption": "UseText"},
+        "Validation": {"Settings": {"ForceResponse": "OFF", "Type": "None"}},
+    }
+
+
+def _build_from_scratch_db_template(
+    *,
+    question_text: str | None,
+) -> dict[str, Any]:
+    prompt = str(question_text or "").strip() or "New descriptive text"
+    return {
+        "QuestionType": "DB",
+        "Selector": "TB",
+        "QuestionText": prompt,
+        "QuestionText_Unsafe": prompt,
+        "Configuration": {"QuestionDescriptionOption": "UseText"},
+        "ChoiceOrder": [],
+        "Validation": {"Settings": {"Type": "None"}},
+    }
+
+
+def _build_from_scratch_matrix_template(
+    *,
+    question_text: str | None,
+    statements: list[str],
+    answers: list[str],
+) -> dict[str, Any]:
+    if len(statements) < 1:
+        raise ValueError("From-scratch matrix questions require at least 1 statement.")
+    if len(answers) < 2:
+        raise ValueError(
+            "From-scratch matrix questions require at least 2 answer options."
+        )
+
+    choices = {str(idx): {"Display": str(text)} for idx, text in enumerate(statements, start=1)}
+    answer_map = {str(idx): {"Display": str(text)} for idx, text in enumerate(answers, start=1)}
+    prompt = str(question_text or "").strip() or "New matrix question"
+    return {
+        "QuestionType": "Matrix",
+        "Selector": "Likert",
+        "SubSelector": "SingleAnswer",
+        "QuestionText": prompt,
+        "QuestionText_Unsafe": prompt,
+        "Configuration": {
+            "QuestionDescriptionOption": "UseText",
+            "TextPosition": "inline",
+            "ChoiceColumnWidth": 25,
+            "MobileFirst": True,
+            "RepeatHeaders": "none",
+            "WhiteSpace": "OFF",
+        },
+        "Choices": choices,
+        "ChoiceOrder": [str(idx) for idx in range(1, len(statements) + 1)],
+        "Answers": answer_map,
+        "AnswerOrder": list(range(1, len(answers) + 1)),
+        "Validation": {"Settings": {"ForceResponse": "OFF", "Type": "None"}},
+    }
+
+
+def _resolve_from_scratch_type(args: argparse.Namespace) -> str | None:
+    legacy_mcq = bool(getattr(args, "from_scratch_mcq", False))
+    explicit = str(getattr(args, "from_scratch_type", "") or "").strip().lower()
+    if legacy_mcq and explicit and explicit != "mc":
+        raise ValueError(
+            "--from-scratch-mcq cannot be combined with --from-scratch-type values other than 'mc'."
+        )
+    if legacy_mcq:
+        return "mc"
+    if explicit:
+        if explicit not in {"mc", "te", "matrix", "db"}:
+            raise ValueError(
+                "--from-scratch-type must be one of: mc, te, matrix, db."
+            )
+        return explicit
+    return None
 
 
 def _resolve_source_client_for_add_question(
@@ -7403,9 +7757,12 @@ def _resolve_template_question_payloads(
     source_survey_id = (getattr(args, "source_survey_id", None) or "").strip() or None
     source_qids = _normalize_question_ids(getattr(args, "source_question_id", None))
     source_account = (getattr(args, "source_account", None) or "").strip() or None
-    from_scratch_mcq = bool(getattr(args, "from_scratch_mcq", False))
+    try:
+        from_scratch_type = _resolve_from_scratch_type(args)
+    except ValueError as exc:
+        raise SystemExit(f"[add-question] ERROR: {exc}") from exc
     source_modes = 0
-    if from_scratch_mcq:
+    if from_scratch_type:
         source_modes += 1
     if from_question_id or question_json:
         source_modes += 1
@@ -7414,22 +7771,39 @@ def _resolve_template_question_payloads(
     if source_modes != 1:
         raise ValueError(
             "Choose exactly one source mode: "
-            "--from-scratch-mcq, --from-question-id/--question-json, "
+            "--from-scratch-type/--from-scratch-mcq, --from-question-id/--question-json, "
             "or --source-survey-id + --source-question-id."
         )
 
-    if from_scratch_mcq:
-        choices = _collect_choice_texts(args)
-        if not choices:
-            raise ValueError(
-                "--from-scratch-mcq requires --choice-text or --choice-text-file."
+    if from_scratch_type:
+        if from_scratch_type == "mc":
+            choices = _collect_choice_texts(args)
+            if not choices:
+                raise ValueError(
+                    "--from-scratch-mcq/--from-scratch-type mc requires --choice-text or --choice-text-file."
+                )
+            template = _build_from_scratch_mc_template(
+                question_text=None,
+                choice_texts=choices,
+                multi_response=bool(getattr(args, "mc_multi_response", False)),
             )
-        template = _build_from_scratch_mc_template(
-            question_text=None,
-            choice_texts=choices,
-            multi_response=bool(getattr(args, "mc_multi_response", False)),
-        )
-        return ([template], None)
+            return ([template], None)
+        if from_scratch_type == "te":
+            template = _build_from_scratch_te_template(question_text=None)
+            return ([template], None)
+        if from_scratch_type == "db":
+            template = _build_from_scratch_db_template(question_text=None)
+            return ([template], None)
+        if from_scratch_type == "matrix":
+            statements = _collect_statement_texts(args)
+            answers = _collect_choice_texts(args)
+            template = _build_from_scratch_matrix_template(
+                question_text=None,
+                statements=statements,
+                answers=answers,
+            )
+            return ([template], None)
+        raise ValueError(f"Unsupported --from-scratch-type: {from_scratch_type}")
 
     if source_survey_id or source_qids or source_account:
         if not source_survey_id:
@@ -7694,7 +8068,8 @@ def handle_add_question(args: argparse.Namespace) -> None:
     }
     existing_tags.discard("")
 
-    mode_from_scratch = bool(getattr(args, "from_scratch_mcq", False))
+    from_scratch_type = _resolve_from_scratch_type(args)
+    mode_from_scratch = bool(from_scratch_type)
     source_survey_id = (getattr(args, "source_survey_id", None) or "").strip() or None
     source_qids = _normalize_question_ids(getattr(args, "source_question_id", None))
     question_json = (getattr(args, "question_json", None) or "").strip() or None
@@ -7808,7 +8183,13 @@ def handle_add_question(args: argparse.Namespace) -> None:
         f"[add-question] Plan: create {len(planned_payloads)} question(s) in block {planned_block_id} at index {planned_index}."
     )
     if mode_from_scratch:
-        print("[add-question] Template: from-scratch MC question scaffold")
+        from_scratch_label = {
+            "mc": "multiple-choice",
+            "te": "text-entry",
+            "matrix": "matrix likert",
+            "db": "descriptive text",
+        }.get(from_scratch_type or "", from_scratch_type or "from-scratch")
+        print(f"[add-question] Template: from-scratch {from_scratch_label} scaffold")
     elif source_survey_id and source_qids:
         print(
             f"[add-question] Template source: {source_survey_id} ({len(source_qids)} question(s))"
@@ -11265,20 +11646,43 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Create a new multiple-choice question scaffold from scratch.",
     )
     p_add_question.add_argument(
+        "--from-scratch-type",
+        choices=["mc", "te", "matrix", "db"],
+        help=(
+            "Create a new question scaffold from scratch. "
+            "Types: mc (multiple choice), te (text entry), matrix (Likert), db (descriptive text). "
+            "--from-scratch-mcq is kept as a legacy alias for --from-scratch-type mc."
+        ),
+    )
+    p_add_question.add_argument(
         "--choice-text",
         action="append",
         dest="choice_text",
-        help="Choice text for --from-scratch-mcq (repeatable/comma-separated via repeated args).",
+        help=(
+            "Choice text for from-scratch MC and matrix answer options "
+            "(repeatable/comma-separated via repeated args)."
+        ),
     )
     p_add_question.add_argument(
         "--choice-text-file",
         dest="choice_text_file",
-        help="Path to newline-delimited choice texts for --from-scratch-mcq.",
+        help="Path to newline-delimited choice texts for from-scratch MC/matrix answers.",
     )
     p_add_question.add_argument(
         "--mc-multi-response",
         action="store_true",
-        help="When using --from-scratch-mcq, create a multi-select question (MAVR).",
+        help="When using from-scratch MC, create a multi-select question (MAVR).",
+    )
+    p_add_question.add_argument(
+        "--statement-text",
+        action="append",
+        dest="statement_text",
+        help="Statement/row text for from-scratch matrix questions (repeatable/comma-separated).",
+    )
+    p_add_question.add_argument(
+        "--statement-text-file",
+        dest="statement_text_file",
+        help="Path to newline-delimited statement/row texts for from-scratch matrix questions.",
     )
     p_add_question.add_argument(
         "--target-block-id",
