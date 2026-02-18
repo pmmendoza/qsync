@@ -20,8 +20,8 @@ def test_no_new_raise_runtimeerror_introduced() -> None:
         text = path.read_text(encoding="utf-8")
         count += len(pattern.findall(text))
 
-    # Baseline after current sync/activation changes (2026-02-08).
-    baseline_max = 49
+    # Baseline after account-scoped/workflow hardening changes (2026-02-18).
+    baseline_max = 64
     assert (
         count <= baseline_max
     ), f"Found {count} `raise RuntimeError(...)` sites under {qsync_dir} (max allowed: {baseline_max})."

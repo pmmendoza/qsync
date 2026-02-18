@@ -399,11 +399,16 @@ def _resolve_account_from_args(args: argparse.Namespace) -> str | None:
     if isinstance(raw, str):
         name = raw.strip()
         if name:
+            if name.lower() == "default":
+                return None
             return name
     try:
         from .config import get_active_account
 
-        return get_active_account()
+        active = get_active_account()
+        if isinstance(active, str) and active.strip().lower() == "default":
+            return None
+        return active
     except Exception:
         return None
 
@@ -414,6 +419,80 @@ def _get_client_config_for_args(args: argparse.Namespace) -> tuple[str, dict]:
         env = load_account_env(account, root=_workspace_root())
         return get_client_config(env)
     return get_client_config()
+
+
+def _emit_active_account_banner(
+    *,
+    args: argparse.Namespace | None,
+    action: str,
+    base_url: str | None = None,
+    prefix: str = "[account-preflight]",
+) -> None:
+    """Print a concise active-account preflight line for write-heavy actions."""
+
+    account = "default"
+    if args is not None:
+        try:
+            account = _resolve_account_from_args(args) or "default"
+        except Exception:
+            account = "default"
+    resolved_base = (base_url or "").strip()
+    if not resolved_base and args is not None:
+        try:
+            resolved_base = _get_client_config_for_args(args)[0]
+        except Exception:
+            resolved_base = ""
+    print(
+        f"{prefix} action={action} account={account} "
+        f"base_url={resolved_base or '(unknown)'}"
+    )
+
+
+_SURVEY_WRITE_PREFLIGHT_ACTIONS: dict[str, str] = {
+    # Remote/account-scoped writes
+    "copy": "copy",
+    "copy-cross-account": "copy-cross-account",
+    "slice-language": "slice-language",
+    "rename": "rename",
+    "delete": "delete",
+    "cleanup-embedded-data": "cleanup-embedded-data",
+    "prolific-auth": "prolific-auth",
+    "publish": "publish",
+    "activate": "activate",
+    "deactivate": "deactivate",
+    "rollback": "rollback",
+    # Local workspace writes
+    "inventory": "inventory-refresh",
+    "prepare": "prepare-surfaces",
+}
+
+_SURVEY_MASTER_WRITE_PREFLIGHT_ACTIONS: dict[str, str] = {
+    "pull": "survey-master-pull",
+    "stage": "survey-master-stage",
+    "apply": "survey-master-apply",
+    "push": "survey-master-push",
+    "rollback": "survey-master-rollback",
+}
+
+
+def maybe_emit_survey_write_preflight(args: argparse.Namespace) -> None:
+    """Emit account/base preflight line for direct write-heavy survey commands."""
+
+    sub = str(getattr(args, "survey_command", "") or "").strip()
+    if not sub:
+        return
+
+    action = ""
+    if sub == "master":
+        master_sub = str(getattr(args, "master_command", "") or "").strip()
+        action = _SURVEY_MASTER_WRITE_PREFLIGHT_ACTIONS.get(master_sub, "")
+    else:
+        action = _SURVEY_WRITE_PREFLIGHT_ACTIONS.get(sub, "")
+
+    if not action:
+        return
+
+    _emit_active_account_banner(args=args, action=action)
 
 
 def _discover_account_env_files(*, root: Path) -> list[str]:
@@ -601,6 +680,39 @@ def handle_menu(args: argparse.Namespace) -> None:
         return _pick_survey_ids_from_records(message=message, records=surveys)
 
     def _run_action(func, ns: argparse.Namespace) -> None:
+        write_action = str(getattr(ns, "_preflight_action", "") or "").strip()
+        if not write_action:
+            implicit_write_actions = {
+                "handle_activate": "activate",
+                "handle_deactivate": "deactivate",
+                "handle_publish": "publish",
+                "handle_rollback": "rollback",
+                "handle_copy": "copy",
+                "handle_copy_cross_account": "copy-cross-account",
+                "handle_delete": "delete",
+                "handle_rename": "rename",
+                "handle_cleanup_embedded_data": "cleanup-embedded-data",
+                "handle_prolific_auth": "prolific-auth",
+                "handle_prolific_wiring": "prolific-wiring",
+                "handle_add_question": "add-question",
+                "handle_move_question": "move-question",
+                "handle_add_page_break": "add-page-break",
+                "handle_remove_page_break": "remove-page-break",
+                "handle_push_question": "push-question",
+                "handle_master_pull": "survey-master-pull",
+                "handle_master_stage": "survey-master-stage",
+                "handle_master_apply": "survey-master-apply",
+                "handle_master_push": "survey-master-push",
+                "handle_master_rollback": "survey-master-rollback",
+            }
+            write_action = implicit_write_actions.get(getattr(func, "__name__", ""), "")
+        if write_action:
+            _emit_active_account_banner(
+                args=argparse.Namespace(account=_resolve_menu_account()),
+                action=write_action,
+                base_url=_resolve_base_url_for_display(),
+                prefix="[survey-menu]",
+            )
         try:
             func(ns)
         except SystemExit as exc:
@@ -1041,6 +1153,261 @@ def handle_menu(args: argparse.Namespace) -> None:
                 layout_heuristics=False,
                 skip_js_strings=False,
                 open=bool(do_open),
+            ),
+        )
+
+    def _menu_inspect_question() -> None:
+        survey_id = _pick_survey_id(message="Pick a survey to inspect a question from:")
+        if not survey_id:
+            return
+        definition = _fetch_definition_for_menu(survey_id)
+        if definition is None:
+            return
+        question_id = _pick_question_id_from_definition(
+            definition,
+            message="Pick a question to inspect:",
+        )
+        if not question_id:
+            return
+        field_choice = select_from_list(
+            "Inspect output:",
+            [
+                "Full question payload",
+                "QuestionText",
+                "QuestionJS",
+                "DataExportTag",
+                "Custom field",
+                "↩ Back",
+            ],
+        )
+        if not field_choice or field_choice.endswith("Back"):
+            return
+        field_name = None
+        raw = False
+        if field_choice == "Custom field":
+            entered = input("Enter field name (exact key): ").strip()
+            if not entered:
+                return
+            field_name = entered
+            raw = (
+                select_from_list("Raw output if field is a string?", ["No", "Yes"])
+                == "Yes"
+            )
+        elif field_choice != "Full question payload":
+            field_name = field_choice
+            raw = (
+                select_from_list("Raw output if field is a string?", ["No", "Yes"])
+                == "Yes"
+            )
+        _run_action(
+            handle_inspect_question,
+            argparse.Namespace(
+                survey_id=survey_id,
+                question_id=question_id,
+                survey_file=None,
+                field=field_name,
+                raw=bool(raw),
+            ),
+        )
+
+    def _menu_push_question() -> None:
+        survey_id = _pick_survey_id(message="Pick a survey to push one question to:")
+        if not survey_id:
+            return
+        definition = _fetch_definition_for_menu(survey_id)
+        if definition is None:
+            return
+        question_id = _pick_question_id_from_definition(
+            definition,
+            message="Pick a question to push:",
+        )
+        if not question_id:
+            return
+        dry_run = select_from_list("Dry run only?", ["Yes", "No"]) == "Yes"
+        force_live = (
+            select_from_list("Allow push with live responses?", ["No", "Yes"]) == "Yes"
+        )
+        show_diff = select_from_list("Show diff output?", ["Yes", "No"]) == "Yes"
+        no_publish = (
+            select_from_list("Publish after push?", ["Yes", "No"]) == "No"
+        )
+        _run_action(
+            handle_push_question,
+            argparse.Namespace(
+                survey_id=survey_id,
+                question_id=question_id,
+                survey_file=None,
+                dry_run=bool(dry_run),
+                force_live=bool(force_live),
+                yes=False,
+                show_diff=bool(show_diff),
+                no_publish=bool(no_publish),
+                _preflight_action="push-question",
+            ),
+        )
+
+    def _menu_stage_by_qid() -> None:
+        if not _require_default_account(action="stage-by-qid"):
+            return
+        survey_id = _pick_survey_id(message="Pick a survey to stage by QID scope:")
+        if not survey_id:
+            return
+        definition = _fetch_definition_for_menu(survey_id)
+        if definition is None:
+            return
+        qids = _pick_question_ids_from_definition(
+            definition,
+            message="Pick one or more QIDs to stage:",
+        )
+        if not qids:
+            return
+        from .interactive_menu import multi_select_from_list
+
+        dims = multi_select_from_list(
+            message="Dimensions to stage for selected QIDs:",
+            choices=["items", "js", "translations"],
+            instruction="Space: toggle, Enter: confirm",
+        )
+        if not dims:
+            return
+        dims_unique = [d for d in ["items", "js", "translations"] if d in set(dims)]
+        if not dims_unique:
+            return
+        scope_expr = " OR ".join([f"qid:{qid}" for qid in qids])
+        print(
+            f"[survey-menu] Stage by QID scope: survey={survey_id} dims={','.join(dims_unique)} scope={scope_expr}"
+        )
+        _emit_active_account_banner(
+            args=argparse.Namespace(account=_resolve_menu_account()),
+            action="stage-by-qid",
+            base_url=_resolve_base_url_for_display(),
+            prefix="[survey-menu]",
+        )
+        from .cli import _main_impl
+
+        cmd = [
+            "--root",
+            str(root),
+            "sync",
+            "--survey-id",
+            survey_id,
+            "--dimensions",
+            ",".join(dims_unique),
+            "--scope",
+            scope_expr,
+            "--pending-action",
+            "stage",
+            "--yes",
+        ]
+        account_scope = _resolve_menu_account()
+        if account_scope:
+            cmd = ["--account", account_scope, *cmd]
+        try:
+            _main_impl(cmd)
+        except SystemExit as exc:
+            code = getattr(exc, "code", 1)
+            if code not in (None, 0):
+                print(
+                    f"[survey-menu] Stage-by-QID flow failed (exit={code}). Review sync output above."
+                )
+
+    def _menu_master() -> None:
+        if not _require_default_account(action="survey master"):
+            return
+        choice = select_from_list(
+            "Survey master",
+            [
+                "Pull focal snapshots + master CSV",
+                "Preview staged changes",
+                "Stage master CSV changes",
+                "Stage by QID (scope sync dimensions)",
+                "Push staged master changes",
+                "Rollback master snapshot",
+                "↩ Back",
+            ],
+            instruction="Bulk operations are workspace-wide; prefer pull → preview → stage → push.",
+        )
+        if not choice or choice.endswith("Back"):
+            return
+        if choice.startswith("Pull"):
+            force_overwrite = (
+                select_from_list("Force overwrite existing master CSV?", ["No", "Yes"])
+                == "Yes"
+            )
+            _run_action(
+                handle_master_pull,
+                argparse.Namespace(
+                    verbose=False,
+                    mapping_csv=None,
+                    survey_ids=None,
+                    force_overwrite=bool(force_overwrite),
+                    _preflight_action="survey-master-pull",
+                ),
+            )
+            return
+        if choice.startswith("Preview"):
+            detail = select_from_list("Show detailed per-field changes?", ["No", "Yes"]) == "Yes"
+            _run_action(
+                handle_master_preview,
+                argparse.Namespace(
+                    verbose=False,
+                    mapping_csv=None,
+                    detail=bool(detail),
+                    survey_id=None,
+                    format="text",
+                    tags=None,
+                    all_surveys=False,
+                ),
+            )
+            return
+        if choice.startswith("Stage by QID"):
+            _menu_stage_by_qid()
+            return
+        if choice.startswith("Stage"):
+            _run_action(
+                handle_master_stage,
+                argparse.Namespace(
+                    verbose=False,
+                    survey_id=None,
+                    tags=None,
+                    all_surveys=False,
+                    _preflight_action="survey-master-stage",
+                ),
+            )
+            return
+        if choice.startswith("Push"):
+            publish = select_from_list("Publish after push?", ["Yes", "No"]) == "Yes"
+            _run_action(
+                handle_master_push,
+                argparse.Namespace(
+                    verbose=False,
+                    mapping_csv=None,
+                    description=None,
+                    survey_id=None,
+                    all_surveys=False,
+                    no_publish=not bool(publish),
+                    force_live=False,
+                    force_preview=False,
+                    yes=False,
+                    allow_dangerous=False,
+                    allow_locked=False,
+                    _preflight_action="survey-master-push",
+                ),
+            )
+            return
+        _run_action(
+            handle_master_rollback,
+            argparse.Namespace(
+                survey_id=None,
+                list=True,
+                version=1,
+                dry_run=True,
+                force=False,
+                allow_dangerous=False,
+                no_publish=False,
+                description=None,
+                yes=False,
+                _preflight_action="survey-master-rollback",
             ),
         )
 
@@ -2323,6 +2690,21 @@ def handle_menu(args: argparse.Namespace) -> None:
     def _question_labels_from_index_payload(
         index_payload: Mapping[str, Any], *, survey_id: str
     ) -> list[str]:
+        def _normalize_label(raw_label: object) -> str | None:
+            label = str(raw_label or "").strip()
+            if not label:
+                return None
+            if " - " in label:
+                head = _label_head(label)
+                if head and head.upper().startswith("QID"):
+                    return label
+                return None
+            token = label.split()[0].strip()
+            if token and token.upper().startswith("QID"):
+                tail = label[len(token) :].strip(" -") or "(no text)"
+                return f"{token} - {_truncate_menu_text(tail)}"
+            return None
+
         surveys = index_payload.get("surveys")
         if not isinstance(surveys, list):
             return []
@@ -2333,7 +2715,12 @@ def handle_menu(args: argparse.Namespace) -> None:
                 continue
             labels = entry.get("question_labels")
             if isinstance(labels, list):
-                return [str(item) for item in labels if str(item).strip()]
+                normalized: list[str] = []
+                for item in labels:
+                    cooked = _normalize_label(item)
+                    if cooked:
+                        normalized.append(cooked)
+                return normalized
         return []
 
     def _fetch_definition_for_menu(
@@ -2400,6 +2787,23 @@ def handle_menu(args: argparse.Namespace) -> None:
         *,
         exclude: set[str] | None = None,
     ) -> list[str]:
+        def _question_label_text(payload: Mapping[str, Any]) -> str:
+            text = (
+                str(payload.get("QuestionText") or "").strip()
+                or str(payload.get("QuestionText_Unsafe") or "").strip()
+                or str(payload.get("QuestionDescription") or "").strip()
+                or str(payload.get("DataExportTag") or "").strip()
+            )
+            if text:
+                return text
+            qtype = str(payload.get("QuestionType") or "").strip()
+            selector = str(payload.get("Selector") or "").strip()
+            if qtype and selector:
+                return f"{qtype}/{selector}"
+            if qtype:
+                return qtype
+            return "(no text)"
+
         questions = definition.get("Questions")
         if not isinstance(questions, dict):
             return []
@@ -2412,13 +2816,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             if qid in exclude_set:
                 continue
             payload = questions.get(qid)
-            text = ""
-            if isinstance(payload, dict):
-                text = (
-                    str(payload.get("QuestionText") or "").strip()
-                    or str(payload.get("QuestionDescription") or "").strip()
-                    or str(payload.get("DataExportTag") or "").strip()
-                )
+            text = _question_label_text(payload) if isinstance(payload, dict) else "(no text)"
             labels.append(f"{qid} - {_truncate_menu_text(text)}")
         return labels
 
@@ -3626,6 +4024,9 @@ def handle_menu(args: argparse.Namespace) -> None:
             "edit-add-question": _menu_add_question,
             "edit-move-question": _menu_move_question,
             "edit-page-breaks": _menu_page_breaks,
+            "edit-inspect-question": _menu_inspect_question,
+            "edit-push-question": _menu_push_question,
+            "edit-stage-by-qid": _menu_stage_by_qid,
             # Flow / embedded / integrations
             "flow-add-embedded": lambda: _menu_embedded_field("add-embedded-field"),
             "flow-remove-embedded": lambda: _menu_embedded_field("remove-embedded-field"),
@@ -3659,6 +4060,8 @@ def handle_menu(args: argparse.Namespace) -> None:
             "workspace-prepare": _menu_prepare,
             "workspace-configure-cache": _menu_configure_cache_folder,
             "workspace-configure-externally-managed": _menu_configure_externally_managed_overrides,
+            # Bulk / master
+            "bulk-master": _menu_master,
             # Danger zone
             "danger-rename": _menu_rename,
             "danger-delete": _menu_delete,
@@ -3683,7 +4086,7 @@ def handle_menu(args: argparse.Namespace) -> None:
         _menu_context(
             f"Survey Menu (account={_account_label()} base={base})",
             "Choose the task type first; each submenu is organized by user intent.",
-            "Setup/Selection, Edit, Flow/Integrations, Publish/Versions, Copy/Compare, Exports, Workspace/Account, Danger Zone",
+            "Setup/Selection, Edit, Flow/Integrations, Publish/Versions, Copy/Compare, Exports, Workspace/Account, Bulk/Master, Danger Zone",
         )
         top = select_from_list(
             message=f"qsync survey menu  (account: {_account_label()}  base: {base})",
@@ -3695,6 +4098,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                 "Copy, Slice & Compare — derive and verify surveys",
                 "Exports — responses and docs",
                 "Workspace & Account — account, API, inventory, prepare",
+                "Bulk & Master — focal bulk editing",
                 "Danger Zone — rename/delete",
                 "Exit",
             ],
@@ -3743,7 +4147,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             _menu_context(
                 "Survey Menu > Edit Questions & Content",
                 "Question-level content edits (safe staged workflow).",
-                "Items structural edits, add-question (guided), move-question (guided), page-break edits",
+                "Items structural edits, add/move/page-break edits, inspect/push utilities, QID-scoped staging",
             )
             choice = select_from_list(
                 "Edit Questions & Content",
@@ -3752,9 +4156,12 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Add question(s) (clone template, insert in flow)",
                     "Move question(s) (reorder / move across blocks)",
                     "Page breaks (add/remove in block flow)",
+                    "Inspect question payload (local cache)",
+                    "Push one question from local cache",
+                    "Stage by QID (items/js/translations)",
                     "↩ Back",
                 ],
-                instruction="Use add/move/page-break actions for block placement; use structural edits for text/options/subitems.",
+                instruction="Use add/move/page-break for flow placement; utilities help inspect/push/scope by QID.",
             )
             if not choice or choice.endswith("Back"):
                 continue
@@ -3764,8 +4171,14 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_add_question()
             elif choice.startswith("Move question"):
                 _menu_move_question()
-            else:
+            elif choice.startswith("Page breaks"):
                 _menu_page_breaks()
+            elif choice.startswith("Inspect question"):
+                _menu_inspect_question()
+            elif choice.startswith("Push one question"):
+                _menu_push_question()
+            else:
+                _menu_stage_by_qid()
             continue
 
         if top.startswith("Flow, Embedded Data & Integrations"):
@@ -3935,6 +4348,15 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_configure_externally_managed_overrides()
             else:
                 _menu_configure_cache_folder()
+            continue
+
+        if top.startswith("Bulk & Master"):
+            _menu_context(
+                "Survey Menu > Bulk & Master",
+                "Focal-survey bulk editing workflow and scoped staging helper.",
+                "Master pull/preview/stage/push/rollback plus optional stage-by-QID flow",
+            )
+            _menu_master()
             continue
 
         if top.startswith("Danger Zone"):
@@ -6999,8 +7421,21 @@ def handle_rename_embedded_field(args: argparse.Namespace) -> None:
 
 def handle_pull(args: argparse.Namespace) -> None:
     """Download a survey definition JSON to local cache."""
+    raw_account = getattr(args, "account", None)
+    explicit_default_account = (
+        isinstance(raw_account, str) and raw_account.strip().lower() == "default"
+    )
+    if not explicit_default_account:
+        explicit_default_account = (
+            (os.environ.get("QSYNC_ACCOUNT") or "").strip().lower() == "default"
+        )
     account = _resolve_account_from_args(args)
-    dest_dir: Path | None = _resolve_pull_dest(_workspace_root(), account, args.dest)
+    # `--account default` must force legacy unscoped cache location even when
+    # ambient account context is present in the process environment.
+    dest_account_scope: str | None = "" if explicit_default_account else account
+    dest_dir: Path | None = _resolve_pull_dest(
+        _workspace_root(), dest_account_scope, args.dest
+    )
     env = None
     if account:
         env = load_account_env(account, root=_workspace_root())
@@ -9166,8 +9601,15 @@ def _preflight_question_writes(
     dry_run: bool,
     force_live: bool,
     interactive_override_prompt: bool = False,
+    action_label: str = "question-write",
+    account_label: str | None = None,
 ) -> bool:
     effective_force_live = bool(force_live)
+    account = (account_label or "default").strip() or "default"
+    print(
+        f"[account-preflight] action={action_label} "
+        f"account={account} base_url={(base_url or '').strip() or '(unknown)'}"
+    )
 
     def _prompt_override(message: str) -> bool:
         if not interactive_override_prompt:
@@ -9313,6 +9755,8 @@ def handle_add_question(args: argparse.Namespace) -> None:
         dry_run=dry_run,
         force_live=force_live,
         interactive_override_prompt=bool(getattr(args, "interactive_mode", False)),
+        action_label="add-question",
+        account_label=_resolve_account_from_args(args) or "default",
     )
 
     definition = fetch_survey_definition(base_url, headers, survey_id)
@@ -9402,23 +9846,41 @@ def handle_add_question(args: argparse.Namespace) -> None:
         _normalize_language_code_token(lang) for lang in (target_langs or [])
     }
     dropped_language_total = 0
+    malformed_language_total = 0
 
     for payload in planned_payloads:
         lang_block = payload.get("Language")
-        if isinstance(lang_block, dict) and target_langs is not None:
-            filtered_langs: dict[str, Any] = {}
-            dropped = 0
-            for lang_key, lang_value in lang_block.items():
-                norm = _normalize_language_code_token(str(lang_key))
-                if norm in target_lang_set:
-                    filtered_langs[str(lang_key)] = lang_value
-                else:
-                    dropped += 1
-            dropped_language_total += dropped
-            if filtered_langs:
-                payload["Language"] = filtered_langs
-            else:
+        if lang_block is not None:
+            if not isinstance(lang_block, Mapping):
+                malformed_language_total += 1
                 payload.pop("Language", None)
+            else:
+                filtered_langs: dict[str, Any] = {}
+                dropped = 0
+                malformed = 0
+                for lang_key, lang_value in lang_block.items():
+                    lang_key_raw = str(lang_key or "").strip()
+                    normalized_lang = _normalize_language_code_token(lang_key_raw)
+                    if not lang_key_raw or not normalized_lang:
+                        malformed += 1
+                        continue
+                    if target_langs is not None and normalized_lang not in target_lang_set:
+                        dropped += 1
+                        continue
+                    if isinstance(lang_value, Mapping):
+                        filtered_langs[lang_key_raw] = copy.deepcopy(dict(lang_value))
+                    elif isinstance(lang_value, str):
+                        # Best-effort fallback for legacy shape payloads.
+                        filtered_langs[lang_key_raw] = {"QuestionText": lang_value}
+                        malformed += 1
+                    else:
+                        malformed += 1
+                dropped_language_total += dropped
+                malformed_language_total += malformed
+                if filtered_langs:
+                    payload["Language"] = filtered_langs
+                else:
+                    payload.pop("Language", None)
 
         base_tag = explicit_tag or str(payload.get("DataExportTag") or "").strip()
         if base_tag:
@@ -9434,6 +9896,11 @@ def handle_add_question(args: argparse.Namespace) -> None:
         print(
             f"[add-question] NOTE: filtered {dropped_language_total} translation language block(s) "
             "not enabled in the target survey."
+        )
+    if malformed_language_total > 0:
+        print(
+            f"[add-question] NOTE: normalized or dropped {malformed_language_total} "
+            "malformed translation language block entries."
         )
 
     try:
@@ -9661,6 +10128,8 @@ def handle_move_question(args: argparse.Namespace) -> None:
         dry_run=dry_run,
         force_live=force_live,
         interactive_override_prompt=bool(getattr(args, "interactive_mode", False)),
+        action_label="move-question",
+        account_label=_resolve_account_from_args(args) or "default",
     )
 
     definition = fetch_survey_definition(base_url, headers, survey_id)
@@ -9834,6 +10303,8 @@ def handle_add_page_break(args: argparse.Namespace) -> None:
         dry_run=dry_run,
         force_live=force_live,
         interactive_override_prompt=bool(getattr(args, "interactive_mode", False)),
+        action_label="add-page-break",
+        account_label=_resolve_account_from_args(args) or "default",
     )
 
     definition = fetch_survey_definition(base_url, headers, survey_id)
@@ -9947,6 +10418,8 @@ def handle_remove_page_break(args: argparse.Namespace) -> None:
         dry_run=dry_run,
         force_live=force_live,
         interactive_override_prompt=bool(getattr(args, "interactive_mode", False)),
+        action_label="remove-page-break",
+        account_label=_resolve_account_from_args(args) or "default",
     )
 
     definition = fetch_survey_definition(base_url, headers, survey_id)
@@ -10340,7 +10813,23 @@ def handle_export_translation(args: argparse.Namespace) -> None:
 
     from .interactive_menu import is_interactive
     from .terminal_output import error, info, success, warn
-    from .translation_export import export_survey_to_pdf, export_survey_to_word
+    from .translation_export import (
+        export_survey_to_pdf,
+        export_survey_to_word,
+        export_surveys_side_by_side_docx,
+    )
+
+    def _normalize_filter_values(raw_values: object) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in list(raw_values or []):
+            for token in str(raw).replace(",", " ").split():
+                value = token.strip()
+                if not value or value in seen:
+                    continue
+                seen.add(value)
+                out.append(value)
+        return out
 
     survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
     if not survey_ids:
@@ -10439,6 +10928,10 @@ def handle_export_translation(args: argparse.Namespace) -> None:
     smart_name = bool(getattr(args, "smart_name", False))
     do_open = bool(getattr(args, "open", False))
     compare_to_base = bool(getattr(args, "compare_to_base", False))
+    compare_with = str(getattr(args, "compare_with", "") or "").strip() or None
+    include_qids = set(_normalize_filter_values(getattr(args, "include_qid", None)))
+    include_tags = set(_normalize_filter_values(getattr(args, "include_tag", None)))
+    include_blocks = set(_normalize_filter_values(getattr(args, "block", None)))
     refresh = bool(getattr(args, "refresh", False))
     layout_heuristics = bool(getattr(args, "layout_heuristics", False))
     format = getattr(args, "format", "docx")
@@ -10468,6 +10961,66 @@ def handle_export_translation(args: argparse.Namespace) -> None:
             "--compare-to-base requires --language/--languages.",
         )
         sys.exit(1)
+
+    if compare_with:
+        if len(survey_ids) != 1:
+            error(
+                "[qsync:export-translation]",
+                "--compare-with supports exactly one primary --survey-id.",
+            )
+            sys.exit(1)
+        if format != "docx":
+            error(
+                "[qsync:export-translation]",
+                "--compare-with currently supports --format docx only.",
+            )
+            sys.exit(1)
+        if compare_to_base or any(lang is not None for lang in render_langs):
+            error(
+                "[qsync:export-translation]",
+                "--compare-with cannot be combined with --language/--languages or --compare-to-base.",
+            )
+            sys.exit(1)
+        if include_qids or include_tags or include_blocks:
+            error(
+                "[qsync:export-translation]",
+                "--compare-with cannot be combined with --include-qid/--include-tag/--block.",
+            )
+            sys.exit(1)
+        try:
+            path = export_surveys_side_by_side_docx(
+                survey_ids[0],
+                compare_with,
+                output_path=output,
+                smart_name=smart_name,
+                refresh=refresh,
+                include_html_source=not no_html,
+                layout_heuristics=layout_heuristics,
+                include_js_strings=not skip_js_strings,
+                interactive=is_interactive(),
+                flow_trace=flow_trace_cb,
+            )
+        except Exception as exc:
+            error("[qsync:export-translation]", f"compare export failed: {exc}")
+            sys.exit(1)
+
+        success("[qsync:export-translation]", f"Exported compare document: {path}")
+        if do_open:
+            try:
+                import subprocess
+
+                if sys.platform == "darwin":
+                    subprocess.run(["open", str(path)], check=False)
+                elif os.name == "nt":
+                    os.startfile(str(path))  # type: ignore[attr-defined]
+                else:
+                    subprocess.run(["xdg-open", str(path)], check=False)
+            except Exception:
+                warn(
+                    "[qsync:export-translation]",
+                    "Could not open document automatically.",
+                )
+        return
 
     output_suffix = getattr(output, "suffix", "").lower() if output is not None else ""
 
@@ -10511,6 +11064,18 @@ def handle_export_translation(args: argparse.Namespace) -> None:
     interactive = is_interactive()
     all_paths: list[Path] = []
     failures: list[tuple[str, str]] = []
+    if include_qids or include_tags or include_blocks:
+        summary_bits: list[str] = []
+        if include_qids:
+            summary_bits.append(f"qids={','.join(sorted(include_qids))}")
+        if include_tags:
+            summary_bits.append(f"tags={','.join(sorted(include_tags))}")
+        if include_blocks:
+            summary_bits.append(f"blocks={','.join(sorted(include_blocks))}")
+        info(
+            "[qsync:export-translation]",
+            f"Applying filters: {'; '.join(summary_bits)}",
+        )
 
     for survey_id in survey_ids:
         edf_overrides = dict(base_edf_overrides)
@@ -10561,6 +11126,9 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 layout_heuristics=layout_heuristics,
                                 render_language=lang,
                                 compare_to_base=compare_to_base,
+                                include_qids=include_qids or None,
+                                include_tags=include_tags or None,
+                                include_blocks=include_blocks or None,
                                 refresh=refresh,
                                 include_js_strings=not skip_js_strings,
                                 interactive=interactive,
@@ -10578,6 +11146,9 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 layout_heuristics=layout_heuristics,
                                 render_language=lang,
                                 compare_to_base=compare_to_base,
+                                include_qids=include_qids or None,
+                                include_tags=include_tags or None,
+                                include_blocks=include_blocks or None,
                                 refresh=refresh,
                                 include_js_strings=not skip_js_strings,
                                 interactive=interactive,
@@ -10600,6 +11171,9 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                     layout_heuristics=layout_heuristics,
                                     render_language=None,
                                     compare_to_base=False,
+                                    include_qids=include_qids or None,
+                                    include_tags=include_tags or None,
+                                    include_blocks=include_blocks or None,
                                     refresh=False,
                                     include_js_strings=not skip_js_strings,
                                     interactive=interactive,
@@ -10617,6 +11191,9 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                     layout_heuristics=layout_heuristics,
                                     render_language=None,
                                     compare_to_base=False,
+                                    include_qids=include_qids or None,
+                                    include_tags=include_tags or None,
+                                    include_blocks=include_blocks or None,
                                     refresh=False,
                                     include_js_strings=not skip_js_strings,
                                     interactive=interactive,
@@ -10710,6 +11287,31 @@ def _add_export_translation_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         dest="compare_to_base",
         help="Bilingual export: include EN + target language for each question.",
+    )
+    parser.add_argument(
+        "--compare-with",
+        help=(
+            "Export a side-by-side compare document against another survey ID "
+            "(docx only; cannot be combined with --compare-to-base or --language)."
+        ),
+    )
+    parser.add_argument(
+        "--include-qid",
+        action="append",
+        dest="include_qid",
+        help="Limit export scope to specific QID(s) (repeatable/comma-separated).",
+    )
+    parser.add_argument(
+        "--include-tag",
+        action="append",
+        dest="include_tag",
+        help="Limit export scope to question DataExportTag value(s) (repeatable/comma-separated).",
+    )
+    parser.add_argument(
+        "--block",
+        action="append",
+        dest="block",
+        help="Limit export scope to specific Block ID(s) (repeatable/comma-separated).",
     )
     parser.add_argument(
         "--refresh",

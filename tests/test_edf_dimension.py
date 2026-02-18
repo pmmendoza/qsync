@@ -122,6 +122,25 @@ def _update_question_text(xlsx_path: Path, qid: str, text: str) -> None:
     wb.save(xlsx_path)
 
 
+def _update_question_translation_text(
+    xlsx_path: Path, qid: str, language: str, text: str
+) -> None:
+    wb = load_workbook(xlsx_path)
+    ws = wb[excel_io.QUESTION_SHEET]
+    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    idx = {name: i for i, name in enumerate(headers)}
+    qid_idx = idx["QID"]
+    col_name = f"Text_{str(language).lower()}_MD"
+    if col_name not in idx:
+        raise KeyError(f"Missing translation column: {col_name}")
+    text_idx = idx[col_name]
+    for row in ws.iter_rows(min_row=2, values_only=False):
+        if str(row[qid_idx].value or "").strip() == qid:
+            row[text_idx].value = text
+            break
+    wb.save(xlsx_path)
+
+
 def _read_question_text(xlsx_path: Path, qid: str) -> str:
     wb = load_workbook(xlsx_path, data_only=True)
     ws = wb[excel_io.QUESTION_SHEET]
@@ -129,6 +148,24 @@ def _read_question_text(xlsx_path: Path, qid: str) -> str:
     idx = {name: i for i, name in enumerate(headers)}
     qid_idx = idx["QID"]
     text_idx = _find_base_col(headers, "Text")
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if str(row[qid_idx] or "").strip() == qid:
+            return str(row[text_idx] or "")
+    return ""
+
+
+def _read_question_translation_text(
+    xlsx_path: Path, qid: str, language: str
+) -> str:
+    wb = load_workbook(xlsx_path, data_only=True)
+    ws = wb[excel_io.QUESTION_SHEET]
+    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    idx = {name: i for i, name in enumerate(headers)}
+    qid_idx = idx["QID"]
+    col_name = f"Text_{str(language).lower()}_MD"
+    if col_name not in idx:
+        raise KeyError(f"Missing translation column: {col_name}")
+    text_idx = idx[col_name]
     for row in ws.iter_rows(min_row=2, values_only=True):
         if str(row[qid_idx] or "").strip() == qid:
             return str(row[text_idx] or "")
@@ -224,6 +261,83 @@ def test_repair_workbook_dry_run_does_not_modify_file(
     assert "DEBUG" not in fields
     assert report.changed is True
     assert report.backup_path is None
+
+
+def test_repair_workbook_preserves_translation_cells(
+    tmp_path: Path, monkeypatch
+) -> None:
+    payload = _payload_with_embedded()
+    payload["result"]["SurveyOptions"] = {
+        "SurveyLanguage": "EN",
+        "AvailableLanguages": {"EN": True, "FR": True},
+    }
+    payload["result"]["Questions"]["QID1"]["Language"] = {
+        "FR": {"QuestionText": "Texte d'origine"}
+    }
+    survey_id = "SV_REPAIR_TRANSLATIONS"
+    _write_cached_survey(tmp_path, survey_id, payload)
+
+    xlsx_path = WorkbookResolver(root=tmp_path).resolve(survey_id)
+    excel_io.init_workbook_from_survey(survey_id, payload, xlsx_path, languages=["FR"])
+    _remove_embedded_row(xlsx_path, "DEBUG")
+    _update_question_translation_text(
+        xlsx_path, "QID1", "FR", "Conserver cette traduction locale"
+    )
+
+    monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
+    with patch("qsync.qualtrics_client._workspace_root", return_value=tmp_path):
+        report = edf_dimension.repair_workbook(
+            survey_id,
+            xlsx_path=xlsx_path,
+            dry_run=False,
+            refresh_cache=False,
+            retain_backups=3,
+        )
+
+    assert report.changed is True
+    assert (
+        _read_question_translation_text(xlsx_path, "QID1", "FR")
+        == "Conserver cette traduction locale"
+    )
+
+
+def test_repair_workbook_dry_run_is_stable_across_repeated_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    payload = _payload_with_embedded()
+    survey_id = "SV_DRYRUN_STABLE"
+    _write_cached_survey(tmp_path, survey_id, payload)
+
+    xlsx_path = WorkbookResolver(root=tmp_path).resolve(survey_id)
+    excel_io.init_workbook_from_survey(survey_id, payload, xlsx_path)
+    _remove_embedded_row(xlsx_path, "DEBUG")
+    bytes_before = xlsx_path.read_bytes()
+
+    monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
+    with patch("qsync.qualtrics_client._workspace_root", return_value=tmp_path):
+        report_a = edf_dimension.repair_workbook(
+            survey_id,
+            xlsx_path=xlsx_path,
+            dry_run=True,
+            refresh_cache=False,
+            retain_backups=3,
+        )
+        report_b = edf_dimension.repair_workbook(
+            survey_id,
+            xlsx_path=xlsx_path,
+            dry_run=True,
+            refresh_cache=False,
+            retain_backups=3,
+        )
+
+    bytes_after = xlsx_path.read_bytes()
+    assert bytes_after == bytes_before
+    assert report_a.changed is True and report_b.changed is True
+    assert report_a.rows_before == report_b.rows_before
+    assert report_a.rows_after == report_b.rows_after
+    assert report_a.rows_added == report_b.rows_added
+    assert report_a.rows_removed == report_b.rows_removed
+    assert report_a.backup_path is None and report_b.backup_path is None
 
 
 def test_repair_workbook_requires_cached_json_when_not_refreshing(

@@ -726,6 +726,71 @@ def _build_survey_link(
     return url
 
 
+def _collect_block_question_ids(
+    result: Mapping[str, Any],
+    *,
+    include_blocks: set[str],
+) -> set[str]:
+    blocks = result.get("Blocks") or {}
+    questions = result.get("Questions") or {}
+    if not isinstance(blocks, Mapping) or not isinstance(questions, Mapping):
+        return set()
+    wanted_blocks = {str(item).strip() for item in include_blocks if str(item).strip()}
+    if not wanted_blocks:
+        return set()
+
+    qids: set[str] = set()
+    for block_id in wanted_blocks:
+        block = blocks.get(block_id)
+        if not isinstance(block, Mapping):
+            continue
+        for elem in block.get("BlockElements", []) or []:
+            if not isinstance(elem, Mapping):
+                continue
+            if str(elem.get("Type") or "") != "Question":
+                continue
+            qid = str(elem.get("QuestionID") or "").strip()
+            if qid and qid in questions:
+                qids.add(qid)
+    return qids
+
+
+def _apply_active_qid_filters(
+    *,
+    result: Mapping[str, Any],
+    active_qids: set[str],
+    include_qids: set[str] | None,
+    include_tags: set[str] | None,
+    include_blocks: set[str] | None,
+) -> set[str]:
+    include_qids_set = {str(item).strip() for item in (include_qids or set()) if str(item).strip()}
+    include_tags_set = {str(item).strip() for item in (include_tags or set()) if str(item).strip()}
+    include_blocks_set = {str(item).strip() for item in (include_blocks or set()) if str(item).strip()}
+    if not include_qids_set and not include_tags_set and not include_blocks_set:
+        return active_qids
+
+    questions = result.get("Questions") or {}
+    if not isinstance(questions, Mapping):
+        return set()
+
+    allowed: set[str] = set()
+    if include_qids_set:
+        allowed.update({qid for qid in include_qids_set if qid in questions})
+    if include_tags_set:
+        for qid, payload in questions.items():
+            if not isinstance(payload, Mapping):
+                continue
+            tag = str(payload.get("DataExportTag") or "").strip()
+            if tag and tag in include_tags_set:
+                allowed.add(str(qid))
+    if include_blocks_set:
+        allowed.update(
+            _collect_block_question_ids(result, include_blocks=include_blocks_set)
+        )
+
+    return {qid for qid in active_qids if qid in allowed}
+
+
 def _prepare_export_content(
     survey_id: str,
     survey_payload: dict,
@@ -739,6 +804,9 @@ def _prepare_export_content(
     layout_heuristics: bool = False,
     render_language: str | None = None,
     compare_to_base: bool = False,
+    include_qids: set[str] | None = None,
+    include_tags: set[str] | None = None,
+    include_blocks: set[str] | None = None,
     include_js_strings: bool = True,
     flow_trace: Callable[[str], None] | None = None,
     translation_ctx_override: TranslationRenderContext | None = None,
@@ -820,6 +888,13 @@ def _prepare_export_content(
 
     # Extract active QIDs
     active_qids = _active_qids_in_flow(result)
+    active_qids = _apply_active_qid_filters(
+        result=result,
+        active_qids=active_qids,
+        include_qids=include_qids,
+        include_tags=include_tags,
+        include_blocks=include_blocks,
+    )
 
     # Build translation context if language specified
     translation_ctx: TranslationRenderContext | None = translation_ctx_override
@@ -920,6 +995,9 @@ def export_survey_to_word(
     layout_heuristics: bool = False,
     render_language: str | None = None,
     compare_to_base: bool = False,
+    include_qids: set[str] | None = None,
+    include_tags: set[str] | None = None,
+    include_blocks: set[str] | None = None,
     refresh: bool = False,
     include_js_strings: bool = True,
     interactive: bool = True,
@@ -979,6 +1057,9 @@ def export_survey_to_word(
         layout_heuristics=layout_heuristics,
         render_language=render_language,
         compare_to_base=compare_to_base,
+        include_qids=include_qids,
+        include_tags=include_tags,
+        include_blocks=include_blocks,
         include_js_strings=include_js_strings,
         flow_trace=flow_trace,
     )
@@ -994,6 +1075,9 @@ def export_survey_to_pdf(
     layout_heuristics: bool = False,
     render_language: str | None = None,
     compare_to_base: bool = False,
+    include_qids: set[str] | None = None,
+    include_tags: set[str] | None = None,
+    include_blocks: set[str] | None = None,
     refresh: bool = False,
     include_js_strings: bool = True,
     interactive: bool = True,
@@ -1070,6 +1154,9 @@ def export_survey_to_pdf(
         layout_heuristics=layout_heuristics,
         render_language=render_language,
         compare_to_base=compare_to_base,
+        include_qids=include_qids,
+        include_tags=include_tags,
+        include_blocks=include_blocks,
         include_js_strings=include_js_strings,
         flow_trace=flow_trace,
     )
@@ -1088,6 +1175,9 @@ def export_survey_payload_to_pdf(
     layout_heuristics: bool = False,
     render_language: str | None = None,
     compare_to_base: bool = False,
+    include_qids: set[str] | None = None,
+    include_tags: set[str] | None = None,
+    include_blocks: set[str] | None = None,
     include_js_strings: bool = True,
     flow_trace: Callable[[str], None] | None = None,
 ) -> Path:
@@ -1131,6 +1221,9 @@ def export_survey_payload_to_pdf(
         layout_heuristics=layout_heuristics,
         render_language=render_language,
         compare_to_base=compare_to_base,
+        include_qids=include_qids,
+        include_tags=include_tags,
+        include_blocks=include_blocks,
         include_js_strings=include_js_strings,
         flow_trace=flow_trace,
     )
@@ -1252,6 +1345,9 @@ def export_survey_payload_to_word(
     layout_heuristics: bool = False,
     render_language: str | None = None,
     compare_to_base: bool = False,
+    include_qids: set[str] | None = None,
+    include_tags: set[str] | None = None,
+    include_blocks: set[str] | None = None,
     include_js_strings: bool = True,
     flow_trace: Callable[[str], None] | None = None,
 ) -> Path:
@@ -1274,6 +1370,9 @@ def export_survey_payload_to_word(
         layout_heuristics=layout_heuristics,
         render_language=render_language,
         compare_to_base=compare_to_base,
+        include_qids=include_qids,
+        include_tags=include_tags,
+        include_blocks=include_blocks,
         include_js_strings=include_js_strings,
         flow_trace=flow_trace,
     )

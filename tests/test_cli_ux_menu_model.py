@@ -62,6 +62,15 @@ def test_qsync_tui_missing_dependency_prints_hint(
 ) -> None:
     from qsync.cli import main
 
+    real_import = builtins.__import__
+
+    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in {"qsync.tui.app", "tui.app"} or name.endswith(".tui.app"):
+            raise ImportError("forced missing tui dependency for test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
     # Ensure we don't fail early on non-interactive detection for this test.
     monkeypatch.setattr("qsync.interactive_menu.is_interactive", lambda: True)
     monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
@@ -74,4 +83,3 @@ def test_qsync_tui_missing_dependency_prints_hint(
     combined = (out.out or "") + (out.err or "")
     assert "TUI dependencies are not installed" in combined
     assert "qsync[tui]" in combined
-

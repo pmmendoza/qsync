@@ -253,3 +253,116 @@ def test_account_cache_dir_show_set_and_clear(
     main(["--root", str(tmp_path), "account", "cache-dir", "--clear", "--json"])
     payload = json.loads(capsys.readouterr().out)
     assert payload["survey_cache_subdir_pref"] is None
+
+
+def test_workspace_active_account_applies_to_survey_pull_when_no_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync.cli import main
+    from qsync import cli_survey
+
+    _touch_env_for_restore(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    ensure_qsync_workspace(tmp_path)
+    _write_account_env(tmp_path, "damian", base_url="syd1.qualtrics.com")
+    _write_workspace_prefs(tmp_path, active_account="damian")
+
+    captured: dict[str, str | None] = {}
+
+    def _fake_download(
+        survey_id: str,
+        *,
+        target_dir: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> Path:
+        captured["survey_id"] = survey_id
+        captured["target_dir"] = str(target_dir)
+        captured["base"] = (env or {}).get("QUALTRICS_BASE_URL")
+        captured["token"] = (env or {}).get("X-API-TOKEN")
+        return (target_dir or tmp_path / "surveys") / f"{survey_id}.json"
+
+    monkeypatch.setattr(cli_survey, "download_survey_definition", _fake_download)
+
+    main(["--root", str(tmp_path), "survey", "pull", "--survey-id", "SV_1"])
+
+    assert captured["survey_id"] == "SV_1"
+    assert captured["base"] == "syd1.qualtrics.com"
+    assert captured["token"] == "secret"
+    assert captured["target_dir"] == str((tmp_path / "surveys" / ".damian").resolve())
+
+
+def test_survey_pull_account_default_bypasses_workspace_active_account(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync.cli import main
+    from qsync import cli_survey
+
+    _touch_env_for_restore(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    ensure_qsync_workspace(tmp_path)
+    _write_account_env(tmp_path, "damian", base_url="syd1.qualtrics.com")
+    _write_workspace_prefs(tmp_path, active_account="damian")
+
+    monkeypatch.setattr(
+        cli_survey,
+        "load_account_env",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("load_account_env should not be called for --account default")
+        ),
+    )
+
+    captured: dict[str, str | None] = {}
+
+    def _fake_download(
+        survey_id: str,
+        *,
+        target_dir: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> Path:
+        captured["survey_id"] = survey_id
+        captured["target_dir"] = str(target_dir)
+        captured["env"] = "set" if env else None
+        return (target_dir or tmp_path / "surveys") / f"{survey_id}.json"
+
+    monkeypatch.setattr(cli_survey, "download_survey_definition", _fake_download)
+
+    main(
+        [
+            "--root",
+            str(tmp_path),
+            "survey",
+            "pull",
+            "--account",
+            "default",
+            "--survey-id",
+            "SV_1",
+        ]
+    )
+
+    assert captured["survey_id"] == "SV_1"
+    assert captured["env"] is None
+    assert captured["target_dir"] == str((tmp_path / "surveys").resolve())
+
+
+def test_workspace_active_account_missing_env_fails_pull_strictly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from qsync.cli import main
+
+    _touch_env_for_restore(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    ensure_qsync_workspace(tmp_path)
+    _write_workspace_prefs(tmp_path, active_account="damian")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--root", str(tmp_path), "survey", "pull", "--survey-id", "SV_1"])
+
+    assert excinfo.value.code == 1
+    assert "QSYNC-CONFIG-ACCOUNTENV-001" in capsys.readouterr().err

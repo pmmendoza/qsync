@@ -15,15 +15,21 @@ def test_init_accepts_repeatable_survey_id_values(
     ensure_qsync_workspace(tmp_path)
     write_inventory_csv(tmp_path, "id,name,locked\n")
 
-    calls: list[tuple[str, Path, list[str] | None]] = []
+    calls: list[tuple[str, Path, list[str] | None, bool]] = []
 
     monkeypatch.setattr(
         "qsync.cli._default_xlsx_path",
         lambda survey_id: tmp_path / "excel" / f"{survey_id}.xlsx",
     )
 
-    def _fake_init(survey_id: str, xlsx_path: Path, *, languages=None) -> None:
-        calls.append((survey_id, xlsx_path, languages))
+    def _fake_init(
+        survey_id: str,
+        xlsx_path: Path,
+        *,
+        languages=None,
+        prune_orphans: bool = False,
+    ) -> None:
+        calls.append((survey_id, xlsx_path, languages, prune_orphans))
 
     monkeypatch.setattr("qsync.sync_core.init_survey_to_excel", _fake_init)
 
@@ -40,8 +46,8 @@ def test_init_accepts_repeatable_survey_id_values(
     )
 
     assert calls == [
-        ("SV_A", tmp_path / "excel" / "SV_A.xlsx", None),
-        ("SV_B", tmp_path / "excel" / "SV_B.xlsx", None),
+        ("SV_A", tmp_path / "excel" / "SV_A.xlsx", None, False),
+        ("SV_B", tmp_path / "excel" / "SV_B.xlsx", None, False),
     ]
 
 

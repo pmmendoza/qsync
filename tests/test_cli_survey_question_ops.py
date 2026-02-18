@@ -1004,6 +1004,166 @@ def test_add_question_cross_account_preserves_source_order_and_filters_languages
     assert qids == ["QID1", "QID101", "QID102"]
 
 
+def test_add_question_cross_account_normalizes_malformed_language_entries(
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from qsync import cli_survey
+
+    target_initial = {
+        "Questions": {
+            "QID1": {
+                "QuestionID": "QID1",
+                "QuestionType": "MC",
+                "QuestionText": "Anchor",
+            }
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+            }
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_MAIN"}]},
+    }
+    target_after_create = {
+        "Questions": {
+            **target_initial["Questions"],
+            "QID101": {"QuestionID": "QID101", "QuestionType": "MC"},
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID1"},
+                ],
+            },
+            "BL_AUTO": {
+                "Type": "Standard",
+                "BlockElements": [{"Type": "Question", "QuestionID": "QID101"}],
+            },
+        },
+        "SurveyFlow": {
+            "Flow": [{"Type": "Block", "ID": "BL_MAIN"}, {"Type": "Block", "ID": "BL_AUTO"}]
+        },
+    }
+    source_definition = {
+        "Questions": {
+            "QID10": {
+                "QuestionID": "QID10",
+                "QuestionType": "MC",
+                "Selector": "SAVR",
+                "QuestionText": "Source malformed language payload",
+                "Language": {
+                    "FR": "Texte FR legacy",
+                    "DE": {"QuestionText": "Text DE should be dropped"},
+                    "IT": ["bad-shape"],
+                    "": {"QuestionText": "missing-key"},
+                },
+            }
+        },
+        "Blocks": {},
+        "SurveyFlow": {"Flow": []},
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TARGET",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("target.qualtrics.com", {"X-API-TOKEN": "t"}),
+    )
+    monkeypatch.setattr(cli_survey, "ensure_unlocked", lambda _sid: None)
+    monkeypatch.setattr(cli_survey, "load_push_context", lambda *_a, **_k: _PushCtx())
+    monkeypatch.setattr(
+        cli_survey,
+        "load_account_env",
+        lambda account, root=None: {"QUALTRICS_BASE_URL": f"{account}.qualtrics.com", "X-API-TOKEN": "s"},
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "get_client_config",
+        lambda env=None: (
+            str((env or {}).get("QUALTRICS_BASE_URL") or "target.qualtrics.com"),
+            {"X-API-TOKEN": str((env or {}).get("X-API-TOKEN") or "t")},
+        ),
+    )
+
+    fetch_calls = {"target": 0}
+
+    def _fetch(base_url, _headers, survey_id):
+        if survey_id == "SV_SOURCE":
+            return source_definition
+        if survey_id != "SV_TARGET":
+            raise AssertionError(f"Unexpected survey fetch: {survey_id}")
+        fetch_calls["target"] += 1
+        return target_initial if fetch_calls["target"] == 1 else target_after_create
+
+    monkeypatch.setattr(cli_survey, "fetch_survey_definition", _fetch)
+
+    created_payloads: list[dict[str, Any]] = []
+
+    def _send_api_request(*, method: str, path: str, json=None, **_kwargs):
+        if method == "GET" and path == "surveys/SV_TARGET/languages":
+            return _Resp({"result": {"AvailableLanguages": {"EN": True, "FR": True}}})
+        if method == "POST" and path == "survey-definitions/SV_TARGET/questions":
+            created_payloads.append(json or {})
+            return _Resp({"result": {"QuestionID": "QID101"}})
+        if method == "PUT" and path in {
+            "survey-definitions/SV_TARGET/blocks/BL_MAIN",
+            "survey-definitions/SV_TARGET/blocks/BL_AUTO",
+        }:
+            return _Resp({"result": {"ok": True}})
+        raise AssertionError(f"Unexpected API call: {method} {path}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", _send_api_request)
+    monkeypatch.setattr(
+        cli_survey,
+        "download_survey_definition",
+        lambda survey_id, **_kwargs: Path(f"/tmp/{survey_id}.json"),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TARGET",
+        from_question_id=None,
+        question_json=None,
+        source_account="linda",
+        source_survey_id="SV_SOURCE",
+        source_question_id=["QID10"],
+        from_scratch_mcq=False,
+        choice_text=None,
+        choice_text_file=None,
+        mc_multi_response=False,
+        question_text=None,
+        question_text_file=None,
+        target_block_id=None,
+        after_qid="QID1",
+        before_qid=None,
+        position="append",
+        data_export_tag=None,
+        allow_duplicate_tags=False,
+        dry_run=False,
+        force_live=False,
+        yes=True,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_add_question(args)
+
+    assert created_payloads
+    assert created_payloads[0].get("Language") == {
+        "FR": {"QuestionText": "Texte FR legacy"}
+    }
+    out = capsys.readouterr().out
+    assert "malformed translation language block entries" in out
+
+
 def test_resolve_source_client_default_uses_workspace_dotenv(
     monkeypatch, tmp_path: Path
 ) -> None:

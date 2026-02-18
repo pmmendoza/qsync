@@ -1594,3 +1594,90 @@ def test_pdf_css_styling_applied(tmp_path: Path) -> None:
     assert ".external-surface" in css
     assert "margin" in css
     assert "table" in css
+
+
+def test_apply_active_qid_filters_supports_qid_tag_and_block_filters() -> None:
+    from qsync.translation_export import _apply_active_qid_filters
+
+    result = {
+        "Questions": {
+            "QID1": {"DataExportTag": "tag_one"},
+            "QID2": {"DataExportTag": "tag_two"},
+            "QID3": {"DataExportTag": "tag_three"},
+        },
+        "Blocks": {
+            "BL_A": {
+                "BlockElements": [{"Type": "Question", "QuestionID": "QID2"}],
+            }
+        },
+    }
+
+    active = {"QID1", "QID2"}
+    assert _apply_active_qid_filters(
+        result=result,
+        active_qids=active,
+        include_qids={"QID1"},
+        include_tags=None,
+        include_blocks=None,
+    ) == {"QID1"}
+    assert _apply_active_qid_filters(
+        result=result,
+        active_qids=active,
+        include_qids=None,
+        include_tags={"tag_two"},
+        include_blocks=None,
+    ) == {"QID2"}
+    assert _apply_active_qid_filters(
+        result=result,
+        active_qids=active,
+        include_qids=None,
+        include_tags=None,
+        include_blocks={"BL_A"},
+    ) == {"QID2"}
+
+
+def test_export_word_include_qid_filter_limits_rendered_questions(tmp_path: Path) -> None:
+    from qsync.translation_export import export_survey_payload_to_word
+
+    payload = {
+        "result": {
+            "SurveyFlow": {"Flow": [{"Type": "Standard", "ID": "BL_1"}]},
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Default",
+                    "Description": "Main",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": "QID1"},
+                        {"Type": "Question", "QuestionID": "QID2"},
+                    ],
+                }
+            },
+            "Questions": {
+                "QID1": {
+                    "QuestionType": "TE",
+                    "Selector": "SL",
+                    "QuestionText": "Question one",
+                    "DataExportTag": "q1",
+                },
+                "QID2": {
+                    "QuestionType": "TE",
+                    "Selector": "SL",
+                    "QuestionText": "Question two",
+                    "DataExportTag": "q2",
+                },
+            },
+        }
+    }
+
+    out_docx = tmp_path / "filtered.docx"
+    export_survey_payload_to_word(
+        "SV_TEST",
+        payload,
+        out_docx,
+        include_qids={"QID2"},
+    )
+
+    d = docx.Document(str(out_docx))
+    text = _doc_text(d)
+    assert "[QID2][TE] q2" in text
+    assert "[QID1][TE] q1" not in text

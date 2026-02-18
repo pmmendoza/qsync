@@ -929,3 +929,260 @@ def test_embedded_options_structural_route_reaches_wizard(
     assert state["env"]
     assert state["env"].get("QUALTRICS_BASE_URL") == "iad1.qualtrics.com"
     assert str(state["surveys_dir"]).endswith("/surveys/.damian")
+
+
+def test_edit_menu_includes_inspect_push_and_stage_by_qid_entries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+
+    seen_edit_choices: list[list[str]] = []
+    steps = iter(["Edit Questions & Content — structural item edits", "↩ Back", "Exit"])
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        normalized = [str(c) for c in choices]
+        if message == "Edit Questions & Content":
+            seen_edit_choices.append(normalized)
+        return next(steps)
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert seen_edit_choices, "Edit Questions & Content menu was not shown."
+    assert any(
+        "Inspect question payload (local cache)" in menu_choices
+        for menu_choices in seen_edit_choices
+    )
+    assert any(
+        "Push one question from local cache" in menu_choices
+        for menu_choices in seen_edit_choices
+    )
+    assert any(
+        "Stage by QID (items/js/translations)" in menu_choices
+        for menu_choices in seen_edit_choices
+    )
+
+
+def test_edit_menu_stage_by_qid_runs_sync_scope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.list_surveys",
+        lambda base, headers: [{"id": "SV_1", "name": "Survey One"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey._pick_survey_id_from_records",
+        lambda **kwargs: "SV_1",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.fetch_survey_definition",
+        lambda base, headers, survey_id: {
+            "Questions": {
+                "QID1": {"QuestionText": "Question one"},
+                "QID2": {"QuestionText": "Question two"},
+            },
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Standard",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": "QID1"},
+                        {"Type": "Question", "QuestionID": "QID2"},
+                    ],
+                }
+            },
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+        },
+    )
+
+    invoked: dict[str, list[str]] = {}
+
+    def _fake_main_impl(argv: list[str]) -> None:
+        invoked["argv"] = list(argv)
+
+    monkeypatch.setattr("qsync.cli._main_impl", _fake_main_impl)
+
+    state = {"top_visits": 0}
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message.startswith("qsync survey menu"):
+            state["top_visits"] += 1
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
+            return "Stage by QID (items/js/translations)"
+        return "Exit"
+
+    def _multi_select_from_list(message: str, choices, instruction=None, default=None):
+        if message == "Pick one or more QIDs to stage:":
+            return [str(choices[0]), str(choices[1])]
+        if message == "Dimensions to stage for selected QIDs:":
+            return ["items", "translations"]
+        return []
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+    monkeypatch.setattr(
+        interactive_menu, "multi_select_from_list", _multi_select_from_list
+    )
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    argv = invoked.get("argv") or []
+    assert argv
+    assert "sync" in argv
+    assert "--survey-id" in argv and "SV_1" in argv
+    assert "--dimensions" in argv and "items,translations" in argv
+    assert "--scope" in argv and "qid:QID1 OR qid:QID2" in argv
+    assert "--pending-action" in argv and "stage" in argv
+    assert "--yes" in argv
+
+
+def test_edit_menu_add_question_uses_data_export_tag_name_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.list_surveys",
+        lambda base, headers: [{"id": "SV_1", "name": "Survey One"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey._pick_survey_id_from_records",
+        lambda **kwargs: "SV_1",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.fetch_survey_definition",
+        lambda base, headers, survey_id: {
+            "Questions": {
+                "QID1": {
+                    "QuestionText": "",
+                    "QuestionDescription": "",
+                    "DataExportTag": "tag_fallback",
+                },
+                "QID2": {
+                    "QuestionText": "Second question",
+                    "DataExportTag": "tag_second",
+                },
+            },
+            "Blocks": {"BL_1": {"Type": "Standard", "BlockElements": []}},
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+        },
+    )
+
+    called = {}
+    seen_source_labels: list[str] = []
+
+    def _capture(ns):
+        called["args"] = ns
+
+    def _multi_select_from_list(message: str, choices, instruction=None, default=None):
+        if message == "Choose source question(s) to clone:":
+            seen_source_labels.extend(str(choice) for choice in choices)
+            return [str(choices[0])]
+        return []
+
+    monkeypatch.setattr("qsync.cli_survey.handle_add_question", _capture)
+    monkeypatch.setattr(
+        interactive_menu, "multi_select_from_list", _multi_select_from_list
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    state = {"top_visits": 0}
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message.startswith("qsync survey menu"):
+            state["top_visits"] += 1
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
+            return "Add question(s) (clone template, insert in flow)"
+        if message == "Question template source:":
+            return "Clone existing question(s) from question bank"
+        if message == "Clone source account:":
+            return "Current account (default)"
+        if message == "Question bank lookup mode:":
+            return "Live survey definitions (default)"
+        if message == "Question text behavior:":
+            return "Keep source question text(s)"
+        if message == "Choose target block:":
+            return str(choices[0])
+        if message == "Choose where to insert new question(s) in the selected block:":
+            return "slot:0"
+        if message == "Page break handling for inserted question(s):":
+            return "No extra page breaks"
+        if message == "Dry run?":
+            return "Yes"
+        return "Exit"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert seen_source_labels
+    assert any("tag_fallback" in label for label in seen_source_labels)
+    assert "args" in called
+    assert called["args"].source_question_id == ["QID1"]
+
+
+def test_bulk_master_quick_action_routes_to_master_pull(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+
+    captured: dict[str, argparse.Namespace] = {}
+
+    def _capture(ns: argparse.Namespace) -> None:
+        captured["args"] = ns
+
+    monkeypatch.setattr("qsync.cli_survey.handle_master_pull", _capture)
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message == "Survey master":
+            return "Pull focal snapshots + master CSV"
+        if message == "Force overwrite existing master CSV?":
+            return "No"
+        return "↩ Back"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False, quick_action="bulk-master"))
+
+    assert "args" in captured
+    assert captured["args"].force_overwrite is False

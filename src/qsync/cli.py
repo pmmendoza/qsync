@@ -5116,6 +5116,14 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             raise SystemExit(2)
 
         if hasattr(args, "func"):
+            if getattr(args, "command", None) == "survey":
+                try:
+                    from .cli_survey import maybe_emit_survey_write_preflight
+
+                    maybe_emit_survey_write_preflight(args)
+                except Exception:
+                    # Preflight banner is best-effort and must not block command execution.
+                    pass
             args.func(args)
             return
 

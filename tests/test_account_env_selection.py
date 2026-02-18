@@ -321,6 +321,70 @@ def test_survey_pull_account_uses_account_env(
     assert captured["target_dir"] == str((tmp_path / "surveys" / ".damian").resolve())
 
 
+@pytest.mark.parametrize(
+    ("account_value", "env_content", "error_id", "expected_exit"),
+    [
+        ("../../etc/passwd", None, "QSYNC-VALIDATION-ACCOUNT-002", 2),
+        ("missing", None, "QSYNC-CONFIG-ACCOUNTENV-001", 1),
+        (
+            "damian",
+            "QUALTRICS_BASE_URL=syd1.qualtrics.com\n",
+            "QSYNC-CONFIG-ACCOUNTENV-002",
+            1,
+        ),
+        (
+            "damian",
+            "QUALTRICS_BASE_URL=https://syd1.qualtrics.com\nX-API-TOKEN=secret\n",
+            "QSYNC-CONFIG-ACCOUNTENV-003",
+            1,
+        ),
+    ],
+)
+def test_survey_pull_account_strict_error_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    account_value: str,
+    env_content: str | None,
+    error_id: str,
+    expected_exit: int,
+) -> None:
+    from qsync.cli import main
+    from qsync import cli_survey
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+
+    if env_content is not None:
+        (tmp_path / ".env.damian").write_text(env_content, encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli_survey,
+        "download_survey_definition",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("download_survey_definition should not run on strict failures")
+        ),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "--root",
+                str(tmp_path),
+                "survey",
+                "pull",
+                "--account",
+                account_value,
+                "--survey-id",
+                "SV_1",
+            ]
+        )
+
+    assert excinfo.value.code == expected_exit
+    stderr = capsys.readouterr().err
+    assert error_id in stderr
+
+
 def test_survey_pull_account_dest_precedence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -531,3 +595,40 @@ def test_translations_pull_account_uses_account_env_and_scoped_cache(
     assert captured["base"] == "syd1.qualtrics.com"
     assert captured["token"] == "secret"
     assert captured["target_dir"] == str((tmp_path / "surveys" / ".damian").resolve())
+
+
+def test_survey_publish_emits_account_preflight_banner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from qsync.cli import main
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+    (tmp_path / ".env.damian").write_text(
+        "QUALTRICS_BASE_URL=syd1.qualtrics.com\nX-API-TOKEN=secret\n",
+        encoding="utf-8",
+    )
+
+    main(
+        [
+            "--root",
+            str(tmp_path),
+            "survey",
+            "publish",
+            "--account",
+            "damian",
+            "--survey-id",
+            "SV_1",
+            "--description",
+            "dry run",
+            "--dry-run",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert (
+        "[account-preflight] action=publish account=damian "
+        "base_url=syd1.qualtrics.com"
+    ) in out
