@@ -642,6 +642,11 @@ FLOW_TEXT_KEYS: tuple[str, ...] = (
     "Text",
 )
 
+# Some node types (notably WebService) can use generic keys like "Text" for
+# request config, not participant-facing copy. Never rewrite those during
+# language slicing.
+FLOW_TEXT_EXCLUDED_TYPES: tuple[str, ...] = ("WebService",)
+
 
 def _iter_flow_nodes(qsf: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
     elem = _find_element(qsf, "FL")
@@ -736,6 +741,8 @@ def _rebase_flow_text(
 
     for node in _iter_flow_nodes(qsf):
         node_type = str(node.get("Type") or "").strip()
+        if node_type in FLOW_TEXT_EXCLUDED_TYPES:
+            continue
         for key in FLOW_TEXT_KEYS:
             if key not in node:
                 continue
@@ -810,6 +817,8 @@ def warn_if_flow_text_present(qsf: Mapping[str, Any]) -> list[str]:
     warnings: list[str] = []
     for node in _iter_flow_nodes(qsf):
         t = str(node.get("Type") or "").strip()
+        if t in FLOW_TEXT_EXCLUDED_TYPES:
+            continue
         fields: list[str] = []
         for key in FLOW_TEXT_KEYS:
             if key not in node:

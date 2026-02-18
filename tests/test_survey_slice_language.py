@@ -440,6 +440,41 @@ def test_slice_qsf_no_flow_text_preserves_messages() -> None:
     assert any("not rebased (--no-flow-text)" in w for w in result.warnings)
 
 
+def test_slice_qsf_does_not_rebase_webservice_nodes() -> None:
+    qsf = _qsf_payload(available_languages=["EN", "DE"])
+    request_params = {"panel_id": "${e://Field/PanelID}"}
+    text_by_lang = {
+        "EN": "https://api.example.com/en",
+        "DE": "https://api.example.com/de",
+    }
+    qsf["SurveyElements"].append(
+        {
+            "Element": "FL",
+            "PrimaryAttribute": "Survey Flow",
+            "Payload": {
+                "Flow": [
+                    {
+                        "Type": "WebService",
+                        "FlowID": "FL_WS",
+                        "RequestType": "GET",
+                        "RequestURL": "https://api.example.com",
+                        "RequestParams": request_params.copy(),
+                        "Text": text_by_lang.copy(),
+                    }
+                ]
+            },
+        }
+    )
+
+    slice_qsf_to_language(qsf, target_language="DE", kept_languages=["DE"])
+    flow_elem = next(
+        elem for elem in qsf["SurveyElements"] if elem.get("Element") == "FL"
+    )
+    node = flow_elem["Payload"]["Flow"][0]
+    assert node["RequestParams"] == request_params
+    assert node["Text"] == text_by_lang
+
+
 def test_write_batch_manifest(tmp_path: Path) -> None:
     payload = [
         {

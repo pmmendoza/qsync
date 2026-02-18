@@ -544,8 +544,8 @@ def _run_autofix(dimension: str, survey_id: str) -> str:
         pull_eos_messages(survey_id=survey_id, allow_shared=True)
         return "Pulled EOS messages to contents/qualtrics_library_messages"
     if dimension == "flow":
-        flow_dimension.pull(survey_id, force=True)
-        return f"Pulled flow to surveys/flow/{survey_id}/flow.yaml"
+        yaml_path = flow_dimension.pull(survey_id, force=True)
+        return f"Pulled flow to {yaml_path}"
     raise ValueError(f"Unknown auto-fix dimension: {dimension}")
 
 

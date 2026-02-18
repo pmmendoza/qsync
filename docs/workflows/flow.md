@@ -2,7 +2,7 @@
 
 This document explains how to version-control and synchronize survey branching logic, block ordering, and flow structure between local YAML files and the Qualtrics API.
 
-Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). For flow, that means `surveys/.<name>/flow/{survey_id}/...`. The paths below assume the default account.
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). For flow, that means `surveys/.<name>/flow/<survey-slug>-{survey_id}/...`. The paths below assume the default account.
 
 ## 1. Overview
 
@@ -19,7 +19,7 @@ Survey flow defines the execution path through a survey: which blocks appear, in
 After pulling flow for a survey, you'll have:
 
 ```
-surveys/flow/{survey_id}/
+surveys/flow/<survey-slug>-{survey_id}/
   flow.yaml       # Editable flow definition (human-readable YAML)
   baseline.json   # Last-pulled API state (for drift detection)
 ```
@@ -283,7 +283,7 @@ Any unrecognized node type is preserved as `type: Unknown` with full raw JSON, e
 ## 13. Roundtrip checklist
 
 1. `qsync flow pull --survey-id SV_...` - get current state
-2. Edit `surveys/flow/SV_.../flow.yaml` as needed
+2. Edit `surveys/flow/<survey-slug>-SV_.../flow.yaml` as needed
 3. `qsync flow preview --survey-id SV_...` - verify changes
 4. `qsync flow stage --survey-id SV_...` - stage for push
 5. `qsync flow push --survey-id SV_... --yes` - push to Qualtrics

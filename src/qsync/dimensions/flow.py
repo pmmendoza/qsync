@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import logging
@@ -41,15 +42,97 @@ def _workspace_root() -> Path:
     return resolve_root(required=False) or Path.cwd()
 
 
-def _flow_dir(survey_id: str) -> Path:
+def _slugify(value: str) -> str:
+    """Make a filesystem-safe slug from a human-readable value."""
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(value))
+
+
+def _flow_root_dir() -> Path:
+    """Get the base flow directory under account-scoped surveys."""
+    root = _workspace_root()
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    return surveys_dir / "flow"
+
+
+def _inventory_survey_name(survey_id: str) -> str | None:
+    """Best-effort survey display name lookup from inventory CSV."""
+    surveys_dir = resolve_scoped_dir("surveys", root=_workspace_root())
+    for name in ("inventory.csv", "qualtrics_surveys.csv"):
+        csv_path = surveys_dir / name
+        if not csv_path.exists():
+            continue
+        try:
+            with csv_path.open(newline="", encoding="utf-8") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    sid = str(row.get("id") or "").strip()
+                    if sid != survey_id:
+                        continue
+                    survey_name = str(row.get("name") or "").strip()
+                    return survey_name or None
+        except Exception:
+            continue
+    return None
+
+
+def _preferred_flow_dir_name(survey_id: str, *, survey_name: str | None = None) -> str:
+    """Return preferred folder name: <slug>-<survey_id> when name is known."""
+    raw_name = str(survey_name or "").strip() or (_inventory_survey_name(survey_id) or "")
+    if not raw_name:
+        return survey_id
+    slug = _slugify(raw_name)
+    if not slug or slug == survey_id:
+        return survey_id
+    return f"{slug}-{survey_id}"
+
+
+def _find_existing_flow_dir(
+    survey_id: str, *, preferred_name: str | None = None
+) -> Path | None:
+    """Find an existing flow directory for a survey ID."""
+    flow_root = _flow_root_dir()
+    if not flow_root.exists():
+        return None
+
+    if preferred_name:
+        preferred = flow_root / preferred_name
+        if preferred.exists() and preferred.is_dir():
+            return preferred
+
+    # Prefer already-slugged dirs like "<slug>-SV_xxx".
+    slug_candidates = [p for p in flow_root.glob(f"*-{survey_id}") if p.is_dir()]
+    if slug_candidates:
+        slug_candidates.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+        return slug_candidates[0]
+
+    # Legacy format: surveys/flow/SV_xxx
+    legacy = flow_root / survey_id
+    if legacy.exists() and legacy.is_dir():
+        return legacy
+    return None
+
+
+def _flow_dir(
+    survey_id: str,
+    *,
+    survey_name: str | None = None,
+    prefer_existing: bool = True,
+) -> Path:
     """Get the flow directory for a survey.
 
     Returns:
-        Path to surveys/flow/{survey_id}/ (account-scoped when QSYNC_ACCOUNT is set)
+        Path to surveys/flow/<slug>-{survey_id}/ when name is known, otherwise
+        surveys/flow/{survey_id}/ (account-scoped when QSYNC_ACCOUNT is set)
     """
-    root = _workspace_root()
-    surveys_dir = resolve_scoped_dir("surveys", root=root)
-    return surveys_dir / "flow" / survey_id
+    flow_root = _flow_root_dir()
+    preferred_name = _preferred_flow_dir_name(survey_id, survey_name=survey_name)
+
+    if prefer_existing:
+        existing = _find_existing_flow_dir(survey_id, preferred_name=preferred_name)
+        if existing is not None:
+            return existing
+
+    return flow_root / preferred_name
 
 
 def _yaml_path(survey_id: str) -> Path:
@@ -82,10 +165,25 @@ def pull(survey_id: str, *, force: bool = False) -> Path:
     flow = cache.payload.get("result", {}).get("SurveyFlow", {})
     blocks = cache.payload.get("result", {}).get("Blocks", {})
     questions = cache.payload.get("result", {}).get("Questions", {})
+    survey_name = str(cache.payload.get("result", {}).get("SurveyName") or "").strip() or None
 
-    flow_dir = _flow_dir(survey_id)
-    yaml_path = _yaml_path(survey_id)
-    baseline_path = _baseline_path(survey_id)
+    preferred_dir = _flow_dir(survey_id, survey_name=survey_name, prefer_existing=False)
+    existing_dir = _find_existing_flow_dir(survey_id, preferred_name=preferred_dir.name)
+    flow_dir = preferred_dir
+
+    if existing_dir is not None:
+        flow_dir = existing_dir
+        # Migrate legacy surveys/flow/SV_xxx -> surveys/flow/<slug>-SV_xxx.
+        if (
+            existing_dir.name == survey_id
+            and existing_dir != preferred_dir
+            and not preferred_dir.exists()
+        ):
+            existing_dir.rename(preferred_dir)
+            flow_dir = preferred_dir
+
+    yaml_path = flow_dir / "flow.yaml"
+    baseline_path = flow_dir / "baseline.json"
 
     # Check for existing changes
     if yaml_path.exists() and baseline_path.exists() and not force:
