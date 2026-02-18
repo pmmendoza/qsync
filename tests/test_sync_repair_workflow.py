@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -22,6 +24,10 @@ def test_parse_fix_selector_and_type_filter() -> None:
     import qsync.sync_orchestrator as orchestrator
 
     mode, issue_type = orchestrator._parse_fix_selector("safe")
+    assert mode == "safe"
+    assert issue_type is None
+
+    mode, issue_type = orchestrator._parse_fix_selector("all")
     assert mode == "safe"
     assert issue_type is None
 
@@ -74,6 +80,96 @@ def test_single_survey_repair_menu_reachable_when_only_issues() -> None:
 
     assert result is None
     mock_run_autofix.assert_called_once_with("flow", "SV_TEST")
+
+
+def test_single_survey_view_issue_details_reachable_for_non_fixable_issues() -> None:
+    import qsync.sync_orchestrator as orchestrator
+
+    initial_changes = SimpleNamespace(
+        survey_name="Survey One",
+        dimensions=_empty_dimensions(),
+    )
+    non_fixable_unstaged = _empty_dimensions()
+    non_fixable_unstaged["js"] = DimensionChanges(
+        "js",
+        False,
+        "No changes",
+        set(),
+        error_detail="Mapping CSV missing a column for this survey.",
+        safe_to_autofix=False,
+        status_kind="error",
+    )
+
+    output = io.StringIO()
+    with (
+        redirect_stdout(output),
+        patch.object(orchestrator, "detect_survey_changes", return_value=initial_changes),
+        patch.object(orchestrator, "list_pending", return_value={}),
+        patch.object(
+            orchestrator,
+            "_detect_unstaged_changes",
+            return_value=non_fixable_unstaged,
+        ),
+        patch.object(orchestrator, "_display_survey_overview"),
+        patch.object(orchestrator, "_get_inventory_cached", return_value={}),
+        patch("qsync.interactive_menu.confirm", return_value=False),
+        patch(
+            "qsync.interactive_menu.select_from_list",
+            side_effect=["📋 View issue details", "↩ Exit sync"],
+        ),
+        patch.object(orchestrator, "_run_autofix") as mock_run_autofix,
+    ):
+        result = orchestrator.sync_survey(
+            survey_id="SV_TEST",
+            dimensions=None,
+            interactive=True,
+            auto_yes=False,
+        )
+
+    assert result is None
+    assert "Manual resolution required for: js" in output.getvalue()
+    mock_run_autofix.assert_not_called()
+
+
+def test_display_survey_overview_lists_fixable_and_manual_issue_actions() -> None:
+    import qsync.sync_orchestrator as orchestrator
+
+    unstaged = _empty_dimensions()
+    unstaged["translations"] = DimensionChanges(
+        "translations",
+        False,
+        "No changes",
+        set(),
+        warning_detail=(
+            "Workbook not found at /tmp/workbook.xlsx. "
+            "Run: qsync items pull --survey-id SV_TEST"
+        ),
+        safe_to_autofix=True,
+    )
+    unstaged["js"] = DimensionChanges(
+        "js",
+        False,
+        "No changes",
+        set(),
+        error_detail="Mapping CSV missing a column for this survey.",
+        safe_to_autofix=False,
+        status_kind="error",
+    )
+
+    output = io.StringIO()
+    with redirect_stdout(output):
+        orchestrator._display_survey_overview(
+            "SV_TEST",
+            "Survey One (SV_TEST)",
+            staged={dim: "none" for dim in _empty_dimensions()},
+            unstaged=unstaged,
+            has_pending=False,
+        )
+
+    text = output.getvalue()
+    assert "Repair safe translations issues" in text
+    assert "qsync items pull --survey-id SV_TEST" in text
+    assert "Review issue details for manual resolution: js" in text
 
 
 def test_focal_noninteractive_fix_type_repairs_only_matching_type() -> None:

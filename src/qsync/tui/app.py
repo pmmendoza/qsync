@@ -1333,7 +1333,7 @@ class SyncConfirmScreen(Screen):
                     "",
                     "Coverage note:",
                     "- Add any CLI sync flags in 'additional args' for full parity.",
-                    "- Examples: --all --scope items:QID1 --yes --pending-action push --fix all",
+                    "- Examples: --all --scope items:QID1 --yes --pending-action push --fix safe",
                     "- Also supports: --force-live/--force-preview --skip-publish --refresh-workbooks",
                     "- And: --skip-refresh --allow-drift --allow-skip-embedded --json",
                     "",

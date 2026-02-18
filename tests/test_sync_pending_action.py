@@ -381,6 +381,53 @@ class TestSyncPendingAction(unittest.TestCase):
         mock_preview.assert_called_once()
         self.assertEqual(mock_preview.call_args.kwargs["dimensions"], ["master"])
 
+    def test_resolve_staged_changes_can_repair_unstaged_safe_issues(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        unstaged = self._empty_unstaged()
+        unstaged["flow"] = DimensionChanges(
+            "flow",
+            False,
+            "Not initialized",
+            set(),
+            error_detail="Run: qsync flow pull --survey-id SV_TEST",
+            safe_to_autofix=True,
+            status_kind="error",
+        )
+
+        with (
+            patch(
+                "qsync.interactive_menu.select_from_list",
+                side_effect=[
+                    "🔧 Repair unstaged safe issues",
+                    "Fix all safe issues",
+                    "↩ Exit sync",
+                ],
+            ),
+            patch("qsync.interactive_menu.confirm", return_value=True),
+            patch.object(
+                orchestrator, "_detect_unstaged_changes", return_value=unstaged
+            ) as mock_detect,
+            patch.object(
+                orchestrator, "_get_inventory_cached", return_value={"name": "Test Survey"}
+            ),
+            patch.object(orchestrator, "_run_autofix", return_value="ok") as mock_run,
+        ):
+            resolved = orchestrator._resolve_staged_changes_interactive(
+                "SV_TEST",
+                pending={"items": object()},
+                dimension_results={},
+                force_live=False,
+                force_preview=False,
+                auto_yes=False,
+                allow_drift=False,
+                skip_publish=False,
+            )
+
+        self.assertFalse(resolved)
+        self.assertGreaterEqual(mock_detect.call_count, 1)
+        mock_run.assert_called_once_with("flow", "SV_TEST")
+
     def test_sync_dimensions_once_blocks_noninteractive_items_without_allow_skip_embedded(
         self,
     ):

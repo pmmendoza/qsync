@@ -61,6 +61,13 @@ SURVEY_METADATA_KEYS = [
     "SurveyDescription",
     "SurveyMetaDescription",
 ]
+FLOW_METADATA_COLUMNS = (
+    "BlockName",
+    "BlockID",
+    "BlockOrder",
+    "QuestionOrder",
+    "QuestionOrderInBlock",
+)
 _QUESTION_VALIDATION_CORE_KEYS = {"ForceResponse", "Type"}
 _QUESTION_VALIDATION_TYPE_DEFAULT = "None"
 
@@ -264,6 +271,18 @@ def _column_guide(base_language: str = "EN") -> dict:
             ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
             ("QID", "System", "Qualtrics Question ID. Read-only."),
             ("BlockName", "System", "Qualtrics block name. Read-only."),
+            ("BlockID", "System", "Qualtrics block ID from SurveyFlow. Read-only."),
+            ("BlockOrder", "System", "1-based block position in SurveyFlow. Read-only."),
+            (
+                "QuestionOrder",
+                "System",
+                "1-based question position in SurveyFlow. Read-only.",
+            ),
+            (
+                "QuestionOrderInBlock",
+                "System",
+                "1-based question position inside the block. Read-only.",
+            ),
             ("QuestionType", "System", "Qualtrics question type (MC, TE, etc.)."),
             ("DataExportTag", "System", "Qualtrics DataExportTag / variable name."),
             (
@@ -314,6 +333,19 @@ def _column_guide(base_language: str = "EN") -> dict:
         OPTIONS_SHEET: [
             ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
             ("QID", "System", "Qualtrics Question ID. Read-only."),
+            ("BlockName", "System", "Qualtrics block name from SurveyFlow. Read-only."),
+            ("BlockID", "System", "Qualtrics block ID from SurveyFlow. Read-only."),
+            ("BlockOrder", "System", "1-based block position in SurveyFlow. Read-only."),
+            (
+                "QuestionOrder",
+                "System",
+                "1-based question position in SurveyFlow. Read-only.",
+            ),
+            (
+                "QuestionOrderInBlock",
+                "System",
+                "1-based question position inside the block. Read-only.",
+            ),
             ("ChoiceId", "System", "Qualtrics choice ID for this option."),
             ("QuestionType", "System", "Qualtrics question type (MC, Matrix, etc.)."),
             ("ExportTag", "System", "Qualtrics DataExportTag / variable name."),
@@ -342,6 +374,19 @@ def _column_guide(base_language: str = "EN") -> dict:
         SUBITEMS_SHEET: [
             ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
             ("QID", "System", "Qualtrics Question ID. Read-only."),
+            ("BlockName", "System", "Qualtrics block name from SurveyFlow. Read-only."),
+            ("BlockID", "System", "Qualtrics block ID from SurveyFlow. Read-only."),
+            ("BlockOrder", "System", "1-based block position in SurveyFlow. Read-only."),
+            (
+                "QuestionOrder",
+                "System",
+                "1-based question position in SurveyFlow. Read-only.",
+            ),
+            (
+                "QuestionOrderInBlock",
+                "System",
+                "1-based question position inside the block. Read-only.",
+            ),
             ("AnswerId", "System", "Qualtrics sub-item / statement ID."),
             (
                 "Field",
@@ -369,6 +414,19 @@ def _column_guide(base_language: str = "EN") -> dict:
         SBS_COLUMNS_SHEET: [
             ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
             ("QID", "System", "Qualtrics Question ID. Read-only."),
+            ("BlockName", "System", "Qualtrics block name from SurveyFlow. Read-only."),
+            ("BlockID", "System", "Qualtrics block ID from SurveyFlow. Read-only."),
+            ("BlockOrder", "System", "1-based block position in SurveyFlow. Read-only."),
+            (
+                "QuestionOrder",
+                "System",
+                "1-based question position in SurveyFlow. Read-only.",
+            ),
+            (
+                "QuestionOrderInBlock",
+                "System",
+                "1-based question position inside the block. Read-only.",
+            ),
             (
                 "ColumnId",
                 "System",
@@ -400,6 +458,19 @@ def _column_guide(base_language: str = "EN") -> dict:
         SBS_COLUMN_ANSWERS_SHEET: [
             ("SurveyID", "System", "Qualtrics Survey ID. Read-only."),
             ("QID", "System", "Qualtrics Question ID. Read-only."),
+            ("BlockName", "System", "Qualtrics block name from SurveyFlow. Read-only."),
+            ("BlockID", "System", "Qualtrics block ID from SurveyFlow. Read-only."),
+            ("BlockOrder", "System", "1-based block position in SurveyFlow. Read-only."),
+            (
+                "QuestionOrder",
+                "System",
+                "1-based question position in SurveyFlow. Read-only.",
+            ),
+            (
+                "QuestionOrderInBlock",
+                "System",
+                "1-based question position inside the block. Read-only.",
+            ),
             ("ColumnId", "System", "SBS column ID (AdditionalQuestions key)."),
             ("AnswerId", "System", "Qualtrics answer ID inside the SBS column."),
             ("QuestionType", "System", "Qualtrics question type (SBS)."),
@@ -1193,6 +1264,102 @@ def _externally_managed_note(script: str) -> str:
     return f"{_EXTERNALLY_MANAGED_NOTE_PREFIX}{script}, not directly in Excel."
 
 
+@dataclass(frozen=True)
+class _QuestionFlowMeta:
+    block_id: str
+    block_name: str
+    block_order: int
+    question_order: int
+    question_order_in_block: int
+
+
+def _question_flow_meta_by_qid(survey_payload: dict) -> Dict[str, _QuestionFlowMeta]:
+    """Return SurveyFlow position metadata for each in-flow/non-trash QID."""
+
+    result = survey_payload.get("result", {})
+    questions = result.get("Questions", {})
+    blocks = result.get("Blocks", {})
+    if not isinstance(questions, dict) or not isinstance(blocks, dict):
+        return {}
+
+    flow_meta: Dict[str, _QuestionFlowMeta] = {}
+    seen_qids: set[str] = set()
+    question_order = 0
+    block_order = 0
+
+    for block_id in _iter_block_ids_in_flow(survey_payload):
+        block = blocks.get(block_id)
+        if not isinstance(block, dict):
+            continue
+        if str(block.get("Type") or "").strip() == "Trash":
+            continue
+        block_order += 1
+        block_name = str(block.get("Description") or "")
+        elements = block.get("BlockElements") or block.get("Elements") or []
+        if not isinstance(elements, list):
+            continue
+
+        question_order_in_block = 0
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            elem_type = str(elem.get("Type") or "").strip()
+            if elem_type not in {"", "Question"}:
+                continue
+            qid = str(elem.get("QuestionID") or "").strip()
+            if not qid or qid in seen_qids or qid not in questions:
+                continue
+            seen_qids.add(qid)
+            question_order += 1
+            question_order_in_block += 1
+            flow_meta[qid] = _QuestionFlowMeta(
+                block_id=str(block_id),
+                block_name=block_name,
+                block_order=block_order,
+                question_order=question_order,
+                question_order_in_block=question_order_in_block,
+            )
+
+    return flow_meta
+
+
+def _flow_meta_values(
+    qid: str,
+    flow_meta_by_qid: Dict[str, _QuestionFlowMeta],
+) -> Dict[str, str | int | None]:
+    """Return workbook column values for flow metadata columns."""
+
+    meta = flow_meta_by_qid.get(str(qid))
+    if not meta:
+        return {
+            "BlockName": "",
+            "BlockID": "",
+            "BlockOrder": None,
+            "QuestionOrder": None,
+            "QuestionOrderInBlock": None,
+        }
+    return {
+        "BlockName": meta.block_name,
+        "BlockID": meta.block_id,
+        "BlockOrder": meta.block_order,
+        "QuestionOrder": meta.question_order,
+        "QuestionOrderInBlock": meta.question_order_in_block,
+    }
+
+
+def _write_flow_meta_cells(
+    ws: Worksheet,
+    row_idx: int,
+    col_index: Dict[str, int],
+    qid: str,
+    flow_meta_by_qid: Dict[str, _QuestionFlowMeta],
+) -> None:
+    values = _flow_meta_values(qid, flow_meta_by_qid)
+    for col_name, value in values.items():
+        if col_name in col_index:
+            ws.cell(row=row_idx, column=col_index[col_name] + 1, value=value)
+
+
 def _iter_block_ids_in_flow(survey_payload: dict) -> List[str]:
     """Return block IDs in survey-flow order."""
 
@@ -1223,36 +1390,9 @@ def _iter_block_ids_in_flow(survey_payload: dict) -> List[str]:
 def _iter_question_entries_in_flow(survey_payload: dict) -> List[Tuple[str, str]]:
     """Return `(qid, block_name)` pairs in SurveyFlow order (non-Trash blocks only)."""
 
-    result = survey_payload.get("result", {})
-    questions = result.get("Questions", {})
-    blocks = result.get("Blocks", {})
-    if not isinstance(questions, dict) or not isinstance(blocks, dict):
-        return []
-
-    entries: List[Tuple[str, str]] = []
-    seen_qids: set[str] = set()
-    for block_id in _iter_block_ids_in_flow(survey_payload):
-        block = blocks.get(block_id)
-        if not isinstance(block, dict):
-            continue
-        if str(block.get("Type") or "").strip() == "Trash":
-            continue
-        block_name = str(block.get("Description") or "")
-        elements = block.get("BlockElements") or block.get("Elements") or []
-        if not isinstance(elements, list):
-            continue
-        for elem in elements:
-            if not isinstance(elem, dict):
-                continue
-            elem_type = str(elem.get("Type") or "").strip()
-            if elem_type not in {"", "Question"}:
-                continue
-            qid = str(elem.get("QuestionID") or "").strip()
-            if not qid or qid in seen_qids or qid not in questions:
-                continue
-            seen_qids.add(qid)
-            entries.append((qid, block_name))
-    return entries
+    flow_meta = _question_flow_meta_by_qid(survey_payload)
+    ordered = sorted(flow_meta.items(), key=lambda item: item[1].question_order)
+    return [(qid, meta.block_name) for qid, meta in ordered]
 
 
 def _ordered_qids_in_flow(survey_payload: dict) -> List[str]:
@@ -2039,12 +2179,14 @@ def init_workbook_from_survey(
     embedded_rows = build_embedded_data_rows(survey_id, survey_payload)
     option_previews = _build_option_previews(survey_payload)
     subitem_previews = _build_subitem_previews(survey_payload)
+    flow_meta_by_qid = _question_flow_meta_by_qid(survey_payload)
 
     _init_questions_sheet(
         wb,
         questions_map,
         option_previews,
         subitem_previews,
+        flow_meta_by_qid,
         survey_payload,
         languages=languages,
         base_language=base_language,
@@ -2052,6 +2194,7 @@ def init_workbook_from_survey(
     _init_options_sheet(
         wb,
         options_map,
+        flow_meta_by_qid,
         survey_payload,
         languages=languages,
         base_language=base_language,
@@ -2059,6 +2202,7 @@ def init_workbook_from_survey(
     _init_subitems_sheet(
         wb,
         subitems_map,
+        flow_meta_by_qid,
         survey_payload,
         languages=languages,
         base_language=base_language,
@@ -2066,6 +2210,7 @@ def init_workbook_from_survey(
     _init_sbs_columns_sheet(
         wb,
         sbs_columns_map,
+        flow_meta_by_qid,
         survey_payload,
         languages=languages,
         base_language=base_language,
@@ -2073,6 +2218,7 @@ def init_workbook_from_survey(
     _init_sbs_column_answers_sheet(
         wb,
         sbs_column_answers_map,
+        flow_meta_by_qid,
         survey_payload,
         languages=languages,
         base_language=base_language,
@@ -2138,6 +2284,7 @@ def init_workbook_from_survey(
     # Normalise ordering in the options/subitems sheets so rows are grouped
     # deterministically by (QID, ChoiceId/AnswerId). This keeps previews and
     # manual inspection predictable, even after multiple init runs.
+    _sort_questions_sheet(wb[QUESTION_SHEET])
     _sort_sheet_by_qid_and_id(wb[OPTIONS_SHEET], "ChoiceId")
     _sort_sheet_by_qid_and_id(wb[SUBITEMS_SHEET], "AnswerId")
     _sort_sheet_by_qid_and_id(wb[SBS_COLUMNS_SHEET], "ColumnId")
@@ -2169,6 +2316,7 @@ def _init_questions_sheet(
     questions_map: Dict[str, QuestionRow],
     option_previews: Dict[str, str],
     subitem_previews: Dict[str, str],
+    flow_meta_by_qid: Dict[str, _QuestionFlowMeta],
     survey_payload: dict,
     *,
     languages: Sequence[str] | None = None,
@@ -2185,6 +2333,10 @@ def _init_questions_sheet(
         "SurveyID",
         "QID",
         "BlockName",
+        "BlockID",
+        "BlockOrder",
+        "QuestionOrder",
+        "QuestionOrderInBlock",
         "QuestionType",
         "DataExportTag",
         "QuestionKey",
@@ -2236,10 +2388,12 @@ def _init_questions_sheet(
                 row=row_idx, column=col_index["SurveyID"] + 1, value=row_data.survey_id
             )
             ws.cell(row=row_idx, column=col_index["QID"] + 1, value=row_data.qid)
-            ws.cell(
-                row=row_idx,
-                column=col_index["BlockName"] + 1,
-                value=row_data.block_name,
+            _write_flow_meta_cells(
+                ws,
+                row_idx,
+                col_index,
+                row_data.qid,
+                flow_meta_by_qid,
             )
             ws.cell(
                 row=row_idx,
@@ -2342,10 +2496,12 @@ def _init_questions_sheet(
                 value=row_data.survey_id,
             )
             ws.cell(row=new_row_idx, column=col_index["QID"] + 1, value=row_data.qid)
-            ws.cell(
-                row=new_row_idx,
-                column=col_index["BlockName"] + 1,
-                value=row_data.block_name,
+            _write_flow_meta_cells(
+                ws,
+                new_row_idx,
+                col_index,
+                row_data.qid,
+                flow_meta_by_qid,
             )
             ws.cell(
                 row=new_row_idx,
@@ -2440,6 +2596,7 @@ def _init_questions_sheet(
 def _init_options_sheet(
     wb: Workbook,
     options_map: Dict[Tuple[str, str], OptionRow],
+    flow_meta_by_qid: Dict[str, _QuestionFlowMeta],
     survey_payload: dict,
     *,
     languages: Sequence[str] | None = None,
@@ -2455,6 +2612,11 @@ def _init_options_sheet(
     required_cols = [
         "SurveyID",
         "QID",
+        "BlockName",
+        "BlockID",
+        "BlockOrder",
+        "QuestionOrder",
+        "QuestionOrderInBlock",
         "ChoiceId",
         "QuestionType",
         "ExportTag",
@@ -2512,6 +2674,13 @@ def _init_options_sheet(
                 row=row_idx, column=col_index["SurveyID"] + 1, value=row_data.survey_id
             )
             ws.cell(row=row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            _write_flow_meta_cells(
+                ws,
+                row_idx,
+                col_index,
+                row_data.qid,
+                flow_meta_by_qid,
+            )
             ws.cell(
                 row=row_idx, column=col_index["ChoiceId"] + 1, value=row_data.choice_id
             )
@@ -2555,6 +2724,13 @@ def _init_options_sheet(
                 value=row_data.survey_id,
             )
             ws.cell(row=new_row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            _write_flow_meta_cells(
+                ws,
+                new_row_idx,
+                col_index,
+                row_data.qid,
+                flow_meta_by_qid,
+            )
             ws.cell(
                 row=new_row_idx,
                 column=col_index["ChoiceId"] + 1,
@@ -2630,6 +2806,7 @@ def _init_options_sheet(
 def _init_subitems_sheet(
     wb: Workbook,
     subitems_map: Dict[Tuple[str, str, str], SubitemRow],
+    flow_meta_by_qid: Dict[str, _QuestionFlowMeta],
     survey_payload: dict,
     *,
     languages: Sequence[str] | None = None,
@@ -2646,6 +2823,11 @@ def _init_subitems_sheet(
     required_cols = [
         "SurveyID",
         "QID",
+        "BlockName",
+        "BlockID",
+        "BlockOrder",
+        "QuestionOrder",
+        "QuestionOrderInBlock",
         "AnswerId",
         "Field",
         "QuestionType",
@@ -2695,6 +2877,13 @@ def _init_subitems_sheet(
                 row=row_idx, column=col_index["SurveyID"] + 1, value=row_data.survey_id
             )
             ws.cell(row=row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            _write_flow_meta_cells(
+                ws,
+                row_idx,
+                col_index,
+                row_data.qid,
+                flow_meta_by_qid,
+            )
             ws.cell(
                 row=row_idx, column=col_index["AnswerId"] + 1, value=row_data.answer_id
             )
@@ -2730,6 +2919,13 @@ def _init_subitems_sheet(
                 value=row_data.survey_id,
             )
             ws.cell(row=new_row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            _write_flow_meta_cells(
+                ws,
+                new_row_idx,
+                col_index,
+                row_data.qid,
+                flow_meta_by_qid,
+            )
             ws.cell(
                 row=new_row_idx,
                 column=col_index["AnswerId"] + 1,
@@ -2818,6 +3014,13 @@ def _init_subitems_sheet(
                 existing_rows[label_key] = row_idx
                 ws.cell(row=row_idx, column=col_index["SurveyID"] + 1, value=survey_id)
                 ws.cell(row=row_idx, column=col_index["QID"] + 1, value=qid)
+                _write_flow_meta_cells(
+                    ws,
+                    row_idx,
+                    col_index,
+                    qid,
+                    flow_meta_by_qid,
+                )
                 ws.cell(
                     row=row_idx,
                     column=col_index["AnswerId"] + 1,
@@ -2838,6 +3041,13 @@ def _init_subitems_sheet(
                     column=col_index["ExportTag"] + 1,
                     value=tag,
                 )
+            _write_flow_meta_cells(
+                ws,
+                row_idx,
+                col_index,
+                qid,
+                flow_meta_by_qid,
+            )
 
             # Always enforce Field=Label for label rows
             if "Field" in col_index:
@@ -2895,6 +3105,7 @@ def _init_subitems_sheet(
 def _init_sbs_columns_sheet(
     wb: Workbook,
     columns_map: Dict[Tuple[str, str], SbsColumnRow],
+    flow_meta_by_qid: Dict[str, _QuestionFlowMeta],
     survey_payload: dict,
     *,
     languages: Sequence[str] | None = None,
@@ -2910,6 +3121,11 @@ def _init_sbs_columns_sheet(
     required_cols = [
         "SurveyID",
         "QID",
+        "BlockName",
+        "BlockID",
+        "BlockOrder",
+        "QuestionOrder",
+        "QuestionOrderInBlock",
         "ColumnId",
         "QuestionType",
         "ExportTag",
@@ -2954,6 +3170,13 @@ def _init_sbs_columns_sheet(
                 row=row_idx, column=col_index["SurveyID"] + 1, value=row_data.survey_id
             )
             ws.cell(row=row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            _write_flow_meta_cells(
+                ws,
+                row_idx,
+                col_index,
+                row_data.qid,
+                flow_meta_by_qid,
+            )
             ws.cell(
                 row=row_idx, column=col_index["ColumnId"] + 1, value=row_data.column_id
             )
@@ -2995,6 +3218,13 @@ def _init_sbs_columns_sheet(
                 value=row_data.survey_id,
             )
             ws.cell(row=new_row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            _write_flow_meta_cells(
+                ws,
+                new_row_idx,
+                col_index,
+                row_data.qid,
+                flow_meta_by_qid,
+            )
             ws.cell(
                 row=new_row_idx,
                 column=col_index["ColumnId"] + 1,
@@ -3073,6 +3303,7 @@ def _init_sbs_columns_sheet(
 def _init_sbs_column_answers_sheet(
     wb: Workbook,
     answers_map: Dict[Tuple[str, str, str], SbsColumnAnswerRow],
+    flow_meta_by_qid: Dict[str, _QuestionFlowMeta],
     survey_payload: dict,
     *,
     languages: Sequence[str] | None = None,
@@ -3088,6 +3319,11 @@ def _init_sbs_column_answers_sheet(
     required_cols = [
         "SurveyID",
         "QID",
+        "BlockName",
+        "BlockID",
+        "BlockOrder",
+        "QuestionOrder",
+        "QuestionOrderInBlock",
         "ColumnId",
         "AnswerId",
         "QuestionType",
@@ -3135,6 +3371,13 @@ def _init_sbs_column_answers_sheet(
                 row=row_idx, column=col_index["SurveyID"] + 1, value=row_data.survey_id
             )
             ws.cell(row=row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            _write_flow_meta_cells(
+                ws,
+                row_idx,
+                col_index,
+                row_data.qid,
+                flow_meta_by_qid,
+            )
             ws.cell(
                 row=row_idx, column=col_index["ColumnId"] + 1, value=row_data.column_id
             )
@@ -3179,6 +3422,13 @@ def _init_sbs_column_answers_sheet(
                 value=row_data.survey_id,
             )
             ws.cell(row=new_row_idx, column=col_index["QID"] + 1, value=row_data.qid)
+            _write_flow_meta_cells(
+                ws,
+                new_row_idx,
+                col_index,
+                row_data.qid,
+                flow_meta_by_qid,
+            )
             ws.cell(
                 row=new_row_idx,
                 column=col_index["ColumnId"] + 1,
@@ -3565,6 +3815,62 @@ def _apply_readonly_fill(
                 row[idx - 1].fill = _READONLY_FILL
 
 
+_QID_NUM_RE = re.compile(r"^QID(?P<num>\d+)$", re.IGNORECASE)
+
+
+def _qid_order_key(qid: str) -> tuple[int, int | None, str]:
+    value = str(qid or "").strip()
+    match = _QID_NUM_RE.match(value)
+    if not match:
+        return (1, None, value)
+    return (0, int(match.group("num")), value)
+
+
+def _int_sort_value(value: object) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _question_order_sort_key(row, *, headers: Sequence[object], qid_idx: int):
+    order_idx = headers.index("QuestionOrder") if "QuestionOrder" in headers else None
+    question_order = _int_sort_value(row[order_idx].value) if order_idx is not None else None
+    qid = str(row[qid_idx].value or "").strip()
+    qid_key = _qid_order_key(qid)
+    if question_order is None or question_order <= 0:
+        return (1, None, qid_key)
+    return (0, question_order, qid_key)
+
+
+def _sort_questions_sheet(ws: Worksheet) -> None:
+    """Sort Questions sheet by QuestionOrder (fallback: numeric QID)."""
+
+    headers, data_rows = _iter_sheet_rows(ws)
+    if not headers or "QID" not in headers:
+        return
+    qid_idx = headers.index("QID")
+
+    rows_with_values = [[cell.value for cell in row] for row in data_rows]
+    if not rows_with_values:
+        return
+
+    paired = [
+        (
+            _question_order_sort_key(data_rows[i], headers=headers, qid_idx=qid_idx),
+            rows_with_values[i],
+        )
+        for i in range(len(data_rows))
+    ]
+    paired.sort(key=lambda x: x[0])
+
+    if ws.max_row > 1:
+        ws.delete_rows(2, ws.max_row - 1)
+
+    for _, values in paired:
+        ws.append(values)
+
+
 def _sort_sheet_by_qid_and_id(ws: Worksheet, id_header: str) -> None:
     """Sort a sheet by (QID, id_header) in-place.
 
@@ -3585,6 +3891,7 @@ def _sort_sheet_by_qid_and_id(ws: Worksheet, id_header: str) -> None:
         qid_val = row[qid_idx].value
         id_val = row[id_idx].value
         qid = str(qid_val or "")
+        q_order_key = _question_order_sort_key(row, headers=headers, qid_idx=qid_idx)
         field_val = row[field_idx].value if field_idx is not None else "Answer"
         field = _normalize_subitem_field(field_val)
         id_str = str(id_val or "")
@@ -3600,7 +3907,7 @@ def _sort_sheet_by_qid_and_id(ws: Worksheet, id_header: str) -> None:
             field_order = 1
         else:
             field_order = 2
-        return (qid, field_order, field, id_key)
+        return (q_order_key, field_order, field, id_key)
 
     # Extract current values so we can rewrite the rows after sorting.
     rows_with_values = [[cell.value for cell in row] for row in data_rows]
@@ -3646,10 +3953,10 @@ def _sort_sheet_by_qid_and_two_ids(
             return (1, None, s)
 
     def sort_key(row):
-        qid = str(row[qid_idx].value or "")
+        q_order_key = _question_order_sort_key(row, headers=headers, qid_idx=qid_idx)
         id1 = _num_or_str(row[id1_idx].value)
         id2 = _num_or_str(row[id2_idx].value)
-        return (qid, id1, id2)
+        return (q_order_key, id1, id2)
 
     rows_with_values = [[cell.value for cell in row] for row in data_rows]
     if not rows_with_values:

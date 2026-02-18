@@ -2644,7 +2644,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--fix",
         help=(
             "Optional auto-repair selector before sync. "
-            "Use `safe`/`all-safe` to apply all safe repairs, "
+            "Use `safe`/`all`/`all-safe` to apply all safe repairs, "
             "or `type:<ISSUE_TYPE>` to repair one issue class "
             "(for example `type:FLOW_NOT_INITIALIZED`)."
         ),

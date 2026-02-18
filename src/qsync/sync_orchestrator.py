@@ -167,7 +167,7 @@ def _parse_fix_selector(selector: Optional[str]) -> tuple[Literal["none", "safe"
     if not raw:
         return ("none", None)
     lowered = raw.lower()
-    if lowered in {"safe", "all-safe", "all_safe"}:
+    if lowered in {"safe", "all", "all-safe", "all_safe"}:
         return ("safe", None)
     if lowered.startswith("type:"):
         value = raw.split(":", 1)[1].strip().upper()
@@ -175,7 +175,7 @@ def _parse_fix_selector(selector: Optional[str]) -> tuple[Literal["none", "safe"
             raise ValueError("Issue type cannot be empty after 'type:'")
         return ("type", value)
     raise ValueError(
-        "Invalid --fix selector. Use one of: safe, all-safe, type:<ISSUE_TYPE>"
+        "Invalid --fix selector. Use one of: safe, all, all-safe, type:<ISSUE_TYPE>"
     )
 
 
@@ -437,6 +437,60 @@ def _fixable_detail(info: DimensionChanges) -> Optional[str]:
     if not info.safe_to_autofix:
         return None
     return info.error_detail or info.warning_detail
+
+
+def _collect_issue_details(
+    unstaged: Dict[str, DimensionChanges],
+) -> list[tuple[str, Literal["error", "warning"], str]]:
+    """Collect per-dimension issues in stable display order."""
+    issues: list[tuple[str, Literal["error", "warning"], str]] = []
+    for dim in MASTER_DIMENSION_ORDER:
+        info = unstaged.get(dim)
+        if not info:
+            continue
+        if info.error_detail:
+            issues.append((dim, "error", info.error_detail))
+        if info.warning_detail:
+            issues.append((dim, "warning", info.warning_detail))
+    return issues
+
+
+def _print_survey_issue_details(
+    *,
+    survey_id: str,
+    survey_ref: str,
+    unstaged: Dict[str, DimensionChanges],
+) -> None:
+    """Print issues with safe-fix guidance when available."""
+    issues = _collect_issue_details(unstaged)
+    if not issues:
+        print(f"{Colors.DIM}[sync] No issues detected for {survey_ref}.{Colors.RESET}")
+        return
+
+    print(f"\n{Colors.YELLOW}⚠ Issues for {survey_ref}{Colors.RESET}")
+    manual_dims: set[str] = set()
+    shown_fix_cmd_for_dim: set[str] = set()
+    for dim, severity, detail in issues:
+        print(f"  • {Colors.BOLD}{dim}{Colors.RESET} ({severity}): {detail}")
+        info = unstaged.get(dim)
+        can_autofix = bool(info and _fixable_detail(info) and _autofix_command(dim, survey_id))
+        if can_autofix and dim not in shown_fix_cmd_for_dim:
+            shown_fix_cmd_for_dim.add(dim)
+            cmd = _autofix_command(dim, survey_id)
+            if cmd:
+                print(
+                    f"    {Colors.DIM}safe autofix:{Colors.RESET} "
+                    f"{Colors.CYAN}{cmd}{Colors.RESET}"
+                )
+        elif not can_autofix:
+            manual_dims.add(dim)
+
+    if manual_dims:
+        dims_label = ", ".join(sorted(manual_dims))
+        print(
+            f"{Colors.DIM}[sync:fix] Manual resolution required for: "
+            f"{dims_label}.{Colors.RESET}"
+        )
 
 
 def _run_autofix(dimension: str, survey_id: str) -> str:
@@ -2662,14 +2716,17 @@ def _display_survey_overview(
     print(separator)
     print(row)
 
-    errors: list[tuple[str, str, str]] = []
-    warnings: list[tuple[str, str, str]] = []
-    for dim in MASTER_DIMENSION_ORDER:
-        info = unstaged.get(dim)
-        if info and info.error_detail:
-            errors.append((survey_ref, dim, info.error_detail))
-        if info and info.warning_detail:
-            warnings.append((survey_ref, dim, info.warning_detail))
+    issue_details = _collect_issue_details(unstaged)
+    errors = [
+        (survey_ref, dim, detail)
+        for dim, severity, detail in issue_details
+        if severity == "error"
+    ]
+    warnings = [
+        (survey_ref, dim, detail)
+        for dim, severity, detail in issue_details
+        if severity == "warning"
+    ]
     errors = _filter_new_issue_lines(errors)
     warnings = _filter_new_issue_lines(warnings)
     if errors:
@@ -2693,11 +2750,29 @@ def _display_survey_overview(
         sync_actions.append("Sync dimensions (preview → stage → push)")
         sync_actions.append("QID-mode (items/js/translations + global EDF status)")
 
-    edf_info = unstaged.get("edf")
-    if edf_info and (edf_info.warning_detail or edf_info.error_detail):
-        cmd = _autofix_command("edf", survey_id)
-        if cmd:
-            repair_actions.append(f"Repair workbook issues only (no API writes): {cmd}")
+    overview_changes = SurveyChanges(
+        survey_id=survey_id,
+        survey_name=survey_ref,
+        dimensions=unstaged,
+    )
+    fixable_issues = _collect_fixable_issues(
+        overview_changes,
+        survey_id=survey_id,
+        survey_name=survey_ref,
+    )
+    fixable_dims = {issue.dimension for issue in fixable_issues}
+    issue_dims = [dim for dim, _, _ in issue_details]
+    non_fixable_dims = sorted({dim for dim in issue_dims if dim not in fixable_dims})
+
+    for issue in fixable_issues:
+        if issue.dimension == "edf":
+            repair_actions.append(f"Repair workbook issues only (no API writes): {issue.command}")
+        else:
+            repair_actions.append(f"Repair safe {issue.dimension} issues: {issue.command}")
+    if non_fixable_dims:
+        repair_actions.append(
+            "Review issue details for manual resolution: " + ", ".join(non_fixable_dims)
+        )
 
     if sync_actions:
         print(f"  {Colors.BOLD}Sync:{Colors.RESET}")
@@ -3179,6 +3254,7 @@ def _resolve_staged_changes_interactive(
 ) -> bool:
     from .interactive_menu import confirm, select_from_list
     from .qualtrics_client import refresh_survey_cache
+    from .survey_ref import format_survey_ref
 
     safe_order = list(MASTER_DIMENSION_ORDER)
 
@@ -3186,6 +3262,8 @@ def _resolve_staged_changes_interactive(
         choices = [
             "👀 Preview drift (live vs cache) / staged (pending vs cache)",
             "📝 Preview unstaged changes (source vs cache)",
+            "🔧 Repair unstaged safe issues",
+            "📋 View unstaged issue details",
             "🚀 Push staged changes now",
             "🧹 Discard staged changes (clear pending + refresh cache)",
             "↩ Exit sync",
@@ -3226,6 +3304,46 @@ def _resolve_staged_changes_interactive(
             )
             continue
 
+        if selection.startswith("🔧"):
+            unstaged = _detect_unstaged_changes(survey_id, scope=scope)
+            record = _get_inventory_cached(survey_id)
+            survey_name = record.get("name", survey_id) if record else survey_id
+            survey_ref = format_survey_ref(survey_id, survey_name)
+            fixable_issues = _collect_fixable_issues(
+                SurveyChanges(
+                    survey_id=survey_id,
+                    survey_name=survey_name,
+                    dimensions=unstaged,
+                ),
+                survey_id=survey_id,
+                survey_name=survey_name,
+            )
+            selected_actions = _select_repair_actions_interactive(
+                context_issues=fixable_issues,
+                context_label=survey_ref,
+            )
+            if not selected_actions:
+                continue
+            _execute_repair_actions(
+                selected_actions,
+                interactive=True,
+                auto_yes=auto_yes,
+                context_label=survey_ref,
+            )
+            continue
+
+        if selection.startswith("📋"):
+            unstaged = _detect_unstaged_changes(survey_id, scope=scope)
+            record = _get_inventory_cached(survey_id)
+            survey_name = record.get("name", survey_id) if record else survey_id
+            survey_ref = format_survey_ref(survey_id, survey_name)
+            _print_survey_issue_details(
+                survey_id=survey_id,
+                survey_ref=survey_ref,
+                unstaged=unstaged,
+            )
+            continue
+
         if selection.startswith("🧹"):
             for dim in list(pending.keys()):
                 clear_pending(survey_id, dim)  # type: ignore[arg-type]
@@ -3241,9 +3359,6 @@ def _resolve_staged_changes_interactive(
             return True
 
         if selection.startswith("🚀"):
-            # Get survey ref for reporting
-            from .survey_ref import format_survey_ref
-
             inv = _get_inventory_cached(survey_id) or {}
             survey_ref = format_survey_ref(
                 survey_id, str(inv.get("name") or "").strip() or None
@@ -3950,7 +4065,7 @@ def sync_survey(
         allow_skip_embedded: Allow skip-embedded pushes when EDF is invalid
         json_output: Emit machine-readable JSON for blocked runs
         fix: Optional non-interactive/interactive autofix selector:
-             safe|all-safe, or type:<ISSUE_TYPE>
+             safe|all|all-safe, or type:<ISSUE_TYPE>
 
     Returns:
         SurveySyncSummary with per-dimension results, or None if nothing synced
@@ -4042,6 +4157,21 @@ def sync_survey(
             print(
                 f"{Colors.DIM}[sync:fix] Continuing without upfront repair. "
                 f"Use 'Repair issues' in the menu anytime.{Colors.RESET}"
+            )
+    elif interactive and not auto_yes and fix_selector_mode == "none":
+        detected_issues = _collect_issue_details(changes.dimensions)
+        non_fixable_issue_dims = sorted(
+            {dim for dim, _, _ in detected_issues if dim not in {i.dimension for i in scoped_fixable}}
+        )
+        if detected_issues and not scoped_fixable:
+            print(
+                f"{Colors.DIM}[sync:fix] Issues detected, but no safe auto-fixes are available. "
+                f"Use 'View issue details' for manual guidance.{Colors.RESET}"
+            )
+        elif non_fixable_issue_dims:
+            print(
+                f"{Colors.DIM}[sync:fix] Some issues require manual resolution: "
+                f"{', '.join(non_fixable_issue_dims)}.{Colors.RESET}"
             )
 
     pending = list_pending(survey_id)
@@ -4151,6 +4281,7 @@ def sync_survey(
             dimensions=unstaged,
         )
         fixable_issues = _collect_fixable_issues(unstaged_changes)
+        has_issues = bool(_collect_issue_details(unstaged))
 
         if pending:
             resolved = _resolve_staged_changes_interactive(
@@ -4188,7 +4319,7 @@ def sync_survey(
             break
 
         has_unstaged = any(info.has_changes for info in unstaged.values())
-        if not has_unstaged and not fixable_issues:
+        if not has_unstaged and not has_issues:
             print(f"[sync] No unstaged changes detected for {survey_ref}")
             break
 
@@ -4202,6 +4333,8 @@ def sync_survey(
             )
         if fixable_issues:
             choices.append("🔧 Repair issues")
+        if has_issues:
+            choices.append("📋 View issue details")
         choices.append("↩ Exit sync")
 
         selection = select_from_list(
@@ -4211,6 +4344,14 @@ def sync_survey(
 
         if selection is None or "Exit" in selection:
             break
+
+        if selection.startswith("📋"):
+            _print_survey_issue_details(
+                survey_id=survey_id,
+                survey_ref=survey_ref,
+                unstaged=unstaged,
+            )
+            continue
 
         if selection.startswith("🔧"):
             selected_actions = _select_repair_actions_interactive(
@@ -4542,7 +4683,7 @@ def sync_focal_surveys(
         allow_skip_embedded: Allow skip-embedded pushes when EDF is invalid
         json_output: Emit machine-readable JSON for blocked runs
         fix: Optional non-interactive/interactive autofix selector:
-             safe|all-safe, or type:<ISSUE_TYPE>
+             safe|all|all-safe, or type:<ISSUE_TYPE>
 
     Returns:
         True if all syncs succeeded, False otherwise
