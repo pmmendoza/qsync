@@ -2281,9 +2281,9 @@ def init_workbook_from_survey(
             for row_idx in sorted(set(delete_rows), reverse=True):
                 ws_opt.delete_rows(row_idx, 1)
 
-    # Normalise ordering in the options/subitems sheets so rows are grouped
-    # deterministically by (QID, ChoiceId/AnswerId). This keeps previews and
-    # manual inspection predictable, even after multiple init runs.
+    # Normalise ordering so item sheets follow SurveyFlow question order first
+    # (fallback: numeric QID), then per-row IDs. This keeps previews and manual
+    # inspection predictable, even after multiple init runs.
     _sort_questions_sheet(wb[QUESTION_SHEET])
     _sort_sheet_by_qid_and_id(wb[OPTIONS_SHEET], "ChoiceId")
     _sort_sheet_by_qid_and_id(wb[SUBITEMS_SHEET], "AnswerId")
@@ -4024,6 +4024,10 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         "SurveyID",
         "QID",
         "BlockName",
+        "BlockID",
+        "BlockOrder",
+        "QuestionOrder",
+        "QuestionOrderInBlock",
         "QuestionType",
         "DataExportTag",
         "RequiredResponse",
@@ -4156,6 +4160,10 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         "SurveyID": 18.0,
         "QID": 7.0,
         "BlockName": 19.0,
+        "BlockID": 14.0,
+        "BlockOrder": 12.0,
+        "QuestionOrder": 14.0,
+        "QuestionOrderInBlock": 18.0,
         "QuestionType": 14.5,
         "DataExportTag": 19.0,
         "QuestionKey": 14.0,
@@ -4188,6 +4196,11 @@ def _format_options_sheet(ws: Worksheet) -> None:
     system_headers = {
         "SurveyID",
         "QID",
+        "BlockName",
+        "BlockID",
+        "BlockOrder",
+        "QuestionOrder",
+        "QuestionOrderInBlock",
         "ChoiceId",
         "QuestionType",
         "ExportTag",
@@ -4290,6 +4303,11 @@ def _format_options_sheet(ws: Worksheet) -> None:
     widths = {
         "SurveyID": 20.0,
         "QID": 7.0,
+        "BlockName": 19.0,
+        "BlockID": 14.0,
+        "BlockOrder": 12.0,
+        "QuestionOrder": 14.0,
+        "QuestionOrderInBlock": 18.0,
         "ChoiceId": 10.0,
         "QuestionType": 14.0,
         "ExportTag": 19.0,
@@ -4316,6 +4334,11 @@ def _format_subitems_sheet(ws: Worksheet) -> None:
     system_headers = {
         "SurveyID",
         "QID",
+        "BlockName",
+        "BlockID",
+        "BlockOrder",
+        "QuestionOrder",
+        "QuestionOrderInBlock",
         "AnswerId",
         "Field",
         "QuestionType",
@@ -4383,6 +4406,11 @@ def _format_subitems_sheet(ws: Worksheet) -> None:
     widths = {
         "SurveyID": 20.0,
         "QID": 7.0,
+        "BlockName": 19.0,
+        "BlockID": 14.0,
+        "BlockOrder": 12.0,
+        "QuestionOrder": 14.0,
+        "QuestionOrderInBlock": 18.0,
         "AnswerId": 10.0,
         "Field": 9.0,
         "QuestionType": 14.0,
@@ -4408,6 +4436,11 @@ def _format_sbs_columns_sheet(ws: Worksheet) -> None:
     system_headers = {
         "SurveyID",
         "QID",
+        "BlockName",
+        "BlockID",
+        "BlockOrder",
+        "QuestionOrder",
+        "QuestionOrderInBlock",
         "ColumnId",
         "QuestionType",
         "ExportTag",
@@ -4501,6 +4534,11 @@ def _format_sbs_columns_sheet(ws: Worksheet) -> None:
     widths = {
         "SurveyID": 20.0,
         "QID": 7.0,
+        "BlockName": 19.0,
+        "BlockID": 14.0,
+        "BlockOrder": 12.0,
+        "QuestionOrder": 14.0,
+        "QuestionOrderInBlock": 18.0,
         "ColumnId": 10.0,
         "QuestionType": 14.0,
         "ExportTag": 19.0,
@@ -4526,6 +4564,11 @@ def _format_sbs_column_answers_sheet(ws: Worksheet) -> None:
     system_headers = {
         "SurveyID",
         "QID",
+        "BlockName",
+        "BlockID",
+        "BlockOrder",
+        "QuestionOrder",
+        "QuestionOrderInBlock",
         "ColumnId",
         "AnswerId",
         "QuestionType",
@@ -4620,6 +4663,11 @@ def _format_sbs_column_answers_sheet(ws: Worksheet) -> None:
     widths = {
         "SurveyID": 20.0,
         "QID": 7.0,
+        "BlockName": 19.0,
+        "BlockID": 14.0,
+        "BlockOrder": 12.0,
+        "QuestionOrder": 14.0,
+        "QuestionOrderInBlock": 18.0,
         "ColumnId": 10.0,
         "AnswerId": 10.0,
         "QuestionType": 14.0,
