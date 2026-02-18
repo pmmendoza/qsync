@@ -31,7 +31,8 @@ surveys/flow/{survey_id}/
 
 | Step | Command | Description |
 | --- | --- | --- |
-| Pull | `qsync flow pull --survey-id SV_xxx` | Downloads flow from Qualtrics and saves as YAML |
+| Pull | `qsync flow pull --survey-id SV_xxx` | Downloads flow from Qualtrics for a single survey and saves as YAML |
+| Pull (all focal) | `qsync flow pull --all-focal` | Pulls flow for all focal surveys without interactive prompts |
 | Preview | `qsync flow preview --survey-id SV_xxx` | Shows semantic diff between YAML and baseline |
 | Stage | `qsync flow stage --survey-id SV_xxx` | Stages changes for push |
 | Push | `qsync flow push --survey-id SV_xxx --yes` | Pushes staged changes to Qualtrics |
