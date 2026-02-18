@@ -5190,18 +5190,22 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 from .drift_check import confirm_preview_drift
                 from .qualtrics_client import refresh_survey_cache
 
-                xlsx_path = args.xlsx or _default_xlsx_path(args.survey_id)
+                survey_id = _prompt_for_survey_id_if_needed(
+                    getattr(args, "survey_id", None),
+                    allow_all_surveys=False,
+                )
+                xlsx_path = args.xlsx or _default_xlsx_path(survey_id)
                 include_qids = _to_set(getattr(args, "include_qid", None))
                 include_tags = _to_set(getattr(args, "include_tag", None))
 
                 def _update_cache() -> None:
-                    refresh_survey_cache(args.survey_id)
+                    refresh_survey_cache(survey_id)
                     info(
                         "[qsync:items]", "Refreshed cached survey definition from API."
                     )
 
                 confirm_preview_drift(
-                    survey_id=args.survey_id,
+                    survey_id=survey_id,
                     dimension="items",
                     allow_drift=bool(getattr(args, "allow_drift", False)),
                     interactive=sys.stdin.isatty(),
@@ -5209,7 +5213,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 )
 
                 changes = preview_changes(
-                    args.survey_id,
+                    survey_id,
                     xlsx_path,
                     include_qids=include_qids,
                     include_tags=include_tags,
@@ -5273,12 +5277,16 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 from .pending_stage import PendingStagedChanges, save_pending
                 from .dimensions.items import _build_pending_payload_from_workbook
 
-                xlsx_path = args.xlsx or _default_xlsx_path(args.survey_id)
+                survey_id = _prompt_for_survey_id_if_needed(
+                    getattr(args, "survey_id", None),
+                    allow_all_surveys=False,
+                )
+                xlsx_path = args.xlsx or _default_xlsx_path(survey_id)
                 include_qids = _to_set(getattr(args, "include_qid", None))
                 include_tags = _to_set(getattr(args, "include_tag", None))
 
                 payload = _build_pending_payload_from_workbook(
-                    args.survey_id,
+                    survey_id,
                     Path(xlsx_path),
                     scope_expr=getattr(args, "scope", None),
                     filter_column=getattr(args, "filter_column", None),
@@ -5293,10 +5301,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 )
                 if not payload:
                     warn("[qsync:items]", "No changes to stage.")
-                    clear_pending(args.survey_id, "items")
+                    clear_pending(survey_id, "items")
                     return
                 record = PendingStagedChanges(
-                    survey_id=args.survey_id,
+                    survey_id=survey_id,
                     dimension="items",
                     payload=payload,
                     schema_version=2,
@@ -5308,7 +5316,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 )
                 info(
                     "[qsync:items]",
-                    f"Pending: surveys/pending/items/{args.survey_id}.json (schema v{record.schema_version})",
+                    f"Pending: surveys/pending/items/{survey_id}.json (schema v{record.schema_version})",
                 )
                 return
 
