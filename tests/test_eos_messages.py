@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
+import requests
 
 from tests.workspace_helpers import ensure_qsync_workspace
 
@@ -309,3 +311,261 @@ def test_eos_apply_blocks_shared_message_with_context(
     assert log_path.exists()
     last = json.loads(log_path.read_text(encoding="utf-8").strip().splitlines()[-1])
     assert last["error"]["error_id"] == ERROR_ID_EOS_SHARED_MESSAGE
+
+
+def test_cross_account_eos_repair_dry_run_plans_imports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync.dimensions import eos_core
+
+    calls: list[tuple[str, str, str]] = []
+
+    class _Resp:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    target_payload = {
+        "result": {
+            "SurveyFlow": {
+                "Flow": [
+                    {
+                        "Type": "EndSurvey",
+                        "FlowID": "FL_1",
+                        "Options": {
+                            "SurveyTermination": "DisplayMessage",
+                            "EOSMessageLibrary": "UR_SRC",
+                            "EOSMessage": "MS_OLD",
+                        },
+                    }
+                ]
+            }
+        }
+    }
+    source_payload = {
+        "result": {
+            "SurveyFlow": {
+                "Flow": [
+                    {
+                        "Type": "EndSurvey",
+                        "FlowID": "FL_1",
+                        "Options": {
+                            "SurveyTermination": "DisplayMessage",
+                            "EOSMessageLibrary": "UR_SRC",
+                            "EOSMessage": "MS_SRC",
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    def fake_send_api_request(**kwargs):
+        key = (kwargs.get("method"), kwargs.get("base_url"), kwargs.get("path"))
+        calls.append((str(key[0]), str(key[1]), str(key[2])))
+        if key == ("GET", "target.qualtrics.test", "survey-definitions/SV_TGT"):
+            return _Resp(target_payload)
+        if key == ("GET", "source.qualtrics.test", "survey-definitions/SV_SRC"):
+            return _Resp(source_payload)
+        if key == ("GET", "target.qualtrics.test", "libraries/UR_SRC/messages/MS_OLD"):
+            response = Mock(status_code=404)
+            raise requests.HTTPError("not found", response=response)
+        raise AssertionError(f"Unexpected API call: {kwargs}")
+
+    monkeypatch.setattr(eos_core, "send_api_request", fake_send_api_request)
+
+    result = eos_core.repair_eos_messages_from_source_account(
+        target_survey_id="SV_TGT",
+        source_survey_id="SV_SRC",
+        target_base_url="target.qualtrics.test",
+        target_headers={"X-API-TOKEN": "target-token"},
+        source_base_url="source.qualtrics.test",
+        source_headers={"X-API-TOKEN": "source-token"},
+        include_backups_scan=False,
+        dry_run=True,
+        publish=False,
+    )
+
+    assert result.dry_run is True
+    assert result.target_refs_total == 1
+    assert result.source_refs_total == 1
+    assert result.missing_refs == 1
+    assert result.planned_rewire_count == 1
+    assert len(result.planned_imports) == 1
+    planned = result.planned_imports[0]
+    assert planned.target_library_id == "UR_SRC"
+    assert planned.target_message_id == "MS_OLD"
+    assert planned.source_library_id == "UR_SRC"
+    assert planned.source_message_id == "MS_SRC"
+    assert planned.target_create_library_id == "UR_SRC"
+    assert result.created_pairs == {}
+    assert result.replacements == {}
+    assert ("POST", "target.qualtrics.test", "libraries/UR_SRC/messages") not in calls
+
+
+def test_cross_account_eos_repair_rewrites_flow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync.dimensions import eos_core
+
+    ensure_qsync_workspace(tmp_path)
+    monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
+
+    pushed_flow: dict = {}
+
+    class _Resp:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    target_payload = {
+        "result": {
+            "SurveyFlow": {
+                "Flow": [
+                    {
+                        "Type": "EndSurvey",
+                        "FlowID": "FL_1",
+                        "Options": {
+                            "SurveyTermination": "DisplayMessage",
+                            "EOSMessageLibrary": "UR_SRC",
+                            "EOSMessage": "MS_OLD",
+                        },
+                    }
+                ]
+            }
+        }
+    }
+    source_payload = {
+        "result": {
+            "SurveyFlow": {
+                "Flow": [
+                    {
+                        "Type": "EndSurvey",
+                        "FlowID": "FL_1",
+                        "Options": {
+                            "SurveyTermination": "DisplayMessage",
+                            "EOSMessageLibrary": "UR_SRC",
+                            "EOSMessage": "MS_SRC",
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    def fake_send_api_request(**kwargs):
+        method = kwargs.get("method")
+        base_url = kwargs.get("base_url")
+        path = kwargs.get("path")
+        if (method, base_url, path) == (
+            "GET",
+            "target.qualtrics.test",
+            "survey-definitions/SV_TGT",
+        ):
+            return _Resp(target_payload)
+        if (method, base_url, path) == (
+            "GET",
+            "source.qualtrics.test",
+            "survey-definitions/SV_SRC",
+        ):
+            return _Resp(source_payload)
+        if (method, base_url, path) == (
+            "GET",
+            "target.qualtrics.test",
+            "libraries/UR_SRC/messages/MS_OLD",
+        ):
+            response = Mock(status_code=404)
+            raise requests.HTTPError("not found", response=response)
+        if (method, base_url, path) == (
+            "GET",
+            "source.qualtrics.test",
+            "libraries/UR_SRC/messages/MS_SRC",
+        ):
+            return _Resp(
+                {
+                    "result": {
+                        "category": "endOfSurvey",
+                        "description": "source",
+                        "messages": {"en": "<p>source</p>"},
+                    }
+                }
+            )
+        if (method, base_url, path) == ("GET", "target.qualtrics.test", "whoami"):
+            return _Resp({"result": {"userId": "UR_TARGET"}})
+        if (method, base_url, path) == (
+            "POST",
+            "target.qualtrics.test",
+            "libraries/UR_SRC/messages",
+        ):
+            return _Resp({"result": {"messageId": "MS_NEW"}})
+        if (method, base_url, path) == (
+            "PUT",
+            "target.qualtrics.test",
+            "libraries/UR_SRC/messages/MS_NEW",
+        ):
+            return _Resp({"result": {}})
+        if (method, base_url, path) == (
+            "PUT",
+            "target.qualtrics.test",
+            "survey-definitions/SV_TGT/flow",
+        ):
+            pushed_flow.update(kwargs.get("json") or {})
+            return _Resp({"result": {}})
+        raise AssertionError(f"Unexpected API call: {kwargs}")
+
+    monkeypatch.setattr(eos_core, "send_api_request", fake_send_api_request)
+    monkeypatch.setattr(
+        eos_core, "ensure_backup", lambda survey_id: tmp_path / "surveys" / "backups"
+    )
+    monkeypatch.setattr(
+        eos_core,
+        "refresh_survey_cache",
+        lambda survey_id: (
+            Mock(survey_id=survey_id, payload={"result": {}}, path=tmp_path / "surveys"),
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        eos_core,
+        "pull_eos_messages",
+        lambda **kwargs: [
+            tmp_path
+            / "contents"
+            / "qualtrics_library_messages"
+            / "UR_SRC"
+            / "MS_NEW"
+        ],
+    )
+    monkeypatch.setattr(
+        eos_core,
+        "publish_survey_definition",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("publish should not be called")
+        ),
+    )
+
+    result = eos_core.repair_eos_messages_from_source_account(
+        target_survey_id="SV_TGT",
+        source_survey_id="SV_SRC",
+        target_base_url="target.qualtrics.test",
+        target_headers={"X-API-TOKEN": "target-token"},
+        source_base_url="source.qualtrics.test",
+        source_headers={"X-API-TOKEN": "source-token"},
+        include_backups_scan=False,
+        dry_run=False,
+        publish=False,
+    )
+
+    assert result.dry_run is False
+    assert result.missing_refs == 1
+    assert result.created_pairs == {("UR_SRC", "MS_SRC"): ("UR_SRC", "MS_NEW")}
+    assert result.replacements == {("UR_SRC", "MS_OLD"): ("UR_SRC", "MS_NEW")}
+    assert result.updated_flow_ids == ["FL_1"]
+    assert len(result.pulled_paths) == 1
+    assert pushed_flow["Flow"][0]["Options"]["EOSMessageLibrary"] == "UR_SRC"
+    assert pushed_flow["Flow"][0]["Options"]["EOSMessage"] == "MS_NEW"

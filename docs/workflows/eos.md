@@ -91,6 +91,33 @@ If local message files are out of sync with live content (or you want a clean re
 qsync eos repair --survey-id SV_xxx
 ```
 
+For cross-account copies where target SurveyFlow still references source EOS IDs, run cross-account repair (target account selected via `--account`):
+
+```bash
+qsync eos repair --survey-id SV_TARGET \
+  --account damian \
+  --source-account default \
+  --source-survey-id SV_SOURCE \
+  --yes
+```
+
+Preview only (no writes):
+
+```bash
+qsync eos repair --survey-id SV_TARGET \
+  --account damian \
+  --source-account default \
+  --source-survey-id SV_SOURCE \
+  --dry-run
+```
+
+Cross-account repair behavior:
+- reads EndSurvey `DisplayMessage` refs from source + target survey flows
+- detects target refs that are missing in target account
+- imports missing EOS messages from source account into target libraries
+- rewrites target SurveyFlow to the newly created message IDs
+- refreshes local cache and re-pulls EOS files to `contents/`
+
 If your cached survey definition is drifted, preview/push may prompt or refuse unless you pass `--allow-drift`.
 
 ## Translation hygiene for EOS

@@ -11,6 +11,15 @@ This workflow covers `qsync survey copy-cross-account`, which copies a survey fr
 Important limitations:
 - If you overwrite an existing target survey, Qualtrics version history is lost for that target survey, and the replacement survey will have a NEW SurveyID.
 - It does not preserve "survey history" across accounts; treat this as a controlled import.
+- EOS library message IDs can be account-specific. If EndSurvey `DisplayMessage` refs are broken in target, run:
+
+```bash
+qsync eos repair --survey-id SV_TARGET \
+  --account <target-account> \
+  --source-account <source-account-or-default> \
+  --source-survey-id SV_SOURCE \
+  --yes
+```
 
 ## Prerequisites
 
