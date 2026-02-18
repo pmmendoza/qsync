@@ -12115,6 +12115,66 @@ def handle_master_pull(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def handle_master_columns(args: argparse.Namespace) -> None:
+    """Interactive TUI to configure Survey Master columns (order + visibility)."""
+    from .interactive_menu import is_interactive
+
+    if not is_interactive():
+        print(
+            "[qsync:master-columns] ERROR: Interactive TTY required (non-TTY/CI not supported).",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if os.environ.get("QSYNC_JSON_MODE", "").strip():
+        print(
+            "[qsync:master-columns] ERROR: JSON mode is not compatible with the TUI.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    try:
+        from .tui.master_columns import MasterColumnsApp  # lazy import (Textual is optional)
+    except Exception:
+        print(
+            "[qsync:master-columns] ERROR: TUI dependencies are not installed.",
+            file=sys.stderr,
+        )
+        print("Install: pip install 'qsync[tui]'", file=sys.stderr)
+        print(
+            "If using pipx: pipx install --force 'qsync[tui] @ <git-ref>'",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    from .survey_master import _parse_mapping_csv, _get_default_column_order
+    from .survey_master_columns import (
+        master_columns_config_path,
+        load_master_columns_yaml,
+        resolve_master_columns,
+    )
+    from .config import resolve_root
+
+    root = resolve_root(required=False) or Path.cwd()
+    mapping = _parse_mapping_csv()
+    default_order = _get_default_column_order(mapping)
+
+    config_path = master_columns_config_path(root=root)
+    config_data = load_master_columns_yaml(config_path)
+    columns, warnings = resolve_master_columns(
+        available_in_default_order=default_order,
+        config_data=config_data,
+        default_enabled_when_no_config=True,
+        default_enabled_when_missing=False,
+    )
+
+    if warnings:
+        for warning in warnings:
+            print(f"[qsync:master-columns] WARNING: {warning}", file=sys.stderr)
+
+    MasterColumnsApp(columns=columns, config_path=config_path).run()
+    print(f"[qsync:master-columns] Config path: {config_path}")
+
+
 def handle_master_preview(args: argparse.Namespace) -> None:
     """Preview changes that would be applied to Qualtrics."""
     import difflib
@@ -14342,6 +14402,13 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         metavar="COMMAND",
     )
 
+    # master columns
+    p_master_columns = master_subs.add_parser(
+        "columns",
+        help="Configure Survey Master columns (order + visibility) via TUI/YAML",
+    )
+    p_master_columns.set_defaults(func=handle_master_columns)
+
     # master pull
     p_master_pull = master_subs.add_parser(
         "pull",
@@ -14667,6 +14734,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     reorder_subparser_choices(
         master_subs,
         [
+            "columns",
             "pull",
             "preview",
             "stage",

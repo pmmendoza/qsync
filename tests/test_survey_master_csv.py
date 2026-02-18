@@ -380,6 +380,8 @@ class SurveyMasterCSVTests(unittest.TestCase):
                 ws.cell(row=2, column=survey_name_idx).fill.fgColor.rgb,
                 readonly_rgb,
             )
+            self.assertIsNot(ws.cell(row=1, column=survey_name_idx).alignment.wrap_text, True)
+            self.assertIsNot(ws.cell(row=2, column=survey_name_idx).alignment.wrap_text, True)
 
     def test_load_master_csv_prefers_newer_workbook_surface(self) -> None:
         """When workbook is newer than CSV, load from workbook surface."""

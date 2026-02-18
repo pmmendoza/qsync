@@ -644,23 +644,16 @@ def load_rollback_snapshot(survey_id: str, version: int = 1) -> Tuple[Path, dict
     return path, snap
 
 
-def _get_column_order() -> List[str]:
-    """Determine column order based on mapping CSV 'order' values.
+def _get_default_column_order(fields: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Determine column order based on mapping 'order' values (config-free default)."""
 
-    Returns list of field_names in order:
-    1. Fields with order values (1-19), sorted by order
-    2. Remaining fields, sorted alphabetically
-    3. Read-only derived fields prefixed with _ (appended at end, except external_metadata)
-    """
-    fields = _parse_mapping_csv()
+    ordered_fields: list[tuple[int, str]] = []
+    unordered_fields: list[str] = []
+    readonly_fields: list[str] = []
 
-    ordered_fields = []
-    unordered_fields = []
-    readonly_fields = []
-
-    for field_name, field_info in fields.items():
-        order_str = field_info.get("order", "").strip()
-        domain = field_info.get("domain", "").strip().lower()
+    for field_name, field_info in (fields or {}).items():
+        order_str = str(field_info.get("order", "") or "").strip()
+        domain = str(field_info.get("domain", "") or "").strip().lower()
 
         if order_str and order_str.isdigit():
             ordered_fields.append((int(order_str), field_name))
@@ -678,6 +671,48 @@ def _get_column_order() -> List[str]:
 
     result = [f[1] for f in ordered_fields] + unordered_fields + readonly_fields
     return result
+
+
+def _get_column_order() -> List[str]:
+    """Return the effective Survey Master column order (respects user config).
+
+    Default behavior (no config file): preserve mapping 'order' semantics:
+    1. Fields with numeric order values, sorted by order
+    2. Remaining fields, sorted alphabetically
+    3. Read-only derived fields prefixed with _ (appended at end, except external_metadata)
+
+    If `survey_master_columns.yaml` exists in the workspace root (or the override
+    env var is set), order and visibility are driven by that config.
+    """
+
+    fields = _parse_mapping_csv()
+    default_order = _get_default_column_order(fields)
+
+    # Optional user override (two editing surfaces: YAML + TUI).
+    try:
+        from .survey_master_columns import (
+            master_columns_config_path,
+            load_master_columns_yaml,
+            resolve_master_columns,
+        )
+
+        config_path = master_columns_config_path(root=_workspace_root())
+        config_data = load_master_columns_yaml(config_path)
+        if config_data is None:
+            return default_order
+
+        columns, warnings = resolve_master_columns(
+            available_in_default_order=default_order,
+            config_data=config_data,
+        )
+        if warnings and not os.environ.get("QSYNC_JSON_MODE", "").strip():
+            for warning in warnings:
+                print(f"[qsync:master-columns] WARNING: {warning}", flush=True)
+
+        return [c.name for c in columns if c.enabled]
+    except Exception:
+        # Config is best-effort: if parsing fails, fall back to the default order.
+        return default_order
 
 
 def _extract_nested_value(obj: dict, path_str: str) -> Any:
@@ -1015,7 +1050,7 @@ def write_master_workbook(rows: List[List[str]]) -> Path:
         header_cell.alignment = Alignment(
             vertical="center",
             horizontal="left",
-            wrap_text=True,
+            wrap_text=False,
         )
         header_cell.fill = _MASTER_HEADER_FILL
 
@@ -1023,9 +1058,9 @@ def write_master_workbook(rows: List[List[str]]) -> Path:
         for col_idx, header in enumerate(headers, start=1):
             cell = ws.cell(row=row_idx, column=col_idx)
             cell.alignment = Alignment(
-                vertical="top",
+                vertical="center",
                 horizontal="left",
-                wrap_text=True,
+                wrap_text=False,
             )
             if header not in editable_headers:
                 cell.fill = _MASTER_READONLY_FILL
