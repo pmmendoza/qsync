@@ -274,3 +274,94 @@ def test_referential_integrity():
     assert "QID_TRASH" not in question_qids
     assert "QID_TRASH" not in option_qids
     assert "QID_TRASH" not in subitem_qids
+
+
+def test_questions_and_subitems_are_flow_scoped_and_flow_ordered():
+    """Questions/Subitems should include only in-flow QIDs and follow SurveyFlow order."""
+
+    survey_payload = {
+        "result": {
+            "SurveyID": "SV_FLOW_SCOPE",
+            "Blocks": {
+                "BL_FLOW_A": {
+                    "Type": "Standard",
+                    "Description": "Flow A",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": "QID1"},
+                        {"Type": "Question", "QuestionID": "QID3"},
+                    ],
+                },
+                "BL_FLOW_B": {
+                    "Type": "Standard",
+                    "Description": "Flow B",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": "QID2"},
+                    ],
+                },
+                "BL_OUT_OF_FLOW": {
+                    "Type": "Standard",
+                    "Description": "Out of flow",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": "QID_OUT"},
+                    ],
+                },
+            },
+            # Keep dict order intentionally different from SurveyFlow order.
+            "Questions": {
+                "QID2": {
+                    "QuestionType": "Matrix",
+                    "DataExportTag": "Q2",
+                    "QuestionText": "Flow question 2",
+                    "Choices": {"1": {"Display": "Row 2"}},
+                    "Answers": {"1": {"Display": "Agree"}},
+                },
+                "QID_OUT": {
+                    "QuestionType": "Matrix",
+                    "DataExportTag": "Q_OUT",
+                    "QuestionText": "Out-of-flow question",
+                    "Choices": {"1": {"Display": "Out row"}},
+                    "Answers": {"1": {"Display": "Out answer"}},
+                },
+                "QID3": {
+                    "QuestionType": "Matrix",
+                    "DataExportTag": "Q3",
+                    "QuestionText": "Flow question 3",
+                    "Choices": {"1": {"Display": "Row 3"}},
+                    "Answers": {"1": {"Display": "Neutral"}},
+                },
+                "QID1": {
+                    "QuestionType": "Matrix",
+                    "DataExportTag": "Q1",
+                    "QuestionText": "Flow question 1",
+                    "ChoiceOrder": ["2", "1"],
+                    "Choices": {
+                        "1": {"Display": "Row 1"},
+                        "2": {"Display": "Row 1B"},
+                    },
+                    "Answers": {"1": {"Display": "Disagree"}},
+                },
+            },
+            "SurveyFlow": {
+                "Flow": [
+                    {"Type": "Block", "ID": "BL_FLOW_A"},
+                    {"Type": "Block", "ID": "BL_FLOW_B"},
+                ],
+            },
+        }
+    }
+
+    question_rows = build_question_rows("SV_FLOW_SCOPE", survey_payload)
+    option_rows = build_option_rows("SV_FLOW_SCOPE", survey_payload)
+    subitem_rows = build_subitem_rows("SV_FLOW_SCOPE", survey_payload)
+
+    assert list(question_rows.keys()) == ["QID1", "QID3", "QID2"]
+    assert "QID_OUT" not in question_rows
+
+    option_qids = {qid for qid, _ in option_rows.keys()}
+    assert option_qids == {"QID1", "QID3", "QID2"}
+
+    subitem_keys = list(subitem_rows.keys())
+    assert [qid for qid, _field, _aid in subitem_keys] == ["QID1", "QID1", "QID3", "QID2"]
+    assert subitem_keys[0] == ("QID1", "Answer", "2")
+    assert subitem_keys[1] == ("QID1", "Answer", "1")
+    assert "QID_OUT" not in {qid for qid, _field, _aid in subitem_keys}

@@ -1220,6 +1220,47 @@ def _iter_block_ids_in_flow(survey_payload: dict) -> List[str]:
     return ordered_block_ids
 
 
+def _iter_question_entries_in_flow(survey_payload: dict) -> List[Tuple[str, str]]:
+    """Return `(qid, block_name)` pairs in SurveyFlow order (non-Trash blocks only)."""
+
+    result = survey_payload.get("result", {})
+    questions = result.get("Questions", {})
+    blocks = result.get("Blocks", {})
+    if not isinstance(questions, dict) or not isinstance(blocks, dict):
+        return []
+
+    entries: List[Tuple[str, str]] = []
+    seen_qids: set[str] = set()
+    for block_id in _iter_block_ids_in_flow(survey_payload):
+        block = blocks.get(block_id)
+        if not isinstance(block, dict):
+            continue
+        if str(block.get("Type") or "").strip() == "Trash":
+            continue
+        block_name = str(block.get("Description") or "")
+        elements = block.get("BlockElements") or block.get("Elements") or []
+        if not isinstance(elements, list):
+            continue
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            elem_type = str(elem.get("Type") or "").strip()
+            if elem_type not in {"", "Question"}:
+                continue
+            qid = str(elem.get("QuestionID") or "").strip()
+            if not qid or qid in seen_qids or qid not in questions:
+                continue
+            seen_qids.add(qid)
+            entries.append((qid, block_name))
+    return entries
+
+
+def _ordered_qids_in_flow(survey_payload: dict) -> List[str]:
+    """Return active/non-trash QIDs in SurveyFlow order."""
+
+    return [qid for qid, _ in _iter_question_entries_in_flow(survey_payload)]
+
+
 def _build_option_previews(survey_payload: dict) -> Dict[str, str]:
     """Map QID -> newline-joined option labels (Markdown).
 
@@ -1358,32 +1399,13 @@ def _build_subitem_previews(survey_payload: dict) -> Dict[str, str]:
 
 def _get_valid_qids(survey_payload: dict) -> set[str]:
     """
-    Extract QIDs from non-Trash blocks to ensure referential integrity.
+    Extract active QIDs from SurveyFlow (excluding Trash blocks).
 
-    Returns a set of QIDs that appear in the Questions sheet (i.e., questions
-    from non-Trash blocks only). This is used to filter Options and Subitems
-    sheets so they don't contain orphaned rows for Trash questions.
+    Returns the QIDs that should appear in workbook item sheets. A question is
+    considered valid only when it is referenced by a non-Trash block that is
+    reachable via SurveyFlow.
     """
-    result = survey_payload.get("result", {})
-    questions = result.get("Questions", {})
-    blocks = result.get("Blocks", {})
-
-    valid_qids: set[str] = set()
-
-    # Iterate all non-Trash blocks
-    for block_id, block in blocks.items():
-        if block.get("Type") == "Trash":
-            continue
-
-        # Extract QIDs from BlockElements
-        for be in block.get("BlockElements", []):
-            if be.get("Type") != "Question":
-                continue
-            qid = be.get("QuestionID")
-            if qid and qid in questions:
-                valid_qids.add(qid)
-
-    return valid_qids
+    return set(_ordered_qids_in_flow(survey_payload))
 
 
 def build_question_rows(
@@ -1392,86 +1414,55 @@ def build_question_rows(
 ) -> Dict[str, QuestionRow]:
     """Build QuestionRow objects from a survey JSON payload.
 
-    Questions are ordered by SurveyFlow block order and BlockElements order
-    to mirror the Qualtrics survey flow (excluding Trash blocks).
+    Questions are ordered by SurveyFlow block order and BlockElements order and
+    include only QIDs reachable in SurveyFlow (excluding Trash blocks).
     """
 
     result = survey_payload.get("result", {})
     questions = result.get("Questions", {})
-    blocks = result.get("Blocks", {})
 
     rows: Dict[str, QuestionRow] = {}
+    question_entries = _iter_question_entries_in_flow(survey_payload)
+    for qid, block_name in question_entries:
+        q = questions[qid]
+        qtype = q.get("QuestionType") or ""
+        tag = q.get("DataExportTag") or ""
+        text_html = q.get("QuestionText") or ""
+        settings = _validation_settings_dict(q)
+        force_mode = _normalize_force_response_mode(settings.get("ForceResponse"))
+        validation_type = _normalize_validation_type(settings.get("Type"))
+        validation_settings_json = _dump_validation_settings_json(
+            _validation_settings_extra_dict(settings)
+        )
 
-    block_ids_in_flow = _iter_block_ids_in_flow(survey_payload)
-    seen_block_ids = set()
+        if is_markdown_safe_html(text_html):
+            text_md = html_to_md(text_html)
+            is_html = False
+        elif should_treat_as_html(text_html):
+            text_md = normalize_text(text_html)
+            is_html = True
+        else:
+            # Plaintext or odd edge cases – treat as Markdown.
+            text_md = html_to_md(text_html)
+            is_html = False
 
-    def handle_block(block_id: str):
-        block = blocks.get(block_id)
-        if not block:
-            return
-        if block.get("Type") == "Trash":
-            return
-        block_name = block.get("Description") or ""
-        for be in block.get("BlockElements", []):
-            if be.get("Type") != "Question":
-                continue
-            qid = be.get("QuestionID")
-            if not qid or qid not in questions:
-                continue
-            if qid in rows:
-                continue
-            q = questions[qid]
-            qtype = q.get("QuestionType") or ""
-            tag = q.get("DataExportTag") or ""
-            text_html = q.get("QuestionText") or ""
-            settings = _validation_settings_dict(q)
-            force_mode = _normalize_force_response_mode(settings.get("ForceResponse"))
-            validation_type = _normalize_validation_type(settings.get("Type"))
-            validation_settings_json = _dump_validation_settings_json(
-                _validation_settings_extra_dict(settings)
-            )
-
-            if is_markdown_safe_html(text_html):
-                text_md = html_to_md(text_html)
-                is_html = False
-            elif should_treat_as_html(text_html):
-                text_md = normalize_text(text_html)
-                is_html = True
-            else:
-                # Plaintext or odd edge cases – treat as Markdown.
-                text_md = html_to_md(text_html)
-                is_html = False
-
-            rows[qid] = QuestionRow(
-                survey_id=survey_id,
-                qid=qid,
-                block_name=block_name,
-                question_type=qtype,
-                data_export_tag=tag,
-                question_key=None,
-                required_response=_is_required_response(force_mode),
-                force_response_mode=force_mode,
-                validation_type=validation_type,
-                validation_settings_json=validation_settings_json or None,
-                text_en_md=text_md,
-                text_en_is_html=is_html,
-                in_pre=False,
-                in_post=False,
-                externally_managed_by=None,
-            )
-
-    # 1) Blocks that appear in SurveyFlow
-    for bid in block_ids_in_flow:
-        handle_block(bid)
-        seen_block_ids.add(bid)
-
-    # 2) Any remaining non-Trash blocks not referenced in SurveyFlow
-    for bid, block in blocks.items():
-        if bid in seen_block_ids:
-            continue
-        if block.get("Type") == "Trash":
-            continue
-        handle_block(bid)
+        rows[qid] = QuestionRow(
+            survey_id=survey_id,
+            qid=qid,
+            block_name=block_name,
+            question_type=qtype,
+            data_export_tag=tag,
+            question_key=None,
+            required_response=_is_required_response(force_mode),
+            force_response_mode=force_mode,
+            validation_type=validation_type,
+            validation_settings_json=validation_settings_json or None,
+            text_en_md=text_md,
+            text_en_is_html=is_html,
+            in_pre=False,
+            in_post=False,
+            externally_managed_by=None,
+        )
 
     return rows
 
@@ -1533,17 +1524,17 @@ def build_option_rows(
     Options for each question are ordered by `ChoiceOrder` or `AnswerOrder`
     where available so they match the respondent-facing order.
 
-    Only includes options for questions that appear in non-Trash blocks to
+    Only includes options for questions that are active in SurveyFlow to
     maintain referential integrity with the Questions sheet.
     """
 
     questions = survey_payload.get("result", {}).get("Questions", {})
-    valid_qids = _get_valid_qids(survey_payload)
+    ordered_qids = _ordered_qids_in_flow(survey_payload)
 
     rows: Dict[Tuple[str, str], OptionRow] = {}
-    for qid, q in questions.items():
-        # Skip questions from Trash blocks (not in Questions sheet)
-        if qid not in valid_qids:
+    for qid in ordered_qids:
+        q = questions.get(qid)
+        if not isinstance(q, dict):
             continue
 
         qtype = q.get("QuestionType") or ""
@@ -1665,17 +1656,17 @@ def build_subitem_rows(
     - For other question types: subitems come from `Answers` (if present).
     - Label rows (Field=Label) come from `Labels` when present.
 
-    Only includes subitems for questions that appear in non-Trash blocks to
+    Only includes subitems for questions that are active in SurveyFlow to
     maintain referential integrity with the Questions sheet.
     """
 
     questions = survey_payload.get("result", {}).get("Questions", {})
-    valid_qids = _get_valid_qids(survey_payload)
+    ordered_qids = _ordered_qids_in_flow(survey_payload)
 
     rows: Dict[Tuple[str, str, str], SubitemRow] = {}
-    for qid, q in questions.items():
-        # Skip questions from Trash blocks (not in Questions sheet)
-        if qid not in valid_qids:
+    for qid in ordered_qids:
+        q = questions.get(qid)
+        if not isinstance(q, dict):
             continue
 
         qtype = q.get("QuestionType") or ""
@@ -1790,11 +1781,12 @@ def build_sbs_column_rows(
     """Build SbsColumnRow objects for Qualtrics SBSMatrix questions."""
 
     questions = survey_payload.get("result", {}).get("Questions", {})
-    valid_qids = _get_valid_qids(survey_payload)
+    ordered_qids = _ordered_qids_in_flow(survey_payload)
     rows: Dict[Tuple[str, str], SbsColumnRow] = {}
 
-    for qid, q in questions.items():
-        if qid not in valid_qids:
+    for qid in ordered_qids:
+        q = questions.get(qid)
+        if not isinstance(q, dict):
             continue
         if not _is_sbs_matrix_question(q):
             continue
@@ -1843,11 +1835,12 @@ def build_sbs_column_answer_rows(
     """Build SbsColumnAnswerRow objects for SBSMatrix AdditionalQuestions answer scales."""
 
     questions = survey_payload.get("result", {}).get("Questions", {})
-    valid_qids = _get_valid_qids(survey_payload)
+    ordered_qids = _ordered_qids_in_flow(survey_payload)
     rows: Dict[Tuple[str, str, str], SbsColumnAnswerRow] = {}
 
-    for qid, q in questions.items():
-        if qid not in valid_qids:
+    for qid in ordered_qids:
+        q = questions.get(qid)
+        if not isinstance(q, dict):
             continue
         if not _is_sbs_matrix_question(q):
             continue
