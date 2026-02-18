@@ -457,15 +457,28 @@ def _prompt_for_survey_id_if_needed(
     Raises:
         SystemExit: If no survey ID provided and prompt cancelled/non-interactive
     """
-    ids = _prompt_for_survey_ids_if_needed(
-        survey_id,
-        allow_all_surveys=allow_all_surveys,
-    )
+    ids = _normalize_survey_ids(survey_id)
     if len(ids) > 1:
         raise SystemExit(
             "[qsync] ERROR: This command accepts only one --survey-id value."
         )
-    return ids[0]
+    if ids:
+        return ids[0]
+
+    # Import here to avoid circular dependency.
+    from .survey_inventory import prompt_for_survey_id
+
+    prompted = prompt_for_survey_id(
+        allow_all_surveys=allow_all_surveys,
+        interactive=sys.stdin.isatty(),
+    )
+    if not prompted:
+        if sys.stdin.isatty():
+            print("[qsync] Operation cancelled.")
+        else:
+            print("[qsync] ERROR: --survey-id required in non-interactive mode")
+        raise SystemExit(1)
+    return prompted
 
 
 def _prompt_confirmation(message: str) -> bool:
@@ -2216,7 +2229,14 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "init",
         help="Initialise or refresh the Excel workbook for a survey from Qualtrics",
     )
-    _add_common_args(p_init, include_xlsx=False)
+    _add_common_args(
+        p_init,
+        include_xlsx=False,
+        survey_id_action="append",
+        survey_id_help=(
+            "Target survey ID(s) (repeatable/comma-separated; omit to select interactively)"
+        ),
+    )
     p_init.add_argument(
         "--xlsx",
         type=Path,
@@ -6155,16 +6175,18 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
         # Legacy commands (backward compatibility)
         if args.command == "init":
-            survey_id = _prompt_for_survey_id_if_needed(
+            survey_ids = _prompt_for_survey_ids_if_needed(
                 getattr(args, "survey_id", None),
                 allow_all_surveys=True,
             )
-            if args.xlsx is not None:
-                xlsx_path = args.xlsx
-            else:
-                xlsx_path = _default_xlsx_path(survey_id)
+            if args.xlsx is not None and len(survey_ids) > 1:
+                raise SystemExit(
+                    "[qsync] ERROR: --xlsx cannot be used with multiple --survey-id values."
+                )
             languages = _collect_languages_from_args(args)
-            init_survey_to_excel(survey_id, xlsx_path, languages=languages)
+            for survey_id in survey_ids:
+                xlsx_path = args.xlsx if args.xlsx is not None else _default_xlsx_path(survey_id)
+                init_survey_to_excel(survey_id, xlsx_path, languages=languages)
             return
 
         if args.command == "preview":
