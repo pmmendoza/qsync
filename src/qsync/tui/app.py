@@ -1584,6 +1584,7 @@ class SurveyMenuScreen(Screen):
             SurveyMenuEntry("Show account info", quick_action="workspace-show-account", detail_lines=("Display resolved account/base URL/token status.",)),
             SurveyMenuEntry("Check API (/whoami)", quick_action="workspace-check-api", detail_lines=("Run whoami for current account context.",)),
             SurveyMenuEntry("Refresh inventory", quick_action="workspace-refresh-inventory", detail_lines=("Refresh surveys/inventory.csv.",), requires_default_account=True),
+            SurveyMenuEntry("Refresh question-bank index", quick_action="workspace-refresh-question-bank", detail_lines=("Rebuild local cross-survey QID index from pulled survey JSON.",)),
             SurveyMenuEntry("Prepare surfaces", quick_action="workspace-prepare", detail_lines=("Hydrate local editing surfaces.",), requires_default_account=True),
             SurveyMenuEntry("Configure survey cache folder", quick_action="workspace-configure-cache", detail_lines=("Set/clear/create preferred survey cache folder.",)),
             SurveyMenuEntry("── Danger Zone ──", section=True, detail_lines=("Rename/delete with explicit safeguards.",)),

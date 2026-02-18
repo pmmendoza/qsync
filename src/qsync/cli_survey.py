@@ -1076,6 +1076,54 @@ def handle_menu(args: argparse.Namespace) -> None:
             ),
         )
 
+    def _menu_refresh_question_bank_index() -> None:
+        target_scope = _resolve_menu_account()
+        target_label = _account_label()
+
+        scope_choice = select_from_list(
+            "Refresh question-bank index for which account?",
+            [
+                f"Current menu account ({target_label})",
+                "Another linked account",
+                "↩ Back",
+            ],
+            instruction="Indexing scans pulled survey JSON files in that account-scoped cache.",
+        )
+        if not scope_choice or scope_choice.endswith("Back"):
+            return
+
+        if scope_choice.startswith("Another"):
+            discovered = _discover_account_env_files(root=root)
+            choices = ["default", *discovered, "↩ Back"]
+            picked_account = select_from_list("Pick account to index:", choices)
+            if not picked_account or picked_account.endswith("Back"):
+                return
+            if picked_account == "default":
+                target_scope = None
+                target_label = "default"
+            else:
+                target_scope = picked_account
+                target_label = picked_account
+
+        try:
+            surveys = _get_surveys_for_account(account=target_scope)
+        except Exception as exc:
+            print(f"[survey-menu] ERROR: unable to list surveys: {exc}")
+            return
+
+        indexed_payload = _build_question_bank_index(
+            account=target_scope,
+            surveys=surveys,
+        )
+        indexed_count = int(indexed_payload.get("survey_count") or 0)
+        index_path = _question_bank_index_path(account=target_scope)
+        print(
+            f"[survey-menu] Indexed question bank updated "
+            f"(account={target_label}, indexed_surveys={indexed_count}, listed_surveys={len(surveys)})."
+        )
+        print(f"[survey-menu] Index file: {index_path}")
+        print("[survey-menu] Note: only pulled/cached survey JSON files are indexed.")
+
     def _menu_pull() -> None:
         survey_id = _pick_survey_id(message="Pick a survey to pull (cache JSON):")
         if not survey_id:
@@ -2808,13 +2856,24 @@ def handle_menu(args: argparse.Namespace) -> None:
                     return
                 source_labels = _question_labels_from_definition(source_definition)
 
-            source_question_ids = _pick_question_ids_from_labels(
-                labels=source_labels,
-                message="Choose source question(s) to clone:",
-                preserve_selection_order=True,
-            ) or []
-            if not source_question_ids:
-                return
+            while True:
+                picked_source_qids = _pick_question_ids_from_labels(
+                    labels=source_labels,
+                    message="Choose source question(s) to clone:",
+                    preserve_selection_order=True,
+                )
+                if picked_source_qids is None:
+                    return
+                if picked_source_qids:
+                    source_question_ids = picked_source_qids
+                    break
+                retry_pick = select_from_list(
+                    "No source questions selected.",
+                    ["Choose source question(s) again", "↩ Back"],
+                    instruction="Select at least one source question to continue cloning.",
+                )
+                if not retry_pick or retry_pick.endswith("Back"):
+                    return
 
             text_mode = select_from_list(
                 "Question text behavior:",
@@ -3262,6 +3321,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             "workspace-show-account": _menu_show_account_info,
             "workspace-check-api": _menu_check_api,
             "workspace-refresh-inventory": _menu_inventory,
+            "workspace-refresh-question-bank": _menu_refresh_question_bank_index,
             "workspace-prepare": _menu_prepare,
             "workspace-configure-cache": _menu_configure_cache_folder,
             # Danger zone
@@ -3505,7 +3565,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             _menu_context(
                 "Survey Menu > Workspace & Account",
                 "Environment/account controls and local cache preparation.",
-                "Switch account, whoami/API checks, inventory refresh, prepare, cache folder",
+                "Switch account, whoami/API checks, inventory refresh, question-bank index refresh, prepare, cache folder",
             )
             choice = select_from_list(
                 "Workspace & Account",
@@ -3514,6 +3574,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Show account info",
                     "Check API (/whoami)",
                     "Refresh inventory",
+                    "Refresh question-bank index",
                     "Prepare surfaces",
                     "Configure survey cache folder",
                     "↩ Back",
@@ -3528,8 +3589,10 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_show_account_info()
             elif choice.startswith("Check API"):
                 _menu_check_api()
-            elif choice.startswith("Refresh"):
+            elif choice == "Refresh inventory":
                 _menu_inventory()
+            elif choice.startswith("Refresh question-bank"):
+                _menu_refresh_question_bank_index()
             elif choice.startswith("Prepare"):
                 _menu_prepare()
             else:
