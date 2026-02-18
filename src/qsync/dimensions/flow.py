@@ -75,10 +75,10 @@ def pull(survey_id: str, *, force: bool = False) -> Path:
     Raises:
         FileExistsError: If YAML exists with local changes and force=False
     """
-    from ..qualtrics_client import load_cached_survey
+    from ..qualtrics_client import refresh_survey_cache
 
-    # Load cached survey (downloads if not cached)
-    cache = load_cached_survey(survey_id)
+    # Always refresh cache from Qualtrics before materializing flow surfaces.
+    cache, _ = refresh_survey_cache(survey_id)
     flow = cache.payload.get("result", {}).get("SurveyFlow", {})
     blocks = cache.payload.get("result", {}).get("Blocks", {})
     questions = cache.payload.get("result", {}).get("Questions", {})

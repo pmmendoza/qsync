@@ -431,6 +431,9 @@ class SurveyMasterCSVTests(unittest.TestCase):
             self.assertIn("What it controls: Survey protection mode", text)
             self.assertIn("Allowed values:", text)
             self.assertIn("- PublicSurvey", text)
+            self.assertIn("API endpoints:", text)
+            self.assertIn("GET /survey-definitions/{surveyId}/options", text)
+            self.assertIn("PUT /survey-definitions/{surveyId}/options", text)
             self.assertIn(
                 "https://api.qualtrics.com/021740be5b5b6-get-options#response-body",
                 text,
@@ -439,6 +442,73 @@ class SurveyMasterCSVTests(unittest.TestCase):
                 "https://api.qualtrics.com/5d9e865296ce5-update-options",
                 text,
             )
+
+    def test_workbook_header_comments_include_metadata_and_detail_endpoints(self) -> None:
+        """Metadata/detail domain comments include endpoint and docs hints."""
+        from qsync.survey_master import write_master_workbook
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            csv_path = root / "surveys" / "qualtrics_master.csv"
+            rows = [
+                ["SurveyID", "SurveyName", "responseCounts"],
+                ["SV_001", "Survey A", "{}"],
+            ]
+            mapping = {
+                "SurveyID": {
+                    "field_name": "SurveyID",
+                    "survey_master": "read",
+                    "description": "Survey id",
+                    "allowed_values": "",
+                    "format_notes": "",
+                    "domain": "survey_metadata",
+                },
+                "SurveyName": {
+                    "field_name": "SurveyName",
+                    "survey_master": "write",
+                    "description": "Survey name",
+                    "allowed_values": "",
+                    "format_notes": "",
+                    "domain": "survey_metadata",
+                },
+                "responseCounts": {
+                    "field_name": "responseCounts",
+                    "survey_master": "read",
+                    "description": "Counts summary for responses",
+                    "allowed_values": "",
+                    "format_notes": "",
+                    "domain": "survey_detail",
+                    "data_type": "object",
+                },
+            }
+
+            with (
+                patch("qsync.survey_master._master_csv_path", return_value=csv_path),
+                patch("qsync.survey_master._parse_mapping_csv", return_value=mapping),
+            ):
+                write_master_workbook(rows)
+
+            wb = load_workbook(csv_path.with_suffix(".xlsx"))
+            ws = wb["Survey_Master"]
+            header_values = [
+                cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))
+            ]
+
+            metadata_idx = header_values.index("SurveyName") + 1
+            metadata_comment = ws.cell(row=1, column=metadata_idx).comment
+            self.assertIsNotNone(metadata_comment)
+            metadata_text = metadata_comment.text
+            self.assertIn("GET /survey-definitions/{surveyId}/metadata", metadata_text)
+            self.assertIn("PUT /survey-definitions/{surveyId}/metadata", metadata_text)
+            self.assertIn("https://api.qualtrics.com/", metadata_text)
+
+            detail_idx = header_values.index("responseCounts") + 1
+            detail_comment = ws.cell(row=1, column=detail_idx).comment
+            self.assertIsNotNone(detail_comment)
+            detail_text = detail_comment.text
+            self.assertIn("GET /surveys/{surveyId}", detail_text)
+            self.assertIn("Expected type: object", detail_text)
+            self.assertIn("https://api.qualtrics.com/", detail_text)
 
     def test_load_master_csv_prefers_newer_workbook_surface(self) -> None:
         """When workbook is newer than CSV, load from workbook surface."""

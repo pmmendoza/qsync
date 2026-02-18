@@ -1,7 +1,11 @@
 {
-  "version": 1,
+  "version": 2,
   "domains": {
     "survey_options": {
+      "endpoints": [
+        "GET /survey-definitions/{surveyId}/options",
+        "PUT /survey-definitions/{surveyId}/options"
+      ],
       "links": [
         {
           "label": "Get options (response body)",
@@ -10,6 +14,29 @@
         {
           "label": "Update options (request body)",
           "url": "https://api.qualtrics.com/5d9e865296ce5-update-options"
+        }
+      ]
+    },
+    "survey_metadata": {
+      "endpoints": [
+        "GET /survey-definitions/{surveyId}/metadata",
+        "PUT /survey-definitions/{surveyId}/metadata"
+      ],
+      "links": [
+        {
+          "label": "Qualtrics API Reference",
+          "url": "https://api.qualtrics.com/"
+        }
+      ]
+    },
+    "survey_detail": {
+      "endpoints": [
+        "GET /surveys/{surveyId}"
+      ],
+      "links": [
+        {
+          "label": "Qualtrics API Reference",
+          "url": "https://api.qualtrics.com/"
         }
       ]
     }

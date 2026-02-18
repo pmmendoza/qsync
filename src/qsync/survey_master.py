@@ -945,6 +945,10 @@ _DEFAULT_OPTIONS_DOC_LINKS: list[dict[str, str]] = [
         "url": "https://api.qualtrics.com/5d9e865296ce5-update-options",
     },
 ]
+_DEFAULT_OPTIONS_ENDPOINTS: list[str] = [
+    "GET /survey-definitions/{surveyId}/options",
+    "PUT /survey-definitions/{surveyId}/options",
+]
 
 
 def _is_master_editable(field_info: Dict[str, Any] | None) -> bool:
@@ -1008,6 +1012,32 @@ def _normalize_comment_links(raw: Any) -> List[tuple[str, str]]:
     return links
 
 
+def _normalize_comment_endpoints(raw: Any) -> List[str]:
+    """Normalize endpoint lists from config into endpoint strings."""
+
+    if not isinstance(raw, list):
+        return []
+
+    endpoints: List[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        endpoint = ""
+        if isinstance(item, str):
+            endpoint = item.strip()
+        elif isinstance(item, dict):
+            method = str(item.get("method") or "").strip().upper()
+            path = str(item.get("path") or "").strip()
+            if method and path:
+                endpoint = f"{method} {path}"
+            else:
+                endpoint = str(item.get("value") or "").strip()
+        if not endpoint or endpoint in seen:
+            continue
+        seen.add(endpoint)
+        endpoints.append(endpoint)
+    return endpoints
+
+
 def _master_comment_doc_links(
     field_name: str, field_info: Dict[str, Any] | None
 ) -> List[tuple[str, str]]:
@@ -1037,6 +1067,45 @@ def _master_comment_doc_links(
             continue
         seen_urls.add(url)
         deduped.append((label, url))
+    return deduped
+
+
+def _master_comment_endpoints(
+    field_name: str, field_info: Dict[str, Any] | None
+) -> List[str]:
+    docs_config = _load_master_header_docs()
+    endpoints: List[str] = []
+
+    if isinstance(docs_config, dict):
+        field_cfg = (docs_config.get("fields") or {}).get(field_name)
+        if isinstance(field_cfg, dict):
+            endpoints.extend(_normalize_comment_endpoints(field_cfg.get("endpoints")))
+
+        domain = str((field_info or {}).get("domain") or "").strip().lower()
+        domain_cfg = (docs_config.get("domains") or {}).get(domain)
+        if isinstance(domain_cfg, dict):
+            endpoints.extend(_normalize_comment_endpoints(domain_cfg.get("endpoints")))
+
+    # Fallback for options when no config is available.
+    domain = str((field_info or {}).get("domain") or "").strip().lower()
+    if domain == "survey_options" and not endpoints:
+        endpoints.extend(_DEFAULT_OPTIONS_ENDPOINTS)
+
+    # Include direct mapping endpoint hints when present (workspace CSV mappings).
+    read_endpoint = str((field_info or {}).get("read_endpoint") or "").strip()
+    write_endpoint = str((field_info or {}).get("write_endpoint") or "").strip()
+    if read_endpoint:
+        endpoints.append(read_endpoint)
+    if write_endpoint and _is_master_editable(field_info):
+        endpoints.append(write_endpoint)
+
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for endpoint in endpoints:
+        if endpoint in seen:
+            continue
+        seen.add(endpoint)
+        deduped.append(endpoint)
     return deduped
 
 
@@ -1071,6 +1140,12 @@ def _build_master_header_comment(
     format_notes = str(field_info.get("format_notes") or "").strip()
     if format_notes:
         lines.append(f"Format notes: {format_notes}")
+
+    endpoints = _master_comment_endpoints(field_name, field_info)
+    if endpoints:
+        lines.append("API endpoints:")
+        for endpoint in endpoints:
+            lines.append(f"- {endpoint}")
 
     doc_links = _master_comment_doc_links(field_name, field_info)
     if doc_links:
