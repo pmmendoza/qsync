@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -160,3 +161,64 @@ def test_survey_menu_workspace_can_set_cache_subfolder(
 
     prefs = json.loads((tmp_path / ".qsync" / "preferences.json").read_text(encoding="utf-8"))
     assert prefs.get("survey_cache_subdir") == "defs"
+
+
+def test_survey_menu_quick_action_workspace_show_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+
+    handle_menu(
+        argparse.Namespace(
+            tui=False,
+            structural_edit=False,
+            add_question_interactive=False,
+            move_question_interactive=False,
+            survey_id=None,
+            account=None,
+            quick_action="workspace-show-account",
+        )
+    )
+
+    out = capsys.readouterr().out
+    assert "[survey-menu] account=default base_url=" in out
+    assert "[survey-menu] resolved_base_url=example.qualtrics.com token_present=True" in out
+
+
+def test_survey_menu_quick_action_unknown_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+
+    with pytest.raises(SystemExit) as excinfo:
+        handle_menu(
+            argparse.Namespace(
+                tui=False,
+                structural_edit=False,
+                add_question_interactive=False,
+                move_question_interactive=False,
+                survey_id=None,
+                account=None,
+                quick_action="__unknown__",
+            )
+        )
+
+    assert "unknown quick action '__unknown__'" in str(excinfo.value)

@@ -453,6 +453,50 @@ def _typed_confirmation(
     return typed == expected
 
 
+def _confirm_interactive_gate(*, prompt: str, default: bool = False) -> bool:
+    """Prompt for an interactive yes/no decision with a safe default."""
+
+    try:
+        from .interactive_menu import confirm
+
+        return bool(confirm(prompt, default=default))
+    except Exception:
+        suffix = "[Y/n]" if default else "[y/N]"
+        raw = input(f"{prompt} {suffix}: ").strip().lower()
+        if not raw:
+            return default
+        return raw in {"y", "yes"}
+
+
+def _optional_int(value: Any) -> int | None:
+    """Best-effort integer parser used for response counts."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _status_response_counts(status_payload: Mapping[str, Any]) -> tuple[int | None, int | None]:
+    """Extract (live, preview) response counts from a survey status payload."""
+
+    counts = status_payload.get("responseCounts")
+    if not isinstance(counts, Mapping):
+        return (None, None)
+    live = _optional_int(counts.get("auditable"))
+    preview = _optional_int(counts.get("generated"))
+    return (live, preview)
+
+
 def handle_menu(args: argparse.Namespace) -> None:
     """Interactive wizard for common `qsync survey ...` operations."""
 
@@ -653,26 +697,21 @@ def handle_menu(args: argparse.Namespace) -> None:
         if not survey_ids:
             return
 
-        base = _resolve_base_url_for_display() or "(unknown)"
         print()
-        print("[survey-menu] WARNING: This will permanently delete surveys in Qualtrics.")
+        print("[survey-menu] WARNING: Delete is permanent in Qualtrics.")
+        print("[survey-menu] Default behavior is dry-run.")
         print("[survey-menu] Account:", _account_label())
-        print("[survey-menu] Base URL:", base)
         print("[survey-menu] Surveys:", ", ".join(survey_ids))
+        print("[survey-menu] You will be guided through per-survey confirmation gates.")
         print()
-
-        if not _typed_confirmation(
-            prompt="Type 'delete' to confirm: ",
-            expected="delete",
-        ):
-            print("[survey-menu] Aborted.")
-            return
 
         _run_action(
             handle_delete,
             argparse.Namespace(
                 survey_ids=survey_ids,
                 account=selected_account,
+                yes=False,
+                force_live=False,
             ),
         )
 
@@ -2963,6 +3002,77 @@ def handle_menu(args: argparse.Namespace) -> None:
         _menu_move_question(preselected_survey_id=direct_survey_id)
         return
 
+    quick_action = str(getattr(args, "quick_action", "") or "").strip()
+    if quick_action:
+        def _qa_setup_list() -> None:
+            pattern = input("Optional name regex (blank = all): ").strip() or None
+            _run_action(
+                handle_list,
+                argparse.Namespace(name_pattern=pattern, account=selected_account),
+            )
+
+        def _qa_setup_label() -> None:
+            sid = _pick_survey_id(message="Pick a survey to label:")
+            if sid:
+                _run_action(handle_label, argparse.Namespace(survey_id=sid))
+
+        def _qa_setup_focal() -> None:
+            newline = select_from_list("One ID per line?", ["No", "Yes"]) == "Yes"
+            _run_action(handle_focal, argparse.Namespace(newline=bool(newline)))
+
+        actions: dict[str, Any] = {
+            # Setup / selection
+            "setup-list": _qa_setup_list,
+            "setup-label": _qa_setup_label,
+            "setup-focal": _qa_setup_focal,
+            "setup-pull": _menu_pull,
+            # Edit
+            "edit-structural": _menu_items_structural_edits,
+            "edit-add-question": _menu_add_question,
+            "edit-move-question": _menu_move_question,
+            # Flow / embedded / integrations
+            "flow-add-embedded": lambda: _menu_embedded_field("add-embedded-field"),
+            "flow-remove-embedded": lambda: _menu_embedded_field("remove-embedded-field"),
+            "flow-rename-embedded": lambda: _menu_embedded_field("rename-embedded-field"),
+            "flow-cleanup-embedded": _menu_cleanup_embedded_data,
+            "flow-prolific-auth": _menu_prolific_auth,
+            "flow-prolific-wiring": _menu_prolific_wiring,
+            # Publish / lifecycle
+            "publish-activate": lambda: _menu_activate(active=True),
+            "publish-deactivate": lambda: _menu_activate(active=False),
+            "publish-publish": _menu_publish,
+            "publish-versions": _menu_versions,
+            "publish-fetch-version": _menu_version_fetch,
+            "publish-rollback": _menu_rollback,
+            # Copy / slice / parity
+            "copy-copy": _menu_copy,
+            "copy-slice-language": _menu_slice_language,
+            "copy-slice-registry": _menu_slice_registry,
+            "copy-parity": _menu_parity_check,
+            "copy-cross-account": _menu_copy_cross_account,
+            # Exports
+            "export-responses": _menu_export_responses,
+            "export-translation": _menu_export_translation,
+            "export-side-by-side": _menu_export_side_by_side,
+            # Workspace / account
+            "workspace-switch-account": _menu_switch_account,
+            "workspace-show-account": _menu_show_account_info,
+            "workspace-check-api": _menu_check_api,
+            "workspace-refresh-inventory": _menu_inventory,
+            "workspace-prepare": _menu_prepare,
+            "workspace-configure-cache": _menu_configure_cache_folder,
+            # Danger zone
+            "danger-rename": _menu_rename,
+            "danger-delete": _menu_delete,
+        }
+        handler = actions.get(quick_action)
+        if handler is None:
+            raise SystemExit(
+                f"[survey-menu] ERROR: unknown quick action '{quick_action}'."
+            )
+        handler()
+        return
+
     def _menu_context(path: str, summary: str, reachable: str) -> None:
         print()
         print(f"[survey-menu] Path: {path}")
@@ -3224,13 +3334,13 @@ def handle_menu(args: argparse.Namespace) -> None:
             _menu_context(
                 "Survey Menu > Danger Zone",
                 "Mutating admin operations with destructive risk.",
-                "Rename, delete (typed confirmation required)",
+                "Rename, delete (guided confirmations required)",
             )
             choice = select_from_list(
                 "Danger Zone",
                 [
                     "Rename survey",
-                    "Delete survey(s) (type 'delete' to confirm)",
+                    "Delete survey(s) (dry-run + guided gates)",
                     "↩ Back",
                 ],
                 instruction="Use carefully; delete is permanent.",
@@ -5773,10 +5883,149 @@ def handle_delete(args: argparse.Namespace) -> None:
     """Delete one or more surveys by SurveyID."""
     from .survey_ref import format_survey_ref
 
+    def _flag(name: str) -> bool:
+        value = getattr(args, name, False)
+        return bool(value) if isinstance(value, bool) else False
+
+    survey_ids = list(
+        dict.fromkeys(
+            sid.strip()
+            for sid in _normalize_survey_ids(getattr(args, "survey_ids", None))
+            if sid and sid.strip()
+        )
+    )
+    if not survey_ids:
+        raise SystemExit("[delete] ERROR: at least one survey ID is required.")
+
+    yes = _flag("yes")
+    force_live = _flag("force_live")
+    dry_run = _flag("dry_run") or not yes
+    interactive_mode = bool(sys.stdin.isatty() and sys.stdout.isatty())
+
     base, headers = _get_client_config_for_args(args)
 
-    for survey_id in args.survey_ids:
-        print(f"Deleting survey {format_survey_ref(survey_id)}...")
+    if dry_run:
+        print(
+            "[delete] DRY-RUN mode: no delete requests will be sent. "
+            "Use --yes to execute deletes."
+        )
+
+    for survey_id in survey_ids:
+        survey_id = survey_id.strip()
+        if not survey_id:
+            continue
+
+        status_payload: Dict[str, Any]
+        try:
+            status_payload = _fetch_survey_status(base, headers, survey_id)
+        except Exception as exc:
+            print(f"[delete] Failed to fetch survey details for {survey_id}: {exc}")
+            continue
+
+        survey_name = str(status_payload.get("name") or "").strip() or survey_id
+        survey_ref = format_survey_ref(survey_id, survey_name)
+
+        active_value = status_payload.get("isActive")
+        if isinstance(active_value, bool):
+            active_label = "active" if active_value else "inactive"
+        else:
+            active_label = "unknown"
+
+        live_count, preview_count = _status_response_counts(status_payload)
+        counts_unknown = live_count is None or preview_count is None
+        counts_source = "status"
+
+        if counts_unknown:
+            try:
+                ctx = load_push_context(survey_id, base_url=base, headers=headers)
+                survey_name = str(getattr(ctx, "survey_name", "") or "").strip() or survey_name
+                survey_ref = format_survey_ref(survey_id, survey_name)
+                live_count = int(getattr(ctx, "response_count", 0))
+                preview_count = int(getattr(ctx, "preview_count", 0))
+                counts_unknown = bool(getattr(ctx, "counts_unknown", False))
+                counts_source = str(getattr(ctx, "counts_source", "") or "push-context")
+            except Exception as exc:
+                print(
+                    f"[delete] {survey_ref}: NOTE: unable to load fallback response counts: {exc}"
+                )
+                counts_source = "unknown"
+
+        print()
+        print(f"[delete] Survey: {survey_name}")
+        print(f"[delete] SurveyID: {survey_id}")
+        print(f"[delete] Status: {active_label}")
+        if counts_unknown:
+            print("[delete] Responses: unknown")
+        else:
+            print(
+                f"[delete] Responses: {int(live_count or 0)} live / "
+                f"{int(preview_count or 0)} preview (source: {counts_source})"
+            )
+
+        proceed_live = not dry_run
+        effective_force_live = force_live
+
+        if dry_run and interactive_mode:
+            proceed_live = _confirm_interactive_gate(
+                prompt=f"Proceed with LIVE delete for {survey_ref}?",
+                default=False,
+            )
+            if not proceed_live:
+                print("[delete] Dry-run only; skipping live delete.")
+                continue
+
+        if not proceed_live:
+            print("[delete] Dry-run only; skipping live delete.")
+            continue
+
+        if counts_unknown and not effective_force_live:
+            if dry_run and interactive_mode:
+                effective_force_live = _confirm_interactive_gate(
+                    prompt=(
+                        f"Response counts are unknown for {survey_ref}. "
+                        "Proceed with force-live override?"
+                    ),
+                    default=False,
+                )
+                if not effective_force_live:
+                    print("[delete] Skipping live delete (counts unknown).")
+                    continue
+            else:
+                print(
+                    f"[delete] Blocked: unable to verify response counts for {survey_ref}. "
+                    "Re-run with --force-live after manual review."
+                )
+                continue
+
+        live_responses = int(live_count or 0) if not counts_unknown else 0
+        if live_responses > 0 and not effective_force_live:
+            if dry_run and interactive_mode:
+                effective_force_live = _confirm_interactive_gate(
+                    prompt=(
+                        f"{survey_ref} has {live_responses} finished response(s). "
+                        "Proceed with force-live override?"
+                    ),
+                    default=False,
+                )
+                if not effective_force_live:
+                    print("[delete] Skipping live delete (responses present).")
+                    continue
+            else:
+                print(
+                    f"[delete] Blocked: {survey_ref} has {live_responses} finished response(s). "
+                    "Re-run with --force-live after double-checking."
+                )
+                continue
+
+        if not yes:
+            if not _typed_confirmation(
+                prompt=f"Type exact SurveyID '{survey_id}' to confirm delete: ",
+                expected=survey_id,
+            ):
+                print(f"[delete] Confirmation failed for {survey_ref}; skipped.")
+                continue
+
+        print(f"Deleting survey {survey_ref}...")
         try:
             send_api_request(
                 action="qsync.survey.delete",
@@ -5791,12 +6040,12 @@ def handle_delete(args: argparse.Namespace) -> None:
             response = getattr(exc, "response", None)
             if response is not None:
                 print(
-                    f"Failed to delete {format_survey_ref(survey_id)}: {response.status_code} {response.text}"
+                    f"Failed to delete {survey_ref}: {response.status_code} {response.text}"
                 )
             else:
-                print(f"Failed to delete {format_survey_ref(survey_id)}: {exc}")
+                print(f"Failed to delete {survey_ref}: {exc}")
         else:
-            print(f"Successfully deleted {format_survey_ref(survey_id)}")
+            print(f"Successfully deleted {survey_ref}")
 
             from .terminal_output import log_confirmation
 
@@ -11113,6 +11362,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--account",
         help="Use this account for the menu session (or 'default' for primary .env).",
     )
+    p_menu.add_argument(
+        "--quick-action",
+        dest="quick_action",
+        help=argparse.SUPPRESS,
+    )
     p_menu.set_defaults(func=handle_menu)
 
     # label
@@ -11362,6 +11616,23 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     p_delete.add_argument(
         "--account",
         help="Use credentials from `.env.<account>` under the workspace root.",
+    )
+    p_delete.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help=(
+            "Execute live deletes without interactive prompts. "
+            "Without --yes, delete runs as dry-run by default."
+        ),
+    )
+    p_delete.add_argument(
+        "--force-live",
+        action="store_true",
+        help=(
+            "Allow deletion even when finished responses exist "
+            "(normally blocked)."
+        ),
     )
     p_delete.add_argument(
         "survey_ids", nargs="+", help="One or more Survey IDs to delete"
