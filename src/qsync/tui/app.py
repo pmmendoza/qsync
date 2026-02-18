@@ -8,7 +8,6 @@ Design goals:
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass, field
 import os
 import re
@@ -104,6 +103,239 @@ def _timed_call(func):
     value = func()
     elapsed = _format_elapsed_for_ui(time.perf_counter() - started)
     return value, elapsed
+
+
+def _resolve_api_client_for_active_account() -> tuple[str, dict[str, str], str | None]:
+    """Return (base_url, headers, account_name) for the currently active account context."""
+
+    from pathlib import Path
+
+    from qsync.config import (
+        get_active_account,
+        get_client_config,
+        load_account_env,
+        resolve_root,
+    )
+
+    root = resolve_root(required=False) or Path.cwd()
+    account = None
+    try:
+        account = get_active_account()
+    except Exception:
+        account = None
+    env = load_account_env(account, root=root) if account else None
+    base, headers = get_client_config(env) if env else get_client_config()
+    return base, headers, account
+
+
+def _list_surveys_for_active_account() -> list[dict[str, Any]]:
+    from qsync.survey_selection import list_surveys_via_api
+
+    base, headers, _account = _resolve_api_client_for_active_account()
+    surveys = list_surveys_via_api(base_url=base, headers=headers)
+    surveys.sort(
+        key=lambda s: (s.get("lastModified") or s.get("creationDate") or ""),
+        reverse=True,
+    )
+    return surveys
+
+
+def _fetch_survey_definition_for_active_account(survey_id: str) -> dict[str, Any]:
+    from qsync.cli_survey import fetch_survey_definition
+
+    base, headers, _account = _resolve_api_client_for_active_account()
+    definition = fetch_survey_definition(base, headers, survey_id)
+    if not isinstance(definition, dict):
+        raise RuntimeError("Unexpected survey-definition payload shape.")
+    return definition
+
+
+def _ordered_qids_from_definition_for_tui(definition: dict[str, Any]) -> list[str]:
+    from qsync.cli_survey import _flow_ordered_block_ids, _is_trash_block
+
+    questions = definition.get("Questions")
+    if not isinstance(questions, dict):
+        return []
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        return sorted(str(k).strip() for k in questions.keys() if str(k).strip())
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for block_id in _flow_ordered_block_ids(definition):
+        block = blocks.get(block_id)
+        if not isinstance(block, dict):
+            continue
+        if _is_trash_block(block):
+            continue
+        elements = (
+            block.get("BlockElements")
+            if isinstance(block.get("BlockElements"), list)
+            else block.get("Elements")
+        )
+        if not isinstance(elements, list):
+            continue
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            qid = str(elem.get("QuestionID") or "").strip()
+            if not qid or qid in seen or qid not in questions:
+                continue
+            seen.add(qid)
+            ordered.append(qid)
+    leftovers = sorted(
+        [
+            str(qid).strip()
+            for qid in questions.keys()
+            if str(qid).strip() and str(qid).strip() not in seen
+        ]
+    )
+    ordered.extend(leftovers)
+    return ordered
+
+
+def _question_preview_from_payload(payload: dict[str, Any]) -> str:
+    text = (
+        str(payload.get("QuestionText") or "").strip()
+        or str(payload.get("QuestionDescription") or "").strip()
+        or str(payload.get("DataExportTag") or "").strip()
+        or "Untitled question"
+    )
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = " ".join(text.split())
+    if len(text) > 110:
+        return text[:109].rstrip() + "…"
+    return text
+
+
+def _question_labels_from_definition_for_tui(
+    definition: dict[str, Any], qids: list[str]
+) -> dict[str, str]:
+    out: dict[str, str] = {}
+    questions = definition.get("Questions")
+    if not isinstance(questions, dict):
+        return out
+    for qid in qids:
+        payload = questions.get(qid) if isinstance(questions.get(qid), dict) else {}
+        preview = _question_preview_from_payload(payload if isinstance(payload, dict) else {})
+        out[qid] = f"{qid} - {preview}"
+    return out
+
+
+def _block_labels_from_definition_for_tui(definition: dict[str, Any]) -> dict[str, str]:
+    from qsync.cli_survey import _flow_ordered_block_ids, _is_trash_block
+
+    out: dict[str, str] = {}
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        return out
+
+    ordered: list[str] = []
+    for bid in _flow_ordered_block_ids(definition):
+        if bid in blocks:
+            ordered.append(bid)
+    for bid in sorted(str(k).strip() for k in blocks.keys() if str(k).strip()):
+        if bid not in ordered:
+            ordered.append(bid)
+
+    for bid in ordered:
+        block = blocks.get(bid)
+        if not isinstance(block, dict):
+            continue
+        if _is_trash_block(block):
+            continue
+        name = (
+            str(block.get("Description") or "").strip()
+            or str(block.get("BlockDescription") or "").strip()
+            or str(block.get("Type") or "").strip()
+            or "Block"
+        )
+        if len(name) > 90:
+            name = name[:89].rstrip() + "…"
+        out[bid] = f"{bid} - {name}"
+    return out
+
+
+@dataclass
+class MoveQuestionState:
+    survey_id: str | None = None
+    survey_name: str | None = None
+    definition: dict[str, Any] | None = None
+    ordered_qids: list[str] = field(default_factory=list)
+    question_labels: dict[str, str] = field(default_factory=dict)
+    block_labels: dict[str, str] = field(default_factory=dict)
+    selected_qids: list[str] = field(default_factory=list)
+    filter_query: str = ""
+    target_block_id: str | None = None
+    after_qid: str | None = None
+    before_qid: str | None = None
+    position: str = "append"
+    anchor_mode: str | None = None  # after|before
+    block_pick_position: str = "append"
+    dry_run: bool = True
+    force_live: bool = False
+    publish: bool = True
+    publish_description: str = ""
+    last_result: str | None = None
+
+    def reset(self) -> None:
+        self.survey_id = None
+        self.survey_name = None
+        self.definition = None
+        self.ordered_qids = []
+        self.question_labels = {}
+        self.block_labels = {}
+        self.selected_qids = []
+        self.filter_query = ""
+        self.target_block_id = None
+        self.after_qid = None
+        self.before_qid = None
+        self.position = "append"
+        self.anchor_mode = None
+        self.block_pick_position = "append"
+        self.dry_run = True
+        self.force_live = False
+        self.publish = True
+        self.publish_description = ""
+        self.last_result = None
+
+    def placement_summary(self) -> str:
+        if self.after_qid:
+            return f"After {self.after_qid}"
+        if self.before_qid:
+            return f"Before {self.before_qid}"
+        if self.target_block_id:
+            return f"{self.position} in block {self.target_block_id}"
+        return f"{self.position} (auto target block)"
+
+    def argv(self) -> list[str]:
+        argv = ["survey", "move-question"]
+        if self.survey_id:
+            argv.extend(["--survey-id", self.survey_id])
+        for qid in self.selected_qids:
+            argv.extend(["--question-id", qid])
+        if self.target_block_id:
+            argv.extend(["--target-block-id", self.target_block_id])
+        if self.after_qid:
+            argv.extend(["--after-qid", self.after_qid])
+        if self.before_qid:
+            argv.extend(["--before-qid", self.before_qid])
+        if not self.after_qid and not self.before_qid:
+            argv.extend(["--position", self.position])
+        if self.dry_run:
+            argv.append("--dry-run")
+        else:
+            argv.append("--yes")
+            if self.force_live:
+                argv.append("--force-live")
+            if not self.publish:
+                argv.append("--no-publish")
+            if self.publish_description.strip():
+                argv.extend(["--publish-description", self.publish_description.strip()])
+        return argv
+
+    def command(self) -> str:
+        return "qsync " + shlex.join(self.argv())
 
 
 def _account_context_lines() -> list[str]:
@@ -1220,6 +1452,7 @@ class QsyncTuiApp(App):
         self.start_screen = start_screen
         self.sync_state = SyncWizardState()
         self.structural_state = StructuralEditState()
+        self.move_question_state = MoveQuestionState()
 
     def on_mount(self) -> None:
         self.install_screen(HelpScreen(), name="help")
@@ -1231,6 +1464,12 @@ class QsyncTuiApp(App):
         self.install_screen(SyncDimensionsScreen(), name="sync_dims")
         self.install_screen(SyncConfirmScreen(), name="sync_confirm")
         self.install_screen(SurveyMenuScreen(), name="survey_menu")
+        self.install_screen(MoveQuestionSurveyScreen(), name="moveq_survey")
+        self.install_screen(MoveQuestionSelectScreen(), name="moveq_select")
+        self.install_screen(MoveQuestionPlacementScreen(), name="moveq_place")
+        self.install_screen(MoveQuestionAnchorScreen(), name="moveq_anchor")
+        self.install_screen(MoveQuestionBlockScreen(), name="moveq_block")
+        self.install_screen(MoveQuestionRunScreen(), name="moveq_run")
         self.install_screen(PullSurveyScreen(), name="pull_survey")
         self.install_screen(StructuralSurveyScreen(), name="struct_survey")
         self.install_screen(StructuralSessionScreen(), name="struct_session")
@@ -1312,8 +1551,9 @@ class SurveyMenuScreen(Screen):
             SurveyMenuEntry("Pull survey definition (cache)", quick_action="setup-pull", detail_lines=("Download and cache survey JSON locally.",)),
             SurveyMenuEntry("── Edit Questions & Content ──", section=True, detail_lines=("Structural edits and guided add/move flows.",)),
             SurveyMenuEntry("Items: structural edits", quick_action="edit-structural", detail_lines=("Stage -> review -> push item-level structural ops.",)),
-            SurveyMenuEntry("Add question(s) guided wizard", quick_action="edit-add-question", detail_lines=("Clone/import question and place in flow.",)),
-            SurveyMenuEntry("Move question(s) guided wizard", quick_action="edit-move-question", detail_lines=("Move one or more QIDs in flow.",)),
+            SurveyMenuEntry("Move question(s) native TUI (recommended)", quick_action="__tui_move__", detail_lines=("Stay in Textual: pick survey, select QIDs, choose placement, run.",)),
+            SurveyMenuEntry("Add question(s) guided wizard (CLI fallback)", quick_action="edit-add-question", detail_lines=("Clone/import question and place in flow (questionary flow).",)),
+            SurveyMenuEntry("Move question(s) guided wizard (CLI fallback)", quick_action="edit-move-question", detail_lines=("Legacy guided path (questionary flow).",)),
             SurveyMenuEntry("── Flow, Embedded Data & Integrations ──", section=True, detail_lines=("Embedded-data and Prolific workflows.",)),
             SurveyMenuEntry("Add embedded field (stage)", quick_action="flow-add-embedded", detail_lines=("Stage embedded field add in SurveyFlow.",), requires_default_account=True),
             SurveyMenuEntry("Remove embedded field (stage)", quick_action="flow-remove-embedded", detail_lines=("Stage embedded field removal.",), requires_default_account=True),
@@ -1387,27 +1627,22 @@ class SurveyMenuScreen(Screen):
         return entries[idx]
 
     def _run_quick_action(self, quick_action: str) -> str:
-        from qsync.cli_survey import handle_menu
-
         with self.app.suspend():  # type: ignore[attr-defined]
             print(f"\n[qsync:tui] Launching survey action: {quick_action or 'full-menu'}")
+            argv = ["survey", "menu"]
+            if quick_action:
+                argv.extend(["--quick-action", quick_action])
 
-            def _runner() -> None:
-                handle_menu(
-                    argparse.Namespace(
-                        tui=False,
-                        structural_edit=False,
-                        add_question_interactive=False,
-                        move_question_interactive=False,
-                        survey_id=None,
-                        account=None,
-                        quick_action=quick_action,
-                    )
-                )
+            def _runner() -> int:
+                # Run in a subprocess so questionary/autocomplete prompts do not
+                # share Textual's event loop.
+                return _run_qsync_cli_subcommand(argv)
 
-            _ignored, elapsed = _timed_call(_runner)
-            print(f"[qsync:tui] Survey action completed in {elapsed}.")
-        return f"Completed in {elapsed}."
+            code, elapsed = _timed_call(_runner)
+            print(f"[qsync:tui] Survey action exit={code} in {elapsed}.")
+        if code == 0:
+            return f"Completed in {elapsed}."
+        return f"Exited with code {code} after {elapsed}."
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:  # type: ignore[name-defined]
         entry = self._entry_at(getattr(event, "option_index", None))
@@ -1431,6 +1666,11 @@ class SurveyMenuScreen(Screen):
             return
         if entry.quick_action == "__back__":
             self.app.pop_screen()  # type: ignore[attr-defined]
+            return
+        if entry.quick_action == "__tui_move__":
+            state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+            state.reset()
+            self.app.push_screen("moveq_survey")  # type: ignore[attr-defined]
             return
         if not entry.quick_action:
             return
@@ -1471,6 +1711,745 @@ class SurveyMenuScreen(Screen):
                 ]
             )
         )
+
+
+class MoveQuestionSurveyScreen(Screen):
+    BINDINGS = [
+        ("b", "app.pop_screen", "Back"),
+        ("escape", "app.pop_screen", "Back"),
+        ("q", "app.quit", "Quit"),
+        ("?", "app.push_screen('help')", "Help"),
+        ("h", "context_help", "Screen Help"),
+        ("r", "refresh", "Refresh"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            with Vertical():
+                yield Input(
+                    placeholder="Filter surveys by ID or name (regex/text)",
+                    id="survey_filter",
+                )
+                yield OptionList(id="surveys")
+            yield Static("Loading surveys from API...", id="detail")
+        yield Footer()
+
+    def action_refresh(self) -> None:
+        self.on_mount()
+
+    def action_context_help(self) -> None:
+        self.app.push_screen(  # type: ignore[attr-defined]
+            ContextHelpScreen(
+                title="Move Questions: Survey Picker",
+                lines=[
+                    "This is the native in-TUI move flow.",
+                    "Select a survey first; next screens stay inside Textual.",
+                    "Use the guided wizard fallback from Survey Menu if needed.",
+                ],
+            )
+        )
+
+    def on_mount(self) -> None:
+        surveys_widget = self.query_one("#surveys", OptionList)
+        surveys_widget.clear_options()
+        detail = self.query_one("#detail", Static)
+        detail.update("\n".join(["Loading surveys from API...", "", *_account_context_lines()]))
+        try:
+            rows = _list_surveys_for_active_account()
+            self._rows = rows[:400]
+            self._filtered_rows = list(self._rows)
+            self._apply_filter("")
+            detail.update(
+                "\n".join(
+                    [
+                        "Move questions (native TUI).",
+                        "",
+                        "Select a survey to continue.",
+                        "",
+                        *_account_context_lines(),
+                    ]
+                )
+            )
+        except Exception as exc:
+            detail.update(f"ERROR loading surveys: {exc}\n\n" + "\n".join(_account_context_lines()))
+
+    def _apply_filter(self, query: str) -> None:
+        rows = [
+            r for r in getattr(self, "_rows", []) if _survey_filter_matches(r, query)
+        ]
+        self._filtered_rows = rows
+        surveys_widget = self.query_one("#surveys", OptionList)
+        surveys_widget.clear_options()
+        for row in rows:
+            sid = str(row.get("id") or "").strip()
+            if sid:
+                surveys_widget.add_option(_survey_option_label(row))
+
+    def on_input_changed(self, event: Input.Changed) -> None:  # type: ignore[name-defined]
+        if str(getattr(event, "input", None).id or "") != "survey_filter":
+            return
+        self._apply_filter(str(getattr(event, "value", "")))
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:  # type: ignore[name-defined]
+        if str(getattr(event, "input", None).id or "") != "survey_filter":
+            return
+        rows = getattr(self, "_filtered_rows", [])
+        if len(rows) == 1:
+            self._select_survey(rows[0])
+
+    def on_key(self, event) -> None:  # type: ignore[override]
+        if (
+            str(getattr(event, "key", "")) == "down"
+            and str(getattr(self.app.focused, "id", "")) == "survey_filter"
+        ):
+            filtered = getattr(self, "_filtered_rows", [])
+            if filtered:
+                event.prevent_default()
+                self.query_one("#surveys", OptionList).focus()
+                return
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:  # type: ignore[name-defined]
+        idx = getattr(event, "option_index", None)
+        rows = getattr(self, "_filtered_rows", None)
+        if idx is None or not rows or idx < 0 or idx >= len(rows):
+            return
+        survey = rows[idx]
+        detail = self.query_one("#detail", Static)
+        detail.update(
+            "\n".join(
+                [
+                    "Move questions (native TUI)",
+                    "",
+                    f"Survey: {str(survey.get('id') or '').strip()}",
+                    f"Name: {str(survey.get('name') or 'Untitled').strip()}",
+                    f"Active: {'yes' if survey.get('isActive') else 'no'}",
+                    f"Last modified: {str(survey.get('lastModified') or survey.get('creationDate') or '').strip() or '-'}",
+                    "",
+                    "Enter to load question list.",
+                ]
+            )
+        )
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
+        idx = getattr(event, "option_index", None)
+        rows = getattr(self, "_filtered_rows", None)
+        if idx is None or rows is None or idx < 0 or idx >= len(rows):
+            return
+        self._select_survey(rows[idx])
+
+    def _select_survey(self, row: dict[str, Any]) -> None:
+        survey_id = str(row.get("id") or "").strip()
+        if not survey_id:
+            return
+        detail = self.query_one("#detail", Static)
+        detail.update(f"Loading survey definition for {survey_id}...")
+        try:
+            definition = _fetch_survey_definition_for_active_account(survey_id)
+            ordered_qids = _ordered_qids_from_definition_for_tui(definition)
+            labels = _question_labels_from_definition_for_tui(definition, ordered_qids)
+            blocks = _block_labels_from_definition_for_tui(definition)
+            if not ordered_qids:
+                raise RuntimeError("No questions found in selected survey definition.")
+
+            state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+            state.reset()
+            state.survey_id = survey_id
+            state.survey_name = str(row.get("name") or "").strip() or None
+            state.definition = definition
+            state.ordered_qids = ordered_qids
+            state.question_labels = labels
+            state.block_labels = blocks
+            self.app.push_screen("moveq_select")  # type: ignore[attr-defined]
+        except Exception as exc:
+            detail.update(f"ERROR loading survey definition: {exc}")
+
+
+class MoveQuestionSelectScreen(Screen):
+    BINDINGS = [
+        ("b", "app.pop_screen", "Back"),
+        ("escape", "app.pop_screen", "Back"),
+        ("q", "app.quit", "Quit"),
+        ("?", "app.push_screen('help')", "Help"),
+        ("h", "context_help", "Screen Help"),
+        ("r", "refresh", "Refresh"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            with Vertical():
+                yield Input(
+                    placeholder="Filter questions by QID/text (regex/text)",
+                    id="question_filter",
+                )
+                yield OptionList(id="questions")
+            yield Static("", id="detail")
+        yield Footer()
+
+    def action_refresh(self) -> None:
+        self._render()
+
+    def action_context_help(self) -> None:
+        self.app.push_screen(  # type: ignore[attr-defined]
+            ContextHelpScreen(
+                title="Move Questions: Selection",
+                lines=[
+                    "Toggle one or many QIDs for the move operation.",
+                    "Use 'Continue to placement' after selecting QIDs.",
+                    "This screen does not leave Textual.",
+                ],
+            )
+        )
+
+    def on_mount(self) -> None:
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        qfilter = self.query_one("#question_filter", Input)
+        qfilter.value = state.filter_query or ""
+        self._render()
+
+    def _filtered_qids(self, query: str) -> list[str]:
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        raw = (query or "").strip()
+        if not raw:
+            return list(state.ordered_qids)
+        try:
+            pattern = re.compile(raw, re.IGNORECASE)
+        except re.error:
+            pattern = re.compile(re.escape(raw), re.IGNORECASE)
+        out: list[str] = []
+        for qid in state.ordered_qids:
+            label = state.question_labels.get(qid, qid)
+            if pattern.search(qid) or pattern.search(label):
+                out.append(qid)
+        return out
+
+    def _render(self, *, message: str | None = None) -> None:
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        options = self.query_one("#questions", OptionList)
+        options.clear_options()
+        detail = self.query_one("#detail", Static)
+        if not state.survey_id:
+            detail.update("No survey selected.")
+            return
+
+        visible_qids = self._filtered_qids(state.filter_query)
+        self._visible_qids = visible_qids
+
+        options.add_option(f"Continue to placement ({len(state.selected_qids)} selected)")
+        options.add_option("Select all visible")
+        options.add_option("Clear selection")
+        for qid in visible_qids:
+            mark = "[x]" if qid in state.selected_qids else "[ ]"
+            options.add_option(f"{mark} {state.question_labels.get(qid, qid)}")
+        options.add_option("← Back")
+
+        lines = [
+            f"Survey: {state.survey_id}",
+            f"Selected QIDs: {len(state.selected_qids)}",
+            "",
+            "Use Enter to toggle QIDs. Continue when selection is ready.",
+            "",
+            *(["Last result:", message, ""] if message else []),
+            *(["State:", state.last_result or "", ""] if state.last_result else []),
+            *_account_context_lines(),
+        ]
+        detail.update("\n".join([line for line in lines if line is not None]))
+
+    def on_input_changed(self, event: Input.Changed) -> None:  # type: ignore[name-defined]
+        if str(getattr(event, "input", None).id or "") != "question_filter":
+            return
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        state.filter_query = str(getattr(event, "value", ""))
+        self._render()
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:  # type: ignore[name-defined]
+        idx = getattr(event, "option_index", None)
+        visible_qids = getattr(self, "_visible_qids", [])
+        if idx is None:
+            return
+        if idx < 3 or idx >= 3 + len(visible_qids):
+            return
+        qid = visible_qids[idx - 3]
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        detail = self.query_one("#detail", Static)
+        question = {}
+        if isinstance(state.definition, dict):
+            questions = state.definition.get("Questions")
+            if isinstance(questions, dict):
+                payload = questions.get(qid)
+                if isinstance(payload, dict):
+                    question = payload
+        detail.update(
+            "\n".join(
+                [
+                    state.question_labels.get(qid, qid),
+                    "",
+                    f"DataExportTag: {str(question.get('DataExportTag') or '-').strip() or '-'}",
+                    f"Type: {str(question.get('QuestionType') or '-').strip() or '-'}",
+                    f"Selector: {str(question.get('Selector') or '-').strip() or '-'}",
+                    "",
+                    f"Currently selected: {'yes' if qid in state.selected_qids else 'no'}",
+                    "",
+                    "Press Enter to toggle this QID.",
+                ]
+            )
+        )
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
+        idx = getattr(event, "option_index", None)
+        visible_qids = getattr(self, "_visible_qids", [])
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        if idx is None:
+            return
+        if idx == 0:
+            if not state.selected_qids:
+                self._render(message="Select at least one QID before continuing.")
+                return
+            self.app.push_screen("moveq_place")  # type: ignore[attr-defined]
+            return
+        if idx == 1:
+            for qid in visible_qids:
+                if qid not in state.selected_qids:
+                    state.selected_qids.append(qid)
+            self._render(message=f"Selected {len(visible_qids)} visible QID(s).")
+            return
+        if idx == 2:
+            state.selected_qids = []
+            self._render(message="Cleared selected QIDs.")
+            return
+        if idx == 3 + len(visible_qids):
+            self.app.pop_screen()  # type: ignore[attr-defined]
+            return
+        if idx < 3 or idx >= 3 + len(visible_qids):
+            return
+        qid = visible_qids[idx - 3]
+        if qid in state.selected_qids:
+            state.selected_qids = [item for item in state.selected_qids if item != qid]
+            self._render(message=f"Unselected {qid}.")
+            return
+        state.selected_qids.append(qid)
+        self._render(message=f"Selected {qid}.")
+
+
+class MoveQuestionPlacementScreen(Screen):
+    BINDINGS = [
+        ("b", "app.pop_screen", "Back"),
+        ("escape", "app.pop_screen", "Back"),
+        ("q", "app.quit", "Quit"),
+        ("?", "app.push_screen('help')", "Help"),
+        ("h", "context_help", "Screen Help"),
+        ("r", "refresh", "Refresh"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            yield OptionList(id="placement")
+            yield Static("", id="detail")
+        yield Footer()
+
+    def action_refresh(self) -> None:
+        self._render()
+
+    def action_context_help(self) -> None:
+        self.app.push_screen(  # type: ignore[attr-defined]
+            ContextHelpScreen(
+                title="Move Questions: Placement",
+                lines=[
+                    "Choose where selected QIDs should move.",
+                    "Anchor choices set after/before semantics.",
+                    "Block choices set explicit target block + prepend/append.",
+                ],
+            )
+        )
+
+    def on_mount(self) -> None:
+        self._render()
+
+    def _render(self, *, message: str | None = None) -> None:
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        menu = self.query_one("#placement", OptionList)
+        menu.clear_options()
+        menu.add_option("Use auto target block (append)")
+        menu.add_option("Use auto target block (prepend)")
+        menu.add_option("Place after anchor question")
+        menu.add_option("Place before anchor question")
+        menu.add_option("Place in specific block (append)")
+        menu.add_option("Place in specific block (prepend)")
+        menu.add_option("Continue to run options")
+        menu.add_option("← Back")
+
+        selected = ", ".join(state.selected_qids[:6]) if state.selected_qids else "(none)"
+        if len(state.selected_qids) > 6:
+            selected += f" … +{len(state.selected_qids) - 6}"
+        lines = [
+            f"Survey: {state.survey_id or '(none)'}",
+            f"Selected QIDs: {selected}",
+            "",
+            f"Placement: {state.placement_summary()}",
+            "",
+            *(["Last result:", message, ""] if message else []),
+            *(["State:", state.last_result or "", ""] if state.last_result else []),
+            "Continue to run options when placement is ready.",
+        ]
+        self.query_one("#detail", Static).update("\n".join([line for line in lines if line is not None]))
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
+        idx = getattr(event, "option_index", None)
+        if idx is None:
+            return
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        if idx == 0:
+            state.after_qid = None
+            state.before_qid = None
+            state.target_block_id = None
+            state.position = "append"
+            state.last_result = "Placement updated: auto append."
+            self._render()
+            return
+        if idx == 1:
+            state.after_qid = None
+            state.before_qid = None
+            state.target_block_id = None
+            state.position = "prepend"
+            state.last_result = "Placement updated: auto prepend."
+            self._render()
+            return
+        if idx == 2:
+            state.anchor_mode = "after"
+            self.app.push_screen("moveq_anchor")  # type: ignore[attr-defined]
+            return
+        if idx == 3:
+            state.anchor_mode = "before"
+            self.app.push_screen("moveq_anchor")  # type: ignore[attr-defined]
+            return
+        if idx == 4:
+            state.block_pick_position = "append"
+            self.app.push_screen("moveq_block")  # type: ignore[attr-defined]
+            return
+        if idx == 5:
+            state.block_pick_position = "prepend"
+            self.app.push_screen("moveq_block")  # type: ignore[attr-defined]
+            return
+        if idx == 6:
+            self.app.push_screen("moveq_run")  # type: ignore[attr-defined]
+            return
+        self.app.pop_screen()  # type: ignore[attr-defined]
+
+
+class MoveQuestionAnchorScreen(Screen):
+    BINDINGS = [
+        ("b", "app.pop_screen", "Back"),
+        ("escape", "app.pop_screen", "Back"),
+        ("q", "app.quit", "Quit"),
+        ("?", "app.push_screen('help')", "Help"),
+        ("h", "context_help", "Screen Help"),
+        ("r", "refresh", "Refresh"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            with Vertical():
+                yield Input(
+                    placeholder="Filter anchor questions by QID/text",
+                    id="anchor_filter",
+                )
+                yield OptionList(id="anchors")
+            yield Static("", id="detail")
+        yield Footer()
+
+    def action_refresh(self) -> None:
+        self._render()
+
+    def action_context_help(self) -> None:
+        self.app.push_screen(  # type: ignore[attr-defined]
+            ContextHelpScreen(
+                title="Move Questions: Anchor Picker",
+                lines=[
+                    "Pick an anchor question for after/before placement.",
+                    "Selected moved QIDs are excluded from anchor candidates.",
+                ],
+            )
+        )
+
+    def on_mount(self) -> None:
+        self._render()
+
+    def _filtered_qids(self, query: str) -> list[str]:
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        candidates = [qid for qid in state.ordered_qids if qid not in state.selected_qids]
+        raw = (query or "").strip()
+        if not raw:
+            return candidates
+        try:
+            pattern = re.compile(raw, re.IGNORECASE)
+        except re.error:
+            pattern = re.compile(re.escape(raw), re.IGNORECASE)
+        out: list[str] = []
+        for qid in candidates:
+            label = state.question_labels.get(qid, qid)
+            if pattern.search(qid) or pattern.search(label):
+                out.append(qid)
+        return out
+
+    def _render(self) -> None:
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        menu = self.query_one("#anchors", OptionList)
+        menu.clear_options()
+        qfilter = self.query_one("#anchor_filter", Input)
+        query = str(qfilter.value or "")
+        visible_qids = self._filtered_qids(query)
+        self._visible_qids = visible_qids
+        for qid in visible_qids:
+            menu.add_option(state.question_labels.get(qid, qid))
+        menu.add_option("← Back")
+        mode = state.anchor_mode or "after"
+        self.query_one("#detail", Static).update(
+            "\n".join(
+                [
+                    f"Anchor mode: {mode}",
+                    "",
+                    f"Candidates: {len(visible_qids)}",
+                    "Select an anchor question.",
+                ]
+            )
+        )
+
+    def on_input_changed(self, event: Input.Changed) -> None:  # type: ignore[name-defined]
+        if str(getattr(event, "input", None).id or "") != "anchor_filter":
+            return
+        self._render()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
+        idx = getattr(event, "option_index", None)
+        visible_qids = getattr(self, "_visible_qids", [])
+        if idx is None:
+            return
+        if idx == len(visible_qids):
+            self.app.pop_screen()  # type: ignore[attr-defined]
+            return
+        if idx < 0 or idx >= len(visible_qids):
+            return
+        qid = visible_qids[idx]
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        if state.anchor_mode == "before":
+            state.before_qid = qid
+            state.after_qid = None
+            state.target_block_id = None
+            state.last_result = f"Placement updated: before {qid}."
+        else:
+            state.after_qid = qid
+            state.before_qid = None
+            state.target_block_id = None
+            state.last_result = f"Placement updated: after {qid}."
+        self.app.pop_screen()  # type: ignore[attr-defined]
+
+
+class MoveQuestionBlockScreen(Screen):
+    BINDINGS = [
+        ("b", "app.pop_screen", "Back"),
+        ("escape", "app.pop_screen", "Back"),
+        ("q", "app.quit", "Quit"),
+        ("?", "app.push_screen('help')", "Help"),
+        ("h", "context_help", "Screen Help"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            yield OptionList(id="blocks")
+            yield Static("", id="detail")
+        yield Footer()
+
+    def action_context_help(self) -> None:
+        self.app.push_screen(  # type: ignore[attr-defined]
+            ContextHelpScreen(
+                title="Move Questions: Block Picker",
+                lines=[
+                    "Pick a destination block for the selected QIDs.",
+                    "Placement mode (append/prepend) is kept from prior selection.",
+                ],
+            )
+        )
+
+    def on_mount(self) -> None:
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        menu = self.query_one("#blocks", OptionList)
+        menu.clear_options()
+        block_ids = list(state.block_labels.keys())
+        self._block_ids = block_ids
+        for bid in block_ids:
+            menu.add_option(state.block_labels.get(bid, bid))
+        menu.add_option("← Back")
+        self.query_one("#detail", Static).update(
+            "\n".join(
+                [
+                    f"Blocks: {len(block_ids)}",
+                    f"Mode: {state.block_pick_position}",
+                    "",
+                    "Select target block.",
+                ]
+            )
+        )
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
+        idx = getattr(event, "option_index", None)
+        block_ids = getattr(self, "_block_ids", [])
+        if idx is None:
+            return
+        if idx == len(block_ids):
+            self.app.pop_screen()  # type: ignore[attr-defined]
+            return
+        if idx < 0 or idx >= len(block_ids):
+            return
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        bid = block_ids[idx]
+        state.target_block_id = bid
+        state.position = state.block_pick_position or "append"
+        state.after_qid = None
+        state.before_qid = None
+        state.last_result = f"Placement updated: {state.position} in block {bid}."
+        self.app.pop_screen()  # type: ignore[attr-defined]
+
+
+class MoveQuestionRunScreen(Screen):
+    BINDINGS = [
+        ("b", "app.pop_screen", "Back"),
+        ("escape", "app.pop_screen", "Back"),
+        ("q", "app.quit", "Quit"),
+        ("?", "app.push_screen('help')", "Help"),
+        ("h", "context_help", "Screen Help"),
+        ("r", "refresh", "Refresh"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            yield OptionList(id="actions")
+            yield Static("", id="detail")
+        yield Footer()
+
+    def action_refresh(self) -> None:
+        self._render()
+
+    def action_context_help(self) -> None:
+        self.app.push_screen(  # type: ignore[attr-defined]
+            ContextHelpScreen(
+                title="Move Questions: Run Options",
+                lines=[
+                    "Toggle dry-run/force-live/publish settings.",
+                    "Then run inside TUI without dropping into questionary prompts.",
+                    "Equivalent CLI command is always shown.",
+                ],
+            )
+        )
+
+    def on_mount(self) -> None:
+        self._render()
+
+    def _render(self, *, message: str | None = None) -> None:
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        menu = self.query_one("#actions", OptionList)
+        menu.clear_options()
+        menu.add_option(f"Dry run: {'ON' if state.dry_run else 'OFF'}")
+        menu.add_option(f"Force live: {'ON' if state.force_live else 'OFF'}")
+        menu.add_option(f"Publish after move: {'ON' if state.publish else 'OFF'}")
+        menu.add_option("Set publish description")
+        menu.add_option("Run move-question now")
+        menu.add_option("Show equivalent command")
+        menu.add_option("← Back")
+
+        detail_lines = [
+            f"Survey: {state.survey_id or '(none)'}",
+            f"Selected QIDs: {', '.join(state.selected_qids) if state.selected_qids else '(none)'}",
+            f"Placement: {state.placement_summary()}",
+            "",
+            f"Publish description: {state.publish_description.strip() or '(auto)'}",
+            "",
+            "Command preview:",
+            state.command(),
+            "",
+        ]
+        if message:
+            detail_lines.extend(["Last result:", message, ""])
+        if state.last_result:
+            detail_lines.extend(["State:", state.last_result, ""])
+        detail_lines.append("Tip: run dry-run first, then live.")
+        self.query_one("#detail", Static).update("\n".join(detail_lines))
+
+    def _prompt_publish_description(self) -> str | None:
+        with self.app.suspend():  # type: ignore[attr-defined]
+            try:
+                return input("Publish description (blank clears): ")
+            except EOFError:
+                return None
+
+    def _run_move(self) -> str:
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        if not state.survey_id:
+            return "No survey selected."
+        if not state.selected_qids:
+            return "No QIDs selected."
+        argv = state.argv()
+        with self.app.suspend():  # type: ignore[attr-defined]
+            print(f"\n[qsync:tui] Running: qsync {shlex.join(argv)}")
+
+            def _runner() -> int:
+                return _run_qsync_cli_subcommand(argv)
+
+            code, elapsed = _timed_call(_runner)
+            print(f"[qsync:tui] move-question exit={code} in {elapsed}")
+        if code == 0:
+            return f"Completed successfully in {elapsed}."
+        return f"Exited with code {code} after {elapsed}."
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
+        idx = getattr(event, "option_index", None)
+        if idx is None:
+            return
+        state: MoveQuestionState = self.app.move_question_state  # type: ignore[attr-defined]
+        if idx == 0:
+            state.dry_run = not state.dry_run
+            if state.dry_run:
+                state.force_live = False
+            self._render(message=f"Dry run set to {state.dry_run}.")
+            return
+        if idx == 1:
+            if state.dry_run:
+                self._render(message="Force live applies only to live runs.")
+                return
+            state.force_live = not state.force_live
+            self._render(message=f"Force live set to {state.force_live}.")
+            return
+        if idx == 2:
+            if state.dry_run:
+                self._render(message="Publish is ignored in dry-run mode.")
+                return
+            state.publish = not state.publish
+            self._render(message=f"Publish set to {state.publish}.")
+            return
+        if idx == 3:
+            typed = self._prompt_publish_description()
+            if typed is None:
+                self._render(message="Publish description unchanged.")
+                return
+            state.publish_description = str(typed).strip()
+            self._render(message="Updated publish description.")
+            return
+        if idx == 4:
+            try:
+                message = self._run_move()
+            except Exception as exc:
+                message = f"ERROR running move-question: {exc}"
+            state.last_result = message
+            self._render(message=message)
+            return
+        if idx == 5:
+            self._render(message=state.command())
+            return
+        self.app.pop_screen()  # type: ignore[attr-defined]
 
 
 class PullSurveyScreen(Screen):
