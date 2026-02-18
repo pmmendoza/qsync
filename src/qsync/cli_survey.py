@@ -456,7 +456,7 @@ def _typed_confirmation(
 def handle_menu(args: argparse.Namespace) -> None:
     """Interactive wizard for common `qsync survey ...` operations."""
 
-    from .interactive_menu import is_interactive, select_from_list
+    from .interactive_menu import MenuItem, is_interactive, select_from_list
 
     if not is_interactive():
         raise SystemExit("[survey-menu] ERROR: Interactive TTY required.")
@@ -2203,6 +2203,159 @@ def handle_menu(args: argparse.Namespace) -> None:
         token = _label_head(picked)
         return token or None
 
+    def _block_elements_for_menu(
+        definition: Mapping[str, Any],
+        *,
+        block_id: str,
+    ) -> list[dict[str, Any]]:
+        blocks = definition.get("Blocks")
+        if not isinstance(blocks, dict):
+            return []
+        block = blocks.get(block_id)
+        if not isinstance(block, dict):
+            return []
+        elements = (
+            block.get("BlockElements")
+            if isinstance(block.get("BlockElements"), list)
+            else block.get("Elements")
+        )
+        if not isinstance(elements, list):
+            return []
+        return [elem for elem in elements if isinstance(elem, dict)]
+
+    def _block_name_for_menu(
+        definition: Mapping[str, Any],
+        *,
+        block_id: str,
+    ) -> str:
+        blocks = definition.get("Blocks")
+        if not isinstance(blocks, dict):
+            return block_id
+        block = blocks.get(block_id)
+        if not isinstance(block, dict):
+            return block_id
+        block_name = (
+            str(block.get("Description") or "").strip()
+            or str(block.get("BlockDescription") or "").strip()
+            or "Block"
+        )
+        return f"{block_id} - {_truncate_menu_text(block_name, limit=80)}"
+
+    def _block_element_token(elem: Mapping[str, Any]) -> str:
+        elem_type = str(elem.get("Type") or "").strip()
+        if elem_type == "Question":
+            qid = str(elem.get("QuestionID") or "").strip()
+            return qid or "Question"
+        if elem_type == "Page Break":
+            return "PB"
+        return elem_type or "Element"
+
+    def _block_element_line(
+        definition: Mapping[str, Any],
+        elem: Mapping[str, Any],
+        *,
+        marked_qids: set[str] | None = None,
+    ) -> str:
+        elem_type = str(elem.get("Type") or "").strip()
+        if elem_type == "Question":
+            qid = str(elem.get("QuestionID") or "").strip() or "Question"
+            questions = definition.get("Questions")
+            question = questions.get(qid) if isinstance(questions, dict) else None
+            text = ""
+            tag = ""
+            if isinstance(question, dict):
+                text = (
+                    str(question.get("QuestionText") or "").strip()
+                    or str(question.get("QuestionDescription") or "").strip()
+                )
+                tag = str(question.get("DataExportTag") or "").strip()
+            marker = " [selected]" if marked_qids and qid in marked_qids else ""
+            if tag:
+                return f"{qid}{marker} (tag={tag}) - {_truncate_menu_text(text, limit=70)}"
+            return f"{qid}{marker} - {_truncate_menu_text(text, limit=70)}"
+        if elem_type == "Page Break":
+            return "--- PB ---"
+        return f"[{elem_type or 'Element'}]"
+
+    def _slot_context(elements: list[dict[str, Any]], *, slot_index: int) -> str:
+        if not elements:
+            return "empty block"
+        if slot_index <= 0:
+            return f"start (before {_block_element_token(elements[0])})"
+        if slot_index >= len(elements):
+            return f"end (after {_block_element_token(elements[-1])})"
+        prev = _block_element_token(elements[slot_index - 1])
+        nxt = _block_element_token(elements[slot_index])
+        return f"between {prev} and {nxt}"
+
+    def _pick_insert_slot_in_block(
+        definition: Mapping[str, Any],
+        *,
+        block_id: str,
+        message: str,
+        marked_qids: set[str] | None = None,
+    ) -> int | None:
+        elements = _block_elements_for_menu(definition, block_id=block_id)
+        block_label = _block_name_for_menu(definition, block_id=block_id)
+
+        menu_items: list[MenuItem] = [
+            MenuItem(label=f"{block_label} selected.", enabled=False),
+            MenuItem.separator(),
+        ]
+        for slot_idx in range(len(elements) + 1):
+            context = _slot_context(elements, slot_index=slot_idx)
+            menu_items.append(
+                MenuItem(
+                    label=f"[insert here] {context}",
+                    value=f"slot:{slot_idx}",
+                )
+            )
+            if slot_idx < len(elements):
+                line = _block_element_line(
+                    definition,
+                    elements[slot_idx],
+                    marked_qids=marked_qids,
+                )
+                menu_items.append(MenuItem(label=f"  {line}", enabled=False))
+
+        menu_items.extend([MenuItem.separator(), MenuItem(label="↩ Back", value="__back__")])
+        picked = select_from_list(
+            message,
+            menu_items,
+            instruction="Pick an insertion boundary. Non-selectable rows show current block elements.",
+        )
+        if not picked or picked == "__back__":
+            return None
+        token = str(picked)
+        if not token.startswith("slot:"):
+            return None
+        try:
+            return int(token.split(":", 1)[1])
+        except (TypeError, ValueError):
+            return None
+
+    def _prompt_block_slot_placement(
+        definition: Mapping[str, Any],
+        *,
+        title: str,
+        marked_qids: set[str] | None = None,
+    ) -> tuple[str, int] | None:
+        block_id = _pick_block_id_from_definition(
+            definition,
+            message="Choose target block:",
+        )
+        if not block_id:
+            return None
+        slot_index = _pick_insert_slot_in_block(
+            definition,
+            block_id=block_id,
+            message=title,
+            marked_qids=marked_qids,
+        )
+        if slot_index is None:
+            return None
+        return (block_id, slot_index)
+
     def _prompt_question_placement(
         definition: Mapping[str, Any],
         *,
@@ -2617,13 +2770,37 @@ def handle_menu(args: argparse.Namespace) -> None:
                     print("[survey-menu] No non-empty question lines were provided.")
                     return
 
-        placement = _prompt_question_placement(
+        placement = _prompt_block_slot_placement(
             definition,
-            title="Where should the new question(s) be inserted?",
+            title="Choose where to insert new question(s) in the selected block:",
         )
         if not placement:
             return
-        target_block_id, after_qid, before_qid, position = placement
+        target_block_id, insert_index = placement
+        after_qid = None
+        before_qid = None
+        position = "append"
+
+        page_break_mode = "none"
+        page_break_choice = select_from_list(
+            "Page break handling for inserted question(s):",
+            [
+                "No extra page breaks",
+                "Add page break before inserted question(s)",
+                "Add page break after inserted question(s)",
+                "Add page break between inserted questions",
+                "↩ Back",
+            ],
+            instruction="This controls page-break elements inserted together with the new questions.",
+        )
+        if not page_break_choice or page_break_choice.endswith("Back"):
+            return
+        if page_break_choice.startswith("Add page break before"):
+            page_break_mode = "before"
+        elif page_break_choice.startswith("Add page break after"):
+            page_break_mode = "after"
+        elif page_break_choice.startswith("Add page break between"):
+            page_break_mode = "between"
 
         data_export_tag = input("Base DataExportTag (optional): ").strip() or None
         allow_duplicate_tags = False
@@ -2666,6 +2843,8 @@ def handle_menu(args: argparse.Namespace) -> None:
                 after_qid=after_qid,
                 before_qid=before_qid,
                 position=position,
+                insert_index=insert_index,
+                page_break_mode=page_break_mode,
                 data_export_tag=data_export_tag,
                 allow_duplicate_tags=bool(allow_duplicate_tags),
                 dry_run=bool(dry_run),
@@ -2705,14 +2884,17 @@ def handle_menu(args: argparse.Namespace) -> None:
         if not qids:
             return
 
-        placement = _prompt_question_placement(
+        placement = _prompt_block_slot_placement(
             definition,
-            title="Where should selected question(s) be moved?",
-            excluded_anchors=set(qids),
+            title="Choose where to move selected question(s) in the target block:",
+            marked_qids=set(qids),
         )
         if not placement:
             return
-        target_block_id, after_qid, before_qid, position = placement
+        target_block_id, insert_index = placement
+        after_qid = None
+        before_qid = None
+        position = "append"
 
         dry_run = select_from_list("Dry run?", ["No", "Yes"]) == "Yes"
         force_live = False
@@ -2741,6 +2923,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                 after_qid=after_qid,
                 before_qid=before_qid,
                 position=position,
+                insert_index=insert_index,
                 dry_run=bool(dry_run),
                 force_live=bool(force_live),
                 yes=False,
@@ -7373,6 +7556,127 @@ def _resolve_insert_index(
     return len(elements)
 
 
+def _parse_insert_index_override(value: Any) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = int(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("--insert-index must be an integer >= 0.") from exc
+    if parsed < 0:
+        raise ValueError("--insert-index must be >= 0.")
+    return parsed
+
+
+def _resolve_insert_index_with_override(
+    definition: Mapping[str, Any],
+    *,
+    block_id: str,
+    after_qid: str | None,
+    before_qid: str | None,
+    position: str,
+    insert_index_override: int | None,
+) -> int:
+    if insert_index_override is None:
+        return _resolve_insert_index(
+            definition,
+            block_id=block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+            position=position,
+        )
+
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise ValueError("Survey definition has no Blocks map.")
+    block = blocks.get(block_id)
+    if not isinstance(block, dict):
+        raise ValueError(f"Block {block_id} was not found in this survey.")
+    elements, _ = _block_elements_ref(block)
+    if insert_index_override > len(elements):
+        raise ValueError(
+            f"--insert-index {insert_index_override} exceeds block length {len(elements)}."
+        )
+    return insert_index_override
+
+
+def _adjust_insert_index_after_qid_removal(
+    definition: Mapping[str, Any],
+    *,
+    block_id: str,
+    insert_index: int,
+    qids_to_remove: Iterable[str],
+) -> int:
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        return insert_index
+    block = blocks.get(block_id)
+    if not isinstance(block, dict):
+        return insert_index
+
+    qid_set = {str(qid).strip() for qid in qids_to_remove if str(qid).strip()}
+    if not qid_set:
+        return insert_index
+
+    elements = (
+        block.get("BlockElements")
+        if isinstance(block.get("BlockElements"), list)
+        else block.get("Elements")
+    )
+    if not isinstance(elements, list):
+        return insert_index
+
+    bounded = max(0, min(int(insert_index), len(elements)))
+    removed_before = 0
+    for idx, elem in enumerate(elements):
+        if idx >= bounded:
+            break
+        if not isinstance(elem, dict):
+            continue
+        if str(elem.get("Type") or "").strip() != "Question":
+            continue
+        qid = str(elem.get("QuestionID") or "").strip()
+        if qid in qid_set:
+            removed_before += 1
+    return max(0, bounded - removed_before)
+
+
+def _build_insert_elements(
+    *,
+    qids: list[str],
+    page_break_mode: str = "none",
+) -> list[dict[str, Any]]:
+    mode = str(page_break_mode or "none").strip().lower()
+    if mode not in {"none", "before", "after", "between"}:
+        raise ValueError("page_break_mode must be one of: none, before, after, between.")
+
+    question_elements = [
+        {"Type": "Question", "QuestionID": str(qid)}
+        for qid in qids
+        if str(qid).strip()
+    ]
+    if not question_elements:
+        return []
+
+    if mode == "none":
+        return question_elements
+    if mode == "before":
+        return [{"Type": "Page Break"}, *question_elements]
+    if mode == "after":
+        return [*question_elements, {"Type": "Page Break"}]
+
+    # between
+    out: list[dict[str, Any]] = []
+    for idx, elem in enumerate(question_elements):
+        if idx > 0:
+            out.append({"Type": "Page Break"})
+        out.append(elem)
+    return out
+
+
 def _remove_qids_from_all_blocks(
     definition: Mapping[str, Any],
     qids: Iterable[str],
@@ -7412,6 +7716,7 @@ def _insert_question_elements(
     block_id: str,
     insert_index: int,
     qids: list[str],
+    page_break_mode: str = "none",
 ) -> None:
     blocks = definition.get("Blocks")
     if not isinstance(blocks, dict):
@@ -7421,8 +7726,8 @@ def _insert_question_elements(
         raise ValueError(f"Block {block_id} was not found in this survey.")
     elements, _ = _block_elements_ref(block)
     idx = max(0, min(int(insert_index), len(elements)))
-    for qid in qids:
-        elements.insert(idx, {"Type": "Question", "QuestionID": str(qid)})
+    for elem in _build_insert_elements(qids=qids, page_break_mode=page_break_mode):
+        elements.insert(idx, elem)
         idx += 1
 
 
@@ -8023,11 +8328,26 @@ def handle_add_question(args: argparse.Namespace) -> None:
     before_qid = (getattr(args, "before_qid", None) or "").strip() or None
     target_block_id = (getattr(args, "target_block_id", None) or "").strip() or None
     position = (getattr(args, "position", None) or "append").strip().lower()
+    try:
+        insert_index_override = _parse_insert_index_override(
+            getattr(args, "insert_index", None)
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[add-question] ERROR: {exc}") from exc
+    page_break_mode = str(getattr(args, "page_break_mode", None) or "none").strip().lower()
+    if page_break_mode not in {"none", "before", "after", "between"}:
+        raise SystemExit(
+            "[add-question] ERROR: --page-break-mode must be one of none, before, after, between."
+        )
     if position not in {"append", "prepend"}:
         raise SystemExit("[add-question] ERROR: --position must be append or prepend.")
     if after_qid and before_qid:
         raise SystemExit(
             "[add-question] ERROR: Use only one of --after-qid or --before-qid."
+        )
+    if insert_index_override is not None and (after_qid or before_qid):
+        raise SystemExit(
+            "[add-question] ERROR: --insert-index cannot be combined with --after-qid/--before-qid."
         )
 
     base_url, headers = _get_client_config_for_args(args)
@@ -8169,12 +8489,13 @@ def handle_add_question(args: argparse.Namespace) -> None:
             before_qid=before_qid,
             fallback_qid=template_qid,
         )
-        planned_index = _resolve_insert_index(
+        planned_index = _resolve_insert_index_with_override(
             definition,
             block_id=planned_block_id,
             after_qid=after_qid,
             before_qid=before_qid,
             position=position,
+            insert_index_override=insert_index_override,
         )
     except ValueError as exc:
         raise SystemExit(f"[add-question] ERROR: {exc}") from exc
@@ -8182,6 +8503,8 @@ def handle_add_question(args: argparse.Namespace) -> None:
     print(
         f"[add-question] Plan: create {len(planned_payloads)} question(s) in block {planned_block_id} at index {planned_index}."
     )
+    if page_break_mode != "none":
+        print(f"[add-question] Page break mode: {page_break_mode}")
     if mode_from_scratch:
         from_scratch_label = {
             "mc": "multiple-choice",
@@ -8238,29 +8561,48 @@ def handle_add_question(args: argparse.Namespace) -> None:
             before_qid=before_qid,
             fallback_qid=template_qid,
         )
-        insert_index = _resolve_insert_index(
+        insert_index = _resolve_insert_index_with_override(
             live_definition,
             block_id=block_id,
             after_qid=after_qid,
             before_qid=before_qid,
             position=position,
+            insert_index_override=insert_index_override,
         )
     except ValueError as exc:
         raise SystemExit(f"[add-question] ERROR: {exc}") from exc
 
     touched_blocks = _remove_qids_from_all_blocks(live_definition, created_qids)
-    insert_index = _resolve_insert_index(
-        live_definition,
-        block_id=block_id,
-        after_qid=after_qid,
-        before_qid=before_qid,
-        position=position,
-    )
+    if insert_index_override is None:
+        insert_index = _resolve_insert_index_with_override(
+            live_definition,
+            block_id=block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+            position=position,
+            insert_index_override=None,
+        )
+    else:
+        block_map = live_definition.get("Blocks")
+        if not isinstance(block_map, dict):
+            raise SystemExit("[add-question] ERROR: Survey definition has no Blocks map.")
+        block_payload = block_map.get(block_id)
+        if not isinstance(block_payload, dict):
+            raise SystemExit(f"[add-question] ERROR: Block {block_id} was not found.")
+        elements = (
+            block_payload.get("BlockElements")
+            if isinstance(block_payload.get("BlockElements"), list)
+            else block_payload.get("Elements")
+        )
+        if not isinstance(elements, list):
+            elements = []
+        insert_index = max(0, min(insert_index_override, len(elements)))
     _insert_question_elements(
         live_definition,
         block_id=block_id,
         insert_index=insert_index,
         qids=created_qids,
+        page_break_mode=page_break_mode,
     )
     touched_blocks.add(block_id)
 
@@ -8331,11 +8673,21 @@ def handle_move_question(args: argparse.Namespace) -> None:
     before_qid = (getattr(args, "before_qid", None) or "").strip() or None
     target_block_id = (getattr(args, "target_block_id", None) or "").strip() or None
     position = (getattr(args, "position", None) or "append").strip().lower()
+    try:
+        insert_index_override = _parse_insert_index_override(
+            getattr(args, "insert_index", None)
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[move-question] ERROR: {exc}") from exc
     if position not in {"append", "prepend"}:
         raise SystemExit("[move-question] ERROR: --position must be append or prepend.")
     if after_qid and before_qid:
         raise SystemExit(
             "[move-question] ERROR: Use only one of --after-qid or --before-qid."
+        )
+    if insert_index_override is not None and (after_qid or before_qid):
+        raise SystemExit(
+            "[move-question] ERROR: --insert-index cannot be combined with --after-qid/--before-qid."
         )
     if after_qid and after_qid in qids:
         raise SystemExit(
@@ -8374,12 +8726,13 @@ def handle_move_question(args: argparse.Namespace) -> None:
             before_qid=before_qid,
             fallback_qid=qids[0],
         )
-        insert_index = _resolve_insert_index(
+        insert_index = _resolve_insert_index_with_override(
             definition,
             block_id=block_id,
             after_qid=after_qid,
             before_qid=before_qid,
             position=position,
+            insert_index_override=insert_index_override,
         )
     except ValueError as exc:
         raise SystemExit(f"[move-question] ERROR: {exc}") from exc
@@ -8396,14 +8749,40 @@ def handle_move_question(args: argparse.Namespace) -> None:
         prompt=f"Move {len(qids)} question(s) in {survey_id}?",
     )
 
+    adjusted_insert_index: int | None = None
+    if insert_index_override is not None:
+        adjusted_insert_index = _adjust_insert_index_after_qid_removal(
+            definition,
+            block_id=block_id,
+            insert_index=insert_index_override,
+            qids_to_remove=qids,
+        )
+
     touched_blocks = _remove_qids_from_all_blocks(definition, qids)
-    insert_index = _resolve_insert_index(
-        definition,
-        block_id=block_id,
-        after_qid=after_qid,
-        before_qid=before_qid,
-        position=position,
-    )
+    if insert_index_override is None:
+        insert_index = _resolve_insert_index_with_override(
+            definition,
+            block_id=block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+            position=position,
+            insert_index_override=None,
+        )
+    else:
+        block_map = definition.get("Blocks")
+        if not isinstance(block_map, dict):
+            raise SystemExit("[move-question] ERROR: Survey definition has no Blocks map.")
+        block_payload = block_map.get(block_id)
+        if not isinstance(block_payload, dict):
+            raise SystemExit(f"[move-question] ERROR: Block {block_id} was not found.")
+        elements = (
+            block_payload.get("BlockElements")
+            if isinstance(block_payload.get("BlockElements"), list)
+            else block_payload.get("Elements")
+        )
+        if not isinstance(elements, list):
+            elements = []
+        insert_index = max(0, min(int(adjusted_insert_index or 0), len(elements)))
     _insert_question_elements(
         definition,
         block_id=block_id,
@@ -11706,6 +12085,23 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Placement when no --after-qid/--before-qid is provided (default: append)",
     )
     p_add_question.add_argument(
+        "--insert-index",
+        type=int,
+        help=(
+            "0-based insertion boundary inside target block BlockElements; "
+            "overrides anchor/position placement."
+        ),
+    )
+    p_add_question.add_argument(
+        "--page-break-mode",
+        choices=["none", "before", "after", "between"],
+        default="none",
+        help=(
+            "Insert page break(s) with newly created questions: "
+            "none | before | after | between."
+        ),
+    )
+    p_add_question.add_argument(
         "--data-export-tag",
         dest="data_export_tag",
         help="Base DataExportTag for created questions (auto-deduped by default)",
@@ -11782,6 +12178,14 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         choices=["append", "prepend"],
         default="append",
         help="Placement when no --after-qid/--before-qid is provided (default: append)",
+    )
+    p_move_question.add_argument(
+        "--insert-index",
+        type=int,
+        help=(
+            "0-based insertion boundary inside target block BlockElements; "
+            "overrides anchor/position placement."
+        ),
     )
     p_move_question.add_argument(
         "--dry-run",

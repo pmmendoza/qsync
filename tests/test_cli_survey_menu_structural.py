@@ -104,10 +104,12 @@ def test_edit_menu_add_question_routes_to_handler(
             return "Live survey definitions (default)"
         if message == "Question text behavior:":
             return "Keep source question text(s)"
-        if message == "Where should the new question(s) be inserted?":
-            return "After existing question"
-        if message == "Choose anchor question (insert after):":
-            return "QID1 - Intro"
+        if message == "Choose target block:":
+            return str(choices[0])
+        if message == "Choose where to insert new question(s) in the selected block:":
+            return "slot:0"
+        if message == "Page break handling for inserted question(s):":
+            return "No extra page breaks"
         if message == "Dry run?":
             return "Yes"
         return "Exit"
@@ -122,7 +124,10 @@ def test_edit_menu_add_question_routes_to_handler(
     assert ns.from_question_id is None
     assert ns.source_survey_id == "SV_1"
     assert ns.source_question_id == ["QID1"]
-    assert ns.after_qid == "QID1"
+    assert ns.target_block_id == "BL_1"
+    assert ns.insert_index == 0
+    assert ns.after_qid is None
+    assert ns.page_break_mode == "none"
     assert ns.dry_run is True
 
 
@@ -175,10 +180,10 @@ def test_edit_menu_move_question_routes_to_handler(
             )
         if message == "Edit Questions & Content":
             return "Move question(s) (reorder / move across blocks)"
-        if message == "Where should selected question(s) be moved?":
-            return "End of block (append)"
-        if message == "How should the target block be resolved?":
-            return "Auto target block"
+        if message == "Choose target block:":
+            return str(choices[0])
+        if message == "Choose where to move selected question(s) in the target block:":
+            return "slot:0"
         if message == "Dry run?":
             return "Yes"
         return "Exit"
@@ -191,6 +196,8 @@ def test_edit_menu_move_question_routes_to_handler(
     ns = called["args"]
     assert ns.survey_id == "SV_1"
     assert ns.question_id == ["QID1"]
+    assert ns.target_block_id == "BL_1"
+    assert ns.insert_index == 0
     assert ns.position == "append"
     assert ns.dry_run is True
 
@@ -285,10 +292,12 @@ def test_edit_menu_add_question_clone_uses_flow_order_and_explicit_clone_order(
             )
         if message == "Question text behavior:":
             return "Keep source question text(s)"
-        if message == "Where should the new question(s) be inserted?":
-            return "End of block (append)"
-        if message == "How should the target block be resolved?":
-            return "Auto target block"
+        if message == "Choose target block:":
+            return str(choices[0])
+        if message == "Choose where to insert new question(s) in the selected block:":
+            return "slot:2"
+        if message == "Page break handling for inserted question(s):":
+            return "No extra page breaks"
         if message == "Dry run?":
             return "Yes"
         return "Exit"
@@ -302,6 +311,7 @@ def test_edit_menu_add_question_clone_uses_flow_order_and_explicit_clone_order(
     assert "args" in called
     ns = called["args"]
     assert ns.source_question_id == ["QID1", "QID2"]
+    assert ns.insert_index == 2
     assert ns.position == "append"
     assert ns.dry_run is True
 
@@ -344,10 +354,12 @@ def test_direct_add_question_mode_accepts_preselected_survey(
             return "Live survey definitions (default)"
         if message == "Question text behavior:":
             return "Keep source question text(s)"
-        if message == "Where should the new question(s) be inserted?":
-            return "After existing question"
-        if message == "Choose anchor question (insert after):":
-            return "QID1 - Intro"
+        if message == "Choose target block:":
+            return str(choices[0])
+        if message == "Choose where to insert new question(s) in the selected block:":
+            return "slot:0"
+        if message == "Page break handling for inserted question(s):":
+            return "No extra page breaks"
         if message == "Dry run?":
             return "Yes"
         return "Exit"
@@ -371,7 +383,9 @@ def test_direct_add_question_mode_accepts_preselected_survey(
     assert ns.from_question_id is None
     assert ns.source_survey_id == "SV_1"
     assert ns.source_question_id == ["QID1"]
-    assert ns.after_qid == "QID1"
+    assert ns.target_block_id == "BL_1"
+    assert ns.insert_index == 0
+    assert ns.after_qid is None
     assert ns.dry_run is True
 
 
@@ -483,10 +497,12 @@ def test_edit_menu_add_question_clone_indexed_uses_cached_question_bank(
             )
         if message == "Question text behavior:":
             return "Keep source question text(s)"
-        if message == "Where should the new question(s) be inserted?":
-            return "After existing question"
-        if message == "Choose anchor question (insert after):":
-            return "QID1 - Target Intro"
+        if message == "Choose target block:":
+            return str(choices[0])
+        if message == "Choose where to insert new question(s) in the selected block:":
+            return "slot:0"
+        if message == "Page break handling for inserted question(s):":
+            return "No extra page breaks"
         if message == "Dry run?":
             return "Yes"
         return "Exit"
@@ -499,6 +515,7 @@ def test_edit_menu_add_question_clone_indexed_uses_cached_question_bank(
     ns = called["args"]
     assert ns.source_survey_id == "SV_SOURCE"
     assert ns.source_question_id == ["QID9", "QID10"]
+    assert ns.insert_index == 0
     assert ns.dry_run is True
 
 

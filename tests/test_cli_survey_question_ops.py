@@ -214,6 +214,148 @@ def test_add_question_creates_and_reorders_blocks(monkeypatch) -> None:
     assert auto_qids == []
 
 
+def test_add_question_insert_index_with_between_page_breaks(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    initial = {
+        "Questions": {
+            "QID1": {
+                "QuestionID": "QID1",
+                "QuestionType": "MC",
+                "QuestionText": "Anchor A",
+            },
+            "QID2": {
+                "QuestionID": "QID2",
+                "QuestionType": "MC",
+                "QuestionText": "Anchor B",
+            },
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID1"},
+                    {"Type": "Question", "QuestionID": "QID2"},
+                ],
+            }
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_MAIN"}]},
+    }
+    after_create = {
+        "Questions": {
+            **initial["Questions"],
+            "QID101": {"QuestionID": "QID101", "QuestionType": "MC"},
+            "QID102": {"QuestionID": "QID102", "QuestionType": "MC"},
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID1"},
+                    {"Type": "Question", "QuestionID": "QID2"},
+                ],
+            },
+            "BL_AUTO": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID101"},
+                    {"Type": "Question", "QuestionID": "QID102"},
+                ],
+            },
+        },
+        "SurveyFlow": {
+            "Flow": [{"Type": "Block", "ID": "BL_MAIN"}, {"Type": "Block", "ID": "BL_AUTO"}]
+        },
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(cli_survey, "ensure_unlocked", lambda _sid: None)
+    monkeypatch.setattr(cli_survey, "load_push_context", lambda *_a, **_k: _PushCtx())
+
+    fetch_calls = {"n": 0}
+
+    def _fetch(*_a, **_k):
+        fetch_calls["n"] += 1
+        return initial if fetch_calls["n"] == 1 else after_create
+
+    monkeypatch.setattr(cli_survey, "fetch_survey_definition", _fetch)
+
+    created_ids = iter(["QID101", "QID102"])
+    updated_blocks: dict[str, dict[str, Any]] = {}
+
+    def _send_api_request(*, method: str, path: str, json=None, **_kwargs):
+        if method == "GET" and path == "surveys/SV_TEST/languages":
+            return _Resp({"result": {"AvailableLanguages": {"EN": True}}})
+        if method == "POST" and path == "survey-definitions/SV_TEST/questions":
+            return _Resp({"result": {"QuestionID": next(created_ids)}})
+        if method == "PUT" and path.startswith("survey-definitions/SV_TEST/blocks/"):
+            block_id = Path(path).name
+            updated_blocks[block_id] = json
+            return _Resp({"result": {"ok": True}})
+        raise AssertionError(f"Unexpected API call: {method} {path}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", _send_api_request)
+    monkeypatch.setattr(
+        cli_survey,
+        "download_survey_definition",
+        lambda survey_id, **_kwargs: Path(f"/tmp/{survey_id}.json"),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        from_question_id="QID1",
+        question_json=None,
+        question_text=["Item A", "Item B"],
+        question_text_file=None,
+        source_account=None,
+        source_survey_id=None,
+        source_question_id=None,
+        from_scratch_mcq=False,
+        from_scratch_type=None,
+        choice_text=None,
+        choice_text_file=None,
+        statement_text=None,
+        statement_text_file=None,
+        mc_multi_response=False,
+        target_block_id="BL_MAIN",
+        after_qid=None,
+        before_qid=None,
+        position="append",
+        insert_index=1,
+        page_break_mode="between",
+        data_export_tag=None,
+        allow_duplicate_tags=False,
+        dry_run=False,
+        force_live=False,
+        yes=True,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_add_question(args)
+
+    block = updated_blocks["BL_MAIN"]
+    rendered = []
+    for elem in block.get("BlockElements", []):
+        etype = str(elem.get("Type") or "")
+        if etype == "Question":
+            rendered.append(str(elem.get("QuestionID") or ""))
+        else:
+            rendered.append(etype)
+    assert rendered == ["QID1", "QID101", "Page Break", "QID102", "QID2"]
+
+
 def test_move_question_reorders_within_block(monkeypatch) -> None:
     from qsync import cli_survey
 
@@ -292,6 +434,90 @@ def test_move_question_reorders_within_block(monkeypatch) -> None:
         for elem in block_payloads[0].get("BlockElements", [])
     ]
     assert qids == ["QID3", "QID1", "QID2"]
+
+
+def test_move_question_insert_index_adjusts_for_removed_items(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    definition = {
+        "Questions": {
+            "QID1": {"QuestionID": "QID1", "QuestionType": "MC"},
+            "QID2": {"QuestionID": "QID2", "QuestionType": "MC"},
+            "QID3": {"QuestionID": "QID3", "QuestionType": "MC"},
+            "QID4": {"QuestionID": "QID4", "QuestionType": "MC"},
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID1"},
+                    {"Type": "Question", "QuestionID": "QID2"},
+                    {"Type": "Question", "QuestionID": "QID3"},
+                    {"Type": "Question", "QuestionID": "QID4"},
+                ],
+            }
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_MAIN"}]},
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(cli_survey, "ensure_unlocked", lambda _sid: None)
+    monkeypatch.setattr(cli_survey, "load_push_context", lambda *_a, **_k: _PushCtx())
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda *_a, **_k: definition,
+    )
+
+    captured_block: dict[str, Any] = {}
+
+    def _send_api_request(*, method: str, path: str, json=None, **_kwargs):
+        if method == "PUT" and path == "survey-definitions/SV_TEST/blocks/BL_MAIN":
+            captured_block.clear()
+            captured_block.update(json or {})
+            return _Resp({"result": {"ok": True}})
+        raise AssertionError(f"Unexpected API call: {method} {path}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", _send_api_request)
+    monkeypatch.setattr(
+        cli_survey,
+        "download_survey_definition",
+        lambda survey_id, **_kwargs: Path(f"/tmp/{survey_id}.json"),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        question_id=["QID2"],
+        target_block_id="BL_MAIN",
+        after_qid=None,
+        before_qid=None,
+        position="append",
+        insert_index=3,
+        dry_run=False,
+        force_live=False,
+        yes=True,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+    )
+
+    cli_survey.handle_move_question(args)
+
+    qids = [
+        str(elem.get("QuestionID") or "")
+        for elem in captured_block.get("BlockElements", [])
+        if str(elem.get("Type") or "") == "Question"
+    ]
+    assert qids == ["QID1", "QID3", "QID2", "QID4"]
 
 
 def test_move_question_before_anchor_same_block_keeps_correct_order(monkeypatch) -> None:
