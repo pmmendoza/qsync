@@ -21,6 +21,7 @@ from .config import (
     get_active_account,
     get_client_config,
     load_account_env,
+    load_env,
     resolve_root,
     resolve_scoped_dir,
     resolve_survey_cache_dir,
@@ -531,14 +532,7 @@ def handle_menu(args: argparse.Namespace) -> None:
         return _resolve_menu_client()
 
     def _get_surveys() -> list[dict[str, Any]]:
-        base, headers = _get_client()
-        cached = survey_cache.get(base)
-        if cached is not None:
-            return cached
-        surveys = list_surveys(base, headers)
-        surveys.sort(key=lambda x: x.get("creationDate", ""), reverse=True)
-        survey_cache[base] = surveys
-        return surveys
+        return _get_surveys_for_account(account=_resolve_menu_account())
 
     def _pick_survey_id(*, message: str) -> str | None:
         try:
@@ -1816,9 +1810,27 @@ def handle_menu(args: argparse.Namespace) -> None:
             return text
         return text[: max(0, limit - 3)].rstrip() + "..."
 
-    def _fetch_definition_for_menu(survey_id: str) -> dict[str, Any] | None:
+    def _get_client_for_account(*, account: str | None) -> tuple[str, dict]:
+        if account:
+            env = load_account_env(account, root=root)
+            return get_client_config(env)
+        return get_client_config()
+
+    def _get_surveys_for_account(*, account: str | None) -> list[dict[str, Any]]:
+        base, headers = _get_client_for_account(account=account)
+        cached = survey_cache.get(base)
+        if cached is not None:
+            return cached
+        surveys = list_surveys(base, headers)
+        surveys.sort(key=lambda x: x.get("creationDate", ""), reverse=True)
+        survey_cache[base] = surveys
+        return surveys
+
+    def _fetch_definition_for_menu(
+        survey_id: str, *, account: str | None = None
+    ) -> dict[str, Any] | None:
         try:
-            base, headers = _get_client()
+            base, headers = _get_client_for_account(account=account)
             definition = fetch_survey_definition(base, headers, survey_id)
         except Exception as exc:
             print(
@@ -1829,6 +1841,49 @@ def handle_menu(args: argparse.Namespace) -> None:
             print("[survey-menu] ERROR: unexpected survey-definition payload shape.")
             return None
         return definition
+
+    def _ordered_qids_from_definition(definition: Mapping[str, Any]) -> list[str]:
+        questions = definition.get("Questions")
+        if not isinstance(questions, dict):
+            return []
+        blocks = definition.get("Blocks")
+        if not isinstance(blocks, dict):
+            return sorted(str(k).strip() for k in questions.keys() if str(k).strip())
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for block_id in _flow_ordered_block_ids(definition):
+            block = blocks.get(block_id)
+            if not isinstance(block, dict):
+                continue
+            if _is_trash_block(block):
+                continue
+            elements = (
+                block.get("BlockElements")
+                if isinstance(block.get("BlockElements"), list)
+                else block.get("Elements")
+            )
+            if not isinstance(elements, list):
+                continue
+            for elem in elements:
+                if not isinstance(elem, dict):
+                    continue
+                qid = str(elem.get("QuestionID") or "").strip()
+                if not qid or qid in seen:
+                    continue
+                if qid not in questions:
+                    continue
+                seen.add(qid)
+                ordered.append(qid)
+        leftovers = sorted(
+            [
+                str(qid).strip()
+                for qid in questions.keys()
+                if str(qid).strip() and str(qid).strip() not in seen
+            ]
+        )
+        ordered.extend(leftovers)
+        return ordered
 
     def _question_labels_from_definition(
         definition: Mapping[str, Any],
@@ -1841,15 +1896,9 @@ def handle_menu(args: argparse.Namespace) -> None:
 
         exclude_set = {str(item).strip() for item in (exclude or set()) if str(item).strip()}
 
-        def _qid_sort_key(qid: str) -> tuple[int, str]:
-            token = str(qid).strip()
-            match = re.match(r"(?i)^qid(\d+)$", token)
-            if match:
-                return (int(match.group(1)), token)
-            return (10**9, token)
-
+        qids = _ordered_qids_from_definition(definition)
         labels: list[str] = []
-        for qid in sorted((str(k).strip() for k in questions.keys() if str(k).strip()), key=_qid_sort_key):
+        for qid in qids:
             if qid in exclude_set:
                 continue
             payload = questions.get(qid)
@@ -1933,6 +1982,7 @@ def handle_menu(args: argparse.Namespace) -> None:
         definition: Mapping[str, Any],
         *,
         message: str,
+        preserve_selection_order: bool = False,
     ) -> list[str] | None:
         from .interactive_menu import autocomplete_from_list, multi_select_from_list
 
@@ -1982,6 +2032,35 @@ def handle_menu(args: argparse.Namespace) -> None:
                 continue
             seen.add(qid)
             out.append(qid)
+        if preserve_selection_order and len(out) > 1:
+            label_by_qid = {}
+            for label in labels:
+                qid = _label_head(label)
+                if qid:
+                    label_by_qid[qid] = label
+            ordered: list[str] = []
+            remaining = list(out)
+            while remaining:
+                print(
+                    "[survey-menu] Clone order so far: "
+                    + (
+                        ", ".join(f"{idx + 1}:{qid}" for idx, qid in enumerate(ordered))
+                        if ordered
+                        else "(none)"
+                    )
+                )
+                remaining_labels = [label_by_qid.get(qid, qid) for qid in remaining]
+                picked = select_from_list(
+                    f"Pick clone order position {len(ordered) + 1}:",
+                    [*remaining_labels, "↩ Back"],
+                )
+                if not picked or picked.endswith("Back"):
+                    return None
+                token = _label_head(picked)
+                if token and token in remaining:
+                    ordered.append(token)
+                    remaining.remove(token)
+            return ordered
         return out
 
     def _pick_block_id_from_definition(
@@ -2088,8 +2167,9 @@ def handle_menu(args: argparse.Namespace) -> None:
         source_choice = select_from_list(
             "Question template source:",
             [
-                "Clone an existing question in this survey",
-                "Load a question JSON file",
+                "Clone existing question(s) from question bank",
+                "Create new multiple-choice question from scratch",
+                "Load question JSON file (advanced)",
                 "↩ Back",
             ],
         )
@@ -2098,49 +2178,205 @@ def handle_menu(args: argparse.Namespace) -> None:
 
         from_question_id = None
         question_json = None
-        if source_choice.startswith("Clone"):
-            from_question_id = _pick_question_id_from_definition(
-                definition,
-                message="Choose template question:",
+        source_account: str | None = None
+        source_survey_id: str | None = None
+        source_question_ids: list[str] = []
+        from_scratch_mcq = False
+        choice_texts: list[str] = []
+        mc_multi_response = False
+        question_texts: list[str] = []
+
+        if source_choice.startswith("Clone existing"):
+            source_scope = select_from_list(
+                "Clone source account:",
+                [
+                    f"Current account ({_account_label()})",
+                    "Another linked account",
+                    "↩ Back",
+                ],
             )
-            if not from_question_id:
+            if not source_scope or source_scope.endswith("Back"):
                 return
+
+            source_account_scope = _resolve_menu_account()
+            if source_scope.startswith("Another"):
+                discovered = _discover_account_env_files(root=root)
+                choices = ["default", *discovered, "↩ Back"]
+                picked_account = select_from_list("Pick source account:", choices)
+                if not picked_account or picked_account.endswith("Back"):
+                    return
+                if picked_account == "default":
+                    source_account_scope = None
+                    source_account = "default"
+                else:
+                    source_account_scope = picked_account
+                    source_account = picked_account
+
+            if (
+                source_scope.startswith("Current account")
+                and preselected_survey_id
+                and source_account_scope == _resolve_menu_account()
+            ):
+                source_survey_id = survey_id
+            else:
+                try:
+                    source_surveys = _get_surveys_for_account(account=source_account_scope)
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: unable to list source surveys: {exc}")
+                    return
+
+                source_survey_id = _pick_survey_id_from_records(
+                    message="Pick source survey to clone from:",
+                    records=source_surveys,
+                )
+                if not source_survey_id:
+                    return
+
+            source_definition = (
+                definition
+                if source_survey_id == survey_id
+                and source_account_scope == _resolve_menu_account()
+                else _fetch_definition_for_menu(
+                    source_survey_id, account=source_account_scope
+                )
+            )
+            if not source_definition:
+                return
+
+            source_question_ids = _pick_question_ids_from_definition(
+                source_definition,
+                message="Choose source question(s) to clone:",
+                preserve_selection_order=True,
+            ) or []
+            if not source_question_ids:
+                return
+
+            text_mode = select_from_list(
+                "Question text behavior:",
+                [
+                    "Keep source question text(s)",
+                    "Override with one text for all cloned questions",
+                    "Override with one text per cloned question",
+                    "↩ Back",
+                ],
+            )
+            if not text_mode or text_mode.endswith("Back"):
+                return
+            if text_mode.startswith("Override with one text for all"):
+                one_text = input("Question text override: ").strip()
+                if not one_text:
+                    return
+                question_texts = [one_text]
+            elif text_mode.startswith("Override with one text per"):
+                from .interactive_menu import edit_text_in_editor
+
+                seed = "\n".join(
+                    [f"Question {idx + 1}" for idx in range(len(source_question_ids))]
+                )
+                blob = edit_text_in_editor(
+                    f"Enter exactly {len(source_question_ids)} lines (one per cloned question).",
+                    initial_text=seed,
+                    suffix=".txt",
+                )
+                if blob is None:
+                    return
+                lines = [line.strip() for line in str(blob).splitlines() if line.strip()]
+                if len(lines) != len(source_question_ids):
+                    print(
+                        f"[survey-menu] Expected {len(source_question_ids)} lines, got {len(lines)}."
+                    )
+                    return
+                question_texts = lines
+        elif source_choice.startswith("Create new multiple-choice"):
+            from_scratch_mcq = True
+            text_mode = select_from_list(
+                "How many questions should be created?",
+                [
+                    "Enter one question text",
+                    "Enter multiple question texts (one per line)",
+                    "↩ Back",
+                ],
+            )
+            if not text_mode or text_mode.endswith("Back"):
+                return
+            if text_mode.startswith("Enter one"):
+                one_text = input("Question text: ").strip()
+                if not one_text:
+                    return
+                question_texts = [one_text]
+            else:
+                from .interactive_menu import edit_text_in_editor
+
+                blob = edit_text_in_editor(
+                    "Enter one question text per line.",
+                    initial_text="",
+                    suffix=".txt",
+                )
+                if blob is None:
+                    return
+                question_texts = [line.strip() for line in str(blob).splitlines() if line.strip()]
+                if not question_texts:
+                    print("[survey-menu] No non-empty question lines were provided.")
+                    return
+
+            from .interactive_menu import edit_text_in_editor
+
+            choices_blob = edit_text_in_editor(
+                "Enter answer options (one per line, at least 2).",
+                initial_text="Option 1\nOption 2",
+                suffix=".txt",
+            )
+            if choices_blob is None:
+                return
+            choice_texts = [
+                line.strip() for line in str(choices_blob).splitlines() if line.strip()
+            ]
+            if len(choice_texts) < 2:
+                print("[survey-menu] At least two answer options are required.")
+                return
+            mc_multi_response = (
+                select_from_list(
+                    "Allow selecting multiple answers?",
+                    ["No (single answer)", "Yes (multiple answers)"],
+                )
+                == "Yes (multiple answers)"
+            )
         else:
             question_json = input("Path to question JSON file: ").strip() or None
             if not question_json:
                 return
-
-        text_mode = select_from_list(
-            "How many questions should be created?",
-            [
-                "Use template text (create one question)",
-                "Enter one question text",
-                "Enter multiple question texts (one per line)",
-                "↩ Back",
-            ],
-        )
-        if not text_mode or text_mode.endswith("Back"):
-            return
-        question_texts: list[str] = []
-        if text_mode.startswith("Enter one"):
-            one_text = input("Question text: ").strip()
-            if not one_text:
-                return
-            question_texts = [one_text]
-        elif text_mode.startswith("Enter multiple"):
-            from .interactive_menu import edit_text_in_editor
-
-            blob = edit_text_in_editor(
-                "Enter one question text per line.",
-                initial_text="",
-                suffix=".txt",
+            text_mode = select_from_list(
+                "How many questions should be created?",
+                [
+                    "Use template text (create one question)",
+                    "Enter one question text",
+                    "Enter multiple question texts (one per line)",
+                    "↩ Back",
+                ],
             )
-            if blob is None:
+            if not text_mode or text_mode.endswith("Back"):
                 return
-            question_texts = [line.strip() for line in str(blob).splitlines() if line.strip()]
-            if not question_texts:
-                print("[survey-menu] No non-empty question lines were provided.")
-                return
+            if text_mode.startswith("Enter one"):
+                one_text = input("Question text: ").strip()
+                if not one_text:
+                    return
+                question_texts = [one_text]
+            elif text_mode.startswith("Enter multiple"):
+                from .interactive_menu import edit_text_in_editor
+
+                blob = edit_text_in_editor(
+                    "Enter one question text per line.",
+                    initial_text="",
+                    suffix=".txt",
+                )
+                if blob is None:
+                    return
+                question_texts = [
+                    line.strip() for line in str(blob).splitlines() if line.strip()
+                ]
+                if not question_texts:
+                    print("[survey-menu] No non-empty question lines were provided.")
+                    return
 
         placement = _prompt_question_placement(
             definition,
@@ -2199,6 +2435,14 @@ def handle_menu(args: argparse.Namespace) -> None:
                 no_publish=not bool(publish),
                 publish_description=publish_description,
                 account=selected_account,
+                source_account=source_account,
+                source_survey_id=source_survey_id,
+                source_question_id=source_question_ids or None,
+                from_scratch_mcq=bool(from_scratch_mcq),
+                choice_text=choice_texts or None,
+                choice_text_file=None,
+                mc_multi_response=bool(mc_multi_response),
+                interactive_mode=True,
             ),
         )
 
@@ -2261,6 +2505,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                 no_publish=not bool(publish),
                 publish_description=publish_description,
                 account=selected_account,
+                interactive_mode=True,
             ),
         )
 
@@ -7022,6 +7267,224 @@ def _resolve_template_question_payload(
     return (copy.deepcopy(loaded), None)
 
 
+def _normalize_language_code_token(value: str) -> str:
+    token = str(value or "").strip().replace("-", "_").upper()
+    return token
+
+
+def _list_enabled_languages_for_survey(
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    survey_id: str,
+) -> list[str]:
+    resp = send_api_request(
+        action="qsync.survey.languages.list",
+        method="GET",
+        base_url=base_url,
+        headers=headers,
+        path=f"surveys/{survey_id}/languages",
+        survey_id=survey_id,
+        log_event=False,
+        timeout=30,
+    )
+    result = resp.json().get("result") or {}
+    langs = result.get("AvailableLanguages") or result.get("languages") or []
+    normalized: list[str] = []
+    if isinstance(langs, dict):
+        normalized.extend(
+            _normalize_language_code_token(str(k))
+            for k, v in langs.items()
+            if bool(v)
+        )
+    elif isinstance(langs, (list, tuple, set)):
+        normalized.extend(_normalize_language_code_token(str(v)) for v in langs)
+    out: list[str] = []
+    seen: set[str] = set()
+    for lang in normalized:
+        if not lang or lang in seen:
+            continue
+        seen.add(lang)
+        out.append(lang)
+    return out
+
+
+def _collect_choice_texts(args: argparse.Namespace) -> list[str]:
+    values: list[str] = []
+    raw = getattr(args, "choice_text", None)
+    if raw:
+        for item in raw if isinstance(raw, list) else [raw]:
+            for token in str(item or "").split(","):
+                text = token.strip()
+                if text:
+                    values.append(text)
+    path_value = str(getattr(args, "choice_text_file", "") or "").strip()
+    if path_value:
+        path = Path(path_value)
+        if not path.exists():
+            raise ValueError(f"Choice text file not found: {path}")
+        for line in path.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if text:
+                values.append(text)
+    deduped: list[str] = []
+    for idx, text in enumerate(values):
+        if text:
+            deduped.append(text)
+    return deduped
+
+
+def _build_from_scratch_mc_template(
+    *,
+    question_text: str | None,
+    choice_texts: list[str],
+    multi_response: bool,
+) -> dict[str, Any]:
+    if len(choice_texts) < 2:
+        raise ValueError("From-scratch MC questions require at least 2 choices.")
+
+    choices: dict[str, dict[str, str]] = {}
+    choice_order: list[int] = []
+    for idx, label in enumerate(choice_texts, start=1):
+        key = str(idx)
+        choices[key] = {"Display": str(label)}
+        choice_order.append(idx)
+
+    selector = "MAVR" if multi_response else "SAVR"
+    prompt = str(question_text or "").strip() or "New multiple-choice question"
+
+    return {
+        "QuestionType": "MC",
+        "Selector": selector,
+        "SubSelector": "TX",
+        "QuestionText": prompt,
+        "QuestionText_Unsafe": prompt,
+        "Configuration": {"QuestionDescriptionOption": "UseText"},
+        "Choices": choices,
+        "ChoiceOrder": choice_order,
+        "Validation": {"Settings": {"ForceResponse": "OFF", "Type": "None"}},
+    }
+
+
+def _resolve_source_client_for_add_question(
+    *,
+    args: argparse.Namespace,
+    target_base_url: str,
+    target_headers: dict[str, str],
+) -> tuple[str, dict[str, str]]:
+    source_account = (getattr(args, "source_account", None) or "").strip()
+    if not source_account:
+        return (target_base_url, target_headers)
+    if source_account.lower() == "default":
+        default_env_path = (_workspace_root() / ".env").resolve()
+        default_env = load_env(default_env_path)
+        return get_client_config(default_env)
+    env = load_account_env(source_account, root=_workspace_root())
+    base, headers = get_client_config(env)
+    return (base, headers)
+
+
+def _resolve_template_question_payloads(
+    *,
+    args: argparse.Namespace,
+    target_definition: Mapping[str, Any],
+    target_survey_id: str,
+    target_base_url: str,
+    target_headers: dict[str, str],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Resolve one or many source question payloads for add-question.
+
+    Returns:
+        tuple: (payload templates in desired insertion order, fallback_qid)
+    """
+
+    from_question_id = (getattr(args, "from_question_id", None) or "").strip() or None
+    question_json = (getattr(args, "question_json", None) or "").strip() or None
+    source_survey_id = (getattr(args, "source_survey_id", None) or "").strip() or None
+    source_qids = _normalize_question_ids(getattr(args, "source_question_id", None))
+    source_account = (getattr(args, "source_account", None) or "").strip() or None
+    from_scratch_mcq = bool(getattr(args, "from_scratch_mcq", False))
+    source_modes = 0
+    if from_scratch_mcq:
+        source_modes += 1
+    if from_question_id or question_json:
+        source_modes += 1
+    if source_survey_id or source_qids or source_account:
+        source_modes += 1
+    if source_modes != 1:
+        raise ValueError(
+            "Choose exactly one source mode: "
+            "--from-scratch-mcq, --from-question-id/--question-json, "
+            "or --source-survey-id + --source-question-id."
+        )
+
+    if from_scratch_mcq:
+        choices = _collect_choice_texts(args)
+        if not choices:
+            raise ValueError(
+                "--from-scratch-mcq requires --choice-text or --choice-text-file."
+            )
+        template = _build_from_scratch_mc_template(
+            question_text=None,
+            choice_texts=choices,
+            multi_response=bool(getattr(args, "mc_multi_response", False)),
+        )
+        return ([template], None)
+
+    if source_survey_id or source_qids or source_account:
+        if not source_survey_id:
+            raise ValueError("--source-survey-id is required with --source-question-id.")
+        if not source_qids:
+            raise ValueError(
+                "Provide at least one --source-question-id when using --source-survey-id."
+            )
+        source_base, source_headers = _resolve_source_client_for_add_question(
+            args=args,
+            target_base_url=target_base_url,
+            target_headers=target_headers,
+        )
+        source_definition = fetch_survey_definition(
+            source_base,
+            source_headers,
+            source_survey_id,
+        )
+        source_questions = source_definition.get("Questions")
+        if not isinstance(source_questions, dict):
+            raise ValueError("Source survey definition has no Questions map.")
+        payloads: list[dict[str, Any]] = []
+        for qid in source_qids:
+            source = source_questions.get(qid)
+            if not isinstance(source, dict):
+                raise ValueError(f"Source question {qid} was not found.")
+            payloads.append(copy.deepcopy(source))
+
+        # Preserve default block inference only when source == target survey context.
+        target_account = _resolve_account_from_args(args) or None
+        normalized_source_account = (
+            None
+            if not source_account or source_account.lower() == "default"
+            else source_account
+        )
+        fallback_qid: str | None = None
+        if (
+            source_survey_id == target_survey_id
+            and (
+                normalized_source_account is None
+                or normalized_source_account == target_account
+            )
+            and source_qids
+        ):
+            fallback_qid = source_qids[0]
+        return (payloads, fallback_qid)
+
+    template, template_qid = _resolve_template_question_payload(
+        definition=target_definition,
+        from_question_id=from_question_id,
+        question_json_path=question_json,
+    )
+    return ([template], template_qid)
+
+
 def _collect_new_question_texts(args: argparse.Namespace) -> list[str | None]:
     texts: list[str] = []
     raw = getattr(args, "question_text", None)
@@ -7068,31 +7531,74 @@ def _preflight_question_writes(
     headers: dict[str, str],
     dry_run: bool,
     force_live: bool,
-) -> None:
+    interactive_override_prompt: bool = False,
+) -> bool:
+    effective_force_live = bool(force_live)
+
+    def _prompt_override(message: str) -> bool:
+        if not interactive_override_prompt:
+            return False
+        try:
+            from .interactive_menu import select_from_list
+
+            choice = select_from_list(
+                message,
+                ["Abort", "Continue with override"],
+                instruction="Choose whether to continue without restarting the wizard.",
+            )
+            return bool(choice and choice.startswith("Continue"))
+        except Exception:
+            if not sys.stdin.isatty():
+                return False
+            raw = (
+                input(f"{message} Type 'continue' to proceed, anything else to abort: ")
+                .strip()
+                .lower()
+            )
+            return raw == "continue"
+
     try:
         ensure_unlocked(survey_id)
     except (SurveyLockedError, RuntimeError) as exc:
-        raise SystemExit(str(exc)) from exc
+        if dry_run:
+            print(f"[question-op] NOTE: lock check failed in dry-run: {exc}")
+        elif _prompt_override(
+            "[question-op] Survey is locked. Continue anyway?"
+        ):
+            print("[question-op] Proceeding despite local lock check (interactive override).")
+        else:
+            raise SystemExit(str(exc)) from exc
 
     try:
         ctx = load_push_context(survey_id, base_url=base_url, headers=headers)
         print(f"[question-op] Survey: {ctx.survey_name}")
         print(f"[question-op] {ctx.describe_counts()}")
-        if ctx.counts_unknown and not force_live and not dry_run:
-            raise SystemExit(
-                f"[question-op] Unable to verify response counts for {survey_id}. "
-                "Refresh inventory and retry or pass --force-live after manual review."
-            )
-        if ctx.response_count > 0 and not force_live and not dry_run:
-            raise SystemExit(
-                f"[question-op] Survey has {ctx.response_count} finished response(s). "
-                "Re-run with --force-live after double-checking."
-            )
+        if ctx.counts_unknown and not effective_force_live and not dry_run:
+            if _prompt_override(
+                "[question-op] Response counts are unknown. Continue with --force-live?"
+            ):
+                effective_force_live = True
+            else:
+                raise SystemExit(
+                    f"[question-op] Unable to verify response counts for {survey_id}. "
+                    "Refresh inventory and retry or pass --force-live after manual review."
+                )
+        if ctx.response_count > 0 and not effective_force_live and not dry_run:
+            if _prompt_override(
+                f"[question-op] Survey has {ctx.response_count} finished response(s). Continue with --force-live?"
+            ):
+                effective_force_live = True
+            else:
+                raise SystemExit(
+                    f"[question-op] Survey has {ctx.response_count} finished response(s). "
+                    "Re-run with --force-live after double-checking."
+                )
     except Exception as exc:
         if dry_run:
             print(f"[question-op] NOTE: Could not load push context: {exc}")
-            return
+            return effective_force_live
         raise
+    return effective_force_live
 
 
 def _confirm_noninteractive_safe(*, yes: bool, prompt: str) -> None:
@@ -7142,10 +7648,6 @@ def handle_add_question(args: argparse.Namespace) -> None:
     after_qid = (getattr(args, "after_qid", None) or "").strip() or None
     before_qid = (getattr(args, "before_qid", None) or "").strip() or None
     target_block_id = (getattr(args, "target_block_id", None) or "").strip() or None
-    from_question_id = (
-        getattr(args, "from_question_id", None) or ""
-    ).strip() or None
-    question_json = (getattr(args, "question_json", None) or "").strip() or None
     position = (getattr(args, "position", None) or "append").strip().lower()
     if position not in {"append", "prepend"}:
         raise SystemExit("[add-question] ERROR: --position must be append or prepend.")
@@ -7155,20 +7657,25 @@ def handle_add_question(args: argparse.Namespace) -> None:
         )
 
     base_url, headers = _get_client_config_for_args(args)
-    _preflight_question_writes(
+    force_live = _preflight_question_writes(
         survey_id=survey_id,
         base_url=base_url,
         headers=headers,
         dry_run=dry_run,
         force_live=force_live,
+        interactive_override_prompt=bool(getattr(args, "interactive_mode", False)),
     )
 
     definition = fetch_survey_definition(base_url, headers, survey_id)
+    template_qid: str | None = None
+    template_payloads: list[dict[str, Any]]
     try:
-        template, template_qid = _resolve_template_question_payload(
-            definition=definition,
-            from_question_id=from_question_id,
-            question_json_path=question_json,
+        template_payloads, template_qid = _resolve_template_question_payloads(
+            args=args,
+            target_definition=definition,
+            target_survey_id=survey_id,
+            target_base_url=base_url,
+            target_headers=headers,
         )
         texts = _collect_new_question_texts(args)
     except ValueError as exc:
@@ -7187,15 +7694,82 @@ def handle_add_question(args: argparse.Namespace) -> None:
     }
     existing_tags.discard("")
 
-    planned_payloads: list[dict[str, Any]] = []
-    for text in texts:
-        payload = copy.deepcopy(template)
-        payload.pop("QuestionID", None)
-        payload.pop("QuestionId", None)
+    mode_from_scratch = bool(getattr(args, "from_scratch_mcq", False))
+    source_survey_id = (getattr(args, "source_survey_id", None) or "").strip() or None
+    source_qids = _normalize_question_ids(getattr(args, "source_question_id", None))
+    question_json = (getattr(args, "question_json", None) or "").strip() or None
+    from_question_id = (getattr(args, "from_question_id", None) or "").strip() or None
+
+    # If source survey/questions are provided, show as the template plan context.
+    if source_survey_id and source_qids:
+        print(
+            f"[add-question] Source question bank: survey={source_survey_id} "
+            f"questions={', '.join(source_qids)}"
+        )
+
+    def _apply_text_override(payload: dict[str, Any], text: str | None) -> dict[str, Any]:
+        out = copy.deepcopy(payload)
+        out.pop("QuestionID", None)
+        out.pop("QuestionId", None)
         if text is not None:
-            payload["QuestionText"] = text
-            if "QuestionText_Unsafe" in payload:
-                payload["QuestionText_Unsafe"] = text
+            out["QuestionText"] = text
+            if "QuestionText_Unsafe" in out:
+                out["QuestionText_Unsafe"] = text
+        return out
+
+    planned_payloads: list[dict[str, Any]] = []
+    if len(template_payloads) == 1:
+        base_template = template_payloads[0]
+        for text in texts:
+            planned_payloads.append(_apply_text_override(base_template, text))
+    else:
+        if texts == [None]:
+            for payload in template_payloads:
+                planned_payloads.append(_apply_text_override(payload, None))
+        elif len(texts) == 1:
+            for payload in template_payloads:
+                planned_payloads.append(_apply_text_override(payload, texts[0]))
+        elif len(texts) == len(template_payloads):
+            for payload, text in zip(template_payloads, texts):
+                planned_payloads.append(_apply_text_override(payload, text))
+        else:
+            raise SystemExit(
+                "[add-question] ERROR: question text overrides must be either one value, "
+                "or match the number of selected template questions."
+            )
+
+    target_langs: list[str] | None = None
+    if not dry_run:
+        try:
+            target_langs = _list_enabled_languages_for_survey(
+                base_url=base_url,
+                headers=headers,
+                survey_id=survey_id,
+            )
+        except Exception:
+            target_langs = None
+    target_lang_set = {
+        _normalize_language_code_token(lang) for lang in (target_langs or [])
+    }
+    dropped_language_total = 0
+
+    for payload in planned_payloads:
+        lang_block = payload.get("Language")
+        if isinstance(lang_block, dict) and target_langs is not None:
+            filtered_langs: dict[str, Any] = {}
+            dropped = 0
+            for lang_key, lang_value in lang_block.items():
+                norm = _normalize_language_code_token(str(lang_key))
+                if norm in target_lang_set:
+                    filtered_langs[str(lang_key)] = lang_value
+                else:
+                    dropped += 1
+            dropped_language_total += dropped
+            if filtered_langs:
+                payload["Language"] = filtered_langs
+            else:
+                payload.pop("Language", None)
+
         base_tag = explicit_tag or str(payload.get("DataExportTag") or "").strip()
         if base_tag:
             if allow_duplicate_tags:
@@ -7205,7 +7779,12 @@ def handle_add_question(args: argparse.Namespace) -> None:
                 if next_tag:
                     payload["DataExportTag"] = next_tag
                     existing_tags.add(next_tag)
-        planned_payloads.append(payload)
+
+    if dropped_language_total > 0:
+        print(
+            f"[add-question] NOTE: filtered {dropped_language_total} translation language block(s) "
+            "not enabled in the target survey."
+        )
 
     try:
         planned_block_id = _resolve_target_block_id(
@@ -7228,7 +7807,13 @@ def handle_add_question(args: argparse.Namespace) -> None:
     print(
         f"[add-question] Plan: create {len(planned_payloads)} question(s) in block {planned_block_id} at index {planned_index}."
     )
-    if template_qid:
+    if mode_from_scratch:
+        print("[add-question] Template: from-scratch MC question scaffold")
+    elif source_survey_id and source_qids:
+        print(
+            f"[add-question] Template source: {source_survey_id} ({len(source_qids)} question(s))"
+        )
+    elif template_qid:
         print(f"[add-question] Template: {template_qid}")
     elif question_json:
         print(f"[add-question] Template JSON: {question_json}")
@@ -7381,12 +7966,13 @@ def handle_move_question(args: argparse.Namespace) -> None:
         )
 
     base_url, headers = _get_client_config_for_args(args)
-    _preflight_question_writes(
+    force_live = _preflight_question_writes(
         survey_id=survey_id,
         base_url=base_url,
         headers=headers,
         dry_run=dry_run,
         force_live=force_live,
+        interactive_override_prompt=bool(getattr(args, "interactive_mode", False)),
     )
 
     definition = fetch_survey_definition(base_url, headers, survey_id)
@@ -10633,6 +11219,25 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Template question ID to clone (recommended)",
     )
     p_add_question.add_argument(
+        "--source-account",
+        dest="source_account",
+        help=(
+            "Optional source account for cross-account clone "
+            "(defaults to target/current account; use 'default' for primary .env)."
+        ),
+    )
+    p_add_question.add_argument(
+        "--source-survey-id",
+        dest="source_survey_id",
+        help="Source survey ID for cross-account question cloning",
+    )
+    p_add_question.add_argument(
+        "--source-question-id",
+        action="append",
+        dest="source_question_id",
+        help="Source question ID(s) to clone (repeatable/comma-separated; preserves provided order)",
+    )
+    p_add_question.add_argument(
         "--question-json",
         dest="question_json",
         help=(
@@ -10653,6 +11258,27 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--question-text-file",
         dest="question_text_file",
         help="Path to a newline-delimited file of question texts (one question per line)",
+    )
+    p_add_question.add_argument(
+        "--from-scratch-mcq",
+        action="store_true",
+        help="Create a new multiple-choice question scaffold from scratch.",
+    )
+    p_add_question.add_argument(
+        "--choice-text",
+        action="append",
+        dest="choice_text",
+        help="Choice text for --from-scratch-mcq (repeatable/comma-separated via repeated args).",
+    )
+    p_add_question.add_argument(
+        "--choice-text-file",
+        dest="choice_text_file",
+        help="Path to newline-delimited choice texts for --from-scratch-mcq.",
+    )
+    p_add_question.add_argument(
+        "--mc-multi-response",
+        action="store_true",
+        help="When using --from-scratch-mcq, create a multi-select question (MAVR).",
     )
     p_add_question.add_argument(
         "--target-block-id",

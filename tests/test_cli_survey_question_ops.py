@@ -372,3 +372,376 @@ def test_move_question_before_anchor_same_block_keeps_correct_order(monkeypatch)
         for elem in captured_block.get("BlockElements", [])
     ]
     assert qids == ["QID1", "QID2", "QID3"]
+
+
+def test_add_question_cross_account_preserves_source_order_and_filters_languages(
+    monkeypatch,
+) -> None:
+    from qsync import cli_survey
+
+    target_initial = {
+        "Questions": {
+            "QID1": {
+                "QuestionID": "QID1",
+                "QuestionType": "MC",
+                "QuestionText": "Anchor",
+            }
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+            }
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_MAIN"}]},
+    }
+    target_after_create = {
+        "Questions": {
+            **target_initial["Questions"],
+            "QID101": {"QuestionID": "QID101", "QuestionType": "MC"},
+            "QID102": {"QuestionID": "QID102", "QuestionType": "MC"},
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID1"},
+                ],
+            },
+            "BL_AUTO": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID101"},
+                    {"Type": "Question", "QuestionID": "QID102"},
+                ],
+            },
+        },
+        "SurveyFlow": {
+            "Flow": [{"Type": "Block", "ID": "BL_MAIN"}, {"Type": "Block", "ID": "BL_AUTO"}]
+        },
+    }
+    source_definition = {
+        "Questions": {
+            "QID10": {
+                "QuestionID": "QID10",
+                "QuestionType": "MC",
+                "Selector": "SAVR",
+                "QuestionText": "Source A",
+                "Language": {"FR": {"QuestionText": "Source A FR"}, "DE": {"QuestionText": "Source A DE"}},
+            },
+            "QID11": {
+                "QuestionID": "QID11",
+                "QuestionType": "MC",
+                "Selector": "SAVR",
+                "QuestionText": "Source B",
+                "Language": {"FR": {"QuestionText": "Source B FR"}, "DE": {"QuestionText": "Source B DE"}},
+            },
+        },
+        "Blocks": {},
+        "SurveyFlow": {"Flow": []},
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TARGET",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("target.qualtrics.com", {"X-API-TOKEN": "t"}),
+    )
+    monkeypatch.setattr(cli_survey, "ensure_unlocked", lambda _sid: None)
+    monkeypatch.setattr(cli_survey, "load_push_context", lambda *_a, **_k: _PushCtx())
+    monkeypatch.setattr(
+        cli_survey,
+        "load_account_env",
+        lambda account, root=None: {"QUALTRICS_BASE_URL": f"{account}.qualtrics.com", "X-API-TOKEN": "s"},
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "get_client_config",
+        lambda env=None: (
+            str((env or {}).get("QUALTRICS_BASE_URL") or "target.qualtrics.com"),
+            {"X-API-TOKEN": str((env or {}).get("X-API-TOKEN") or "t")},
+        ),
+    )
+
+    fetch_calls = {"target": 0}
+
+    def _fetch(base_url, _headers, survey_id):
+        if survey_id == "SV_SOURCE":
+            return source_definition
+        if survey_id != "SV_TARGET":
+            raise AssertionError(f"Unexpected survey fetch: {survey_id}")
+        fetch_calls["target"] += 1
+        return target_initial if fetch_calls["target"] == 1 else target_after_create
+
+    monkeypatch.setattr(cli_survey, "fetch_survey_definition", _fetch)
+
+    created_ids = iter(["QID101", "QID102"])
+    created_payloads: list[dict[str, Any]] = []
+    updated_block: dict[str, Any] = {}
+
+    def _send_api_request(*, method: str, path: str, json=None, **_kwargs):
+        if method == "GET" and path == "surveys/SV_TARGET/languages":
+            return _Resp({"result": {"AvailableLanguages": {"EN": True, "FR": True}}})
+        if method == "POST" and path == "survey-definitions/SV_TARGET/questions":
+            created_payloads.append(json or {})
+            return _Resp({"result": {"QuestionID": next(created_ids)}})
+        if method == "PUT" and path == "survey-definitions/SV_TARGET/blocks/BL_MAIN":
+            updated_block.clear()
+            updated_block.update(json or {})
+            return _Resp({"result": {"ok": True}})
+        if method == "PUT" and path == "survey-definitions/SV_TARGET/blocks/BL_AUTO":
+            return _Resp({"result": {"ok": True}})
+        raise AssertionError(f"Unexpected API call: {method} {path}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", _send_api_request)
+    monkeypatch.setattr(
+        cli_survey,
+        "download_survey_definition",
+        lambda survey_id, **_kwargs: Path(f"/tmp/{survey_id}.json"),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TARGET",
+        from_question_id=None,
+        question_json=None,
+        source_account="linda",
+        source_survey_id="SV_SOURCE",
+        source_question_id=["QID11", "QID10"],
+        from_scratch_mcq=False,
+        choice_text=None,
+        choice_text_file=None,
+        mc_multi_response=False,
+        question_text=None,
+        question_text_file=None,
+        target_block_id=None,
+        after_qid="QID1",
+        before_qid=None,
+        position="append",
+        data_export_tag=None,
+        allow_duplicate_tags=False,
+        dry_run=False,
+        force_live=False,
+        yes=True,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_add_question(args)
+
+    assert [p.get("QuestionText") for p in created_payloads] == ["Source B", "Source A"]
+    assert created_payloads[0].get("Language") == {"FR": {"QuestionText": "Source B FR"}}
+    assert created_payloads[1].get("Language") == {"FR": {"QuestionText": "Source A FR"}}
+    qids = [
+        str(elem.get("QuestionID") or "")
+        for elem in updated_block.get("BlockElements", [])
+    ]
+    assert qids == ["QID1", "QID101", "QID102"]
+
+
+def test_resolve_source_client_default_uses_workspace_dotenv(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from qsync import cli_survey
+
+    monkeypatch.setattr(cli_survey, "_workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(
+        cli_survey,
+        "load_env",
+        lambda path=None: {
+            "QUALTRICS_BASE_URL": "default.example.qualtrics.com",
+            "X-API-TOKEN": "default-token",
+        },
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "get_client_config",
+        lambda env=None: (
+            str((env or {}).get("QUALTRICS_BASE_URL") or ""),
+            {"X-API-TOKEN": str((env or {}).get("X-API-TOKEN") or "")},
+        ),
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "load_account_env",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError(
+                "load_account_env should not be called for source_account=default"
+            )
+        ),
+    )
+
+    args = argparse.Namespace(source_account="default")
+    base_url, headers = cli_survey._resolve_source_client_for_add_question(
+        args=args,
+        target_base_url="target.example.qualtrics.com",
+        target_headers={"X-API-TOKEN": "target-token"},
+    )
+
+    assert base_url == "default.example.qualtrics.com"
+    assert headers["X-API-TOKEN"] == "default-token"
+
+
+def test_add_question_from_scratch_mcq_dry_run(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(cli_survey, "ensure_unlocked", lambda _sid: None)
+    monkeypatch.setattr(cli_survey, "load_push_context", lambda *_a, **_k: _PushCtx())
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda *_a, **_k: _base_definition(),
+    )
+
+    writes: list[str] = []
+    monkeypatch.setattr(
+        cli_survey,
+        "send_api_request",
+        lambda *_a, **_k: writes.append("write") or _Resp({"result": {}}),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        from_question_id=None,
+        question_json=None,
+        source_account=None,
+        source_survey_id=None,
+        source_question_id=None,
+        from_scratch_mcq=True,
+        choice_text=["Yes", "No"],
+        choice_text_file=None,
+        mc_multi_response=False,
+        question_text=["Do you agree?"],
+        question_text_file=None,
+        target_block_id=None,
+        after_qid="QID15",
+        before_qid=None,
+        position="append",
+        data_export_tag=None,
+        allow_duplicate_tags=False,
+        dry_run=True,
+        force_live=False,
+        yes=False,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_add_question(args)
+    assert writes == []
+
+
+def test_add_question_interactive_force_live_override(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    initial = _base_definition()
+    after_create = _base_definition()
+    after_create["Questions"]["QID16"] = {
+        "QuestionID": "QID16",
+        "QuestionType": "MC",
+        "QuestionText": "Template question",
+    }
+    after_create["Blocks"]["BL_AUTO"] = {
+        "Type": "Standard",
+        "BlockElements": [{"Type": "Question", "QuestionID": "QID16"}],
+    }
+    after_create["SurveyFlow"]["Flow"].append({"Type": "Block", "ID": "BL_AUTO"})
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(cli_survey, "ensure_unlocked", lambda _sid: None)
+    monkeypatch.setattr(
+        cli_survey,
+        "load_push_context",
+        lambda *_a, **_k: _PushCtx(response_count=4),
+    )
+
+    fetch_calls = {"n": 0}
+
+    def _fetch(*_a, **_k):
+        fetch_calls["n"] += 1
+        return initial if fetch_calls["n"] == 1 else after_create
+
+    monkeypatch.setattr(cli_survey, "fetch_survey_definition", _fetch)
+    monkeypatch.setattr(
+        "qsync.interactive_menu.select_from_list",
+        lambda message, choices, instruction=None, default=None: (
+            "Continue with override"
+            if "finished response" in message
+            else choices[0]
+        ),
+    )
+
+    created = {"count": 0}
+
+    def _send_api_request(*, method: str, path: str, json=None, **_kwargs):
+        if method == "GET" and path == "surveys/SV_TEST/languages":
+            return _Resp({"result": {"AvailableLanguages": {"EN": True}}})
+        if method == "POST" and path == "survey-definitions/SV_TEST/questions":
+            created["count"] += 1
+            return _Resp({"result": {"QuestionID": "QID16"}})
+        if method == "PUT" and path.startswith("survey-definitions/SV_TEST/blocks/"):
+            return _Resp({"result": {"ok": True}})
+        raise AssertionError(f"Unexpected API call: {method} {path}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", _send_api_request)
+    monkeypatch.setattr(
+        cli_survey,
+        "download_survey_definition",
+        lambda survey_id, **_kwargs: Path(f"/tmp/{survey_id}.json"),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        from_question_id="QID15",
+        question_json=None,
+        source_account=None,
+        source_survey_id=None,
+        source_question_id=None,
+        from_scratch_mcq=False,
+        choice_text=None,
+        choice_text_file=None,
+        mc_multi_response=False,
+        question_text=None,
+        question_text_file=None,
+        target_block_id=None,
+        after_qid="QID15",
+        before_qid=None,
+        position="append",
+        data_export_tag=None,
+        allow_duplicate_tags=False,
+        dry_run=False,
+        force_live=False,
+        yes=True,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=True,
+    )
+
+    cli_survey.handle_add_question(args)
+    assert created["count"] == 1

@@ -95,11 +95,11 @@ def test_edit_menu_add_question_routes_to_handler(
         if message == "Edit Questions & Content":
             return "Add question(s) (clone template, insert in flow)"
         if message == "Question template source:":
-            return "Clone an existing question in this survey"
-        if message == "Choose template question:":
-            return "QID1 - Intro"
-        if message == "How many questions should be created?":
-            return "Use template text (create one question)"
+            return "Clone existing question(s) from question bank"
+        if message == "Clone source account:":
+            return "Current account (default)"
+        if message == "Question text behavior:":
+            return "Keep source question text(s)"
         if message == "Where should the new question(s) be inserted?":
             return "After existing question"
         if message == "Choose anchor question (insert after):":
@@ -115,7 +115,9 @@ def test_edit_menu_add_question_routes_to_handler(
     assert "args" in called
     ns = called["args"]
     assert ns.survey_id == "SV_1"
-    assert ns.from_question_id == "QID1"
+    assert ns.from_question_id is None
+    assert ns.source_survey_id == "SV_1"
+    assert ns.source_question_id == ["QID1"]
     assert ns.after_qid == "QID1"
     assert ns.dry_run is True
 
@@ -189,6 +191,106 @@ def test_edit_menu_move_question_routes_to_handler(
     assert ns.dry_run is True
 
 
+def test_edit_menu_add_question_clone_uses_flow_order_and_explicit_clone_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.list_surveys",
+        lambda base, headers: [{"id": "SV_1", "name": "Survey One"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey._pick_survey_id_from_records",
+        lambda **kwargs: "SV_1",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.fetch_survey_definition",
+        lambda base, headers, survey_id: {
+            "Questions": {
+                "QID1": {"QuestionText": "First"},
+                "QID2": {"QuestionText": "Second"},
+            },
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Standard",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": "QID2"},
+                        {"Type": "Question", "QuestionID": "QID1"},
+                    ],
+                }
+            },
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+        },
+    )
+
+    called = {}
+
+    def _capture(ns):
+        called["args"] = ns
+
+    monkeypatch.setattr("qsync.cli_survey.handle_add_question", _capture)
+
+    seen_choices: list[str] = []
+
+    def _multi_select(message: str, choices, instruction=None, default=None):
+        seen_choices[:] = list(choices)
+        # Pretend user selected both entries.
+        return list(choices)
+
+    monkeypatch.setattr(interactive_menu, "multi_select_from_list", _multi_select)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    state = {"top_visits": 0}
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message.startswith("qsync survey menu"):
+            state["top_visits"] += 1
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
+            return "Add question(s) (clone template, insert in flow)"
+        if message == "Question template source:":
+            return "Clone existing question(s) from question bank"
+        if message == "Clone source account:":
+            return "Current account (default)"
+        if message.startswith("Pick clone order position 1"):
+            return "QID1 - First"
+        if message.startswith("Pick clone order position 2"):
+            return "QID2 - Second"
+        if message == "Question text behavior:":
+            return "Keep source question text(s)"
+        if message == "Where should the new question(s) be inserted?":
+            return "End of block (append)"
+        if message == "How should the target block be resolved?":
+            return "Auto target block"
+        if message == "Dry run?":
+            return "Yes"
+        return "Exit"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert seen_choices == ["QID2 - Second", "QID1 - First"]
+    assert "args" in called
+    ns = called["args"]
+    assert ns.source_question_id == ["QID1", "QID2"]
+    assert ns.position == "append"
+    assert ns.dry_run is True
+
+
 def test_direct_add_question_mode_accepts_preselected_survey(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -220,11 +322,11 @@ def test_direct_add_question_mode_accepts_preselected_survey(
 
     def _select_from_list(message: str, choices, instruction=None, default=None):
         if message == "Question template source:":
-            return "Clone an existing question in this survey"
-        if message == "Choose template question:":
-            return "QID1 - Intro"
-        if message == "How many questions should be created?":
-            return "Use template text (create one question)"
+            return "Clone existing question(s) from question bank"
+        if message == "Clone source account:":
+            return "Current account (default)"
+        if message == "Question text behavior:":
+            return "Keep source question text(s)"
         if message == "Where should the new question(s) be inserted?":
             return "After existing question"
         if message == "Choose anchor question (insert after):":
@@ -249,7 +351,9 @@ def test_direct_add_question_mode_accepts_preselected_survey(
     assert "args" in called
     ns = called["args"]
     assert ns.survey_id == "SV_1"
-    assert ns.from_question_id == "QID1"
+    assert ns.from_question_id is None
+    assert ns.source_survey_id == "SV_1"
+    assert ns.source_question_id == ["QID1"]
     assert ns.after_qid == "QID1"
     assert ns.dry_run is True
 
