@@ -1163,6 +1163,26 @@ _HELP_TOPICS: dict[str, tuple[str, str]] = {
         )
         + "\n",
     ),
+    "settings": (
+        "Settings Command Center",
+        "\n".join(
+            [
+                "Use a single interactive hub for account/workspace controls:",
+                "- qsync settings",
+                "",
+                "From there you can run:",
+                "- account status/list/use/clear",
+                "- inventory refresh (no counts / focal counts)",
+                "- prepare surfaces",
+                "- cache-folder preference changes",
+                "- doctor --check-api",
+                "",
+                "Optional TUI settings screen (requires qsync[tui]):",
+                "- qsync settings --tui",
+            ]
+        )
+        + "\n",
+    ),
 }
 
 
@@ -1849,6 +1869,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         handle_account_status,
         handle_account_use,
     )
+    from .cli_settings import handle_settings
 
     p_account_status = account_subs.add_parser(
         "status",
@@ -1960,6 +1981,18 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Emit machine-readable JSON to stdout (no other output)",
     )
     p_account_cache_dir.set_defaults(func=handle_account_cache_dir)
+
+    # settings
+    p_settings = subparsers.add_parser(
+        "settings",
+        help="Interactive account/workspace settings command center",
+    )
+    p_settings.add_argument(
+        "--tui",
+        action="store_true",
+        help="Launch Textual settings screen (requires qsync[tui]).",
+    )
+    p_settings.set_defaults(func=handle_settings)
 
     # help
     p_help = subparsers.add_parser(
@@ -3500,6 +3533,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "export",
             "compare",
             "logs",
+            "settings",
             "tui",
             "help",
             "doctor",

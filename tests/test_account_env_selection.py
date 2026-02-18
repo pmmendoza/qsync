@@ -182,6 +182,16 @@ def test_survey_delete_account_uses_account_env(
         return _Resp()
 
     monkeypatch.setattr(cli_survey, "send_api_request", _fake_send_api_request)
+    monkeypatch.setattr(
+        cli_survey,
+        "_fetch_survey_status",
+        lambda *_args, **_kwargs: {
+            "id": "SV_1",
+            "name": "Survey A",
+            "isActive": False,
+            "responseCounts": {"auditable": 0, "generated": 0},
+        },
+    )
 
     main(
         [
@@ -191,6 +201,7 @@ def test_survey_delete_account_uses_account_env(
             "delete",
             "--account",
             "damian",
+            "--yes",
             "SV_1",
         ]
     )

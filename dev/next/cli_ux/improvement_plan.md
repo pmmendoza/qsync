@@ -1,10 +1,10 @@
-j# CLI UX Enhancement Plan: Learning from slackdump
+# CLI UX Enhancement Plan: Learning from slackdump
 
 **Purpose:** Independent improvement elements for qsync's CLI user experience, inspired by slackdump's TUI approach.
 
 **Context:** This plan contains discrete, independently implementable UX improvements. Unlike linear implementation plans, each element can be tackled separately and provides standalone value.
 
-## Implementation status (updated 2026-02-15)
+## Implementation status (updated 2026-02-18)
 
 Implemented on `origin/main` (commit `72ccfeb`):
 - Rich panels/columns helpers (`terminal_output.py`) with JSON/TTY gating.
@@ -13,6 +13,8 @@ Implemented on `origin/main` (commit `72ccfeb`):
 - Survey picker: structured menu + “View details (top 30)” + disabled locked/no-API-edit; inactive shown as informational only (`cli_survey.py`).
 - `qsync help <topic>` content expanded + workspace default account precedence wired (`cli.py`).
 - Textual TUI: live right-pane details on highlight (`tui/app.py`).
+- Textual TUI sync flow now executes real `qsync sync` runs from TUI (single-survey and focal flow), with raw passthrough for all current sync flags via additional args (`tui/app.py`).
+- Textual survey menu now includes a full CLI menu launcher from inside TUI, so all existing `qsync survey menu` actions are reachable without leaving TUI (`tui/app.py` + `cli_survey.py` handlers reused under suspend mode).
 - Account commands/prefs modules are tracked (prevents runtime import failures after reinstall): `cli_account.py`, `workspace_prefs.py`.
 
 Implemented on `origin/agentx/ux-hardening` (rollback-friendly branch):
@@ -646,14 +648,17 @@ console.print(Columns([before_panel, after_panel]))
 - [x] `pip install qsync[tui]` enables the TUI without affecting base installs
 - [x] `qsync tui` launches a Textual app in interactive TTY mode
 - [ ] The TUI implements:
-  - [ ] **← Back** where meaningful (not just Cancel)
+  - [x] **← Back** where meaningful (not just Cancel)
   - [x] live-updating right pane context while navigating
-  - [ ] `?` help overlay (or a Help screen) with shortcuts and workflow hints
+  - [x] `?` help overlay (or a Help screen) with shortcuts and workflow hints
 - [ ] Non-TTY / `--json` / `--yes` never starts the TUI (always CLI behavior)
+  - Current state: `qsync tui` and `qsync survey menu --tui` are guarded for interactive TTY + JSON mode; `qsync sync --tui/--no-tui/--tui=auto` is not implemented yet.
 - [x] Without the `tui` extra installed, `qsync tui` prints an install hint and exits non-zero
 
 **Definition of Done (pilot):**
-- One end-to-end “happy path” is usable (sync selection → confirm), even if execution delegates back to existing commands for now.
+- Multiple end-to-end flows are usable from TUI:
+  - sync selection and execution (single-survey + focal mode) using existing CLI safeguards
+  - survey operations via TUI quick actions and full survey-menu launcher
 - Manual smoke test passes in macOS Terminal/iTerm2 and in a narrow terminal.
 - Documentation includes `qsync tui --help` and a short “Install TUI” section.
 
@@ -920,16 +925,18 @@ Cons: splits discovery; users keep using the old menu by habit.
 ### Stage 1 (MVP): TUI survey menu skeleton + account switching + basic operations
 - [x] Add a TUI survey menu screen reachable via `qsync survey menu --tui`.
 - [x] Add a TUI survey picker sufficient to select a survey for a workflow (inventory-backed or API-backed per action).
-- [ ] Mirror additional top-level categories from the CLI survey menu.
+- [ ] Mirror additional top-level categories from the CLI survey menu (native Textual screens; parity currently achieved via launcher).
 - [ ] Add a TUI “account context” pane (display-only).
 - [x] Add a display-only account context panel (base URL + token-present; no secrets).
 - [ ] Integrate the shared picker semantics (filter/details/regex/manual) into the TUI picker (full parity).
 - [ ] DoD:
   - [x] A user can navigate categories and run at least 3 existing survey-menu actions from the TUI (pull, inventory refresh, items structural edits).
+  - [x] A user can run the full existing CLI survey-menu workflow from inside TUI (`Open full survey menu`) for complete action coverage.
   - (Deferred) Account switching works in the TUI and affects API-backed list operations immediately.
 
 ### Stage 2 (Improvements): Bring over the rest of survey-menu actions + disabled reasons
-- [ ] Parity for all current survey-menu submenus.
+- [x] Parity for all current survey-menu submenus (via full CLI menu launcher inside TUI).
+- [ ] Native per-screen parity for all survey-menu submenus in Textual (without dropping into CLI prompts).
 - [ ] Disabled actions render with reasons (for default-account-only or safety constraints).
 - [ ] DoD:
   - No post-selection “surprise” denial when an action is invalid in current account context; it is disabled upfront.
@@ -1004,13 +1011,13 @@ Help
 - About (version/paths)
 
 ### Stage 1 (MVP): Implement only “Content Editors” first (P0)
-- [ ] Add a main-menu entry: “Content editors”.
-- [ ] Include at least:
-  - [ ] Items structural editor (SBS-first) (reuse existing structural session screens).
-  - [ ] Embedded Data editor (add/remove/rename staged embedded fields).
-- [ ] DoD:
-  - A user can reach SBS structural editing from `qsync tui` without using CLI menus.
-  - The workflow remains stage → preview → push and keeps workbook patch offer.
+- [x] Add a main-menu entry: “Content editors”.
+- [x] Include at least:
+  - [x] Items structural editor (SBS-first) (reuse existing structural session screens).
+  - [x] Embedded Data editor (add/remove/rename staged embedded fields).
+- [x] DoD:
+  - [x] A user can reach SBS structural editing from `qsync tui` without using CLI menus.
+  - [x] The workflow remains stage → preview → push and keeps workbook patch offer.
 
 ---
 
@@ -1132,31 +1139,33 @@ Rationale: makes intent explicit and reduces accidental corruption.
 
 ## Implementation Priority & Sequencing
 
-**Current implementation status (agentx/ux):**
-- Element 2 (menu model + fallback consistency): implemented
-- Element 3 (on-demand “View details”): implemented for sync dimension selection
-- Element 4 (help footer + `qsync help <topic>`): implemented
-- Element 6 (validators wired into onboarding + survey prompts): implemented
-- Element 8 (`qsync[tui]` extra + `qsync tui` pilot): implemented (pilot)
-- Element 9 (Stage 1 cancel semantics): implemented
+**Current implementation status (2026-02-18):**
+- Element 2 (menu model + fallback consistency): implemented.
+- Element 3 Stage 1 (on-demand details): implemented.
+- Element 4 Stage 1 (`qsync help <topic>` + menu hints): implemented.
+- Element 8 (Textual pilot): implemented with direct sync execution from TUI and raw sync-flag passthrough.
+- Element 9 Stage 1 (cancel semantics): implemented.
+- Element 14 parity baseline: implemented (`qsync survey menu --tui` + full CLI survey-menu launcher from TUI).
+- Element 14 Stage 2 (native parity + disabled reasons): implemented via TUI survey quick-actions + default-account gating with inline disabled reasons.
+- Element 13 shared picker parity: implemented for TUI sync survey selection and TUI survey pull selection.
+- Element 12 settings command center: implemented (`qsync settings` + TUI Settings screen).
+- Element 4 Stage 3 + Element 3 Stage 2: implemented for current TUI screens via screen-local help overlays and richer right-pane context/details.
+- Element 10 + Element 1 timing polish: implemented for TUI-launched sync/survey/settings operations (elapsed-time completion feedback).
+- Element 16 Stage 1 (Content Editors): implemented.
 
-### High Value / Low Effort (Start Here)
-1. **Element 2: Dynamic Menu Validation** - Menu model + fallback consistency (foundation for Elements 3/4/9)
-2. **Element 10: Operation Timing** - Simple, high visibility
-3. **Element 9: Keyboard Shortcuts** - Cancellation semantics + consistency (Ctrl+C + fallback behavior)
-4. **Element 1: Progress Indicators** - Add via centralized `terminal_output` helpers (TTY-only; safe fallbacks)
-
-### Medium Value / Medium Effort
-5. **Element 5: Enhanced Visual Hierarchy** - Style guide + selective Rich adoption (keep it centralized)
-6. **Element 3: Preview Panels** - Better context for decisions (on-demand actions)
-
-### Lower Priority
-7. **Element 4: Help System** - Good for discoverability (much easier once menus are structured)
-8. **Element 6: Real-time Validation** - Nice-to-have, questionary validators
-9. **Element 7: Multi-Column Layouts** - Specific use cases
-
-### Extensions (Require Approval)
-10. **Element 8: Real TUI Mode (Textual, optional extra)** - Only after Element 2 is shipped and at least one “on-demand details” flow exists; keep behind `qsync[tui]` and explicit opt-in
+### Ranked next UX improvements (recommended sequence)
+1. [x] **Element 14 Stage 2 (native parity + disabled reasons)**  
+   Implemented: TUI survey menu now exposes native quick actions across survey-menu categories and blocks default-account-only actions with explicit disabled reasons.
+2. [x] **Element 13 (shared survey picker parity everywhere)**  
+   Implemented for TUI sync/pull flows with shared picker semantics (details/manual/regex path).
+3. [ ] **Element 8 follow-up (`qsync sync --tui/--no-tui/--tui=auto`) + guided sync options screen**  
+   Deferred for now (explicitly excluded in the current implementation request).
+4. [x] **Element 12 (`qsync settings` command center)**  
+   Implemented as `qsync settings` plus a dedicated TUI Settings screen.
+5. [x] **Element 4 Stage 3 + Element 3 Stage 2 (screen-local help overlays and richer in-pane previews)**  
+   Implemented for the current TUI surfaces.
+6. [x] **Element 10 + Element 1 final polish (timing/progress consistency audit)**  
+   Implemented for TUI-launched sync/survey/settings flows with elapsed completion feedback.
 
 ---
 

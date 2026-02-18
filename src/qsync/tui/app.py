@@ -12,8 +12,10 @@ import argparse
 from dataclasses import dataclass, field
 import os
 import re
+import shlex
 import subprocess
 import sys
+import time
 from typing import Any
 
 
@@ -66,6 +68,44 @@ def _survey_option_label(row: dict[str, Any]) -> str:
     name = str(row.get("name") or "Untitled").strip()
     return f"{sid} - {name}"
 
+
+def _active_account_name() -> str | None:
+    try:
+        from qsync.config import get_active_account
+
+        return get_active_account()
+    except Exception:
+        return None
+
+
+def _is_default_account() -> bool:
+    return not bool(_active_account_name())
+
+
+def _disabled_reason_for_default_only() -> str | None:
+    if _is_default_account():
+        return None
+    return "Requires default account context (current account is non-default)."
+
+
+def _format_elapsed_for_ui(seconds: float) -> str:
+    try:
+        from qsync.terminal_output import format_elapsed
+
+        return format_elapsed(seconds)
+    except Exception:
+        if seconds < 1:
+            return "< 1s"
+        return f"{seconds:.1f}s"
+
+
+def _timed_call(func):
+    started = time.perf_counter()
+    value = func()
+    elapsed = _format_elapsed_for_ui(time.perf_counter() - started)
+    return value, elapsed
+
+
 def _account_context_lines() -> list[str]:
     """Return safe (non-secret) account context lines for display."""
 
@@ -113,14 +153,35 @@ class SyncWizardState:
     survey_id: str | None = None
     survey_name: str | None = None
     dimensions: list[str] | None = None
+    extra_sync_args: str = ""
 
-    def command(self) -> str | None:
-        if not self.survey_id:
-            return None
-        if not self.dimensions:
-            return f"qsync sync --survey-id {self.survey_id}"
-        dims = ",".join(self.dimensions)
-        return f"qsync sync --survey-id {self.survey_id} --dimensions {dims}"
+    def argv(self) -> list[str]:
+        argv = ["sync"]
+        if self.survey_id:
+            argv.extend(["--survey-id", self.survey_id])
+        if self.dimensions:
+            argv.extend(["--dimensions", ",".join(self.dimensions)])
+        extra = (self.extra_sync_args or "").strip()
+        if extra:
+            try:
+                argv.extend(shlex.split(extra))
+            except ValueError as exc:
+                raise ValueError(f"Invalid additional sync args: {exc}") from exc
+        return argv
+
+    def command(self) -> str:
+        return "qsync " + shlex.join(self.argv())
+
+
+def _run_qsync_cli_subcommand(argv: list[str]) -> int:
+    from pathlib import Path
+
+    from qsync.config import resolve_root
+
+    root = resolve_root(required=False) or Path.cwd()
+    cmd = [sys.executable, "-m", "qsync.cli", "--root", str(root), *argv]
+    result = subprocess.run(cmd, check=False)
+    return int(result.returncode)
 
 
 class HelpScreen(Screen):
@@ -145,10 +206,33 @@ class HelpScreen(Screen):
                     "- q: quit",
                     "- ?: help",
                     "",
-                    "This TUI is a thin wrapper around existing qsync workflows.",
-                    "It intentionally avoids running destructive operations directly.",
+                    "This TUI is a wrapper around existing qsync workflows.",
+                    "Operations run through the same CLI safeguards in suspended mode.",
                 ]
             ),
+            id="help_body",
+        )
+        yield Footer()
+
+
+class ContextHelpScreen(Screen):
+    BINDINGS = [
+        ("b", "app.pop_screen", "Back"),
+        ("escape", "app.pop_screen", "Back"),
+        ("q", "app.quit", "Quit"),
+        ("h", "app.pop_screen", "Close help"),
+        ("?", "app.pop_screen", "Close help"),
+    ]
+
+    def __init__(self, *, title: str, lines: list[str]) -> None:
+        super().__init__()
+        self._title = title
+        self._lines = lines
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Static(
+            "\n".join([self._title, "", *self._lines]),
             id="help_body",
         )
         yield Footer()
@@ -158,6 +242,7 @@ class MainMenuScreen(Screen):
     BINDINGS = [
         ("q", "app.quit", "Quit"),
         ("?", "app.push_screen('help')", "Help"),
+        ("h", "context_help", "Screen Help"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -167,6 +252,7 @@ class MainMenuScreen(Screen):
                 "Sync wizard (select survey + dimensions)",
                 "Survey menu (TUI)",
                 "Content editors",
+                "Settings",
                 "Help",
                 "Exit",
                 id="menu",
@@ -182,19 +268,23 @@ class MainMenuScreen(Screen):
         idx = getattr(event, "option_index", None)
         if idx == 0:
             detail.update(
-                "Sync wizard:\n- Choose a survey from inventory\n- Review detected dimension changes\n- Choose dimensions\n- Get a safe command to run"
+                "Sync wizard:\n- Choose single-survey or focal mode\n- Review/select dimensions\n- Add any CLI sync flags\n- Run sync directly from TUI"
             )
         elif idx == 1:
             detail.update(
-                "Survey menu (TUI):\nBrowse survey operations.\n\nIncludes: Items structural edits (stage → preview → push)."
+                "Survey menu (TUI):\nBrowse quick actions or open the full CLI survey menu from inside TUI."
             )
         elif idx == 2:
             detail.update(
                 "Content editors:\nInteractive editors that stage changes into the normal qsync pipeline.\n\nIncludes: SBS items structural edits."
             )
         elif idx == 3:
-            detail.update("Help:\nKeyboard shortcuts and workflow notes.")
+            detail.update(
+                "Settings:\nWorkspace/account controls, inventory refresh, doctor checks, and cache-folder preferences."
+            )
         elif idx == 4:
+            detail.update("Help:\nKeyboard shortcuts and workflow notes.")
+        elif idx == 5:
             detail.update("Exit the TUI.")
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
@@ -206,9 +296,24 @@ class MainMenuScreen(Screen):
         elif idx == 2:
             self.app.push_screen("content_editors")  # type: ignore[attr-defined]
         elif idx == 3:
+            self.app.push_screen("settings")  # type: ignore[attr-defined]
+        elif idx == 4:
             self.app.push_screen("help")  # type: ignore[attr-defined]
         else:
             self.app.exit()
+
+    def action_context_help(self) -> None:
+        self.app.push_screen(  # type: ignore[attr-defined]
+            ContextHelpScreen(
+                title="Main Menu Help",
+                lines=[
+                    "Use arrows + Enter to navigate.",
+                    "Settings centralizes account/workspace controls.",
+                    "Survey menu exposes native quick actions and full-menu fallback.",
+                    "Press b/Esc from child screens to return.",
+                ],
+            )
+        )
 
 
 class ContentEditorsScreen(Screen):
@@ -289,6 +394,138 @@ class ContentEditorsScreen(Screen):
             self.app.push_screen("embedded_editor")  # type: ignore[attr-defined]
             return
         self.app.pop_screen()  # type: ignore[attr-defined]
+
+
+class SettingsScreen(Screen):
+    BINDINGS = [
+        ("b", "app.pop_screen", "Back"),
+        ("escape", "app.pop_screen", "Back"),
+        ("q", "app.quit", "Quit"),
+        ("?", "app.push_screen('help')", "Help"),
+        ("h", "context_help", "Screen Help"),
+        ("r", "refresh", "Refresh"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            yield OptionList(id="menu")
+            yield Static("", id="detail")
+        yield Footer()
+
+    def action_refresh(self) -> None:
+        self.on_mount()
+
+    def action_context_help(self) -> None:
+        self.app.push_screen(  # type: ignore[attr-defined]
+            ContextHelpScreen(
+                title="Settings Help",
+                lines=[
+                    "This screen is the command center for account/workspace setup.",
+                    "Most actions call existing qsync CLI flows under suspended mode.",
+                    "Use this before sync/edit workflows when environment state is uncertain.",
+                ],
+            )
+        )
+
+    def on_mount(self) -> None:
+        menu = self.query_one("#menu", OptionList)
+        menu.clear_options()
+        menu.add_option("Show account status")
+        menu.add_option("List configured accounts")
+        menu.add_option("Set active account")
+        menu.add_option("Clear active account")
+        menu.add_option("Refresh inventory (no counts)")
+        menu.add_option("Refresh inventory (focal counts)")
+        menu.add_option("Prepare surfaces")
+        menu.add_option("Doctor check API (/whoami)")
+        menu.add_option("Configure survey cache folder")
+        menu.add_option("Open full survey menu")
+        menu.add_option("← Back")
+        self._update_detail()
+
+    def _update_detail(self, *, message: str | None = None) -> None:
+        detail = self.query_one("#detail", Static)
+        lines = [
+            "Settings",
+            "",
+            *_account_context_lines(),
+            "",
+            "Use the left panel to run account/workspace operations.",
+        ]
+        if message:
+            lines.extend(["", "Last result:", message])
+        detail.update("\n".join(lines))
+
+    def _run_subcommand(self, argv: list[str]) -> str:
+        with self.app.suspend():  # type: ignore[attr-defined]
+            print(f"\n[qsync:tui] Running: qsync {shlex.join(argv)}")
+
+            def _runner() -> int:
+                return _run_qsync_cli_subcommand(argv)
+
+            code, elapsed = _timed_call(_runner)
+            print(f"[qsync:tui] Exit={code} in {elapsed}")
+        if code == 0:
+            return f"Completed in {elapsed}."
+        return f"Exited with code {code} after {elapsed}."
+
+    def _prompt_text(self, label: str, default: str = "") -> str | None:
+        from qsync.interactive_menu import text_input
+
+        with self.app.suspend():  # type: ignore[attr-defined]
+            return text_input(label, default=default)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
+        option = getattr(event, "option", None)
+        if option is None:
+            return
+        choice = str(getattr(option, "prompt", "") or getattr(option, "text", "") or "")
+        if choice.startswith("←"):
+            self.app.pop_screen()  # type: ignore[attr-defined]
+            return
+
+        try:
+            if choice.startswith("Show account status"):
+                msg = self._run_subcommand(["account", "status"])
+            elif choice.startswith("List configured accounts"):
+                msg = self._run_subcommand(["account", "list"])
+            elif choice.startswith("Set active account"):
+                typed = (self._prompt_text("Account name (`default` to clear):") or "").strip()
+                if not typed:
+                    msg = "Cancelled."
+                elif typed.lower() == "default":
+                    msg = self._run_subcommand(["account", "clear"])
+                else:
+                    msg = self._run_subcommand(["account", "use", typed])
+            elif choice.startswith("Clear active account"):
+                msg = self._run_subcommand(["account", "clear"])
+            elif choice.startswith("Refresh inventory (no counts)"):
+                msg = self._run_subcommand(["survey", "inventory"])
+            elif choice.startswith("Refresh inventory (focal counts)"):
+                msg = self._run_subcommand(["survey", "inventory", "--focal"])
+            elif choice.startswith("Prepare surfaces"):
+                msg = self._run_subcommand(["survey", "prepare"])
+            elif choice.startswith("Doctor check API"):
+                msg = self._run_subcommand(["doctor", "--check-api"])
+            elif choice.startswith("Configure survey cache folder"):
+                typed = (
+                    self._prompt_text(
+                        "Cache folder name (`default` clears preference; blank cancels):"
+                    )
+                    or ""
+                ).strip()
+                if not typed:
+                    msg = "Cancelled."
+                elif typed.lower() == "default":
+                    msg = self._run_subcommand(["account", "cache-dir", "--clear"])
+                else:
+                    msg = self._run_subcommand(["account", "cache-dir", typed])
+            else:
+                msg = self._run_subcommand(["survey", "menu"])
+        except Exception as exc:
+            msg = f"ERROR: {exc}"
+        self._update_detail(message=msg)
 
 
 class EmbeddedDataEditorScreen(Screen):
@@ -461,11 +698,15 @@ class EmbeddedDataEditorScreen(Screen):
 
 
 class SyncSurveyScreen(Screen):
+    FOCAL_MODE_LABEL = "Focal sync flow (multi-survey, no --survey-id)"
+    SHARED_PICKER_LABEL = "Open shared picker (details/manual/regex)"
+
     BINDINGS = [
         ("b", "app.pop_screen", "Back"),
         ("escape", "app.pop_screen", "Back"),
         ("q", "app.quit", "Quit"),
         ("?", "app.push_screen('help')", "Help"),
+        ("h", "context_help", "Screen Help"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -511,10 +752,46 @@ class SyncSurveyScreen(Screen):
         self._filtered_rows = rows
         surveys = self.query_one("#surveys", OptionList)
         surveys.clear_options()
+        surveys.add_option(self.FOCAL_MODE_LABEL)
+        surveys.add_option(self.SHARED_PICKER_LABEL)
         if not rows:
             return
         for row in rows:
             surveys.add_option(_survey_option_label(row))
+
+    def action_context_help(self) -> None:
+        self.app.push_screen(  # type: ignore[attr-defined]
+            ContextHelpScreen(
+                title="Sync Survey Picker Help",
+                lines=[
+                    "This screen supports both native filtering and the shared picker flow.",
+                    "Use the shared picker option for CLI-parity details/manual/regex behavior.",
+                    "Use focal mode when you want multi-survey sync without --survey-id.",
+                ],
+            )
+        )
+
+    def _run_shared_picker(self) -> None:
+        from qsync.survey_selection import pick_survey_id_from_records
+
+        rows = list(getattr(self, "_rows", []) or [])
+        if not rows:
+            return
+        with self.app.suspend():  # type: ignore[attr-defined]
+            picked = pick_survey_id_from_records(
+                message="Pick a survey for sync:",
+                records=rows,
+                include_back=True,
+                include_manual=True,
+                include_details=True,
+            )
+        if not picked:
+            return
+        for row in rows:
+            if str(row.get("id") or "").strip() == picked:
+                self._select_survey(row)
+                return
+        self._select_survey({"id": picked, "name": picked})
 
     def on_input_changed(self, event: Input.Changed) -> None:  # type: ignore[name-defined]
         if str(getattr(event, "input", None).id or "") != "survey_filter":
@@ -546,9 +823,40 @@ class SyncSurveyScreen(Screen):
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:  # type: ignore[name-defined]
         idx = getattr(event, "option_index", None)
         rows = getattr(self, "_filtered_rows", None)
-        if idx is None or not rows or idx < 0 or idx >= len(rows):
+        if idx is None:
             return
-        r = rows[idx]
+        if idx == 0:
+            detail = self.query_one("#detail", Static)
+            detail.update(
+                "\n".join(
+                    [
+                        self.FOCAL_MODE_LABEL,
+                        "",
+                        "Runs `qsync sync` without --survey-id.",
+                        "Use additional sync args later for flags like:",
+                        "- --all, --scope, --dimensions, --yes, --pending-action, --fix",
+                        "- --force-live/--force-preview, --skip-publish, --refresh-workbooks",
+                        "- --skip-refresh, --allow-drift, --allow-skip-embedded, --json",
+                    ]
+                )
+            )
+            return
+        if idx == 1:
+            detail = self.query_one("#detail", Static)
+            detail.update(
+                "\n".join(
+                    [
+                        self.SHARED_PICKER_LABEL,
+                        "",
+                        "Uses the same picker semantics as CLI survey selection:",
+                        "- details table, manual SurveyID entry, regex/text narrowing",
+                    ]
+                )
+            )
+            return
+        if not rows or idx < 2 or idx > len(rows) + 1:
+            return
+        r = rows[idx - 2]
         detail = self.query_one("#detail", Static)
         sid = str(r.get("id") or "").strip()
         name = str(r.get("name") or "Untitled").strip()
@@ -581,9 +889,21 @@ class SyncSurveyScreen(Screen):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
         idx = getattr(event, "option_index", None)
         rows = getattr(self, "_filtered_rows", None)
-        if idx is None or rows is None or idx < 0 or idx >= len(rows):
+        if idx is None:
             return
-        self._select_survey(rows[idx])
+        state: SyncWizardState = self.app.sync_state  # type: ignore[attr-defined]
+        if idx == 0:
+            state.survey_id = None
+            state.survey_name = None
+            state.dimensions = None
+            self.app.push_screen("sync_confirm")  # type: ignore[attr-defined]
+            return
+        if idx == 1:
+            self._run_shared_picker()
+            return
+        if rows is None or idx < 2 or idx > len(rows) + 1:
+            return
+        self._select_survey(rows[idx - 2])
 
     def _select_survey(self, row: dict[str, Any]) -> None:
         sid = str(row.get("id") or "").strip()
@@ -723,33 +1043,160 @@ class SyncConfirmScreen(Screen):
         ("escape", "app.pop_screen", "Back"),
         ("q", "app.quit", "Quit"),
         ("?", "app.push_screen('help')", "Help"),
+        ("r", "refresh", "Refresh"),
     ]
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Static("", id="detail")
+        with Horizontal():
+            yield OptionList(id="actions")
+            yield Static("", id="detail")
         yield Footer()
 
+    def action_refresh(self) -> None:
+        self.on_mount()
+
     def on_mount(self) -> None:
-        detail = self.query_one("#detail", Static)
+        self._render()
+
+    def _render(self, *, message: str | None = None) -> None:
+        actions = self.query_one("#actions", OptionList)
+        actions.clear_options()
         state: SyncWizardState = self.app.sync_state  # type: ignore[attr-defined]
-        cmd = state.command() or "qsync sync"
+        actions.add_option("Run sync now (execute current command)")
+        actions.add_option("Edit additional sync args (all `qsync sync` flags)")
+        if state.extra_sync_args.strip():
+            actions.add_option("Clear additional sync args")
+        if state.survey_id:
+            actions.add_option("Change selected dimensions")
+            actions.add_option("Switch to focal sync flow (clear --survey-id)")
+        else:
+            actions.add_option("Pick a single survey (--survey-id)")
+        actions.add_option("Launch raw `qsync sync` CLI flow")
+        actions.add_option("← Back")
+
+        detail = self.query_one("#detail", Static)
+        mode = "single-survey" if state.survey_id else "focal / multi-survey"
+        survey = state.survey_id or "(none)"
         dims = ", ".join(state.dimensions or []) if state.dimensions else "(default)"
+        extra = state.extra_sync_args.strip() or "(none)"
+        try:
+            cmd = state.command()
+            cmd_error = None
+        except Exception as exc:
+            cmd = "qsync sync"
+            cmd_error = str(exc)
         detail.update(
             "\n".join(
                 [
-                    "Ready.",
+                    "Sync execution.",
                     "",
-                    f"Survey: {state.survey_id or '(none)'}",
+                    f"Mode: {mode}",
+                    f"Survey: {survey}",
                     f"Dimensions: {dims}",
+                    f"Additional args: {extra}",
                     "",
-                    "Safe next step (run in your shell):",
+                    "Current command:",
                     cmd,
                     "",
-                    "Press b/Esc to go back, or q to quit.",
+                    "Coverage note:",
+                    "- Add any CLI sync flags in 'additional args' for full parity.",
+                    "- Examples: --all --scope items:QID1 --yes --pending-action push --fix all",
+                    "- Also supports: --force-live/--force-preview --skip-publish --refresh-workbooks",
+                    "- And: --skip-refresh --allow-drift --allow-skip-embedded --json",
+                    "",
+                    *(["Command error: " + cmd_error, ""] if cmd_error else []),
+                    *(["Last result:", message, ""] if message else []),
+                    "Use the left panel to run or adjust this sync.",
                 ]
             )
         )
+
+    def _edit_additional_sync_args(self) -> str:
+        from qsync.interactive_menu import text_input
+
+        state: SyncWizardState = self.app.sync_state  # type: ignore[attr-defined]
+        with self.app.suspend():  # type: ignore[attr-defined]
+            typed = text_input(
+                "Additional args for `qsync sync` (optional, everything after `qsync sync`):",
+                default=state.extra_sync_args or "",
+            )
+        if typed is None:
+            return "Additional sync args unchanged."
+        state.extra_sync_args = str(typed).strip()
+        return "Updated additional sync args."
+
+    def _run_current_sync(self) -> str:
+        state: SyncWizardState = self.app.sync_state  # type: ignore[attr-defined]
+        argv = state.argv()
+        with self.app.suspend():  # type: ignore[attr-defined]
+            print(f"\n[qsync:tui] Running: qsync {shlex.join(argv)}")
+            code = _run_qsync_cli_subcommand(argv)
+            print(f"[qsync:tui] Sync finished with exit code {code}.")
+        return "Sync completed successfully." if code == 0 else f"Sync exited with code {code}."
+
+    def _run_raw_sync_flow(self) -> str:
+        with self.app.suspend():  # type: ignore[attr-defined]
+            print("\n[qsync:tui] Launching raw `qsync sync` flow...")
+            code = _run_qsync_cli_subcommand(["sync"])
+            print(f"[qsync:tui] Raw sync flow exited with code {code}.")
+        return "Raw sync flow completed successfully." if code == 0 else f"Raw sync flow exited with code {code}."
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
+        option = getattr(event, "option", None)
+        if option is None:
+            return
+        choice = str(getattr(option, "prompt", "") or getattr(option, "text", "") or "")
+        state: SyncWizardState = self.app.sync_state  # type: ignore[attr-defined]
+
+        if choice.startswith("Run sync now"):
+            try:
+                message = self._run_current_sync()
+            except Exception as exc:
+                message = f"ERROR running sync: {exc}"
+            self._render(message=message)
+            return
+
+        if choice.startswith("Edit additional sync args"):
+            try:
+                message = self._edit_additional_sync_args()
+            except Exception as exc:
+                message = f"ERROR editing additional args: {exc}"
+            self._render(message=message)
+            return
+
+        if choice.startswith("Clear additional sync args"):
+            state.extra_sync_args = ""
+            self._render(message="Cleared additional sync args.")
+            return
+
+        if choice.startswith("Change selected dimensions"):
+            if not state.survey_id:
+                self._render(message="No survey selected; use additional args (--dimensions ...) in focal mode.")
+                return
+            self.app.push_screen("sync_dims")  # type: ignore[attr-defined]
+            return
+
+        if choice.startswith("Switch to focal sync flow"):
+            state.survey_id = None
+            state.survey_name = None
+            state.dimensions = None
+            self._render(message="Switched to focal sync mode (no --survey-id).")
+            return
+
+        if choice.startswith("Pick a single survey"):
+            self.app.push_screen("sync_survey")  # type: ignore[attr-defined]
+            return
+
+        if choice.startswith("Launch raw `qsync sync` CLI flow"):
+            try:
+                message = self._run_raw_sync_flow()
+            except Exception as exc:
+                message = f"ERROR launching raw sync flow: {exc}"
+            self._render(message=message)
+            return
+
+        self.app.pop_screen()  # type: ignore[attr-defined]
 
 
 class QsyncTuiApp(App):
@@ -778,6 +1225,7 @@ class QsyncTuiApp(App):
         self.install_screen(HelpScreen(), name="help")
         self.install_screen(MainMenuScreen(), name="main")
         self.install_screen(ContentEditorsScreen(), name="content_editors")
+        self.install_screen(SettingsScreen(), name="settings")
         self.install_screen(EmbeddedDataEditorScreen(), name="embedded_editor")
         self.install_screen(SyncSurveyScreen(), name="sync_survey")
         self.install_screen(SyncDimensionsScreen(), name="sync_dims")
@@ -794,6 +1242,8 @@ class QsyncTuiApp(App):
 
         if self.start_screen == "sync":
             self.push_screen("sync_survey")
+        elif self.start_screen == "settings":
+            self.push_screen("settings")
         elif self.start_screen == "survey_menu":
             self.push_screen("survey_menu")
         else:
@@ -812,72 +1262,108 @@ class StructuralEditState:
     ops: list[dict] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class SurveyMenuEntry:
+    label: str
+    quick_action: str | None = None
+    detail_lines: tuple[str, ...] = ()
+    requires_default_account: bool = False
+    section: bool = False
+
+
 class SurveyMenuScreen(Screen):
     BINDINGS = [
         ("b", "app.pop_screen", "Back"),
         ("escape", "app.pop_screen", "Back"),
         ("q", "app.quit", "Quit"),
         ("?", "app.push_screen('help')", "Help"),
+        ("h", "context_help", "Screen Help"),
+        ("r", "refresh", "Refresh"),
     ]
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            yield OptionList(
-                "Pull survey definition (cache JSON)",
-                "Refresh inventory (update surveys/inventory.csv)",
-                "List surveys (API top 30)",
-                "Items: structural edits (stage → preview → push)",
-                "Add question(s): guided wizard (CLI flow)",
-                "Move question(s): guided wizard (CLI flow)",
-                "← Back",
-                id="menu",
-            )
-            yield Static(
-                "Survey menu (TUI).\n\nSelect an action.\n\nNote: account switching remains in the CLI survey menu for now.",
-                id="detail",
-            )
+            yield OptionList(id="menu")
+            yield Static("Survey menu (TUI).\n\nSelect an action.", id="detail")
         yield Footer()
 
-    def _run_cli_question_wizard(self, *, mode: str) -> None:
-        detail = self.query_one("#detail", Static)
-        try:
-            from qsync.cli_survey import handle_menu
+    def action_refresh(self) -> None:
+        self.on_mount()
 
-            mode_label = "add-question" if mode == "add" else "move-question"
-            with self.app.suspend():  # type: ignore[attr-defined]
-                print(
-                    f"\n[qsync:tui] Launching {mode_label} guided wizard "
-                    "(interactive CLI flow)..."
-                )
-                handle_menu(
-                    argparse.Namespace(
-                        tui=False,
-                        structural_edit=False,
-                        add_question_interactive=(mode == "add"),
-                        move_question_interactive=(mode == "move"),
-                        survey_id=None,
-                        account=None,
-                    )
-                )
-            detail.update(
-                "\n".join(
-                    [
-                        f"{mode_label} wizard completed.",
-                        "",
-                        *_account_context_lines(),
-                        "",
-                        "Select another action on the left.",
-                    ]
-                )
+    def action_context_help(self) -> None:
+        self.app.push_screen(  # type: ignore[attr-defined]
+            ContextHelpScreen(
+                title="Survey Menu Help",
+                lines=[
+                    "This screen exposes native quick actions for all current survey-menu workflows.",
+                    "Default-account-only actions are shown as disabled when a non-default account is active.",
+                    "Use 'Open full survey menu' as a fallback for the original grouped CLI navigation.",
+                ],
             )
-        except Exception as exc:
-            detail.update(
-                f"ERROR launching guided question wizard: {exc}\n\n"
-                + "\n".join(_account_context_lines())
-            )
+        )
+
+    def _entries(self) -> list[SurveyMenuEntry]:
+        return [
+            SurveyMenuEntry("── Survey Setup & Selection ──", section=True, detail_lines=("List/pull/label/focal discovery flows.",)),
+            SurveyMenuEntry("List surveys", quick_action="setup-list", detail_lines=("Lists surveys with optional regex filter.",)),
+            SurveyMenuEntry("Label survey ID (inventory)", quick_action="setup-label", detail_lines=("Print '<SurveyID> - <Name>' from inventory.",)),
+            SurveyMenuEntry("List focal survey IDs (inventory)", quick_action="setup-focal", detail_lines=("Shows focal IDs from inventory.",)),
+            SurveyMenuEntry("Pull survey definition (cache)", quick_action="setup-pull", detail_lines=("Download and cache survey JSON locally.",)),
+            SurveyMenuEntry("── Edit Questions & Content ──", section=True, detail_lines=("Structural edits and guided add/move flows.",)),
+            SurveyMenuEntry("Items: structural edits", quick_action="edit-structural", detail_lines=("Stage -> review -> push item-level structural ops.",)),
+            SurveyMenuEntry("Add question(s) guided wizard", quick_action="edit-add-question", detail_lines=("Clone/import question and place in flow.",)),
+            SurveyMenuEntry("Move question(s) guided wizard", quick_action="edit-move-question", detail_lines=("Move one or more QIDs in flow.",)),
+            SurveyMenuEntry("── Flow, Embedded Data & Integrations ──", section=True, detail_lines=("Embedded-data and Prolific workflows.",)),
+            SurveyMenuEntry("Add embedded field (stage)", quick_action="flow-add-embedded", detail_lines=("Stage embedded field add in SurveyFlow.",), requires_default_account=True),
+            SurveyMenuEntry("Remove embedded field (stage)", quick_action="flow-remove-embedded", detail_lines=("Stage embedded field removal.",), requires_default_account=True),
+            SurveyMenuEntry("Rename embedded field (stage)", quick_action="flow-rename-embedded", detail_lines=("Stage embedded field rename.",), requires_default_account=True),
+            SurveyMenuEntry("Cleanup embedded data", quick_action="flow-cleanup-embedded", detail_lines=("Cleanup duplicate/placeholder embedded rows.",), requires_default_account=True),
+            SurveyMenuEntry("Prolific authenticity snippet", quick_action="flow-prolific-auth", detail_lines=("Set/review Prolific auth snippet.",), requires_default_account=True),
+            SurveyMenuEntry("Prolific wiring", quick_action="flow-prolific-wiring", detail_lines=("Pull/propose/review/preview/apply Prolific wiring.",)),
+            SurveyMenuEntry("── Publish, Activation & Versions ──", section=True, detail_lines=("Lifecycle and recovery operations.",)),
+            SurveyMenuEntry("Activate survey", quick_action="publish-activate", detail_lines=("Activate selected surveys.",)),
+            SurveyMenuEntry("Deactivate survey", quick_action="publish-deactivate", detail_lines=("Deactivate selected surveys.",)),
+            SurveyMenuEntry("Publish survey-definition", quick_action="publish-publish", detail_lines=("Create a new version in Qualtrics.",)),
+            SurveyMenuEntry("List versions", quick_action="publish-versions", detail_lines=("List available versions for a survey.",)),
+            SurveyMenuEntry("Fetch a version", quick_action="publish-fetch-version", detail_lines=("Fetch version payload as json/qsf.",)),
+            SurveyMenuEntry("Rollback questions to a version", quick_action="publish-rollback", detail_lines=("Rollback selected QIDs from a version.",)),
+            SurveyMenuEntry("── Copy, Slice & Compare ──", section=True, detail_lines=("Derive and verify survey copies.",)),
+            SurveyMenuEntry("Copy survey", quick_action="copy-copy", detail_lines=("Copy a survey in the current account.",)),
+            SurveyMenuEntry("Slice language(s)", quick_action="copy-slice-language", detail_lines=("Create language-sliced survey copies.",)),
+            SurveyMenuEntry("Slice registry (local)", quick_action="copy-slice-registry", detail_lines=("List slice manifests and open links.",)),
+            SurveyMenuEntry("Parity check", quick_action="copy-parity", detail_lines=("Compare survey parity (light/deep).",)),
+            SurveyMenuEntry("Copy cross-account", quick_action="copy-cross-account", detail_lines=("Copy between source/target account credentials.",)),
+            SurveyMenuEntry("── Exports ──", section=True, detail_lines=("Responses and document exports.",)),
+            SurveyMenuEntry("Export responses", quick_action="export-responses", detail_lines=("Export response data for a survey.",)),
+            SurveyMenuEntry("Export translation document", quick_action="export-translation", detail_lines=("Generate translation review document(s).",), requires_default_account=True),
+            SurveyMenuEntry("Export side-by-side document", quick_action="export-side-by-side", detail_lines=("Generate side-by-side comparison doc.",), requires_default_account=True),
+            SurveyMenuEntry("── Workspace & Account ──", section=True, detail_lines=("Account context and workspace maintenance.",)),
+            SurveyMenuEntry("Switch account", quick_action="workspace-switch-account", detail_lines=("Change account for this survey-menu session.",)),
+            SurveyMenuEntry("Show account info", quick_action="workspace-show-account", detail_lines=("Display resolved account/base URL/token status.",)),
+            SurveyMenuEntry("Check API (/whoami)", quick_action="workspace-check-api", detail_lines=("Run whoami for current account context.",)),
+            SurveyMenuEntry("Refresh inventory", quick_action="workspace-refresh-inventory", detail_lines=("Refresh surveys/inventory.csv.",), requires_default_account=True),
+            SurveyMenuEntry("Prepare surfaces", quick_action="workspace-prepare", detail_lines=("Hydrate local editing surfaces.",), requires_default_account=True),
+            SurveyMenuEntry("Configure survey cache folder", quick_action="workspace-configure-cache", detail_lines=("Set/clear/create preferred survey cache folder.",)),
+            SurveyMenuEntry("── Danger Zone ──", section=True, detail_lines=("Rename/delete with explicit safeguards.",)),
+            SurveyMenuEntry("Rename survey", quick_action="danger-rename", detail_lines=("Rename a survey in Qualtrics.",)),
+            SurveyMenuEntry("Delete survey(s)", quick_action="danger-delete", detail_lines=("Guided delete with strict confirmations.",)),
+            SurveyMenuEntry("Open full survey menu (all CLI actions)", quick_action="__full_menu__", detail_lines=("Launch original grouped survey-menu flow.",)),
+            SurveyMenuEntry("← Back", quick_action="__back__"),
+        ]
+
+    def _render_menu(self) -> None:
+        menu = self.query_one("#menu", OptionList)
+        menu.clear_options()
+        self._entries_cache = self._entries()
+        for entry in self._entries_cache:
+            label = entry.label
+            if entry.requires_default_account and not _is_default_account():
+                label = f"{label} [disabled: default-account-only]"
+            menu.add_option(label)
 
     def on_mount(self) -> None:
+        self._render_menu()
         detail = self.query_one("#detail", Static)
         detail.update(
             "\n".join(
@@ -886,203 +1372,116 @@ class SurveyMenuScreen(Screen):
                     "",
                     *_account_context_lines(),
                     "",
-                    "Select an action.",
-                    "",
-                    "Note: account switching remains in the CLI survey menu for now.",
+                    "Native quick-action parity is available on this screen.",
+                    "Use full-menu fallback at the bottom if preferred.",
                 ]
             )
         )
 
+    def _entry_at(self, idx: int | None) -> SurveyMenuEntry | None:
+        if idx is None:
+            return None
+        entries = getattr(self, "_entries_cache", None) or []
+        if idx < 0 or idx >= len(entries):
+            return None
+        return entries[idx]
+
+    def _run_quick_action(self, quick_action: str) -> str:
+        from qsync.cli_survey import handle_menu
+
+        with self.app.suspend():  # type: ignore[attr-defined]
+            print(f"\n[qsync:tui] Launching survey action: {quick_action or 'full-menu'}")
+
+            def _runner() -> None:
+                handle_menu(
+                    argparse.Namespace(
+                        tui=False,
+                        structural_edit=False,
+                        add_question_interactive=False,
+                        move_question_interactive=False,
+                        survey_id=None,
+                        account=None,
+                        quick_action=quick_action,
+                    )
+                )
+
+            _ignored, elapsed = _timed_call(_runner)
+            print(f"[qsync:tui] Survey action completed in {elapsed}.")
+        return f"Completed in {elapsed}."
+
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:  # type: ignore[name-defined]
+        entry = self._entry_at(getattr(event, "option_index", None))
+        if entry is None:
+            return
         detail = self.query_one("#detail", Static)
-        idx = getattr(event, "option_index", None)
-        ctx = _account_context_lines()
-        if idx == 0:
-            detail.update(
-                "\n".join(
-                    [
-                        "Pull survey definition:",
-                        "- Uses live API list to pick a survey",
-                        "- Writes JSON to surveys/ (or surveys/.<account>/ if active account set)",
-                        "",
-                        *ctx,
-                    ]
-                )
-            )
-        elif idx == 1:
-            detail.update(
-                "\n".join(
-                    [
-                        "Refresh inventory:",
-                        "- Fetches surveys via API",
-                        "- Updates surveys/inventory.csv",
-                        "",
-                        *ctx,
-                    ]
-                )
-            )
-        elif idx == 2:
-            detail.update(
-                "\n".join(
-                    [
-                        "List surveys:",
-                        "- Fetches surveys via API",
-                        "- Shows top 30 in the right pane",
-                        "",
-                        *ctx,
-                    ]
-                )
-            )
-        elif idx == 3:
-            detail.update(
-                "\n".join(
-                    [
-                        "Items structural edits:",
-                        "- Stage → review → push (uses existing CLI wizard in a suspended terminal)",
-                        "",
-                        *ctx,
-                    ]
-                )
-            )
-        elif idx == 4:
-            detail.update(
-                "\n".join(
-                    [
-                        "Add question(s) guided wizard:",
-                        "- Clone template question or load question JSON",
-                        "- Choose placement (after/before/prepend/append)",
-                        "- Supports dry-run/live/publish options",
-                        "",
-                        *ctx,
-                    ]
-                )
-            )
-        elif idx == 5:
-            detail.update(
-                "\n".join(
-                    [
-                        "Move question(s) guided wizard:",
-                        "- Select one or more QIDs",
-                        "- Choose placement (after/before/prepend/append)",
-                        "- Supports dry-run/live/publish options",
-                        "",
-                        *ctx,
-                    ]
-                )
-            )
-        else:
-            detail.update("\n".join(ctx))
+        lines = [entry.label, "", *entry.detail_lines, "", *_account_context_lines()]
+        if entry.requires_default_account:
+            reason = _disabled_reason_for_default_only()
+            if reason:
+                lines.extend(["", f"Disabled reason: {reason}"])
+            else:
+                lines.extend(["", "Availability: enabled in default account context."])
+        detail.update("\n".join(lines))
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
-        idx = getattr(event, "option_index", None)
-        if idx == 0:
-            self.app.push_screen("pull_survey")  # type: ignore[attr-defined]
+        entry = self._entry_at(getattr(event, "option_index", None))
+        if entry is None:
             return
-        if idx == 1:
-            detail = self.query_one("#detail", Static)
-            try:
-                from pathlib import Path
+        if entry.section:
+            return
+        if entry.quick_action == "__back__":
+            self.app.pop_screen()  # type: ignore[attr-defined]
+            return
+        if not entry.quick_action:
+            return
 
-                from qsync.config import (
-                    get_active_account,
-                    get_client_config,
-                    load_account_env,
-                    resolve_root,
-                )
-                from qsync.survey_inventory import refresh_inventory
-
-                root = resolve_root(required=False) or Path.cwd()
-                account = None
-                try:
-                    account = get_active_account()
-                except Exception:
-                    account = None
-                env = load_account_env(account, root=root) if account else None
-                base, headers = get_client_config(env) if env else get_client_config()
-
-                with self.app.suspend():  # type: ignore[attr-defined]
-                    print(f"\n[qsync:tui] Refreshing inventory (account={account or 'default'})...")
-                    _all, changed = refresh_inventory(
-                        base,
-                        headers,
-                        progress=True,
-                        quiet=False,
-                    )
-                    print(f"[qsync:tui] Inventory refresh done. Changed={len(changed)}")
+        detail = self.query_one("#detail", Static)
+        if entry.requires_default_account:
+            reason = _disabled_reason_for_default_only()
+            if reason:
                 detail.update(
                     "\n".join(
                         [
-                            "Inventory refreshed.",
+                            "Action blocked.",
+                            "",
+                            reason,
+                            "",
+                            "Use `qsync account clear` (default account) or switch account in Workspace section.",
                             "",
                             *_account_context_lines(),
-                            "",
-                            "Select another action on the left.",
                         ]
                     )
                 )
-            except Exception as exc:
-                detail.update(f"ERROR refreshing inventory: {exc}\n\n" + "\n".join(_account_context_lines()))
-            return
-        if idx == 2:
-            detail = self.query_one("#detail", Static)
-            try:
-                from pathlib import Path
-
-                from qsync.config import (
-                    get_active_account,
-                    get_client_config,
-                    load_account_env,
-                    resolve_root,
-                )
-                from qsync.survey_selection import list_surveys_via_api
-
-                root = resolve_root(required=False) or Path.cwd()
-                account = None
-                try:
-                    account = get_active_account()
-                except Exception:
-                    account = None
-                env = load_account_env(account, root=root) if account else None
-                base, headers = get_client_config(env) if env else get_client_config()
-
-                surveys = list_surveys_via_api(base_url=base, headers=headers)
-                surveys.sort(key=lambda s: (s.get("lastModified") or s.get("creationDate") or ""), reverse=True)
-                head = surveys[:30]
-                lines = ["Surveys (API top 30):", ""]
-                for s in head:
-                    sid = str(s.get("id") or "").strip()
-                    name = str(s.get("name") or "Untitled").strip()
-                    active = s.get("isActive")
-                    lines.append(f"- {sid} [{'active' if active else 'inactive'}] {name}")
-                if len(surveys) > 30:
-                    lines.append("")
-                    lines.append(f"(Showing 30 of {len(surveys)}.)")
-                lines.append("")
-                lines.extend(_account_context_lines())
-                detail.update("\n".join(lines))
-            except Exception as exc:
-                detail.update(f"ERROR listing surveys: {exc}\n\n" + "\n".join(_account_context_lines()))
-            return
-        if idx == 3:
-            self.app.structural_state = StructuralEditState()  # type: ignore[attr-defined]
-            self.app.push_screen("struct_survey")  # type: ignore[attr-defined]
-            return
-        if idx == 4:
-            self._run_cli_question_wizard(mode="add")
-            return
-        if idx == 5:
-            self._run_cli_question_wizard(mode="move")
-            return
-        else:
-            self.app.pop_screen()  # type: ignore[attr-defined]
+                return
+        try:
+            quick_action = "" if entry.quick_action == "__full_menu__" else entry.quick_action
+            message = self._run_quick_action(quick_action)
+        except Exception as exc:
+            message = f"ERROR: {exc}"
+        detail.update(
+            "\n".join(
+                [
+                    entry.label,
+                    "",
+                    message,
+                    "",
+                    *_account_context_lines(),
+                    "",
+                    "Select another action on the left.",
+                ]
+            )
+        )
 
 
 class PullSurveyScreen(Screen):
+    SHARED_PICKER_LABEL = "Open shared picker (details/manual/regex)"
+
     BINDINGS = [
         ("b", "app.pop_screen", "Back"),
         ("escape", "app.pop_screen", "Back"),
         ("q", "app.quit", "Quit"),
         ("?", "app.push_screen('help')", "Help"),
+        ("h", "context_help", "Screen Help"),
         ("r", "refresh", "Refresh"),
     ]
 
@@ -1152,6 +1551,7 @@ class PullSurveyScreen(Screen):
         self._filtered_rows = rows
         surveys_widget = self.query_one("#surveys", OptionList)
         surveys_widget.clear_options()
+        surveys_widget.add_option(self.SHARED_PICKER_LABEL)
         if not rows:
             return
         for row in rows:
@@ -1159,6 +1559,40 @@ class PullSurveyScreen(Screen):
             if not sid:
                 continue
             surveys_widget.add_option(_survey_option_label(row))
+
+    def action_context_help(self) -> None:
+        self.app.push_screen(  # type: ignore[attr-defined]
+            ContextHelpScreen(
+                title="Pull Survey Picker Help",
+                lines=[
+                    "Use native filter list or the shared picker option.",
+                    "Shared picker includes top-30 details and manual SurveyID entry.",
+                    "Pull is read-only and caches survey definitions locally.",
+                ],
+            )
+        )
+
+    def _run_shared_picker(self) -> None:
+        from qsync.survey_selection import pick_survey_id_from_records
+
+        rows = list(getattr(self, "_rows", []) or [])
+        if not rows:
+            return
+        with self.app.suspend():  # type: ignore[attr-defined]
+            picked = pick_survey_id_from_records(
+                message="Pick a survey to pull:",
+                records=rows,
+                include_back=True,
+                include_manual=True,
+                include_details=True,
+            )
+        if not picked:
+            return
+        for row in rows:
+            if str(row.get("id") or "").strip() == picked:
+                self._select_survey(row)
+                return
+        self._select_survey({"id": picked, "name": picked})
 
     def on_input_changed(self, event: Input.Changed) -> None:  # type: ignore[name-defined]
         if str(getattr(event, "input", None).id or "") != "survey_filter":
@@ -1190,9 +1624,23 @@ class PullSurveyScreen(Screen):
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:  # type: ignore[name-defined]
         idx = getattr(event, "option_index", None)
         rows = getattr(self, "_filtered_rows", None)
-        if idx is None or not rows or idx < 0 or idx >= len(rows):
+        if idx is None:
             return
-        s = rows[idx]
+        if idx == 0:
+            detail = self.query_one("#detail", Static)
+            detail.update(
+                "\n".join(
+                    [
+                        self.SHARED_PICKER_LABEL,
+                        "",
+                        "Uses shared CLI picker semantics (details/manual/regex).",
+                    ]
+                )
+            )
+            return
+        if not rows or idx < 1 or idx > len(rows):
+            return
+        s = rows[idx - 1]
         detail = self.query_one("#detail", Static)
         sid = str(s.get("id") or "").strip()
         name = str(s.get("name") or "Untitled").strip()
@@ -1218,9 +1666,14 @@ class PullSurveyScreen(Screen):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:  # type: ignore[name-defined]
         idx = getattr(event, "option_index", None)
         rows = getattr(self, "_filtered_rows", None)
-        if idx is None or rows is None or idx < 0 or idx >= len(rows):
+        if idx is None:
             return
-        self._select_survey(rows[idx])
+        if idx == 0:
+            self._run_shared_picker()
+            return
+        if rows is None or idx < 1 or idx > len(rows):
+            return
+        self._select_survey(rows[idx - 1])
 
     def _select_survey(self, row: dict[str, Any]) -> None:
         survey_id = str(row.get("id") or "").strip()
@@ -1573,20 +2026,20 @@ class StructuralSessionScreen(Screen):
         with self.app.suspend():  # type: ignore[attr-defined]
             # Keep delete policy strict: if deletes are present, push_structural_ops will
             # prompt (since interactive=True) before proceeding.
-	            push_structural_ops(
-	                survey_id=survey_id,
-	                payload=survey.payload,
-	                structural_ops=ops,
-	                push_journal=dict(record.payload.push_journal or {}),
-	                interactive=True,
-	                allow_delete=False,
-	                force_live=False,
-	                force_preview=False,
-	                publish=publish,
-	                dry_run=False,
-	                refresh_cache=True,
-	                save_journal_cb=_save_journal,
-	            )
+            push_structural_ops(
+                survey_id=survey_id,
+                payload=survey.payload,
+                structural_ops=ops,
+                push_journal=dict(record.payload.push_journal or {}),
+                interactive=True,
+                allow_delete=False,
+                force_live=False,
+                force_preview=False,
+                publish=publish,
+                dry_run=False,
+                refresh_cache=True,
+                save_journal_cb=_save_journal,
+            )
 
         return f"Pushed {len(ops)} staged op(s)."
 
