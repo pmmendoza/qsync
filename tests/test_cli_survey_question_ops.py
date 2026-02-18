@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 
 class _Resp:
     def __init__(self, payload: dict[str, Any]) -> None:
@@ -354,6 +356,238 @@ def test_add_question_insert_index_with_between_page_breaks(monkeypatch) -> None
         else:
             rendered.append(etype)
     assert rendered == ["QID1", "QID101", "Page Break", "QID102", "QID2"]
+
+
+def test_add_page_break_inserts_at_explicit_index(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    definition = {
+        "Questions": {
+            "QID1": {"QuestionID": "QID1", "QuestionType": "MC"},
+            "QID2": {"QuestionID": "QID2", "QuestionType": "MC"},
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID1"},
+                    {"Type": "Question", "QuestionID": "QID2"},
+                ],
+            }
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_MAIN"}]},
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_preflight_question_writes",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda *_a, **_k: definition,
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_refresh_cache_after_question_write",
+        lambda **_kwargs: None,
+    )
+
+    updated_block: dict[str, Any] = {}
+
+    def _send_api_request(*, method: str, path: str, json=None, **_kwargs):
+        if method == "PUT" and path == "survey-definitions/SV_TEST/blocks/BL_MAIN":
+            updated_block.clear()
+            updated_block.update(json or {})
+            return _Resp({"result": {"ok": True}})
+        raise AssertionError(f"Unexpected API call: {method} {path}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", _send_api_request)
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        target_block_id="BL_MAIN",
+        after_qid=None,
+        before_qid=None,
+        position="append",
+        insert_index=1,
+        dry_run=False,
+        force_live=False,
+        yes=True,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_add_page_break(args)
+
+    rendered = []
+    for elem in updated_block.get("BlockElements", []):
+        etype = str(elem.get("Type") or "")
+        if etype == "Question":
+            rendered.append(str(elem.get("QuestionID") or ""))
+        else:
+            rendered.append(etype)
+    assert rendered == ["QID1", "Page Break", "QID2"]
+
+
+def test_remove_page_break_removes_selected_indices(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    definition = {
+        "Questions": {
+            "QID1": {"QuestionID": "QID1", "QuestionType": "MC"},
+            "QID2": {"QuestionID": "QID2", "QuestionType": "MC"},
+            "QID3": {"QuestionID": "QID3", "QuestionType": "MC"},
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID1"},
+                    {"Type": "Page Break"},
+                    {"Type": "Question", "QuestionID": "QID2"},
+                    {"Type": "Page Break"},
+                    {"Type": "Question", "QuestionID": "QID3"},
+                ],
+            }
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_MAIN"}]},
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_preflight_question_writes",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda *_a, **_k: definition,
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_refresh_cache_after_question_write",
+        lambda **_kwargs: None,
+    )
+
+    updated_block: dict[str, Any] = {}
+
+    def _send_api_request(*, method: str, path: str, json=None, **_kwargs):
+        if method == "PUT" and path == "survey-definitions/SV_TEST/blocks/BL_MAIN":
+            updated_block.clear()
+            updated_block.update(json or {})
+            return _Resp({"result": {"ok": True}})
+        raise AssertionError(f"Unexpected API call: {method} {path}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", _send_api_request)
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        target_block_id="BL_MAIN",
+        element_index=["1", "3"],
+        dry_run=False,
+        force_live=False,
+        yes=True,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_remove_page_break(args)
+
+    rendered = []
+    for elem in updated_block.get("BlockElements", []):
+        etype = str(elem.get("Type") or "")
+        if etype == "Question":
+            rendered.append(str(elem.get("QuestionID") or ""))
+        else:
+            rendered.append(etype)
+    assert rendered == ["QID1", "QID2", "QID3"]
+
+
+def test_remove_page_break_rejects_non_page_break_index(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    definition = {
+        "Questions": {
+            "QID1": {"QuestionID": "QID1", "QuestionType": "MC"},
+            "QID2": {"QuestionID": "QID2", "QuestionType": "MC"},
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID1"},
+                    {"Type": "Page Break"},
+                    {"Type": "Question", "QuestionID": "QID2"},
+                ],
+            }
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_MAIN"}]},
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_preflight_question_writes",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda *_a, **_k: definition,
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        target_block_id="BL_MAIN",
+        element_index=["0"],
+        dry_run=False,
+        force_live=False,
+        yes=True,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli_survey.handle_remove_page_break(args)
+
+    assert "expected 'Page Break'" in str(excinfo.value)
 
 
 def test_move_question_reorders_within_block(monkeypatch) -> None:

@@ -2395,6 +2395,25 @@ def handle_menu(args: argparse.Namespace) -> None:
             return None
         return (block_id, slot_index)
 
+    def _page_break_choices_for_block(
+        definition: Mapping[str, Any],
+        *,
+        block_id: str,
+    ) -> list[tuple[str, int]]:
+        elements = _block_elements_for_menu(definition, block_id=block_id)
+        choices: list[tuple[str, int]] = []
+        for idx, elem in enumerate(elements):
+            if str(elem.get("Type") or "").strip() != "Page Break":
+                continue
+            prev_token = _block_element_token(elements[idx - 1]) if idx > 0 else "start"
+            next_token = (
+                _block_element_token(elements[idx + 1])
+                if idx + 1 < len(elements)
+                else "end"
+            )
+            choices.append((f"[{idx}] --- PB --- ({prev_token} -> {next_token})", idx))
+        return choices
+
     def _prompt_question_placement(
         definition: Mapping[str, Any],
         *,
@@ -2453,6 +2472,175 @@ def handle_menu(args: argparse.Namespace) -> None:
                 return None
         position = "prepend" if placement.startswith("Start") else "append"
         return (block_id, None, None, position)
+
+    def _menu_page_breaks(*, preselected_survey_id: str | None = None) -> None:
+        survey_id = (preselected_survey_id or "").strip() or _pick_survey_id(
+            message="Pick a survey to edit page break(s):"
+        )
+        if not survey_id:
+            return
+        definition = _fetch_definition_for_menu(survey_id)
+        if not definition:
+            return
+
+        action = select_from_list(
+            "Page break action:",
+            [
+                "Add page break",
+                "Remove page break(s)",
+                "↩ Back",
+            ],
+            instruction="Add uses block slot placement. Remove can target one, many, or all page breaks in a block.",
+        )
+        if not action or action.endswith("Back"):
+            return
+
+        if action.startswith("Add page break"):
+            placement = _prompt_block_slot_placement(
+                definition,
+                title="Choose where to insert page break in the selected block:",
+            )
+            if not placement:
+                return
+            target_block_id, insert_index = placement
+
+            dry_run = select_from_list("Dry run?", ["No", "Yes"]) == "Yes"
+            force_live = False
+            publish = False
+            publish_description = ""
+            if not dry_run:
+                force_live = (
+                    select_from_list(
+                        "Allow writes if finished responses exist?",
+                        ["No", "Yes"],
+                    )
+                    == "Yes"
+                )
+                publish = (
+                    select_from_list("Publish after page-break add?", ["Yes", "No"])
+                    == "Yes"
+                )
+                if publish:
+                    publish_description = (
+                        input("Publish description (optional): ").strip() or ""
+                    )
+
+            _run_action(
+                handle_add_page_break,
+                argparse.Namespace(
+                    survey_id=survey_id,
+                    target_block_id=target_block_id,
+                    after_qid=None,
+                    before_qid=None,
+                    position="append",
+                    insert_index=insert_index,
+                    dry_run=bool(dry_run),
+                    force_live=bool(force_live),
+                    yes=False,
+                    no_publish=not bool(publish),
+                    publish_description=publish_description,
+                    account=selected_account,
+                    interactive_mode=True,
+                ),
+            )
+            return
+
+        block_id = _pick_block_id_from_definition(
+            definition,
+            message="Choose block containing page break(s):",
+        )
+        if not block_id:
+            return
+        page_break_choices = _page_break_choices_for_block(definition, block_id=block_id)
+        if not page_break_choices:
+            print("[survey-menu] No page breaks found in selected block.")
+            return
+
+        label_to_index = {label: idx for label, idx in page_break_choices}
+        labels = [label for label, _idx in page_break_choices]
+
+        remove_mode = select_from_list(
+            "How do you want to select page break(s) to remove?",
+            [
+                "Pick one page break",
+                "Pick multiple page breaks",
+                "Remove all page breaks in block",
+                "↩ Back",
+            ],
+            instruction="Element indices are shown in square brackets to keep removal deterministic.",
+        )
+        if not remove_mode or remove_mode.endswith("Back"):
+            return
+
+        element_indices: list[int]
+        if remove_mode.startswith("Pick one"):
+            picked = select_from_list(
+                "Select page break to remove:",
+                [*labels, "↩ Back"],
+                instruction="Pick one page-break element by index label.",
+            )
+            if not picked or picked.endswith("Back"):
+                return
+            idx = label_to_index.get(str(picked))
+            if idx is None:
+                return
+            element_indices = [idx]
+        elif remove_mode.startswith("Pick multiple"):
+            from .interactive_menu import multi_select_from_list
+
+            picked_labels = multi_select_from_list(
+                "Select page break(s) to remove:",
+                labels,
+                instruction="Space to toggle, Enter to confirm.",
+            )
+            if picked_labels is None:
+                return
+            picked_unique = [
+                label for label in dict.fromkeys(picked_labels) if label in label_to_index
+            ]
+            if not picked_unique:
+                print("[survey-menu] No page breaks selected.")
+                return
+            element_indices = [label_to_index[label] for label in picked_unique]
+        else:
+            element_indices = [idx for _label, idx in page_break_choices]
+
+        dry_run = select_from_list("Dry run?", ["No", "Yes"]) == "Yes"
+        force_live = False
+        publish = False
+        publish_description = ""
+        if not dry_run:
+            force_live = (
+                select_from_list(
+                    "Allow writes if finished responses exist?",
+                    ["No", "Yes"],
+                )
+                == "Yes"
+            )
+            publish = (
+                select_from_list("Publish after page-break removal?", ["Yes", "No"])
+                == "Yes"
+            )
+            if publish:
+                publish_description = (
+                    input("Publish description (optional): ").strip() or ""
+                )
+
+        _run_action(
+            handle_remove_page_break,
+            argparse.Namespace(
+                survey_id=survey_id,
+                target_block_id=block_id,
+                element_index=[str(idx) for idx in element_indices],
+                dry_run=bool(dry_run),
+                force_live=bool(force_live),
+                yes=False,
+                no_publish=not bool(publish),
+                publish_description=publish_description,
+                account=selected_account,
+                interactive_mode=True,
+            ),
+        )
 
     def _menu_add_question(*, preselected_survey_id: str | None = None) -> None:
         survey_id = (preselected_survey_id or "").strip() or _pick_survey_id(
@@ -2976,21 +3164,32 @@ def handle_menu(args: argparse.Namespace) -> None:
     direct_structural = bool(getattr(args, "structural_edit", False))
     direct_add_question = bool(getattr(args, "add_question_interactive", False))
     direct_move_question = bool(getattr(args, "move_question_interactive", False))
+    direct_page_break = bool(getattr(args, "page_break_interactive", False))
     direct_survey_id = str(getattr(args, "survey_id", "") or "").strip() or None
     if sum(
         int(flag)
-        for flag in (direct_structural, direct_add_question, direct_move_question)
+        for flag in (
+            direct_structural,
+            direct_add_question,
+            direct_move_question,
+            direct_page_break,
+        )
     ) > 1:
         raise SystemExit(
             "[survey-menu] ERROR: choose only one direct mode: "
-            "--structural-edit, --add-question-interactive, or --move-question-interactive."
+            "--structural-edit, --add-question-interactive, --move-question-interactive, "
+            "or --page-break-interactive."
         )
     if direct_survey_id and not (
-        direct_structural or direct_add_question or direct_move_question
+        direct_structural
+        or direct_add_question
+        or direct_move_question
+        or direct_page_break
     ):
         raise SystemExit(
             "[survey-menu] ERROR: --survey-id requires one of "
-            "--structural-edit, --add-question-interactive, --move-question-interactive."
+            "--structural-edit, --add-question-interactive, "
+            "--move-question-interactive, --page-break-interactive."
         )
     if direct_structural:
         _menu_items_structural_edits(preselected_survey_id=direct_survey_id)
@@ -3000,6 +3199,9 @@ def handle_menu(args: argparse.Namespace) -> None:
         return
     if direct_move_question:
         _menu_move_question(preselected_survey_id=direct_survey_id)
+        return
+    if direct_page_break:
+        _menu_page_breaks(preselected_survey_id=direct_survey_id)
         return
 
     quick_action = str(getattr(args, "quick_action", "") or "").strip()
@@ -3030,6 +3232,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             "edit-structural": _menu_items_structural_edits,
             "edit-add-question": _menu_add_question,
             "edit-move-question": _menu_move_question,
+            "edit-page-breaks": _menu_page_breaks,
             # Flow / embedded / integrations
             "flow-add-embedded": lambda: _menu_embedded_field("add-embedded-field"),
             "flow-remove-embedded": lambda: _menu_embedded_field("remove-embedded-field"),
@@ -3145,7 +3348,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             _menu_context(
                 "Survey Menu > Edit Questions & Content",
                 "Question-level content edits (safe staged workflow).",
-                "Items structural edits, add-question (guided), move-question (guided)",
+                "Items structural edits, add-question (guided), move-question (guided), page-break edits",
             )
             choice = select_from_list(
                 "Edit Questions & Content",
@@ -3153,9 +3356,10 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Items: structural edits (stage → preview → push)",
                     "Add question(s) (clone template, insert in flow)",
                     "Move question(s) (reorder / move across blocks)",
+                    "Page breaks (add/remove in block flow)",
                     "↩ Back",
                 ],
-                instruction="Use add/move for block placement; use structural edits for text/options/subitems.",
+                instruction="Use add/move/page-break actions for block placement; use structural edits for text/options/subitems.",
             )
             if not choice or choice.endswith("Back"):
                 continue
@@ -3163,8 +3367,10 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_items_structural_edits()
             elif choice.startswith("Add question"):
                 _menu_add_question()
-            else:
+            elif choice.startswith("Move question"):
                 _menu_move_question()
+            else:
+                _menu_page_breaks()
             continue
 
         if top.startswith("Flow, Embedded Data & Integrations"):
@@ -7926,6 +8132,35 @@ def _build_insert_elements(
     return out
 
 
+def _normalize_element_indices(value: object) -> list[int]:
+    values: list[int] = []
+    if value is None:
+        return values
+    items = value if isinstance(value, list) else [value]
+    for item in items:
+        if item is None:
+            continue
+        for token in str(item).split(","):
+            text = token.strip()
+            if not text:
+                continue
+            try:
+                idx = int(text)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid element index '{text}'.") from exc
+            if idx < 0:
+                raise ValueError("Element indices must be >= 0.")
+            values.append(idx)
+    deduped: list[int] = []
+    seen: set[int] = set()
+    for idx in values:
+        if idx in seen:
+            continue
+        seen.add(idx)
+        deduped.append(idx)
+    return deduped
+
+
 def _remove_qids_from_all_blocks(
     definition: Mapping[str, Any],
     qids: Iterable[str],
@@ -7959,13 +8194,12 @@ def _remove_qids_from_all_blocks(
     return changed
 
 
-def _insert_question_elements(
+def _insert_block_elements(
     definition: Mapping[str, Any],
     *,
     block_id: str,
     insert_index: int,
-    qids: list[str],
-    page_break_mode: str = "none",
+    elements_to_insert: list[dict[str, Any]],
 ) -> None:
     blocks = definition.get("Blocks")
     if not isinstance(blocks, dict):
@@ -7975,9 +8209,68 @@ def _insert_question_elements(
         raise ValueError(f"Block {block_id} was not found in this survey.")
     elements, _ = _block_elements_ref(block)
     idx = max(0, min(int(insert_index), len(elements)))
-    for elem in _build_insert_elements(qids=qids, page_break_mode=page_break_mode):
-        elements.insert(idx, elem)
+    for elem in elements_to_insert:
+        elements.insert(idx, dict(elem))
         idx += 1
+
+
+def _remove_page_breaks_from_block(
+    definition: Mapping[str, Any],
+    *,
+    block_id: str,
+    element_indices: list[int],
+) -> int:
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise ValueError("Survey definition has no Blocks map.")
+    block = blocks.get(block_id)
+    if not isinstance(block, dict):
+        raise ValueError(f"Block {block_id} was not found in this survey.")
+    elements, key = _block_elements_ref(block)
+
+    if not element_indices:
+        raise ValueError("At least one --element-index is required.")
+
+    unique_desc = sorted({int(idx) for idx in element_indices}, reverse=True)
+    if unique_desc and unique_desc[0] >= len(elements):
+        raise ValueError(
+            f"Element index {unique_desc[0]} exceeds block length {len(elements)}."
+        )
+
+    removed = 0
+    for idx in unique_desc:
+        elem = elements[idx]
+        if not isinstance(elem, dict):
+            raise ValueError(
+                f"Element index {idx} is not a valid block element object."
+            )
+        elem_type = str(elem.get("Type") or "").strip()
+        if elem_type != "Page Break":
+            raise ValueError(
+                f"Element index {idx} is Type='{elem_type or '(missing)'}', expected 'Page Break'."
+            )
+        del elements[idx]
+        removed += 1
+    block[key] = elements
+    return removed
+
+
+def _insert_question_elements(
+    definition: Mapping[str, Any],
+    *,
+    block_id: str,
+    insert_index: int,
+    qids: list[str],
+    page_break_mode: str = "none",
+) -> None:
+    _insert_block_elements(
+        definition,
+        block_id=block_id,
+        insert_index=insert_index,
+        elements_to_insert=_build_insert_elements(
+            qids=qids, page_break_mode=page_break_mode
+        ),
+    )
 
 
 def _update_block(
@@ -9084,6 +9377,249 @@ def handle_move_question(args: argparse.Namespace) -> None:
 
     _refresh_cache_after_question_write(survey_id=survey_id, args=args)
     print(f"[move-question] Moved question(s): {', '.join(qids)}")
+
+
+def handle_add_page_break(args: argparse.Namespace) -> None:
+    """Insert a Page Break element into a target survey block."""
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to add a page break:",
+    )
+    dry_run = bool(getattr(args, "dry_run", False))
+    force_live = bool(getattr(args, "force_live", False))
+    yes = bool(getattr(args, "yes", False))
+    no_publish = bool(getattr(args, "no_publish", False))
+    after_qid = (getattr(args, "after_qid", None) or "").strip() or None
+    before_qid = (getattr(args, "before_qid", None) or "").strip() or None
+    target_block_id = (getattr(args, "target_block_id", None) or "").strip() or None
+    position = (getattr(args, "position", None) or "append").strip().lower()
+    try:
+        insert_index_override = _parse_insert_index_override(
+            getattr(args, "insert_index", None)
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[add-page-break] ERROR: {exc}") from exc
+    if position not in {"append", "prepend"}:
+        raise SystemExit(
+            "[add-page-break] ERROR: --position must be append or prepend."
+        )
+    if after_qid and before_qid:
+        raise SystemExit(
+            "[add-page-break] ERROR: Use only one of --after-qid or --before-qid."
+        )
+    if insert_index_override is not None and (after_qid or before_qid):
+        raise SystemExit(
+            "[add-page-break] ERROR: --insert-index cannot be combined with --after-qid/--before-qid."
+        )
+
+    base_url, headers = _get_client_config_for_args(args)
+    _preflight_question_writes(
+        survey_id=survey_id,
+        base_url=base_url,
+        headers=headers,
+        dry_run=dry_run,
+        force_live=force_live,
+        interactive_override_prompt=bool(getattr(args, "interactive_mode", False)),
+    )
+
+    definition = fetch_survey_definition(base_url, headers, survey_id)
+    try:
+        block_id = _resolve_target_block_id(
+            definition,
+            target_block_id=target_block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+        )
+        insert_index = _resolve_insert_index_with_override(
+            definition,
+            block_id=block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+            position=position,
+            insert_index_override=insert_index_override,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[add-page-break] ERROR: {exc}") from exc
+
+    print(
+        f"[add-page-break] Plan: insert page break in block {block_id} at index {insert_index}."
+    )
+    if dry_run:
+        print("[add-page-break] DRY-RUN: no API writes performed.")
+        return
+
+    _confirm_noninteractive_safe(
+        yes=yes,
+        prompt=f"Insert page break in {survey_id}?",
+    )
+
+    _insert_block_elements(
+        definition,
+        block_id=block_id,
+        insert_index=insert_index,
+        elements_to_insert=[{"Type": "Page Break"}],
+    )
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise SystemExit("[add-page-break] ERROR: Survey definition has no Blocks map.")
+    block_payload = blocks.get(block_id)
+    if not isinstance(block_payload, dict):
+        raise SystemExit(f"[add-page-break] ERROR: Block {block_id} was not found.")
+
+    _update_block(
+        survey_id=survey_id,
+        block_id=block_id,
+        block_payload=block_payload,
+        base_url=base_url,
+        headers=headers,
+        log_meta={"operation": "add-page-break", "block_id": block_id},
+    )
+
+    if not no_publish:
+        description = (getattr(args, "publish_description", None) or "").strip()
+        if not description:
+            description = make_publish_description(
+                operation="add-page-break",
+                changed_qids=[],
+                count=1,
+                label=f"block {block_id}",
+                max_chars=SURVEY_VERSION_DESCRIPTION_MAX_CHARS,
+            )
+        publish_survey_definition(
+            survey_id,
+            description=description,
+            published=True,
+            context={
+                "origin": "qsync.cli_survey.add-page-break",
+                "block_id": block_id,
+                "insert_index": insert_index,
+            },
+            base_url=base_url,
+            headers=headers,
+        )
+
+    _refresh_cache_after_question_write(survey_id=survey_id, args=args)
+    print(f"[add-page-break] Inserted page break in block {block_id} at index {insert_index}.")
+
+
+def handle_remove_page_break(args: argparse.Namespace) -> None:
+    """Remove one or more Page Break elements from a target survey block."""
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to remove page break(s):",
+    )
+    dry_run = bool(getattr(args, "dry_run", False))
+    force_live = bool(getattr(args, "force_live", False))
+    yes = bool(getattr(args, "yes", False))
+    no_publish = bool(getattr(args, "no_publish", False))
+    target_block_id = (getattr(args, "target_block_id", None) or "").strip() or None
+    if not target_block_id:
+        raise SystemExit("[remove-page-break] ERROR: --target-block-id is required.")
+    try:
+        element_indices = _normalize_element_indices(getattr(args, "element_index", None))
+    except ValueError as exc:
+        raise SystemExit(f"[remove-page-break] ERROR: {exc}") from exc
+    if not element_indices:
+        raise SystemExit(
+            "[remove-page-break] ERROR: provide at least one --element-index."
+        )
+
+    base_url, headers = _get_client_config_for_args(args)
+    _preflight_question_writes(
+        survey_id=survey_id,
+        base_url=base_url,
+        headers=headers,
+        dry_run=dry_run,
+        force_live=force_live,
+        interactive_override_prompt=bool(getattr(args, "interactive_mode", False)),
+    )
+
+    definition = fetch_survey_definition(base_url, headers, survey_id)
+    try:
+        block_id = _resolve_target_block_id(
+            definition,
+            target_block_id=target_block_id,
+            after_qid=None,
+            before_qid=None,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[remove-page-break] ERROR: {exc}") from exc
+    if block_id != target_block_id:
+        raise SystemExit(
+            f"[remove-page-break] ERROR: resolved block {block_id} does not match requested {target_block_id}."
+        )
+
+    print(
+        "[remove-page-break] Plan: remove page break element(s) at "
+        f"index {', '.join(str(i) for i in element_indices)} from block {block_id}."
+    )
+    if dry_run:
+        print("[remove-page-break] DRY-RUN: no API writes performed.")
+        return
+
+    _confirm_noninteractive_safe(
+        yes=yes,
+        prompt=f"Remove {len(element_indices)} page break(s) in {survey_id}?",
+    )
+
+    try:
+        removed = _remove_page_breaks_from_block(
+            definition,
+            block_id=block_id,
+            element_indices=element_indices,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[remove-page-break] ERROR: {exc}") from exc
+
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise SystemExit(
+            "[remove-page-break] ERROR: Survey definition has no Blocks map."
+        )
+    block_payload = blocks.get(block_id)
+    if not isinstance(block_payload, dict):
+        raise SystemExit(f"[remove-page-break] ERROR: Block {block_id} was not found.")
+
+    _update_block(
+        survey_id=survey_id,
+        block_id=block_id,
+        block_payload=block_payload,
+        base_url=base_url,
+        headers=headers,
+        log_meta={
+            "operation": "remove-page-break",
+            "block_id": block_id,
+            "removed_indices": sorted(element_indices),
+        },
+    )
+
+    if not no_publish:
+        description = (getattr(args, "publish_description", None) or "").strip()
+        if not description:
+            description = make_publish_description(
+                operation="remove-page-break",
+                changed_qids=[],
+                count=removed,
+                label=f"block {block_id}",
+                max_chars=SURVEY_VERSION_DESCRIPTION_MAX_CHARS,
+            )
+        publish_survey_definition(
+            survey_id,
+            description=description,
+            published=True,
+            context={
+                "origin": "qsync.cli_survey.remove-page-break",
+                "block_id": block_id,
+                "removed_indices": sorted(element_indices),
+            },
+            base_url=base_url,
+            headers=headers,
+        )
+
+    _refresh_cache_after_question_write(survey_id=survey_id, args=args)
+    print(f"[remove-page-break] Removed {removed} page break(s) from block {block_id}.")
 
 
 def handle_push_question(args: argparse.Namespace) -> None:
@@ -11316,7 +11852,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "  Embedded/options: items structural edits, add-embedded-field, remove-embedded-field, rename-embedded-field, cleanup-embedded-data, prolific-auth\n"
             "  Prolific wiring: prolific-wiring (alias to qsync prolific)\n"
             "  Lifecycle/versions: publish, activate, deactivate, versions, version-fetch, rollback\n"
-            "  Utilities: inspect-question, add-question, move-question, push-question\n"
+            "  Utilities: inspect-question, add-question, move-question, add-page-break, remove-page-break, push-question\n"
             "  Exports: export-responses, export-translation, export-side-by-side\n"
             "  Bulk: master (group; has subcommands)\n"
             "  Admin: rename, delete\n"
@@ -11351,11 +11887,17 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Jump directly to guided move-question flow (skip category navigation).",
     )
     p_menu.add_argument(
+        "--page-break-interactive",
+        action="store_true",
+        help="Jump directly to guided page-break flow (skip category navigation).",
+    )
+    p_menu.add_argument(
         "--survey-id",
         dest="survey_id",
         help=(
             "Preselect SurveyID for direct interactive modes "
-            "(--structural-edit/--add-question-interactive/--move-question-interactive)."
+            "(--structural-edit/--add-question-interactive/"
+            "--move-question-interactive/--page-break-interactive)."
         ),
     )
     p_menu.add_argument(
@@ -12489,6 +13031,133 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_move_question.set_defaults(func=handle_move_question)
 
+    # add-page-break
+    p_add_page_break = survey_subs.add_parser(
+        "add-page-break",
+        help="Insert a page-break element into a target block position",
+    )
+    p_add_page_break.add_argument(
+        "--survey-id",
+        dest="survey_id",
+        help="Target Qualtrics survey ID (omit to select interactively)",
+    )
+    p_add_page_break.add_argument(
+        "--target-block-id",
+        dest="target_block_id",
+        help="Target Block ID (default: inferred from anchor/first eligible block)",
+    )
+    p_add_page_break.add_argument(
+        "--after-qid",
+        dest="after_qid",
+        help="Insert after this QID",
+    )
+    p_add_page_break.add_argument(
+        "--before-qid",
+        dest="before_qid",
+        help="Insert before this QID",
+    )
+    p_add_page_break.add_argument(
+        "--position",
+        choices=["append", "prepend"],
+        default="append",
+        help="Placement when no --after-qid/--before-qid is provided (default: append)",
+    )
+    p_add_page_break.add_argument(
+        "--insert-index",
+        type=int,
+        help=(
+            "0-based insertion boundary inside target block BlockElements; "
+            "overrides anchor/position placement."
+        ),
+    )
+    p_add_page_break.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the plan without calling update endpoints",
+    )
+    p_add_page_break.add_argument(
+        "--force-live",
+        action="store_true",
+        help="Allow writes even if finished responses exist",
+    )
+    p_add_page_break.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+    p_add_page_break.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip publishing the survey after adding page break(s)",
+    )
+    p_add_page_break.add_argument(
+        "--publish-description",
+        help=f"Publish description override (max {SURVEY_VERSION_DESCRIPTION_MAX_CHARS} chars).",
+    )
+    p_add_page_break.add_argument(
+        "--account",
+        help="Use credentials from `.env.<account>` under the workspace root.",
+    )
+    p_add_page_break.set_defaults(func=handle_add_page_break)
+
+    # remove-page-break
+    p_remove_page_break = survey_subs.add_parser(
+        "remove-page-break",
+        help="Remove one or more page-break elements from a target block",
+    )
+    p_remove_page_break.add_argument(
+        "--survey-id",
+        dest="survey_id",
+        help="Target Qualtrics survey ID (omit to select interactively)",
+    )
+    p_remove_page_break.add_argument(
+        "--target-block-id",
+        required=True,
+        dest="target_block_id",
+        help="Target Block ID containing page-break elements to remove",
+    )
+    p_remove_page_break.add_argument(
+        "--element-index",
+        action="append",
+        required=True,
+        dest="element_index",
+        help=(
+            "0-based block element index of page break(s) to remove "
+            "(repeatable/comma-separated)."
+        ),
+    )
+    p_remove_page_break.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the plan without calling update endpoints",
+    )
+    p_remove_page_break.add_argument(
+        "--force-live",
+        action="store_true",
+        help="Allow writes even if finished responses exist",
+    )
+    p_remove_page_break.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+    p_remove_page_break.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip publishing the survey after removing page break(s)",
+    )
+    p_remove_page_break.add_argument(
+        "--publish-description",
+        help=f"Publish description override (max {SURVEY_VERSION_DESCRIPTION_MAX_CHARS} chars).",
+    )
+    p_remove_page_break.add_argument(
+        "--account",
+        help="Use credentials from `.env.<account>` under the workspace root.",
+    )
+    p_remove_page_break.set_defaults(func=handle_remove_page_break)
+
     # push-question
     p_push_q = survey_subs.add_parser(
         "push-question",
@@ -12937,6 +13606,8 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "inspect-question",
             "add-question",
             "move-question",
+            "add-page-break",
+            "remove-page-break",
             "push-question",
             # Exports
             "export-responses",

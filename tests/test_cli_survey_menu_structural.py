@@ -44,6 +44,10 @@ def test_embedded_options_menu_includes_structural_entry(
         "Move question(s) (reorder / move across blocks)" in menu_choices
         for menu_choices in seen_edit_choices
     )
+    assert any(
+        "Page breaks (add/remove in block flow)" in menu_choices
+        for menu_choices in seen_edit_choices
+    )
 
 
 def test_edit_menu_add_question_routes_to_handler(
@@ -199,6 +203,185 @@ def test_edit_menu_move_question_routes_to_handler(
     assert ns.target_block_id == "BL_1"
     assert ns.insert_index == 0
     assert ns.position == "append"
+    assert ns.dry_run is True
+
+
+def test_edit_menu_add_page_break_routes_to_handler(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.list_surveys",
+        lambda base, headers: [{"id": "SV_1", "name": "Survey One"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey._pick_survey_id_from_records",
+        lambda **kwargs: "SV_1",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.fetch_survey_definition",
+        lambda base, headers, survey_id: {
+            "Questions": {
+                "QID1": {"QuestionText": "Q1"},
+                "QID2": {"QuestionText": "Q2"},
+            },
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Standard",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": "QID1"},
+                        {"Type": "Question", "QuestionID": "QID2"},
+                    ],
+                }
+            },
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+        },
+    )
+
+    called = {}
+
+    def _capture(ns):
+        called["args"] = ns
+
+    monkeypatch.setattr("qsync.cli_survey.handle_add_page_break", _capture)
+
+    state = {"top_visits": 0}
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message.startswith("qsync survey menu"):
+            state["top_visits"] += 1
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
+            return "Page breaks (add/remove in block flow)"
+        if message == "Page break action:":
+            return "Add page break"
+        if message == "Choose target block:":
+            return str(choices[0])
+        if message == "Choose where to insert page break in the selected block:":
+            return "slot:1"
+        if message == "Dry run?":
+            return "Yes"
+        return "Exit"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert "args" in called
+    ns = called["args"]
+    assert ns.survey_id == "SV_1"
+    assert ns.target_block_id == "BL_1"
+    assert ns.insert_index == 1
+    assert ns.after_qid is None
+    assert ns.before_qid is None
+    assert ns.position == "append"
+    assert ns.dry_run is True
+
+
+def test_edit_menu_remove_page_break_routes_to_handler(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.list_surveys",
+        lambda base, headers: [{"id": "SV_1", "name": "Survey One"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey._pick_survey_id_from_records",
+        lambda **kwargs: "SV_1",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.fetch_survey_definition",
+        lambda base, headers, survey_id: {
+            "Questions": {
+                "QID1": {"QuestionText": "Q1"},
+                "QID2": {"QuestionText": "Q2"},
+                "QID3": {"QuestionText": "Q3"},
+            },
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Standard",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": "QID1"},
+                        {"Type": "Page Break"},
+                        {"Type": "Question", "QuestionID": "QID2"},
+                        {"Type": "Page Break"},
+                        {"Type": "Question", "QuestionID": "QID3"},
+                    ],
+                }
+            },
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+        },
+    )
+
+    called = {}
+    seen_multi_labels: list[str] = []
+
+    def _capture(ns):
+        called["args"] = ns
+
+    def _multi_select(message: str, choices, instruction=None, default=None):
+        seen_multi_labels[:] = list(choices)
+        return list(choices)
+
+    monkeypatch.setattr(interactive_menu, "multi_select_from_list", _multi_select)
+    monkeypatch.setattr("qsync.cli_survey.handle_remove_page_break", _capture)
+
+    state = {"top_visits": 0}
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message.startswith("qsync survey menu"):
+            state["top_visits"] += 1
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
+            return "Page breaks (add/remove in block flow)"
+        if message == "Page break action:":
+            return "Remove page break(s)"
+        if message == "Choose block containing page break(s):":
+            return str(choices[0])
+        if message == "How do you want to select page break(s) to remove?":
+            return "Pick multiple page breaks"
+        if message == "Dry run?":
+            return "Yes"
+        return "Exit"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert seen_multi_labels
+    assert all(label.startswith("[") and "--- PB ---" in label for label in seen_multi_labels)
+    assert "args" in called
+    ns = called["args"]
+    assert ns.survey_id == "SV_1"
+    assert ns.target_block_id == "BL_1"
+    assert ns.element_index == ["1", "3"]
     assert ns.dry_run is True
 
 
