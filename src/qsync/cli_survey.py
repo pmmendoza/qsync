@@ -500,7 +500,13 @@ def _status_response_counts(status_payload: Mapping[str, Any]) -> tuple[int | No
 def handle_menu(args: argparse.Namespace) -> None:
     """Interactive wizard for common `qsync survey ...` operations."""
 
-    from .interactive_menu import MenuItem, is_interactive, select_from_list
+    from .interactive_menu import (
+        MenuItem,
+        confirm,
+        is_interactive,
+        multi_select_from_list,
+        select_from_list,
+    )
 
     if not is_interactive():
         raise SystemExit("[survey-menu] ERROR: Interactive TTY required.")
@@ -1198,10 +1204,118 @@ def handle_menu(args: argparse.Namespace) -> None:
                 print(f"[survey-menu] Created: {preferred_dir}")
 
     def _menu_configure_externally_managed_overrides() -> None:
+        from .dimensions.items_structural import external_owner_for
+        from .qualtrics_client import load_cached_survey
         from .workspace_prefs import (
             get_workspace_items_allow_externally_managed_qids,
             set_workspace_items_allow_externally_managed_qids,
         )
+
+        def _qid_sort_key(qid: str) -> tuple[int, int | str]:
+            m = re.match(r"^QID(\d+)$", str(qid or "").strip(), re.IGNORECASE)
+            if m:
+                return (0, int(m.group(1)))
+            return (1, str(qid or "").strip())
+
+        def _split_override_tokens(raw: str | None) -> list[str]:
+            return [tok for tok in re.split(r"[,\s]+", str(raw or "").strip()) if tok]
+
+        def _parse_override_token(token: str) -> tuple[str | None, str]:
+            tok = str(token or "").strip()
+            if not tok:
+                return (None, "")
+            if tok.upper().startswith("SV_") and (":" in tok or "/" in tok):
+                if ":" in tok:
+                    sv, qid = tok.split(":", 1)
+                else:
+                    sv, qid = tok.split("/", 1)
+                sv = str(sv or "").strip()
+                qid = str(qid or "").strip()
+                if sv and qid:
+                    return (sv, qid)
+            return (None, tok)
+
+        def _effective_allowed_qids_for_survey(
+            *,
+            survey_id: str,
+            tokens: list[str],
+        ) -> tuple[set[str], set[str], set[str], bool]:
+            allowed: set[str] = set()
+            from_scoped: set[str] = set()
+            from_global: set[str] = set()
+            allow_all = False
+            for token in tokens:
+                scoped_survey_id, qid = _parse_override_token(token)
+                if not qid:
+                    continue
+                if qid.lower() in {"all", "*"}:
+                    if scoped_survey_id is None or scoped_survey_id == survey_id:
+                        allow_all = True
+                    continue
+                if scoped_survey_id is None:
+                    allowed.add(qid)
+                    from_global.add(qid)
+                    continue
+                if scoped_survey_id == survey_id:
+                    allowed.add(qid)
+                    from_scoped.add(qid)
+            return allowed, from_scoped, from_global, allow_all
+
+        def _load_protected_qids_for_survey(
+            survey_id: str,
+        ) -> list[tuple[str, str, str]]:
+            account_scope = _resolve_menu_account()
+            surveys_dir = resolve_survey_cache_dir(root=root, account=account_scope)
+            env = (
+                load_account_env(account_scope, root=root)
+                if account_scope
+                else None
+            )
+            survey = load_cached_survey(
+                survey_id,
+                surveys_dir=surveys_dir,
+                env=env,
+            )
+            protected: list[tuple[str, str, str]] = []
+            for raw_qid, q_json in (survey.questions or {}).items():
+                qid = str(raw_qid or "").strip()
+                if not qid:
+                    continue
+                tag = str((q_json or {}).get("DataExportTag") or "").strip()
+                owner = external_owner_for(qid=qid, data_export_tag=tag)
+                if owner:
+                    protected.append((qid, tag, owner))
+            protected.sort(key=lambda row: _qid_sort_key(row[0]))
+            return protected
+
+        def _print_protected_qids_view(
+            *,
+            survey_id: str,
+            protected_rows: list[tuple[str, str, str]],
+            allowed_qids: set[str],
+            allow_all: bool = False,
+        ) -> None:
+            print(f"[survey-menu] Survey {survey_id}: externally managed protection")
+            if not protected_rows:
+                print("  (no externally managed QIDs found in this survey)")
+                return
+            allowed_count = len(
+                [
+                    qid
+                    for qid, _tag, _owner in protected_rows
+                    if allow_all or qid in allowed_qids
+                ]
+            )
+            print(
+                f"  protected_qids: {len(protected_rows)} | allowed_overrides: "
+                f"{allowed_count}"
+            )
+            for qid, tag, owner in protected_rows:
+                status = "ALLOWED" if (allow_all or qid in allowed_qids) else "PROTECTED"
+                print(
+                    f"  - {qid} [{status}]"
+                    f" tag={tag or '-'} owner={owner}"
+                )
 
         while True:
             pref = get_workspace_items_allow_externally_managed_qids(root)
@@ -1224,18 +1338,186 @@ def handle_menu(args: argparse.Namespace) -> None:
             choice = select_from_list(
                 "Externally managed overrides",
                 [
+                    "Show protected QIDs for one survey",
+                    "Toggle allowed protected QIDs for one survey (multi-select)",
                     "Set override tokens (raw)",
-                    "Add QIDs for one survey",
                     "Clear workspace preference",
                     "↩ Back",
                 ],
                 instruction=(
-                    "Examples: QID15 QID20 SV_xxx:QID30. "
+                    "Examples: QID15 QID20 SV_xxx:QID30 all. "
                     "Used by items preview/stage/push/sync when env/CLI does not override."
                 ),
             )
             if not choice or choice.endswith("Back"):
                 return
+            if choice.startswith("Show protected"):
+                survey_id = _pick_survey_id(
+                    message="Pick a survey to inspect externally managed QIDs:"
+                )
+                if not survey_id:
+                    continue
+                try:
+                    protected_rows = _load_protected_qids_for_survey(survey_id)
+                except Exception as exc:
+                    print(
+                        "[survey-menu] ERROR: could not load survey cache for "
+                        f"{survey_id}: {exc}"
+                    )
+                    print(
+                        "  Next: run `qsync items pull --survey-id <ID>` and retry."
+                    )
+                    continue
+                tokens = _split_override_tokens(pref)
+                allowed_qids, _from_scoped, _from_global, allow_all = (
+                    _effective_allowed_qids_for_survey(
+                        survey_id=survey_id,
+                        tokens=tokens,
+                    )
+                )
+                _print_protected_qids_view(
+                    survey_id=survey_id,
+                    protected_rows=protected_rows,
+                    allowed_qids=allowed_qids,
+                    allow_all=allow_all,
+                )
+                continue
+            if choice.startswith("Toggle allowed protected"):
+                survey_id = _pick_survey_id(
+                    message="Pick a survey to toggle protected QID overrides:"
+                )
+                if not survey_id:
+                    continue
+                try:
+                    protected_rows = _load_protected_qids_for_survey(survey_id)
+                except Exception as exc:
+                    print(
+                        "[survey-menu] ERROR: could not load survey cache for "
+                        f"{survey_id}: {exc}"
+                    )
+                    print(
+                        "  Next: run `qsync items pull --survey-id <ID>` and retry."
+                    )
+                    continue
+                if not protected_rows:
+                    print(
+                        "[survey-menu] No externally managed QIDs found for this survey."
+                    )
+                    continue
+
+                tokens = _split_override_tokens(pref)
+                allowed_qids, _from_scoped, from_global, allow_all = (
+                    _effective_allowed_qids_for_survey(
+                        survey_id=survey_id,
+                        tokens=tokens,
+                    )
+                )
+
+                labels: list[str] = []
+                label_to_qid: dict[str, str] = {}
+                default_labels: list[str] = []
+                for qid, tag, owner in protected_rows:
+                    source = []
+                    if qid in allowed_qids or allow_all:
+                        source.append("allowed")
+                    if qid in from_global:
+                        source.append("global")
+                    if allow_all:
+                        source.append("all")
+                    source_label = f" ({', '.join(source)})" if source else ""
+                    label = (
+                        f"{qid} | tag={tag or '-'} | owner={owner}{source_label}"
+                    )
+                    labels.append(label)
+                    label_to_qid[label] = qid
+                    if qid in allowed_qids or allow_all:
+                        default_labels.append(label)
+
+                selected_labels = multi_select_from_list(
+                    "Choose protected QIDs to ALLOW for editing",
+                    labels,
+                    instruction="Space: toggle, Enter: confirm",
+                    default=default_labels,
+                )
+                if selected_labels is None:
+                    print("[survey-menu] Cancelled.")
+                    continue
+
+                selected_qids = {
+                    label_to_qid[label]
+                    for label in selected_labels
+                    if label in label_to_qid
+                }
+                protected_qids = {qid for qid, _tag, _owner in protected_rows}
+                deselected_qids = protected_qids - selected_qids
+                global_conflicts = sorted(qid for qid in deselected_qids if qid in from_global)
+                global_all_conflict = False
+                if deselected_qids:
+                    for token in tokens:
+                        scoped_survey_id, qid = _parse_override_token(token)
+                        if scoped_survey_id is None and qid.lower() in {"all", "*"}:
+                            global_all_conflict = True
+                            break
+                if global_conflicts:
+                    if not confirm(
+                        "Some deselected QIDs are enabled via global tokens "
+                        f"({', '.join(global_conflicts)}). Remove those global tokens?",
+                        default=False,
+                    ):
+                        print("[survey-menu] No changes saved.")
+                        continue
+                if global_all_conflict:
+                    if not confirm(
+                        "A global `all` override is active. To keep these QIDs protected, "
+                        "remove the global `all` token now?",
+                        default=False,
+                    ):
+                        print("[survey-menu] No changes saved.")
+                        continue
+
+                parsed_tokens: list[tuple[str, str | None, str]] = []
+                for token in tokens:
+                    scoped_survey_id, qid = _parse_override_token(token)
+                    parsed_tokens.append((token, scoped_survey_id, qid))
+
+                next_tokens: list[str] = []
+                for raw_token, scoped_survey_id, qid in parsed_tokens:
+                    if not qid:
+                        continue
+                    if scoped_survey_id == survey_id and (
+                        qid in protected_qids or qid.lower() in {"all", "*"}
+                    ):
+                        continue
+                    if scoped_survey_id is None and qid in global_conflicts:
+                        continue
+                    if scoped_survey_id is None and global_all_conflict and qid.lower() in {
+                        "all",
+                        "*",
+                    }:
+                        continue
+                    next_tokens.append(raw_token)
+
+                for qid in sorted(selected_qids, key=_qid_sort_key):
+                    scoped = f"{survey_id}:{qid}"
+                    if scoped not in next_tokens:
+                        next_tokens.append(scoped)
+
+                set_workspace_items_allow_externally_managed_qids(
+                    root,
+                    " ".join(next_tokens) if next_tokens else None,
+                )
+                print(
+                    "[survey-menu] Updated protected-QID overrides for "
+                    f"{survey_id}: allowed={len(selected_qids)}, "
+                    f"protected={len(deselected_qids)}."
+                )
+                _print_protected_qids_view(
+                    survey_id=survey_id,
+                    protected_rows=protected_rows,
+                    allowed_qids=selected_qids,
+                    allow_all=False,
+                )
+                continue
             if choice.startswith("Set override"):
                 raw = input(
                     "Override tokens (comma/space separated; blank = no change): "
@@ -1245,41 +1527,6 @@ def handle_menu(args: argparse.Namespace) -> None:
                     continue
                 set_workspace_items_allow_externally_managed_qids(root, raw)
                 print("[survey-menu] Updated workspace externally managed override tokens.")
-                continue
-            if choice.startswith("Add QIDs"):
-                survey_id = _pick_survey_id(
-                    message="Pick a survey for scoped overrides:"
-                )
-                if not survey_id:
-                    continue
-                qids_raw = input(
-                    "QIDs to allow for this survey (comma/space, e.g. QID15 QID22): "
-                ).strip()
-                if not qids_raw:
-                    print("[survey-menu] No change.")
-                    continue
-                new_qids = [
-                    tok
-                    for tok in re.split(r"[,\s]+", qids_raw)
-                    if tok and tok.strip()
-                ]
-                if not new_qids:
-                    print("[survey-menu] No valid QIDs entered.")
-                    continue
-                existing_tokens = [
-                    tok for tok in re.split(r"[,\s]+", (pref or "").strip()) if tok
-                ]
-                merged = list(existing_tokens)
-                for qid in new_qids:
-                    scoped = f"{survey_id}:{qid}"
-                    if scoped not in merged:
-                        merged.append(scoped)
-                set_workspace_items_allow_externally_managed_qids(
-                    root, " ".join(merged)
-                )
-                print(
-                    f"[survey-menu] Added {len(new_qids)} scoped override(s) for {survey_id}."
-                )
                 continue
             set_workspace_items_allow_externally_managed_qids(root, None)
             print("[survey-menu] Cleared workspace externally managed override tokens.")

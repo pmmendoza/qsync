@@ -35,6 +35,7 @@ from ..auto_publish import auto_publish_after_push
 ERROR_ID_EMBEDDED_DANGEROUS_SKIPPED = "QSYNC-EMBEDDED-DANGEROUS-001"
 _ALLOW_EXTERNALLY_MANAGED_QIDS_ENV = "QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS"
 _ALLOW_EXTERNALLY_MANAGED_QIDS_SPLIT_RE = re.compile(r"[,\s]+")
+_ALLOW_EXTERNALLY_MANAGED_ALL = "*"
 
 
 def _resolve_allow_externally_managed_qids(*, survey_id: str) -> set[str]:
@@ -50,6 +51,7 @@ def _resolve_allow_externally_managed_qids(*, survey_id: str) -> set[str]:
     Supported token formats (comma/whitespace separated):
     - `QID15`                  (applies to the current survey_id)
     - `SV_xxx:QID15` or `SV_xxx/QID15`  (applies only when survey_id matches)
+    - `all` (or `*`)           (allow all externally-managed QIDs for this run)
     """
 
     # CLI flags are applied by setting this env var. Read it directly so the
@@ -102,8 +104,16 @@ def _resolve_allow_externally_managed_qids(*, survey_id: str) -> set[str]:
             if not tok:
                 continue
 
+        if tok.lower() in {"all", "*"}:
+            allow.add(_ALLOW_EXTERNALLY_MANAGED_ALL)
+            continue
+
         allow.add(tok)
     return allow
+
+
+def _is_externally_managed_override_allowed(*, qid: str, allow_qids: set[str]) -> bool:
+    return _ALLOW_EXTERNALLY_MANAGED_ALL in allow_qids or qid in allow_qids
 
 
 def _should_skip_externally_managed(
@@ -113,7 +123,7 @@ def _should_skip_externally_managed(
     externally_managed_by: object | None,
     allow_qids: set[str],
 ) -> bool:
-    if qid in allow_qids:
+    if _is_externally_managed_override_allowed(qid=qid, allow_qids=allow_qids):
         return False
     if externally_managed_by:
         return True
@@ -2879,7 +2889,9 @@ def push_staged_changes(
             if kind not in {"option", "subitem", "sbs_column", "sbs_column_answer"}:
                 continue
             qid = str(change.get("qid") or "").strip()
-            if not qid or qid in allow_externally_managed_qids:
+            if not qid or _is_externally_managed_override_allowed(
+                qid=qid, allow_qids=allow_externally_managed_qids
+            ):
                 continue
             q_json = questions.get(qid) or {}
             tag = str(q_json.get("DataExportTag") or "").strip()

@@ -342,6 +342,7 @@ Options:
                         docs/reference/scope-semantics.md.
   --allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS
                         Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow
+                        editing all externally managed QIDs with `all`/`*`, or
                         editing options/subitems even when the question
                         DataExportTag is externally managed. Overrides
                         QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS.
@@ -387,6 +388,8 @@ Options:
                         docs/reference/scope-semantics.md.
   --allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS
                         Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow
+                        staging/pushing all externally managed QIDs with
+                        `all`/`*`, or
                         staging/pushing option/subitem edits for externally
                         managed questions. Overrides
                         QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS.
@@ -419,6 +422,7 @@ Options:
                         docs/reference/scope-semantics.md.
   --allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS
                         Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow
+                        pushing all externally managed QIDs with `all`/`*`, or
                         pushing option/subitem edits for externally managed
                         questions. Overrides
                         QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS.
@@ -465,6 +469,8 @@ Options:
                         qsync items pull)
   --allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS
                         Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow
+                        staging/pushing all externally managed QIDs with
+                        `all`/`*`, or
                         staging/pushing option/subitem edits for externally
                         managed questions during sync. Overrides
                         QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS.

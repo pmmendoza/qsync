@@ -2367,6 +2367,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         dest="allow_externally_managed_qids",
         help=(
             "Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow editing options/subitems "
+            "or 'all' to allow all externally managed QIDs for this run. "
             "even when the question DataExportTag is externally managed. "
             "Overrides QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS."
         ),
@@ -2390,6 +2391,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         dest="allow_externally_managed_qids",
         help=(
             "Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow staging/pushing "
+            "or 'all' to allow all externally managed QIDs for this run. "
             "option/subitem edits for externally managed questions. "
             "Overrides QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS."
         ),
@@ -2532,6 +2534,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         dest="allow_externally_managed_qids",
         help=(
             "Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow pushing option/subitem "
+            "or 'all' to allow all externally managed QIDs for this run. "
             "edits for externally managed questions. "
             "Overrides QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS."
         ),
@@ -2616,6 +2619,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         dest="allow_externally_managed_qids",
         help=(
             "Comma/space-separated QIDs (or SV_xxx:QIDyy) to allow staging/pushing "
+            "or 'all' to allow all externally managed QIDs for this run. "
             "option/subitem edits for externally managed questions during sync. "
             "Overrides QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS."
         ),

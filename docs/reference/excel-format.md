@@ -136,6 +136,7 @@ Behaviour:
 - By default, `qsync items stage/push` (and `qsync sync`) skip option/subitem/SBS edits for externally managed questions.
 - You can override this for specific QIDs by:
   - Setting `QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS` in your env/.env (supports tokens like `QID15` and `SV_xxx:QID15`), or
+  - Setting `QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS=all` (or `*`) to allow all externally managed QIDs for the current command context, or
   - Passing `--allow-externally-managed-qids ...` to `qsync items preview|stage|push` or `qsync sync` (CLI flag takes precedence).
 
 SBSMatrix note:

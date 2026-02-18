@@ -131,6 +131,7 @@ Important behaviors:
 - SBSMatrix statements are duplicated under each `AdditionalQuestions[*].Choices` block in Qualtrics. When `qsync` pushes Subitems edits for an SBSMatrix question, it mirrors the updated statements into every `AdditionalQuestions[*].Choices` block to keep the survey consistent.
 - If the question’s `DataExportTag` is externally managed (e.g. `newsmem_recognition`), option/subitem/SBS edits are skipped by default. To override this for specific QIDs, use:
   - Env var `QSYNC_ITEMS_ALLOW_EXTERNALLY_MANAGED_QIDS=QID15` (or scoped tokens like `SV_xxx:QID15`), or
+  - Use `all` (or `*`) to allow all externally managed QIDs for the current command context, or
   - CLI flag `--allow-externally-managed-qids QID15` on `qsync items preview|stage|push` and `qsync sync` (flag takes precedence over the env var).
 
 ## 5. Push safeguards (summary)
