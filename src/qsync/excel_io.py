@@ -70,6 +70,8 @@ FLOW_METADATA_COLUMNS = (
 )
 _QUESTION_VALIDATION_CORE_KEYS = {"ForceResponse", "Type"}
 _QUESTION_VALIDATION_TYPE_DEFAULT = "None"
+_QUESTION_RANDOMIZATION_CORE_KEYS = {"Type"}
+_QUESTION_RANDOMIZATION_TYPE_DEFAULT = "None"
 
 
 def _normalize_force_response_mode(value: object) -> str:
@@ -96,6 +98,15 @@ def _normalize_validation_type(value: object) -> str:
         return _QUESTION_VALIDATION_TYPE_DEFAULT
     if raw.lower() == "none":
         return _QUESTION_VALIDATION_TYPE_DEFAULT
+    return raw
+
+
+def _normalize_randomization_type(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return _QUESTION_RANDOMIZATION_TYPE_DEFAULT
+    if raw.lower() == "none":
+        return _QUESTION_RANDOMIZATION_TYPE_DEFAULT
     return raw
 
 
@@ -127,6 +138,31 @@ def _validation_settings_extra_dict(settings: dict[str, object]) -> dict[str, ob
 
 
 def _dump_validation_settings_json(extras: dict[str, object]) -> str:
+    if not extras:
+        return ""
+    return json.dumps(extras, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _randomization_settings_dict(question: dict) -> dict[str, object]:
+    randomization = question.get("Randomization") or {}
+    if not isinstance(randomization, dict):
+        return {}
+    return dict(randomization)
+
+
+def _randomization_settings_extra_dict(settings: dict[str, object]) -> dict[str, object]:
+    out: dict[str, object] = {}
+    for key, value in (settings or {}).items():
+        key_str = str(key or "").strip()
+        if not key_str or key_str in _QUESTION_RANDOMIZATION_CORE_KEYS:
+            continue
+        if value is None:
+            continue
+        out[key_str] = value
+    return out
+
+
+def _dump_randomization_settings_json(extras: dict[str, object]) -> str:
     if not extras:
         return ""
     return json.dumps(extras, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -286,11 +322,6 @@ def _column_guide(base_language: str = "EN") -> dict:
             ("QuestionType", "System", "Qualtrics question type (MC, TE, etc.)."),
             ("DataExportTag", "System", "Qualtrics DataExportTag / variable name."),
             (
-                "QuestionKey",
-                "Editable",
-                "Optional human-friendly key for internal tracking.",
-            ),
-            (
                 "RequiredResponse",
                 "System",
                 "Read-only marker derived from ForceResponseMode (TRUE when required/requested).",
@@ -309,6 +340,16 @@ def _column_guide(base_language: str = "EN") -> dict:
                 "ValidationSettingsJSON",
                 "Editable",
                 "JSON object for additional Validation.Settings keys (excluding ForceResponse and Type).",
+            ),
+            (
+                "RandomizationType",
+                "Editable",
+                "Question-level randomization mode (for example None, All, Subset, Advanced).",
+            ),
+            (
+                "RandomizationSettingsJSON",
+                "Editable",
+                "JSON object for additional Randomization keys (excluding Type).",
             ),
             (text_md, "Editable", f"{base_upper} wording in restricted Markdown."),
             (
@@ -888,11 +929,12 @@ class QuestionRow:
     block_name: str
     question_type: str
     data_export_tag: str
-    question_key: str | None
     required_response: bool
     force_response_mode: str
     validation_type: str
     validation_settings_json: str | None
+    randomization_type: str
+    randomization_settings_json: str | None
     text_en_md: str | None
     text_en_is_html: bool
     in_pre: bool
@@ -1574,6 +1616,11 @@ def build_question_rows(
         validation_settings_json = _dump_validation_settings_json(
             _validation_settings_extra_dict(settings)
         )
+        randomization = _randomization_settings_dict(q)
+        randomization_type = _normalize_randomization_type(randomization.get("Type"))
+        randomization_settings_json = _dump_randomization_settings_json(
+            _randomization_settings_extra_dict(randomization)
+        )
 
         if is_markdown_safe_html(text_html):
             text_md = html_to_md(text_html)
@@ -1592,11 +1639,12 @@ def build_question_rows(
             block_name=block_name,
             question_type=qtype,
             data_export_tag=tag,
-            question_key=None,
             required_response=_is_required_response(force_mode),
             force_response_mode=force_mode,
             validation_type=validation_type,
             validation_settings_json=validation_settings_json or None,
+            randomization_type=randomization_type,
+            randomization_settings_json=randomization_settings_json or None,
             text_en_md=text_md,
             text_en_is_html=is_html,
             in_pre=False,
@@ -2052,13 +2100,277 @@ def _extract_base_language(survey_payload: dict) -> str:
     return lang or "EN"
 
 
+@dataclass
+class WorkbookOrphanRowsReport:
+    """Summary of workbook rows that do not map to the current survey JSON."""
+
+    survey_id: str
+    workbook_path: Path
+    row_indices_by_sheet: dict[str, list[int]]
+    unknown_qids: set[str]
+    sample_labels: list[str]
+
+    @property
+    def total_rows(self) -> int:
+        return sum(len(rows) for rows in self.row_indices_by_sheet.values())
+
+    @property
+    def has_orphans(self) -> bool:
+        return self.total_rows > 0
+
+    def counts_by_sheet(self) -> dict[str, int]:
+        return {
+            sheet: len(rows)
+            for sheet, rows in self.row_indices_by_sheet.items()
+            if rows
+        }
+
+    def counts_text(self) -> str:
+        counts = self.counts_by_sheet()
+        if not counts:
+            return "none"
+        ordered = sorted(counts.items(), key=lambda item: item[0])
+        return ", ".join(f"{sheet}: {count}" for sheet, count in ordered)
+
+    def unknown_qids_text(self, *, limit: int = 8) -> str:
+        if not self.unknown_qids:
+            return "none"
+        ordered = sorted(
+            self.unknown_qids,
+            key=lambda qid: _qid_order_key(qid),
+        )
+        if len(ordered) <= limit:
+            return ", ".join(ordered)
+        remaining = len(ordered) - limit
+        return f"{', '.join(ordered[:limit])}, +{remaining} more"
+
+    def sample_text(self, *, limit: int = 3) -> str:
+        samples = self.sample_labels[:limit]
+        if not samples:
+            return ""
+        return ", ".join(samples)
+
+
+def _collect_workbook_orphan_rows(
+    wb: Workbook,
+    *,
+    survey_id: str,
+    survey_payload: dict,
+    workbook_path: Path,
+) -> WorkbookOrphanRowsReport:
+    valid_questions = set(build_question_rows(survey_id, survey_payload).keys())
+    valid_options = set(build_option_rows(survey_id, survey_payload).keys())
+    valid_subitems = set(build_subitem_rows(survey_id, survey_payload).keys())
+    valid_sbs_columns = set(build_sbs_column_rows(survey_id, survey_payload).keys())
+    valid_sbs_answers = set(build_sbs_column_answer_rows(survey_id, survey_payload).keys())
+
+    row_indices_by_sheet: dict[str, list[int]] = {
+        QUESTION_SHEET: [],
+        OPTIONS_SHEET: [],
+        SUBITEMS_SHEET: [],
+        SBS_COLUMNS_SHEET: [],
+        SBS_COLUMN_ANSWERS_SHEET: [],
+    }
+    unknown_qids: set[str] = set()
+    sample_labels: list[str] = []
+
+    def _record(sheet: str, row_idx: int, label: str, qid: str | None = None) -> None:
+        row_indices_by_sheet[sheet].append(int(row_idx))
+        if qid:
+            unknown_qids.add(str(qid))
+        if len(sample_labels) < 12:
+            sample_labels.append(label)
+
+    if QUESTION_SHEET in wb.sheetnames:
+        ws = wb[QUESTION_SHEET]
+        headers, data_rows = _iter_sheet_rows(ws)
+        if headers and "QID" in headers:
+            qid_idx = headers.index("QID")
+            for row in data_rows:
+                qid = str(row[qid_idx].value or "").strip()
+                if not qid:
+                    continue
+                if qid not in valid_questions:
+                    _record(
+                        QUESTION_SHEET,
+                        int(row[0].row),
+                        f"{QUESTION_SHEET} row {row[0].row} (QID={qid})",
+                        qid=qid,
+                    )
+
+    if OPTIONS_SHEET in wb.sheetnames:
+        ws = wb[OPTIONS_SHEET]
+        headers, data_rows = _iter_sheet_rows(ws)
+        if headers and "QID" in headers and "ChoiceId" in headers:
+            qid_idx = headers.index("QID")
+            choice_idx = headers.index("ChoiceId")
+            for row in data_rows:
+                qid = str(row[qid_idx].value or "").strip()
+                choice_id = str(row[choice_idx].value or "").strip()
+                if not qid or not choice_id:
+                    continue
+                key = (qid, choice_id)
+                if key not in valid_options:
+                    _record(
+                        OPTIONS_SHEET,
+                        int(row[0].row),
+                        f"{OPTIONS_SHEET} row {row[0].row} (QID={qid}, ChoiceId={choice_id})",
+                        qid=qid,
+                    )
+
+    if SUBITEMS_SHEET in wb.sheetnames:
+        ws = wb[SUBITEMS_SHEET]
+        headers, data_rows = _iter_sheet_rows(ws)
+        if headers and "QID" in headers and "AnswerId" in headers:
+            qid_idx = headers.index("QID")
+            answer_idx = headers.index("AnswerId")
+            field_idx = headers.index("Field") if "Field" in headers else None
+            for row in data_rows:
+                qid = str(row[qid_idx].value or "").strip()
+                answer_id = str(row[answer_idx].value or "").strip()
+                if not qid or not answer_id:
+                    continue
+                field_val = row[field_idx].value if field_idx is not None else "Answer"
+                field = _normalize_subitem_field(field_val)
+                key = (qid, field, answer_id)
+                if key not in valid_subitems:
+                    _record(
+                        SUBITEMS_SHEET,
+                        int(row[0].row),
+                        f"{SUBITEMS_SHEET} row {row[0].row} (QID={qid}, Field={field}, AnswerId={answer_id})",
+                        qid=qid,
+                    )
+
+    if SBS_COLUMNS_SHEET in wb.sheetnames:
+        ws = wb[SBS_COLUMNS_SHEET]
+        headers, data_rows = _iter_sheet_rows(ws)
+        if headers and "QID" in headers and "ColumnId" in headers:
+            qid_idx = headers.index("QID")
+            col_idx = headers.index("ColumnId")
+            for row in data_rows:
+                qid = str(row[qid_idx].value or "").strip()
+                column_id = str(row[col_idx].value or "").strip()
+                if not qid or not column_id:
+                    continue
+                key = (qid, column_id)
+                if key not in valid_sbs_columns:
+                    _record(
+                        SBS_COLUMNS_SHEET,
+                        int(row[0].row),
+                        f"{SBS_COLUMNS_SHEET} row {row[0].row} (QID={qid}, ColumnId={column_id})",
+                        qid=qid,
+                    )
+
+    if SBS_COLUMN_ANSWERS_SHEET in wb.sheetnames:
+        ws = wb[SBS_COLUMN_ANSWERS_SHEET]
+        headers, data_rows = _iter_sheet_rows(ws)
+        if (
+            headers
+            and "QID" in headers
+            and "ColumnId" in headers
+            and "AnswerId" in headers
+        ):
+            qid_idx = headers.index("QID")
+            col_idx = headers.index("ColumnId")
+            answer_idx = headers.index("AnswerId")
+            for row in data_rows:
+                qid = str(row[qid_idx].value or "").strip()
+                column_id = str(row[col_idx].value or "").strip()
+                answer_id = str(row[answer_idx].value or "").strip()
+                if not qid or not column_id or not answer_id:
+                    continue
+                key = (qid, column_id, answer_id)
+                if key not in valid_sbs_answers:
+                    _record(
+                        SBS_COLUMN_ANSWERS_SHEET,
+                        int(row[0].row),
+                        (
+                            f"{SBS_COLUMN_ANSWERS_SHEET} row {row[0].row} "
+                            f"(QID={qid}, ColumnId={column_id}, AnswerId={answer_id})"
+                        ),
+                        qid=qid,
+                    )
+
+    return WorkbookOrphanRowsReport(
+        survey_id=survey_id,
+        workbook_path=Path(workbook_path),
+        row_indices_by_sheet=row_indices_by_sheet,
+        unknown_qids=unknown_qids,
+        sample_labels=sample_labels,
+    )
+
+
+def inspect_workbook_orphan_rows(
+    survey_id: str,
+    survey_payload: dict,
+    xlsx_path: Path,
+) -> WorkbookOrphanRowsReport:
+    """Inspect workbook rows that no longer exist in the current survey payload."""
+
+    path = Path(xlsx_path)
+    if not path.exists():
+        return WorkbookOrphanRowsReport(
+            survey_id=survey_id,
+            workbook_path=path,
+            row_indices_by_sheet={},
+            unknown_qids=set(),
+            sample_labels=[],
+        )
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    return _collect_workbook_orphan_rows(
+        wb,
+        survey_id=survey_id,
+        survey_payload=survey_payload,
+        workbook_path=path,
+    )
+
+
+def prune_workbook_orphan_rows(
+    survey_id: str,
+    survey_payload: dict,
+    xlsx_path: Path,
+) -> WorkbookOrphanRowsReport:
+    """Delete workbook rows that no longer exist in the current survey payload."""
+
+    path = Path(xlsx_path)
+    if not path.exists():
+        return WorkbookOrphanRowsReport(
+            survey_id=survey_id,
+            workbook_path=path,
+            row_indices_by_sheet={},
+            unknown_qids=set(),
+            sample_labels=[],
+        )
+
+    wb = load_workbook(path)
+    report = _collect_workbook_orphan_rows(
+        wb,
+        survey_id=survey_id,
+        survey_payload=survey_payload,
+        workbook_path=path,
+    )
+
+    if report.has_orphans:
+        for sheet_name, row_indices in report.row_indices_by_sheet.items():
+            if not row_indices or sheet_name not in wb.sheetnames:
+                continue
+            ws = wb[sheet_name]
+            for row_idx in sorted(set(int(r) for r in row_indices), reverse=True):
+                ws.delete_rows(row_idx, 1)
+        wb.save(path)
+
+    return report
+
+
 def init_workbook_from_survey(
     survey_id: str,
     survey_payload: dict,
     xlsx_path: Path,
     *,
     languages: Sequence[str] | None = None,
-) -> None:
+    prune_orphans: bool = False,
+) -> WorkbookOrphanRowsReport | None:
     """Create or update an Excel workbook from a survey JSON payload.
 
     This is the workbook initializer used by `qsync items pull` (and legacy
@@ -2076,12 +2388,18 @@ def init_workbook_from_survey(
     - Applies an SBSMatrix migration for legacy/broken workbooks that placed
       SBS statements in the Options sheet (moves them into Subitems).
     - Rebuilds the Instructions sheet with up-to-date column guidance.
+    - Optionally prunes orphan rows from item sheets when `prune_orphans=True`.
 
     Args:
         survey_id: Qualtrics survey ID (e.g., `SV_xxx`).
         survey_payload: Survey JSON payload (as returned by the Qualtrics API).
         xlsx_path: Where to write the workbook.
         languages: Optional list of language codes to add as translation columns.
+        prune_orphans: Remove stale workbook rows whose item keys are no longer
+            present in the current survey payload.
+
+    Returns:
+        `WorkbookOrphanRowsReport` when `prune_orphans=True`, otherwise `None`.
 
     Example:
         >>> from pathlib import Path
@@ -2307,8 +2625,25 @@ def init_workbook_from_survey(
     _update_translation_key_map(wb, questions_map, options_map, subitems_map)
     _update_instructions_sheet(wb, languages=languages, base_language=base_language)
 
+    orphan_report: WorkbookOrphanRowsReport | None = None
+    if prune_orphans:
+        orphan_report = _collect_workbook_orphan_rows(
+            wb,
+            survey_id=survey_id,
+            survey_payload=survey_payload,
+            workbook_path=xlsx_path,
+        )
+        if orphan_report.has_orphans:
+            for sheet_name, row_indices in orphan_report.row_indices_by_sheet.items():
+                if not row_indices or sheet_name not in wb.sheetnames:
+                    continue
+                ws = wb[sheet_name]
+                for row_idx in sorted(set(int(r) for r in row_indices), reverse=True):
+                    ws.delete_rows(row_idx, 1)
+
     xlsx_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(xlsx_path)
+    return orphan_report
 
 
 def _init_questions_sheet(
@@ -2339,17 +2674,22 @@ def _init_questions_sheet(
         "QuestionOrderInBlock",
         "QuestionType",
         "DataExportTag",
-        "QuestionKey",
         "RequiredResponse",
         "ForceResponseMode",
         "ValidationType",
         "ValidationSettingsJSON",
+        "RandomizationType",
+        "RandomizationSettingsJSON",
         *text_columns,
         "OptionsPreview",
         "SubitemsPreview",
         "InPre",
         "InPost",
     ]
+    # Legacy clean-up: remove deprecated QuestionKey column.
+    headers, _ = _iter_sheet_rows(ws)
+    if headers and "QuestionKey" in headers:
+        ws.delete_cols(headers.index("QuestionKey") + 1)
     _drop_stale_translation_columns(ws, required_cols, prefixes=["Text"])
     col_index = _ensure_columns(ws, required_cols)
 
@@ -2426,6 +2766,24 @@ def _init_questions_sheet(
                 or str(validation_settings_cell.value).strip() == ""
             ) and row_data.validation_settings_json:
                 validation_settings_cell.value = row_data.validation_settings_json
+            randomization_type_cell = ws.cell(
+                row=row_idx, column=col_index["RandomizationType"] + 1
+            )
+            if (
+                randomization_type_cell.value is None
+                or str(randomization_type_cell.value).strip() == ""
+            ):
+                randomization_type_cell.value = row_data.randomization_type
+            randomization_settings_cell = ws.cell(
+                row=row_idx, column=col_index["RandomizationSettingsJSON"] + 1
+            )
+            if (
+                randomization_settings_cell.value is None
+                or str(randomization_settings_cell.value).strip() == ""
+            ) and row_data.randomization_settings_json:
+                randomization_settings_cell.value = (
+                    row_data.randomization_settings_json
+                )
             effective_force_mode = (
                 force_mode_cell.value
                 if force_mode_cell.value is not None
@@ -2534,7 +2892,17 @@ def _init_questions_sheet(
                     column=col_index["ValidationSettingsJSON"] + 1,
                     value=row_data.validation_settings_json,
                 )
-            # QuestionKey left blank by default
+            ws.cell(
+                row=new_row_idx,
+                column=col_index["RandomizationType"] + 1,
+                value=row_data.randomization_type,
+            )
+            if row_data.randomization_settings_json:
+                ws.cell(
+                    row=new_row_idx,
+                    column=col_index["RandomizationSettingsJSON"] + 1,
+                    value=row_data.randomization_settings_json,
+                )
 
             text_cell = ws.cell(
                 row=new_row_idx,
@@ -4060,6 +4428,7 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         if str(name).startswith("Text_") and str(name).endswith("_MD"):
             _wrap_column(ws, str(name))
     _wrap_column(ws, "ValidationSettingsJSON")
+    _wrap_column(ws, "RandomizationSettingsJSON")
     _wrap_column(ws, "OptionsPreview")
     _wrap_column(ws, "SubitemsPreview")
 
@@ -4078,8 +4447,21 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         "ValidationType",
         ["None", "MinChoices", "CustomValidation", "ChoicesTotal"],
     )
+    _apply_list_validation(
+        ws,
+        "RandomizationType",
+        ["None", "All", "Subset", "Advanced"],
+    )
 
-    editable_headers = {"QuestionKey", "InPre", "InPost", "ForceResponseMode", "ValidationType", "ValidationSettingsJSON"}
+    editable_headers = {
+        "InPre",
+        "InPost",
+        "ForceResponseMode",
+        "ValidationType",
+        "ValidationSettingsJSON",
+        "RandomizationType",
+        "RandomizationSettingsJSON",
+    }
     for name in headers:
         header = str(name or "")
         if header.startswith("Text_") and (
@@ -4166,11 +4548,12 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         "QuestionOrderInBlock": 18.0,
         "QuestionType": 14.5,
         "DataExportTag": 19.0,
-        "QuestionKey": 14.0,
         "RequiredResponse": 14.0,
         "ForceResponseMode": 20.0,
         "ValidationType": 18.0,
         "ValidationSettingsJSON": 48.0,
+        "RandomizationType": 18.0,
+        "RandomizationSettingsJSON": 48.0,
         "OptionsPreview": 60.0,
         "SubitemsPreview": 60.0,
         "InPre": 8.0,
@@ -4948,11 +5331,12 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
         - `block_name`: The Qualtrics block name.
         - `question_type`: Question type (MC, TE, Matrix, etc.).
         - `data_export_tag`: The DataExportTag / variable name.
-        - `question_key`: Optional human-friendly key.
         - `required_response`: Derived required-response marker.
         - `force_response_mode`: Validation force mode (`OFF`, `ON`, `RequestResponse`).
         - `validation_type`: Validation type (`None`, `MinChoices`, etc.).
         - `validation_settings_json`: JSON payload for additional validation settings.
+        - `randomization_type`: Randomization mode (`None`, `All`, `Subset`, etc.).
+        - `randomization_settings_json`: JSON payload for additional randomization settings.
         - `text_en_md`: Base-language wording in Markdown or raw HTML.
         - `text_en_is_html`: True if `text_en_md` is raw HTML.
         - `in_pre`: True if included in pre-treatment survey.
@@ -4998,7 +5382,6 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
             block_name=str(_get(row, "BlockName") or "").strip(),
             question_type=str(_get(row, "QuestionType") or "").strip(),
             data_export_tag=str(_get(row, "DataExportTag") or "").strip(),
-            question_key=str(_get(row, "QuestionKey") or "").strip() or None,
             required_response=_coerce_bool_cell(
                 _get(row, "RequiredResponse"),
                 default=_is_required_response(_get(row, "ForceResponseMode")),
@@ -5009,6 +5392,12 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
             validation_type=_normalize_validation_type(_get(row, "ValidationType")),
             validation_settings_json=(
                 str(_get(row, "ValidationSettingsJSON") or "").strip() or None
+            ),
+            randomization_type=_normalize_randomization_type(
+                _get(row, "RandomizationType")
+            ),
+            randomization_settings_json=(
+                str(_get(row, "RandomizationSettingsJSON") or "").strip() or None
             ),
             text_en_md=str(_get(row, text_md_col) or ""),
             text_en_is_html=_coerce_bool_cell(_get(row, text_html_col)),

@@ -1679,6 +1679,7 @@ def _summarize_preview(changes: list[PreviewChange]) -> None:
     sheets = {
         "question": "Questions",
         "question_setting": "Questions",
+        "question_randomization": "Questions",
         "option": "Options",
         "subitem": "Subitems",
         "sbs_column": "SBS_Columns",
@@ -1711,6 +1712,9 @@ def _summarize_preview(changes: list[PreviewChange]) -> None:
         elif change.kind == "question_setting":
             target = "Validation"
             desc = "Question response settings"
+        elif change.kind == "question_randomization":
+            target = "Randomization"
+            desc = "Question randomization settings"
         elif change.kind == "option":
             target = f"Choice {change.choice_id}"
             desc = "Option label"
@@ -2252,6 +2256,14 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--languages",
         help="Comma-separated language codes to add as translation columns. If omitted, auto-detects all enabled languages from Qualtrics.",
     )
+    p_init.add_argument(
+        "--prune-orphans",
+        action="store_true",
+        help=(
+            "Delete orphan item rows in existing workbook sheets before refresh "
+            "(rows whose QID/Choice/Subitem keys are no longer present in the survey)."
+        ),
+    )
 
     # preview
     p_preview = subparsers.add_parser(
@@ -2375,6 +2387,14 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--language", action="append", dest="language", help="Add translation columns"
     )
     p_items_pull.add_argument("--languages", help="Comma-separated language codes")
+    p_items_pull.add_argument(
+        "--prune-orphans",
+        action="store_true",
+        help=(
+            "Delete orphan item rows in existing workbook sheets before refresh "
+            "(rows whose QID/Choice/Subitem keys are no longer present in the survey)."
+        ),
+    )
     p_items_pull.add_argument("--scope", help=_SCOPE_HELP_ITEMS)
 
     p_items_preview = items_subparsers.add_parser("preview", help="Show workbook diffs")
@@ -5686,6 +5706,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         survey_id,
                         xlsx_path,
                         languages=languages,
+                        prune_orphans=bool(getattr(args, "prune_orphans", False)),
                     )
                     info("[qsync:items]", f"{survey_id}: survey pulled to {xlsx_path}")
                 return
@@ -6186,7 +6207,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             languages = _collect_languages_from_args(args)
             for survey_id in survey_ids:
                 xlsx_path = args.xlsx if args.xlsx is not None else _default_xlsx_path(survey_id)
-                init_survey_to_excel(survey_id, xlsx_path, languages=languages)
+                init_survey_to_excel(
+                    survey_id,
+                    xlsx_path,
+                    languages=languages,
+                    prune_orphans=bool(getattr(args, "prune_orphans", False)),
+                )
             return
 
         if args.command == "preview":

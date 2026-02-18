@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from .. import excel_io
 from .types import DimensionChanges
 from ..pending_stage import (
     ItemsPendingPayload,
@@ -25,6 +26,18 @@ from ..drift_check import enforce_no_drift
 from ..qualtrics_client import load_cached_survey
 
 logger = logging.getLogger(__name__)
+
+
+def _orphan_warning_detail(
+    *,
+    survey_id: str,
+    report: excel_io.WorkbookOrphanRowsReport,
+) -> str:
+    return (
+        f"Workbook has orphan item rows for {survey_id} "
+        f"({report.counts_text()}; unknown QIDs: {report.unknown_qids_text()}). "
+        f"Run: qsync items pull --survey-id {survey_id} --prune-orphans"
+    )
 
 
 def _build_pending_payload_from_workbook(
@@ -212,11 +225,33 @@ def detect_changes(survey_id: str) -> DimensionChanges:
     resolver = WorkbookResolver()
     xlsx_path = resolver.resolve(survey_id)
     if xlsx_path.exists():
+        orphan_warning: str | None = None
+        try:
+            survey = load_cached_survey(survey_id)
+            orphan_report = excel_io.inspect_workbook_orphan_rows(
+                survey_id=survey_id,
+                survey_payload=survey.payload,
+                xlsx_path=xlsx_path,
+            )
+            if orphan_report.has_orphans:
+                orphan_warning = _orphan_warning_detail(
+                    survey_id=survey_id,
+                    report=orphan_report,
+                )
+        except Exception as exc:
+            logger.debug(
+                "[sync:items] Could not inspect workbook orphan rows for %s: %s",
+                survey_id,
+                exc,
+            )
+
         changes = preview_changes(
             survey_id,
             xlsx_path,
             check_drift=False,
             skip_embedded=True,
+            annotate_dirty=False,
+            self_heal_system_columns=False,
         )
         if changes:
             qids = set(c.qid for c in changes if c.qid)
@@ -225,8 +260,21 @@ def detect_changes(survey_id: str) -> DimensionChanges:
                 has_changes=True,
                 change_summary=f"⚡ Unstaged: {len(changes)} change(s) in {len(qids)} QID(s)",
                 affected_qids=qids,
+                warning_detail=orphan_warning,
+                safe_to_autofix=bool(orphan_warning),
                 status_kind="unstaged",
                 edit_count=len(qids),
+            )
+        if orphan_warning:
+            return DimensionChanges(
+                dimension="items",
+                has_changes=False,
+                change_summary="Workbook has orphan rows",
+                affected_qids=set(),
+                warning_detail=orphan_warning,
+                safe_to_autofix=True,
+                status_kind="none",
+                edit_count=0,
             )
 
     return DimensionChanges(

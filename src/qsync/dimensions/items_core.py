@@ -139,7 +139,7 @@ class PreviewChange:
     plain string values instead.
     """
 
-    kind: str  # "question", "question_setting", "option", "subitem", "sbs_column", "sbs_column_answer", or "embedded"
+    kind: str  # "question", "question_setting", "question_randomization", "option", "subitem", "sbs_column", "sbs_column_answer", or "embedded"
     qid: str
     old_html: str
     new_html: str
@@ -213,6 +213,34 @@ def _parse_validation_extras_json(
     return extras
 
 
+def _parse_randomization_extras_json(
+    raw: object, *, qid: str, source: str
+) -> dict[str, object]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid RandomizationSettingsJSON for {qid} ({source}): "
+            f"{exc.msg} at line {exc.lineno}, column {exc.colno}."
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"Invalid RandomizationSettingsJSON for {qid} ({source}): expected a JSON object."
+        )
+    extras: dict[str, object] = {}
+    for key, value in parsed.items():
+        key_str = str(key or "").strip()
+        if not key_str or key_str in {"Type"}:
+            continue
+        if value is None:
+            continue
+        extras[key_str] = value
+    return extras
+
+
 def _question_validation_settings_from_question(question: dict) -> dict[str, object]:
     settings = excel_io._validation_settings_dict(question)
     normalized: dict[str, object] = {
@@ -246,6 +274,33 @@ def _question_validation_settings_from_row(
     return normalized
 
 
+def _question_randomization_settings_from_question(question: dict) -> dict[str, object]:
+    settings = excel_io._randomization_settings_dict(question)
+    normalized: dict[str, object] = {
+        "Type": excel_io._normalize_randomization_type(settings.get("Type")),
+    }
+    extras = excel_io._randomization_settings_extra_dict(settings)
+    for key in sorted(extras.keys()):
+        normalized[key] = extras[key]
+    return normalized
+
+
+def _question_randomization_settings_from_row(
+    row: excel_io.QuestionRow,
+) -> dict[str, object]:
+    normalized: dict[str, object] = {
+        "Type": excel_io._normalize_randomization_type(row.randomization_type),
+    }
+    extras = _parse_randomization_extras_json(
+        row.randomization_settings_json or "",
+        qid=row.qid,
+        source="workbook",
+    )
+    for key in sorted(extras.keys()):
+        normalized[key] = extras[key]
+    return normalized
+
+
 def _settings_to_display_text(settings: dict[str, object]) -> str:
     return json.dumps(settings, ensure_ascii=True, sort_keys=True, indent=2)
 
@@ -270,6 +325,25 @@ def _apply_question_validation_settings(
             continue
         payload[key_str] = value
     validation["Settings"] = payload
+
+
+def _apply_question_randomization_settings(
+    question: dict, settings: dict[str, object]
+) -> None:
+    payload: dict[str, object] = {}
+    randomization_type = excel_io._normalize_randomization_type(settings.get("Type"))
+    payload["Type"] = randomization_type
+    for key, value in settings.items():
+        key_str = str(key or "").strip()
+        if not key_str or key_str in {"Type"}:
+            continue
+        if value is None:
+            continue
+        payload[key_str] = value
+    if randomization_type == "None" and len(payload) == 1:
+        question.pop("Randomization", None)
+        return
+    question["Randomization"] = payload
 
 
 def _diff_lines(old_html: str, new_html: str, context: str | None = None) -> List[str]:
@@ -833,6 +907,7 @@ def init_survey_to_excel(
     *,
     languages: set[str] | list[str] | None = None,
     check_drift: bool = True,
+    prune_orphans: bool = False,
 ) -> None:
     """Initialize or refresh a survey workbook from the latest Qualtrics cache.
 
@@ -891,13 +966,28 @@ def init_survey_to_excel(
         else:
             print("[qsync:init] No additional languages enabled (base language only)")
 
-    excel_io.init_workbook_from_survey(
-        survey_id,
-        survey.payload,
-        Path(xlsx_path),
+    prune_report = excel_io.init_workbook_from_survey(
+        survey_id=survey_id,
+        survey_payload=survey.payload,
+        xlsx_path=Path(xlsx_path),
         languages=list(languages) if languages is not None else None,
+        prune_orphans=prune_orphans,
     )
     print(f"[qsync:init] Updated workbook at {xlsx_path}")
+    if prune_orphans:
+        if prune_report and prune_report.has_orphans:
+            print(
+                f"[qsync:init] Pruned orphan workbook rows for {survey_id}: "
+                f"{prune_report.counts_text()}. "
+                f"Unknown QIDs: {prune_report.unknown_qids_text()}"
+            )
+            sample_text = prune_report.sample_text()
+            if sample_text:
+                print(f"[qsync:init] Prune sample: {sample_text}")
+        else:
+            print(
+                f"[qsync:init] No orphan workbook rows found for {survey_id}."
+            )
 
     # Translation columns are populated from the cached survey definition only.
 
@@ -1074,7 +1164,7 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
     # Apply new Dirty markers
     for change in changes:
         if (
-            change.kind in {"question", "question_setting"}
+            change.kind in {"question", "question_setting", "question_randomization"}
             and ws_q is not None
             and dirty_col_q > 0
         ):
@@ -1164,7 +1254,13 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
             for h in headers
             if str(h).startswith("Text_") and str(h).endswith("_MD")
         ]
-        for name in ("ForceResponseMode", "ValidationType", "ValidationSettingsJSON"):
+        for name in (
+            "ForceResponseMode",
+            "ValidationType",
+            "ValidationSettingsJSON",
+            "RandomizationType",
+            "RandomizationSettingsJSON",
+        ):
             if name in headers:
                 target_cols.append(name)
         max_row_q = ws_q.max_row
@@ -1316,24 +1412,36 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
 
     wb = load_workbook(xlsx_path)
     questions = survey.questions
+    warn_prefix = f"[qsync:items][survey={survey.survey_id}]"
+
+    def _warn(message: str) -> None:
+        print(f"{warn_prefix} WARNING: {message}")
+
+    def _row_samples(rows: list[tuple[int, str]], *, limit: int = 3) -> str:
+        if not rows:
+            return ""
+        labels = [f"row {row_no} (QID={qid})" for row_no, qid in rows[:limit]]
+        if len(rows) > limit:
+            labels.append(f"+{len(rows) - limit} more")
+        return ", ".join(labels)
 
     # Questions sheet
     if excel_io.QUESTION_SHEET in wb.sheetnames:
         ws_q = wb[excel_io.QUESTION_SHEET]
         headers, _ = excel_io._iter_sheet_rows(ws_q)
         idx = {name: i for i, name in enumerate(headers)}
+        unknown_qids_questions: list[tuple[int, str]] = []
 
         for row in ws_q.iter_rows(min_row=2, values_only=False):
             qid_cell = row[idx.get("QID")] if "QID" in idx else None
             if qid_cell is None or qid_cell.value is None:
                 continue
             qid = str(qid_cell.value).strip()
+            if not qid:
+                continue
             q_json = questions.get(qid)
             if not q_json:
-                print(
-                    f"[qsync] WARNING: Questions row {qid_cell.row} refers to unknown QID={qid}; "
-                    "row will be ignored for syncing. Next: re-run `qsync init --survey-id ...` to refresh the workbook."
-                )
+                unknown_qids_questions.append((int(qid_cell.row), qid))
                 continue
 
             expected_survey_id = survey.survey_id
@@ -1346,9 +1454,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "SurveyID" in idx:
                 cell = row[idx["SurveyID"]]
                 if str(cell.value or "").strip() != expected_survey_id:
-                    print(
-                        f"[qsync] WARNING: System column SurveyID changed in Questions row "
-                        f"{cell.row} (QID={qid}); resetting to Qualtrics value. "
+                    _warn(
+                        "System column SurveyID changed in Questions "
+                        f"row {cell.row} (QID={qid}); resetting to Qualtrics value. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_survey_id
@@ -1356,9 +1464,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "QuestionType" in idx:
                 cell = row[idx["QuestionType"]]
                 if str(cell.value or "").strip() != expected_qtype:
-                    print(
-                        f"[qsync] WARNING: System column QuestionType changed in Questions row "
-                        f"{cell.row} (QID={qid}); resetting to Qualtrics value. "
+                    _warn(
+                        "System column QuestionType changed in Questions "
+                        f"row {cell.row} (QID={qid}); resetting to Qualtrics value. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_qtype
@@ -1366,9 +1474,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "DataExportTag" in idx:
                 cell = row[idx["DataExportTag"]]
                 if str(cell.value or "").strip() != expected_tag:
-                    print(
-                        f"[qsync] WARNING: System column DataExportTag changed in Questions row "
-                        f"{cell.row} (QID={qid}); resetting to Qualtrics value. "
+                    _warn(
+                        "System column DataExportTag changed in Questions "
+                        f"row {cell.row} (QID={qid}); resetting to Qualtrics value. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_tag
@@ -1376,18 +1484,28 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "RequiredResponse" in idx:
                 cell = row[idx["RequiredResponse"]]
                 if excel_io._coerce_bool_cell(cell.value) != bool(expected_required):
-                    print(
-                        f"[qsync] WARNING: System column RequiredResponse changed in Questions row "
-                        f"{cell.row} (QID={qid}); resetting to Qualtrics value. "
+                    _warn(
+                        "System column RequiredResponse changed in Questions "
+                        f"row {cell.row} (QID={qid}); resetting to Qualtrics value. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = bool(expected_required)
+
+        if unknown_qids_questions:
+            _warn(
+                f"{excel_io.QUESTION_SHEET} has {len(unknown_qids_questions)} orphan row(s) "
+                f"that will be ignored for syncing ({_row_samples(unknown_qids_questions)}). "
+                f"Next: run `qsync items pull --survey-id {survey.survey_id} --prune-orphans` "
+                "to remove stale workbook rows."
+            )
 
     # Options sheet
     if excel_io.OPTIONS_SHEET in wb.sheetnames:
         ws_o = wb[excel_io.OPTIONS_SHEET]
         headers, _ = excel_io._iter_sheet_rows(ws_o)
         idx = {name: i for i, name in enumerate(headers)}
+        unknown_qids_options: list[tuple[int, str]] = []
+        unknown_choice_rows: list[tuple[int, str, str]] = []
 
         for row in ws_o.iter_rows(min_row=2, values_only=False):
             qid_cell = row[idx.get("QID")] if "QID" in idx else None
@@ -1396,12 +1514,11 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                 continue
             qid = str(qid_cell.value or "").strip()
             choice_id = str(choice_cell.value or "").strip()
+            if not qid or not choice_id:
+                continue
             q_json = questions.get(qid)
             if not q_json:
-                print(
-                    f"[qsync] WARNING: Options row {qid_cell.row} refers to unknown QID={qid}; "
-                    "row will be ignored for syncing. Next: re-run `qsync init --survey-id ...` to refresh the workbook."
-                )
+                unknown_qids_options.append((int(qid_cell.row), qid))
                 continue
 
             qtype = q_json.get("QuestionType") or ""
@@ -1411,11 +1528,7 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                 container = q_json.get("Choices") or {}
             choice = container.get(choice_id)
             if not choice:
-                print(
-                    f"[qsync] WARNING: Options row {choice_cell.row} refers to unknown "
-                    f"choiceId={choice_id} for QID={qid}; row will be ignored for syncing. "
-                    "Next: re-run `qsync init --survey-id ...` to refresh the workbook."
-                )
+                unknown_choice_rows.append((int(choice_cell.row), qid, choice_id))
                 continue
 
             expected_survey_id = survey.survey_id
@@ -1425,9 +1538,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "SurveyID" in idx:
                 cell = row[idx["SurveyID"]]
                 if str(cell.value or "").strip() != expected_survey_id:
-                    print(
-                        f"[qsync] WARNING: System column SurveyID changed in Options row "
-                        f"{cell.row} (QID={qid}, ChoiceId={choice_id}); resetting. "
+                    _warn(
+                        "System column SurveyID changed in Options "
+                        f"row {cell.row} (QID={qid}, ChoiceId={choice_id}); resetting. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_survey_id
@@ -1435,9 +1548,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "QuestionType" in idx:
                 cell = row[idx["QuestionType"]]
                 if str(cell.value or "").strip() != expected_qtype:
-                    print(
-                        f"[qsync] WARNING: System column QuestionType changed in Options row "
-                        f"{cell.row} (QID={qid}, ChoiceId={choice_id}); resetting. "
+                    _warn(
+                        "System column QuestionType changed in Options "
+                        f"row {cell.row} (QID={qid}, ChoiceId={choice_id}); resetting. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_qtype
@@ -1447,12 +1560,34 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                 excel_code = str(cell.value or "").strip()
                 expected_code_str = "" if expected_code is None else str(expected_code)
                 if excel_code != expected_code_str:
-                    print(
-                        f"[qsync] WARNING: System column Code changed in Options row "
-                        f"{cell.row} (QID={qid}, ChoiceId={choice_id}); resetting. "
+                    _warn(
+                        "System column Code changed in Options "
+                        f"row {cell.row} (QID={qid}, ChoiceId={choice_id}); resetting. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_code
+
+        if unknown_qids_options:
+            _warn(
+                f"{excel_io.OPTIONS_SHEET} has {len(unknown_qids_options)} orphan row(s) "
+                f"with unknown QID that will be ignored for syncing "
+                f"({_row_samples(unknown_qids_options)}). "
+                f"Next: run `qsync items pull --survey-id {survey.survey_id} --prune-orphans` "
+                "to remove stale workbook rows."
+            )
+        if unknown_choice_rows:
+            samples = ", ".join(
+                f"row {row_no} (QID={qid}, ChoiceId={choice_id})"
+                for row_no, qid, choice_id in unknown_choice_rows[:3]
+            )
+            if len(unknown_choice_rows) > 3:
+                samples = f"{samples}, +{len(unknown_choice_rows) - 3} more"
+            _warn(
+                f"{excel_io.OPTIONS_SHEET} has {len(unknown_choice_rows)} orphan row(s) "
+                f"with unknown choices that will be ignored for syncing ({samples}). "
+                f"Next: run `qsync items pull --survey-id {survey.survey_id} --prune-orphans` "
+                "to remove stale workbook rows."
+            )
 
     # SBS_Columns sheet
     if excel_io.SBS_COLUMNS_SHEET in wb.sheetnames:
@@ -1471,9 +1606,10 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                 continue
             q_json = questions.get(qid)
             if not q_json:
-                print(
-                    f"[qsync] WARNING: SBS_Columns row {qid_cell.row} refers to unknown QID={qid}; "
-                    "row will be ignored for syncing. Next: re-run `qsync init --survey-id ...` to refresh the workbook."
+                _warn(
+                    f"SBS_Columns row {qid_cell.row} refers to unknown QID={qid}; "
+                    "row will be ignored for syncing. Next: run "
+                    f"`qsync items pull --survey-id {survey.survey_id} --prune-orphans`."
                 )
                 continue
 
@@ -1484,10 +1620,11 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                 or not isinstance(additional, dict)
                 or str(column_id) not in additional
             ):
-                print(
-                    f"[qsync] WARNING: SBS_Columns row {col_cell.row} refers to unknown "
+                _warn(
+                    f"SBS_Columns row {col_cell.row} refers to unknown "
                     f"ColumnId={column_id} for QID={qid}; row will be ignored for syncing. "
-                    "Next: re-run `qsync init --survey-id ...` to refresh the workbook."
+                    "Next: run "
+                    f"`qsync items pull --survey-id {survey.survey_id} --prune-orphans`."
                 )
                 continue
 
@@ -1498,9 +1635,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "SurveyID" in idx:
                 cell = row[idx["SurveyID"]]
                 if str(cell.value or "").strip() != expected_survey_id:
-                    print(
-                        f"[qsync] WARNING: System column SurveyID changed in SBS_Columns row "
-                        f"{cell.row} (QID={qid}, ColumnId={column_id}); resetting. "
+                    _warn(
+                        "System column SurveyID changed in SBS_Columns "
+                        f"row {cell.row} (QID={qid}, ColumnId={column_id}); resetting. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_survey_id
@@ -1508,9 +1645,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "QuestionType" in idx:
                 cell = row[idx["QuestionType"]]
                 if str(cell.value or "").strip() != expected_qtype:
-                    print(
-                        f"[qsync] WARNING: System column QuestionType changed in SBS_Columns row "
-                        f"{cell.row} (QID={qid}, ColumnId={column_id}); resetting. "
+                    _warn(
+                        "System column QuestionType changed in SBS_Columns "
+                        f"row {cell.row} (QID={qid}, ColumnId={column_id}); resetting. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_qtype
@@ -1518,9 +1655,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "ExportTag" in idx:
                 cell = row[idx["ExportTag"]]
                 if str(cell.value or "").strip() != expected_tag:
-                    print(
-                        f"[qsync] WARNING: System column ExportTag changed in SBS_Columns row "
-                        f"{cell.row} (QID={qid}, ColumnId={column_id}); resetting. "
+                    _warn(
+                        "System column ExportTag changed in SBS_Columns "
+                        f"row {cell.row} (QID={qid}, ColumnId={column_id}); resetting. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_tag
@@ -1544,9 +1681,10 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                 continue
             q_json = questions.get(qid)
             if not q_json:
-                print(
-                    f"[qsync] WARNING: SBS_ColumnAnswers row {qid_cell.row} refers to unknown QID={qid}; "
-                    "row will be ignored for syncing. Next: re-run `qsync init --survey-id ...` to refresh the workbook."
+                _warn(
+                    f"SBS_ColumnAnswers row {qid_cell.row} refers to unknown QID={qid}; "
+                    "row will be ignored for syncing. Next: run "
+                    f"`qsync items pull --survey-id {survey.survey_id} --prune-orphans`."
                 )
                 continue
 
@@ -1559,10 +1697,11 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                 or not isinstance(answers, dict)
                 or str(answer_id) not in answers
             ):
-                print(
-                    f"[qsync] WARNING: SBS_ColumnAnswers row {ans_cell.row} refers to unknown "
+                _warn(
+                    f"SBS_ColumnAnswers row {ans_cell.row} refers to unknown "
                     f"ColumnId={column_id}/AnswerId={answer_id} for QID={qid}; row will be ignored for syncing. "
-                    "Next: re-run `qsync init --survey-id ...` to refresh the workbook."
+                    "Next: run "
+                    f"`qsync items pull --survey-id {survey.survey_id} --prune-orphans`."
                 )
                 continue
 
@@ -1573,9 +1712,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "SurveyID" in idx:
                 cell = row[idx["SurveyID"]]
                 if str(cell.value or "").strip() != expected_survey_id:
-                    print(
-                        f"[qsync] WARNING: System column SurveyID changed in SBS_ColumnAnswers row "
-                        f"{cell.row} (QID={qid}, ColumnId={column_id}, AnswerId={answer_id}); resetting. "
+                    _warn(
+                        "System column SurveyID changed in SBS_ColumnAnswers "
+                        f"row {cell.row} (QID={qid}, ColumnId={column_id}, AnswerId={answer_id}); resetting. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_survey_id
@@ -1583,9 +1722,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "QuestionType" in idx:
                 cell = row[idx["QuestionType"]]
                 if str(cell.value or "").strip() != expected_qtype:
-                    print(
-                        f"[qsync] WARNING: System column QuestionType changed in SBS_ColumnAnswers row "
-                        f"{cell.row} (QID={qid}, ColumnId={column_id}, AnswerId={answer_id}); resetting. "
+                    _warn(
+                        "System column QuestionType changed in SBS_ColumnAnswers "
+                        f"row {cell.row} (QID={qid}, ColumnId={column_id}, AnswerId={answer_id}); resetting. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_qtype
@@ -1593,9 +1732,9 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
             if "ExportTag" in idx:
                 cell = row[idx["ExportTag"]]
                 if str(cell.value or "").strip() != expected_tag:
-                    print(
-                        f"[qsync] WARNING: System column ExportTag changed in SBS_ColumnAnswers row "
-                        f"{cell.row} (QID={qid}, ColumnId={column_id}, AnswerId={answer_id}); resetting. "
+                    _warn(
+                        "System column ExportTag changed in SBS_ColumnAnswers "
+                        f"row {cell.row} (QID={qid}, ColumnId={column_id}, AnswerId={answer_id}); resetting. "
                         "Next: avoid editing system columns in Excel."
                     )
                     cell.value = expected_tag
@@ -1630,24 +1769,27 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                 if len(matches) == 1:
                     expected = matches[0]
                     if flow_cell is not None and expected.flow_id:
-                        print(
-                            f"[qsync] WARNING: Embedded_Data row {field_cell.row} missing FlowID; "
-                            f"resetting to {expected.flow_id}. Next: avoid clearing FlowID; re-run `qsync init --survey-id ...` if the sheet is corrupted."
+                        _warn(
+                            f"Embedded_Data row {field_cell.row} missing FlowID; "
+                            f"resetting to {expected.flow_id}. Next: avoid clearing FlowID; run "
+                            f"`qsync items pull --survey-id {survey.survey_id}` if the sheet is corrupted."
                         )
                         flow_cell.value = expected.flow_id
                 elif len(matches) > 1:
-                    print(
-                        f"[qsync] WARNING: Embedded_Data row {field_cell.row} has ambiguous field "
-                        f"'{field}'; re-run qsync init to restore FlowID values. "
-                        "Next: run `qsync init --survey-id ...` and use FlowID to disambiguate."
+                    _warn(
+                        f"Embedded_Data row {field_cell.row} has ambiguous field "
+                        f"'{field}'; run `qsync items pull --survey-id {survey.survey_id}` "
+                        "to restore FlowID values and disambiguate."
                     )
                     continue
 
             if not expected:
-                print(
-                    f"[qsync] WARNING: Embedded_Data row {field_cell.row} refers to "
+                _warn(
+                    f"Embedded_Data row {field_cell.row} refers to "
                     f"unknown field '{field}'; row will be ignored for syncing. "
-                    "Next: re-run `qsync init --survey-id ...` to refresh Embedded_Data rows."
+                    "Next: run "
+                    f"`qsync items pull --survey-id {survey.survey_id} --prune-orphans` "
+                    "to refresh Embedded_Data rows."
                 )
                 continue
 
@@ -1674,8 +1816,8 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                     ):
                         return
                 if current != expected_str:
-                    print(
-                        f"[qsync] WARNING: System column {col_name} changed in "
+                    _warn(
+                        f"System column {col_name} changed in "
                         f"Embedded_Data row {cell.row} (Field={field}); resetting. "
                         "Next: avoid editing system columns in Excel."
                     )
@@ -1871,6 +2013,22 @@ def preview_changes(
                     old_html=old_text,
                     new_html=new_text,
                     diff_lines=_diff_lines(old_text, new_text, context="Validation"),
+                    data_export_tag=tag,
+                )
+            )
+
+        old_randomization = _question_randomization_settings_from_question(q_json)
+        new_randomization = _question_randomization_settings_from_row(q_row)
+        if old_randomization != new_randomization:
+            old_text = _settings_to_display_text(old_randomization)
+            new_text = _settings_to_display_text(new_randomization)
+            changes.append(
+                PreviewChange(
+                    kind="question_randomization",
+                    qid=qid,
+                    old_html=old_text,
+                    new_html=new_text,
+                    diff_lines=_diff_lines(old_text, new_text, context="Randomization"),
                     data_export_tag=tag,
                 )
             )
@@ -2255,6 +2413,12 @@ def apply_changes(
                 new_settings = _question_validation_settings_from_row(q_row)
                 if old_settings != new_settings:
                     _apply_question_validation_settings(q_json, new_settings)
+                    changed_qids.add(qid)
+
+                old_randomization = _question_randomization_settings_from_question(q_json)
+                new_randomization = _question_randomization_settings_from_row(q_row)
+                if old_randomization != new_randomization:
+                    _apply_question_randomization_settings(q_json, new_randomization)
                     changed_qids.add(qid)
 
             # Apply option label changes into the survey payload
@@ -2661,6 +2825,19 @@ def _apply_pending_item_changes(
             if not isinstance(parsed_settings, dict):
                 continue
             _apply_question_validation_settings(question, parsed_settings)
+            changed_qids.add(qid)
+            continue
+        if kind == "question_randomization":
+            new_payload_raw = str(change.get("new_html") or "").strip()
+            if not new_payload_raw:
+                continue
+            try:
+                parsed_settings = json.loads(new_payload_raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed_settings, dict):
+                continue
+            _apply_question_randomization_settings(question, parsed_settings)
             changed_qids.add(qid)
             continue
         qtype = (question.get("QuestionType") or "").strip()

@@ -103,7 +103,7 @@ For a detailed “how to read” guide (question metadata format, logic highligh
 
 Each workbook ships with an `Instructions` sheet regenerated at every `qsync items pull` (or legacy `qsync init`). Highlights:
 
-- **Questions sheet** – 1 row per question; edit `Text_{base}_MD` (e.g. `Text_en_MD` for English‑base surveys), toggle `Text_{base}_IsHTML`, and (when needed) edit response settings via `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`. `RequiredResponse` is derived/read-only.
+- **Questions sheet** – 1 row per question; edit `Text_{base}_MD` (e.g. `Text_en_MD` for English‑base surveys), toggle `Text_{base}_IsHTML`, and (when needed) edit response settings via `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`, `RandomizationType`, `RandomizationSettingsJSON`. `RequiredResponse` is derived/read-only.
 - **Options sheet** – 1 row per choice/scale point; edit `Label_{base}_MD` (Markdown) or mark `Label_{base}_IsHTML`. `MetaComment` conveys ownership (e.g. "Externally managed by recognition script").
 - **Subitems sheet** – 1 row per matrix row/sub-statement; same Markdown/HTML toggles as Options.
 - **SBS_Columns sheet** – for SBSMatrix (side-by-side) items only: 1 row per SBS column (the side-by-side “panels”); edit `Label_{base}_MD` (Markdown) or mark `Label_{base}_IsHTML`.

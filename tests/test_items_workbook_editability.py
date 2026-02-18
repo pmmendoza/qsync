@@ -21,6 +21,25 @@ def _fill_rgb(cell) -> str | None:
     return getattr(color, "rgb", None)
 
 
+def _has_data_validation_formula_for_column(
+    ws, header_index: dict[str, int], header_name: str, expected_formula: str
+) -> bool:
+    col_idx = header_index.get(header_name)
+    if not col_idx:
+        return False
+    col_letter = get_column_letter(col_idx)
+    expected_range = f"{col_letter}2:{col_letter}{ws.max_row}"
+    expected_single = f"{col_letter}2"
+    data_validations = ws.data_validations.dataValidation
+    for dv in data_validations:
+        if str(getattr(dv, "formula1", "")).strip() != expected_formula:
+            continue
+        sqref = str(getattr(dv, "sqref", ""))
+        if expected_range in sqref or expected_single in sqref:
+            return True
+    return False
+
+
 def _question_settings_payload() -> dict:
     return {
         "result": {
@@ -176,8 +195,11 @@ def test_questions_sheet_includes_validation_columns_and_required_highlight(tmp_
         "ForceResponseMode",
         "ValidationType",
         "ValidationSettingsJSON",
+        "RandomizationType",
+        "RandomizationSettingsJSON",
     ):
         assert required_col in idx
+    assert "QuestionKey" not in idx
 
     qid_col = idx["QID"]
     row_idx = None
@@ -194,6 +216,10 @@ def test_questions_sheet_includes_validation_columns_and_required_highlight(tmp_
         ws.cell(row=row_idx, column=idx["ValidationSettingsJSON"]).value
         == '{"MinChars":"5"}'
     )
+    assert ws.cell(row=row_idx, column=idx["RandomizationType"]).value == "None"
+    assert (
+        ws.cell(row=row_idx, column=idx["RandomizationSettingsJSON"]).value is None
+    )
 
     assert (
         _fill_rgb(ws.cell(row=row_idx, column=idx["OptionsPreview"])) == READONLY_RGB
@@ -201,6 +227,20 @@ def test_questions_sheet_includes_validation_columns_and_required_highlight(tmp_
     assert (
         _fill_rgb(ws.cell(row=row_idx, column=idx["ForceResponseMode"]))
         != READONLY_RGB
+    )
+    assert (
+        _fill_rgb(ws.cell(row=row_idx, column=idx["RandomizationType"]))
+        != READONLY_RGB
+    )
+
+    assert _has_data_validation_formula_for_column(
+        ws, idx, "ForceResponseMode", '"OFF,ON,RequestResponse"'
+    )
+    assert _has_data_validation_formula_for_column(
+        ws, idx, "ValidationType", '"None,MinChoices,CustomValidation,ChoicesTotal"'
+    )
+    assert _has_data_validation_formula_for_column(
+        ws, idx, "RandomizationType", '"None,All,Subset,Advanced"'
     )
 
     required_col_letter = get_column_letter(idx["RequiredResponse"])
@@ -264,6 +304,10 @@ def test_preview_and_apply_include_question_validation_settings(tmp_path: Path) 
             ws.cell(row=row, column=idx["ValidationSettingsJSON"]).value = (
                 '{"MinChoices":"2"}'
             )
+            ws.cell(row=row, column=idx["RandomizationType"]).value = "All"
+            ws.cell(row=row, column=idx["RandomizationSettingsJSON"]).value = (
+                '{"TotalRandSubset":"2"}'
+            )
             break
     wb.save(xlsx_path)
 
@@ -276,7 +320,11 @@ def test_preview_and_apply_include_question_validation_settings(tmp_path: Path) 
             annotate_dirty=False,
         )
         setting_changes = [c for c in changes if c.kind == "question_setting"]
+        randomization_changes = [
+            c for c in changes if c.kind == "question_randomization"
+        ]
         assert len(setting_changes) == 1
+        assert len(randomization_changes) == 1
 
         result = apply_changes(
             survey_id,
@@ -298,3 +346,7 @@ def test_preview_and_apply_include_question_validation_settings(tmp_path: Path) 
     assert settings.get("Type") == "MinChoices"
     assert settings.get("MinChoices") == "2"
     assert "MinChars" not in settings
+    randomization = (
+        updated.get("result", {}).get("Questions", {}).get("QID1", {}).get("Randomization")
+    )
+    assert randomization == {"Type": "All", "TotalRandSubset": "2"}

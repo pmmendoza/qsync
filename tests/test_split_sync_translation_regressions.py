@@ -171,7 +171,15 @@ def test_init_survey_to_excel_preserves_explicit_empty_languages(monkeypatch, tm
         ),
     )
 
-    def _capture_init(_survey_id, _payload, _xlsx_path, *, languages=None):
+    def _capture_init(
+        _survey_id=None,
+        _payload=None,
+        _xlsx_path=None,
+        *,
+        languages=None,
+        prune_orphans=False,
+        **_kwargs,
+    ):
         captured["languages"] = languages
 
     monkeypatch.setattr(items_core.excel_io, "init_workbook_from_survey", _capture_init)

@@ -56,7 +56,7 @@ Behaviour:
 
 Columns where you are expected to edit content:
 
-- `Questions`: `QuestionKey`, `Text_{base}_MD` (plus `Text_{base}_IsHTML` when you intentionally need raw HTML), `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`
+- `Questions`: `Text_{base}_MD` (plus `Text_{base}_IsHTML` when you intentionally need raw HTML), `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`, `RandomizationType`, `RandomizationSettingsJSON`
 - `Options`, `Subitems`, `SBS_Columns`, `SBS_ColumnAnswers`: `Label_{base}_MD` (plus `Label_{base}_IsHTML` when you intentionally need raw HTML)
 - `Survey_Metadata`: `*_MD` columns (plus `*_IsHTML` flags)
 - `Embedded_Data`: `Value`
@@ -120,7 +120,7 @@ Behaviour:
 - Each preview run clears prior `Dirty` values and re-marks them based on current diffs.
 - When a row is dirty, its `Dirty` cell is set to `Y`.
 - Conditional formatting highlights the edited cell:
-  - `Questions`: `Text_{base}_MD`, `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`
+  - `Questions`: `Text_{base}_MD`, `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`, `RandomizationType`, `RandomizationSettingsJSON`
   - `Options`/`Subitems`/`SBS_*`: `Label_{base}_MD`
   - `Embedded_Data`: `Value`
 

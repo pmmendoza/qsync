@@ -85,6 +85,8 @@ def _infer_issue_type(dimension: str, detail: str) -> str:
         if "baselines not found" in text:
             return "EOS_BASELINES_MISSING"
     if dimension == "items":
+        if "orphan item rows" in text:
+            return "ITEMS_WORKBOOK_ORPHAN_ROWS"
         if "embedded_data sheet is missing rows" in text:
             return "ITEMS_EMBEDDED_ROWS_MISSING"
         if "embedded data fields" in text:
@@ -420,7 +422,7 @@ def _collect_embedded_refs_from_changes(changes: list) -> set[str]:
 
 def _autofix_command(dimension: str, survey_id: str) -> Optional[str]:
     if dimension == "items":
-        return f"qsync items pull --survey-id {survey_id}"
+        return f"qsync items pull --survey-id {survey_id} --prune-orphans"
     if dimension == "edf":
         return f"qsync items repair-edf --survey-id {survey_id}"
     if dimension == "translations":
@@ -500,8 +502,8 @@ def _run_autofix(dimension: str, survey_id: str) -> str:
 
         resolver = WorkbookResolver()
         xlsx_path = resolver.resolve(survey_id)
-        init_survey_to_excel(survey_id, xlsx_path)
-        return f"Regenerated Excel file at {xlsx_path}"
+        init_survey_to_excel(survey_id, xlsx_path, prune_orphans=True)
+        return f"Regenerated Excel file at {xlsx_path} (with orphan-row pruning)"
     if dimension == "edf":
         from .workbook_resolver import WorkbookResolver
 
@@ -740,7 +742,13 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
                 resolver = WorkbookResolver()
                 xlsx_path = resolver.resolve(survey_id)
                 if xlsx_path.exists():
-                    changes = preview_changes(survey_id, xlsx_path, check_drift=False)
+                    changes = preview_changes(
+                        survey_id,
+                        xlsx_path,
+                        check_drift=False,
+                        annotate_dirty=False,
+                        self_heal_system_columns=False,
+                    )
                     safe_to_fix = not changes  # Safe if no unstaged changes
             except Exception:
                 pass  # If we can't check, assume not safe
