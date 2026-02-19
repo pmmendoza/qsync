@@ -339,10 +339,21 @@ def build_translation_map_from_cache(
     is_base = lang == base_lang
 
     translation_map: dict[str, str] = {}
+    survey_options = result.get("SurveyOptions") or {}
+    if not isinstance(survey_options, dict):
+        survey_options = {}
 
     if is_base:
-        survey_title = str(result.get("SurveyTitle") or "")
-        survey_description = str(result.get("SurveyDescription") or "")
+        survey_title = str(
+            result.get("SurveyTitle") or survey_options.get("SurveyTitle") or ""
+        )
+        survey_description = str(
+            result.get("SurveyDescription")
+            or result.get("SurveyMetaDescription")
+            or survey_options.get("SurveyMetaDescription")
+            or survey_options.get("SurveyDescription")
+            or ""
+        )
         if survey_title:
             translation_map["SurveyTitle"] = survey_title
         if survey_description:

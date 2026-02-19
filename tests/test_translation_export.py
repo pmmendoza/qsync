@@ -716,6 +716,32 @@ def test_build_translation_map_from_cache_uses_sbs_matrix_fallback_answers() -> 
     assert fr_map["QID15#2_Answer2"] == "Parfois"
 
 
+def test_build_translation_map_from_cache_base_uses_survey_options_title_fallback() -> None:
+    from qsync.translation_export import build_translation_map_from_cache
+
+    payload = {
+        "result": {
+            "SurveyLanguage": "EN",
+            "SurveyTitle": None,
+            "SurveyDescription": None,
+            "SurveyOptions": {
+                "SurveyTitle": "Fallback Title",
+                "SurveyMetaDescription": "Fallback Description",
+            },
+            "Questions": {},
+        }
+    }
+
+    base_map = build_translation_map_from_cache(
+        payload,
+        language="EN",
+        base_language="EN",
+    )
+
+    assert base_map["SurveyTitle"] == "Fallback Title"
+    assert base_map["SurveyDescription"] == "Fallback Description"
+
+
 def test_word_export_renders_sbs_matrix_with_fallbacked_answers(tmp_path: Path) -> None:
     from qsync.translation_export import export_survey_payload_to_word
 
