@@ -250,3 +250,76 @@ def test_split_profile_available_languages_false_markers_are_filtered() -> None:
         manifest=_split_manifest(),
     )
     assert report.ok
+
+
+def test_split_profile_scopes_translation_gate_to_active_qids() -> None:
+    canonical = {
+        "SurveyID": "SV_SOURCE",
+        "SurveyOptions": {
+            "SurveyLanguage": "EN",
+            "AvailableLanguages": {"EN": [], "DE": []},
+        },
+        "Questions": {
+            "QID1": {
+                "QuestionID": "QID1",
+                "QuestionText": "Hello",
+                "Language": {"DE": {"QuestionText": "Hallo"}},
+            },
+            "QID_UNUSED": {
+                "QuestionID": "QID_UNUSED",
+                "QuestionText": "Unused base",
+                "Language": {"DE": {"QuestionText": "Ungenutzt"}},
+            },
+        },
+        "Blocks": {
+            "BL_1": {
+                "Type": "Standard",
+                "ID": "BL_1",
+                "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+            },
+            "BL_TRASH": {
+                "Type": "Trash",
+                "ID": "BL_TRASH",
+                "BlockElements": [{"Type": "Question", "QuestionID": "QID_UNUSED"}],
+            },
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+    }
+    split = {
+        "SurveyID": "SV_SPLIT",
+        "SurveyOptions": {
+            "SurveyLanguage": "DE",
+            "AvailableLanguages": {"DE": []},
+        },
+        "Questions": {
+            "QID1": {"QuestionID": "QID1", "QuestionText": "Hallo"},
+            "QID_UNUSED": {"QuestionID": "QID_UNUSED", "QuestionText": "DRIFT"},
+        },
+        "Blocks": canonical["Blocks"],
+        "SurveyFlow": canonical["SurveyFlow"],
+    }
+
+    report = compare_survey_definition_deep_parity(
+        canonical,
+        split,
+        profile="split",
+        manifest=_split_manifest(),
+    )
+    assert report.ok
+
+
+def test_split_profile_language_policy_gate_fails_survey_language_mismatch() -> None:
+    canonical = _canonical_for_split()
+    split = _split_for_de()
+    split["SurveyOptions"]["SurveyLanguage"] = "FR"
+
+    report = compare_survey_definition_deep_parity(
+        canonical,
+        split,
+        profile="split",
+        manifest=_split_manifest(),
+    )
+
+    assert not report.ok
+    assert report.gate_results.get("language_policy") is False
+    assert any("language policy gate failed" in item for item in report.hard_fail_paths)

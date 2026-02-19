@@ -5783,6 +5783,46 @@ def _emit_deep_parity_report(*, report, prefix: str) -> bool:
         prefix,
         f"Deep parity FAILED (profile={report.profile}; normalized comparison mismatch).",
     )
+    if report.gate_results:
+        gate_order = (
+            "structural",
+            "translation",
+            "language_policy",
+            "operational_policy",
+        )
+        gate_parts: list[str] = []
+        ordered_states: list[tuple[str, bool]] = []
+        seen: set[str] = set()
+        for name in gate_order:
+            if name not in report.gate_results:
+                continue
+            seen.add(name)
+            state = bool(report.gate_results.get(name))
+            gate_parts.append(f"{name}={'ok' if state else 'fail'}")
+            ordered_states.append((name, state))
+        for name in sorted(report.gate_results.keys()):
+            if name in seen:
+                continue
+            state = bool(report.gate_results.get(name))
+            gate_parts.append(f"{name}={'ok' if state else 'fail'}")
+            ordered_states.append((name, state))
+        warn(prefix, "Gates: " + ", ".join(gate_parts))
+        if report.profile == "split":
+            dim(prefix, "Split dimension summary:")
+            guidance = {
+                "structural": "Review hard-fail structural paths and flow semantic diff.",
+                "translation": "Use translation notes to locate key mismatches and missing text.",
+                "language_policy": "Check target language + keep_languages policy in manifest.",
+                "operational_policy": "Validate country/redirect/EOS policy in manifest.",
+            }
+            for name, state in ordered_states:
+                marker = "OK" if state else "FAIL"
+                dim(prefix, f"  [{marker}] {name}")
+                if not state:
+                    hint = guidance.get(name)
+                    if hint:
+                        dim(prefix, f"       next: {hint}")
+
     if report.section_counts:
         parts = [
             f"{k}={v}"
@@ -5795,13 +5835,6 @@ def _emit_deep_parity_report(*, report, prefix: str) -> bool:
         if parts:
             warn(prefix, f"Diff sections: {', '.join(parts)}")
     warn(prefix, f"Diff count: {report.diff_count}")
-
-    if report.gate_results:
-        gate_parts = [
-            f"{name}={'ok' if bool(state) else 'fail'}"
-            for name, state in sorted(report.gate_results.items())
-        ]
-        warn(prefix, "Gates: " + ", ".join(gate_parts))
 
     if report.hard_fail_paths:
         warn(prefix, f"Hard-fail paths ({len(report.hard_fail_paths)}):")
@@ -5847,9 +5880,17 @@ def _emit_deep_parity_report(*, report, prefix: str) -> bool:
             )
 
     if report.diff_paths:
-        warn(prefix, "Diff paths (sample):")
-        for p in report.diff_paths[:50]:
-            warn(prefix, f"  - {p}")
+        hard_fail_set = {str(item).strip() for item in report.hard_fail_paths}
+        sampled = [p for p in report.diff_paths if str(p).strip() not in hard_fail_set]
+        if not sampled and hard_fail_set:
+            dim(prefix, "Diff sample omitted (already covered by hard-fail paths).")
+            sampled = []
+        elif not sampled:
+            sampled = list(report.diff_paths)
+        if sampled:
+            warn(prefix, "Diff paths (sample):")
+            for p in sampled[:50]:
+                warn(prefix, f"  - {p}")
 
     if report.flow_changes:
         warn(prefix, f"SurveyFlow: {format_diff_summary(report.flow_changes)}")
@@ -9902,7 +9943,6 @@ def handle_add_question(args: argparse.Namespace) -> None:
     source_survey_id = (getattr(args, "source_survey_id", None) or "").strip() or None
     source_qids = _normalize_question_ids(getattr(args, "source_question_id", None))
     question_json = (getattr(args, "question_json", None) or "").strip() or None
-    from_question_id = (getattr(args, "from_question_id", None) or "").strip() or None
 
     # If source survey/questions are provided, show as the template plan context.
     if source_survey_id and source_qids:

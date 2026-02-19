@@ -568,6 +568,43 @@ def _resolve_split_orientation(
     return def_a, def_b, norm_a, norm_b
 
 
+def _question_ids(payload: Mapping[str, Any]) -> set[str]:
+    result = _survey_result(payload)
+    questions = result.get("Questions")
+    if not isinstance(questions, dict):
+        return set()
+    return {str(qid).strip() for qid in questions.keys() if str(qid).strip()}
+
+
+def _translation_keyspace_for_split_gate(
+    *,
+    canonical_payload: Mapping[str, Any],
+    split_payload: Mapping[str, Any],
+) -> tuple[set[str], list[str]]:
+    from .translation_export import active_qids_in_flow, expected_translation_keys_for_qids
+
+    canonical_active = set(active_qids_in_flow(canonical_payload))
+    split_active = set(active_qids_in_flow(split_payload))
+    scoped_qids = canonical_active | split_active
+
+    if not scoped_qids:
+        canonical_qids = _question_ids(canonical_payload)
+        split_qids = _question_ids(split_payload)
+        shared = canonical_qids & split_qids
+        scoped_qids = shared or (canonical_qids | split_qids)
+
+    scoped_keys: set[str] = set()
+    if scoped_qids:
+        scoped_keys.update(
+            expected_translation_keys_for_qids(canonical_payload, qids=scoped_qids)
+        )
+        scoped_keys.update(
+            expected_translation_keys_for_qids(split_payload, qids=scoped_qids)
+        )
+
+    return scoped_qids, sorted(scoped_keys)
+
+
 def _compare_translation_gate(
     *,
     canonical_payload: Mapping[str, Any],
@@ -592,13 +629,24 @@ def _compare_translation_gate(
     )
 
     canonical_fp = _hash_json(canonical_map)
+    scoped_qids, scoped_keys = _translation_keyspace_for_split_gate(
+        canonical_payload=canonical_payload,
+        split_payload=split_payload,
+    )
+    if "SurveyTitle" in canonical_map or "SurveyTitle" in split_map:
+        scoped_keys.append("SurveyTitle")
+    if "SurveyDescription" in canonical_map or "SurveyDescription" in split_map:
+        scoped_keys.append("SurveyDescription")
+    scoped_keys = sorted({str(k).strip() for k in scoped_keys if str(k).strip()})
+    if not scoped_keys:
+        scoped_keys = sorted(set(canonical_map.keys()) | set(split_map.keys()))
 
-    keys_a = set(canonical_map.keys())
-    keys_b = set(split_map.keys())
+    keys_a = {key for key in scoped_keys if key in canonical_map}
+    keys_b = {key for key in scoped_keys if key in split_map}
     missing = sorted(keys_a - keys_b)
     extra = sorted(keys_b - keys_a)
     mismatched: list[str] = []
-    for key in sorted(keys_a & keys_b):
+    for key in scoped_keys:
         if str(canonical_map.get(key) or "") != str(split_map.get(key) or ""):
             mismatched.append(key)
 
@@ -610,6 +658,11 @@ def _compare_translation_gate(
     if mismatched:
         notes.append(
             f"translation: value mismatches ({len(mismatched)}): {mismatched[:10]}"
+        )
+    if notes:
+        notes.insert(
+            0,
+            f"translation: compared {len(scoped_keys)} key(s) across {len(scoped_qids)} scoped QID(s)",
         )
 
     return not notes, notes, canonical_fp
@@ -750,6 +803,162 @@ def _check_keep_languages_policy(
             ],
         )
     return True, []
+
+
+def _check_language_policy(
+    *,
+    split_payload: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    target_language: str,
+) -> tuple[bool, list[str]]:
+    notes: list[str] = []
+    result = _survey_result(split_payload)
+    survey_options = result.get("SurveyOptions")
+    target = _normalize_lang(target_language)
+
+    survey_lang = ""
+    if isinstance(survey_options, dict):
+        survey_lang = _normalize_lang(survey_options.get("SurveyLanguage"))
+    if target and survey_lang and survey_lang != target:
+        notes.append(
+            "policy: SurveyLanguage mismatch "
+            f"(expected={target}, actual={survey_lang})"
+        )
+    elif target and not survey_lang:
+        notes.append("policy: split survey is missing SurveyLanguage")
+
+    keep_ok, keep_notes = _check_keep_languages_policy(
+        split_payload=split_payload,
+        manifest=manifest,
+        target_language=target_language,
+    )
+    notes.extend(keep_notes)
+    return keep_ok and not notes, notes
+
+
+def _strip_split_translation_surfaces(question: dict[str, Any]) -> None:
+    question.pop("Language", None)
+    for key in (
+        "QuestionText",
+        "QuestionDescription",
+        "QuestionText_Unsafe",
+        "QuestionDescription_Unsafe",
+    ):
+        question.pop(key, None)
+
+    for surface in ("Choices", "Answers", "Labels"):
+        mapping = question.get(surface)
+        if not isinstance(mapping, dict):
+            continue
+        for value in mapping.values():
+            if not isinstance(value, dict):
+                continue
+            value.pop("Display", None)
+            value.pop("Display_Unsafe", None)
+
+    additional = question.get("AdditionalQuestions")
+    if not isinstance(additional, dict):
+        return
+    for value in additional.values():
+        if not isinstance(value, dict):
+            continue
+        value.pop("QuestionText", None)
+        value.pop("QuestionText_Unsafe", None)
+        answers = value.get("Answers")
+        if not isinstance(answers, dict):
+            continue
+        for answer in answers.values():
+            if not isinstance(answer, dict):
+                continue
+            answer.pop("Display", None)
+            answer.pop("Display_Unsafe", None)
+
+
+def _strip_split_operational_surfaces(result: dict[str, Any]) -> None:
+    survey_options = result.get("SurveyOptions")
+    if isinstance(survey_options, dict):
+        survey_options.pop("EOSRedirectURL", None)
+
+    flow = result.get("SurveyFlow") or result.get("Flow")
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            node_type = str(node.get("Type") or "").strip()
+            if node_type == "EmbeddedData":
+                embedded = node.get("EmbeddedData")
+                if isinstance(embedded, list):
+                    for item in embedded:
+                        if not isinstance(item, dict):
+                            continue
+                        field = str(item.get("Field") or "").strip().lower()
+                        if field == "country":
+                            item.pop("Value", None)
+            if node_type == "EndSurvey":
+                options = node.get("Options")
+                if isinstance(options, dict):
+                    options.pop("EOSRedirectURL", None)
+                    options.pop("EOSMessage", None)
+                    options.pop("EOSMessageLibrary", None)
+            for value in node.values():
+                walk(value)
+            return
+        if isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(flow)
+
+
+def _normalize_for_split_structure_gate(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    result = _deep_copy_jsonish(payload)
+    if not isinstance(result, dict):
+        return {}
+
+    survey_options = result.get("SurveyOptions")
+    if isinstance(survey_options, dict):
+        for key in (
+            "SurveyLanguage",
+            "AvailableLanguages",
+            "MetaDataTranslations",
+            "SurveyMetaDescription",
+        ):
+            survey_options.pop(key, None)
+
+    questions = result.get("Questions")
+    if isinstance(questions, dict):
+        for value in questions.values():
+            if isinstance(value, dict):
+                _strip_split_translation_surfaces(value)
+
+    _strip_split_operational_surfaces(result)
+    return result
+
+
+def _compare_split_structure_gate(
+    *,
+    canonical_payload: Mapping[str, Any],
+    split_payload: Mapping[str, Any],
+    max_diff_paths: int,
+) -> tuple[bool, list[str], int, list[str], dict[str, int], dict[str, Any], dict[str, Any]]:
+    canonical_view = _normalize_for_split_structure_gate(canonical_payload)
+    split_view = _normalize_for_split_structure_gate(split_payload)
+    events = _collect_diff_events(canonical_view, split_view)
+    diff_count, diff_paths, section_counts = _diff_summary_from_events(
+        events,
+        max_paths=max_diff_paths,
+    )
+    failures = [f"{event.path} ({event.kind})" for event in events]
+    return (
+        diff_count == 0,
+        failures,
+        diff_count,
+        diff_paths,
+        section_counts,
+        canonical_view,
+        split_view,
+    )
 
 
 def _check_operational_policy(
@@ -1033,6 +1242,9 @@ def compare_survey_definition_deep_parity(
         events,
         max_paths=max_diff_paths,
     )
+    report_diff_count = diff_count
+    report_diff_paths = diff_paths
+    report_section_counts = section_counts
     timings_ms["diff"] = (time.perf_counter() - t_diff) * 1000.0
 
     t_flow = time.perf_counter()
@@ -1061,9 +1273,9 @@ def compare_survey_definition_deep_parity(
             ok=ok,
             hash_a=hash_a,
             hash_b=hash_b,
-            diff_count=diff_count,
-            diff_paths=diff_paths,
-            section_counts=section_counts,
+            diff_count=report_diff_count,
+            diff_paths=report_diff_paths,
+            section_counts=report_section_counts,
             flow_changes=flow_changes,
             artifacts=artifacts,
             profile=mode,
@@ -1077,6 +1289,7 @@ def compare_survey_definition_deep_parity(
     gate_results: dict[str, bool] = {
         "structural": True,
         "translation": True,
+        "language_policy": True,
         "operational_policy": True,
     }
 
@@ -1087,6 +1300,7 @@ def compare_survey_definition_deep_parity(
         gate_results = {
             "structural": False,
             "translation": False,
+            "language_policy": False,
             "operational_policy": False,
         }
     else:
@@ -1103,11 +1317,17 @@ def compare_survey_definition_deep_parity(
             hard_fail_paths.append(
                 "manifest: missing required keys " + ", ".join(missing_required)
             )
+            gate_results["language_policy"] = False
             gate_results["operational_policy"] = False
         timings_ms["manifest_required_keys"] = (time.perf_counter() - t_required) * 1000.0
 
         t_orientation = time.perf_counter()
-        canonical_def, split_def, _canonical_norm, split_norm = _resolve_split_orientation(
+        (
+            canonical_def,
+            split_def,
+            canonical_norm,
+            split_norm,
+        ) = _resolve_split_orientation(
             def_a=def_a,
             def_b=def_b,
             norm_a=norm_a,
@@ -1140,15 +1360,16 @@ def compare_survey_definition_deep_parity(
             )
         timings_ms["translation_gate"] = (time.perf_counter() - t_translation) * 1000.0
 
-        t_keep_languages = time.perf_counter()
-        keep_lang_ok, keep_lang_notes = _check_keep_languages_policy(
+        t_language_policy = time.perf_counter()
+        language_policy_ok, language_policy_notes = _check_language_policy(
             split_payload=split_def,
             manifest=manifest_payload,
             target_language=target_language,
         )
-        policy_notes.extend(keep_lang_notes)
-        timings_ms["keep_languages_policy"] = (
-            time.perf_counter() - t_keep_languages
+        policy_notes.extend(language_policy_notes)
+        gate_results["language_policy"] = language_policy_ok
+        timings_ms["language_policy_gate"] = (
+            time.perf_counter() - t_language_policy
         ) * 1000.0
 
         t_operational = time.perf_counter()
@@ -1157,31 +1378,64 @@ def compare_survey_definition_deep_parity(
             manifest=manifest_payload,
         )
         policy_notes.extend(op_notes)
-        operational_ok = keep_lang_ok and all(op_status.values())
+        operational_ok = all(op_status.values())
         gate_results["operational_policy"] = operational_ok
         timings_ms["operational_policy_gate"] = (
             time.perf_counter() - t_operational
         ) * 1000.0
 
-        t_classify = time.perf_counter()
-        allowed, hard, structural_failures, _operational_failures = _classify_split_events(
+        t_structure = time.perf_counter()
+        (
+            structure_ok,
+            structural_failures,
+            structure_diff_count,
+            structure_diff_paths,
+            structure_section_counts,
+            canonical_structure,
+            split_structure,
+        ) = _compare_split_structure_gate(
+            canonical_payload=canonical_norm,
+            split_payload=split_norm,
+            max_diff_paths=max_diff_paths,
+        )
+        gate_results["structural"] = structure_ok
+        hard_fail_paths.extend(structural_failures)
+        report_diff_count = structure_diff_count
+        report_diff_paths = structure_diff_paths
+        report_section_counts = structure_section_counts
+        timings_ms["structure_gate"] = (time.perf_counter() - t_structure) * 1000.0
+
+        t_allowed = time.perf_counter()
+        allowed, _hard_unused, _struct_unused, _op_unused = _classify_split_events(
             events=events,
             split_payload=split_norm,
             translation_ok=gate_results["translation"],
-            keep_lang_ok=keep_lang_ok,
+            keep_lang_ok=gate_results["language_policy"],
             policy_status=op_status,
             manifest=manifest_payload,
         )
         allowed_by_policy_paths.extend(allowed)
-        hard_fail_paths.extend(hard)
 
         if not gate_results["translation"]:
             hard_fail_paths.append("translation gate failed")
+        if not gate_results["language_policy"]:
+            hard_fail_paths.append("language policy gate failed")
         if not gate_results["operational_policy"]:
             hard_fail_paths.append("operational policy gate failed")
+        timings_ms["split_allowed_paths"] = (time.perf_counter() - t_allowed) * 1000.0
 
-        gate_results["structural"] = len(structural_failures) == 0
-        timings_ms["split_classification"] = (time.perf_counter() - t_classify) * 1000.0
+        t_flow_struct = time.perf_counter()
+        flow_a_struct = (
+            canonical_structure.get("SurveyFlow") or canonical_structure.get("Flow") or {}
+        )
+        flow_b_struct = split_structure.get("SurveyFlow") or split_structure.get("Flow") or {}
+        if isinstance(flow_a_struct, dict) and isinstance(flow_b_struct, dict):
+            flow_changes = diff_flows(flow_a_struct, flow_b_struct)
+        else:
+            flow_changes = []
+        timings_ms["flow_semantic_diff_split_structure"] = (
+            time.perf_counter() - t_flow_struct
+        ) * 1000.0
 
     hard_fail_paths = _dedupe(hard_fail_paths)
     allowed_by_policy_paths = _dedupe(allowed_by_policy_paths)
@@ -1206,9 +1460,9 @@ def compare_survey_definition_deep_parity(
         ok=ok,
         hash_a=hash_a,
         hash_b=hash_b,
-        diff_count=diff_count,
-        diff_paths=diff_paths,
-        section_counts=section_counts,
+        diff_count=report_diff_count,
+        diff_paths=report_diff_paths,
+        section_counts=report_section_counts,
         flow_changes=flow_changes,
         artifacts=artifacts,
         profile=mode,
