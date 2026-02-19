@@ -56,14 +56,18 @@ Behaviour:
 
 Columns where you are expected to edit content:
 
-- `Questions`: `Text_{base}_MD` (plus `Text_{base}_IsHTML` when you intentionally need raw HTML), `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`, `RandomizationType`, `RandomizationSettingsJSON`
+- `Questions`: `text_{base}` (plus `ishtml_{base}` when you intentionally need raw HTML), `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`, `RandomizationType`, `RandomizationSettingsJSON`
 - `Options`, `Subitems`, `SBS_Columns`, `SBS_ColumnAnswers`: `Label_{base}_MD` (plus `Label_{base}_IsHTML` when you intentionally need raw HTML)
 - `Survey_Metadata`: `*_MD` columns (plus `*_IsHTML` flags)
 - `Embedded_Data`: `Value`
 
+Read-only mirror columns:
+
+- `Questions.QuestionConfigJSON` is a canonical JSON mirror generated from the editable response-setting columns.
+
 Translation columns:
 
-- When present, `Text_<lang>_MD` / `Label_<lang>_MD` columns (and their `*_IsHTML` flags) are also user-editable.
+- When present, `text_<lang>` / `Label_<lang>_MD` columns (and their `ishtml_<lang>` / `*_IsHTML` flags) are also user-editable.
 
 Preservation rule on refresh:
 
@@ -75,7 +79,6 @@ Preservation rule on refresh:
 Common flags include:
 
 - `Text_*_IsHTML`, `Label_*_IsHTML`
-- `InPre`, `InPost` (and similar survey-specific flags)
 - `RequiredResponse` (derived/read-only in `Questions`)
 
 Formatting:
@@ -99,7 +102,7 @@ When a `*_IsHTML` flag is set to `TRUE`, `qsync` applies conditional formatting 
 
 `Questions.RequiredResponse` is a system-derived field (`TRUE` when `ForceResponseMode` is `ON` or `RequestResponse`).
 
-When `RequiredResponse=TRUE`, `qsync` highlights `Text_*_MD` cells (light red tint) so required questions are obvious during workbook review.
+When `RequiredResponse=TRUE`, `qsync` highlights `text_*` cells (light red tint) so required questions are obvious during workbook review.
 
 ---
 
@@ -120,7 +123,7 @@ Behaviour:
 - Each preview run clears prior `Dirty` values and re-marks them based on current diffs.
 - When a row is dirty, its `Dirty` cell is set to `Y`.
 - Conditional formatting highlights the edited cell:
-  - `Questions`: `Text_{base}_MD`, `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`, `RandomizationType`, `RandomizationSettingsJSON`
+  - `Questions`: `text_{base}`, `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`, `RandomizationType`, `RandomizationSettingsJSON`
   - `Options`/`Subitems`/`SBS_*`: `Label_{base}_MD`
   - `Embedded_Data`: `Value`
 

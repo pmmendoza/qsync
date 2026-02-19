@@ -210,7 +210,7 @@ def _write_cached(root: Path, survey_id: str, payload: dict) -> Path:
     return cached_path
 
 
-def test_questions_sheet_includes_validation_columns_and_required_highlight(tmp_path: Path) -> None:
+def test_questions_sheet_includes_config_column_and_required_highlight(tmp_path: Path) -> None:
     payload = _question_settings_payload()
     xlsx_path = tmp_path / "SV_TEST.xlsx"
     excel_io.init_workbook_from_survey("SV_TEST", payload, xlsx_path)
@@ -227,6 +227,7 @@ def test_questions_sheet_includes_validation_columns_and_required_highlight(tmp_
         "ValidationSettingsJSON",
         "RandomizationType",
         "RandomizationSettingsJSON",
+        "QuestionConfigJSON",
     ):
         assert required_col in idx
     assert "QuestionKey" not in idx
@@ -240,19 +241,20 @@ def test_questions_sheet_includes_validation_columns_and_required_highlight(tmp_
     assert row_idx is not None
 
     assert ws.cell(row=row_idx, column=idx["RequiredResponse"]).value is True
-    assert ws.cell(row=row_idx, column=idx["ForceResponseMode"]).value == "ON"
-    assert ws.cell(row=row_idx, column=idx["ValidationType"]).value == "None"
-    assert (
-        ws.cell(row=row_idx, column=idx["ValidationSettingsJSON"]).value
-        == '{"MinChars":"5"}'
-    )
-    assert ws.cell(row=row_idx, column=idx["RandomizationType"]).value == "None"
-    assert (
-        ws.cell(row=row_idx, column=idx["RandomizationSettingsJSON"]).value is None
-    )
+    config = json.loads(ws.cell(row=row_idx, column=idx["QuestionConfigJSON"]).value)
+    assert config["Validation"] == {
+        "ForceResponse": "ON",
+        "MinChars": "5",
+        "Type": "None",
+    }
+    assert config["Randomization"] == {"Type": "None"}
 
     assert (
         _fill_rgb(ws.cell(row=row_idx, column=idx["OptionsPreview"])) == READONLY_RGB
+    )
+    assert (
+        _fill_rgb(ws.cell(row=row_idx, column=idx["QuestionConfigJSON"]))
+        == READONLY_RGB
     )
     assert (
         _fill_rgb(ws.cell(row=row_idx, column=idx["ForceResponseMode"]))
@@ -401,6 +403,9 @@ def test_questions_short_columns_are_center_aligned_and_html_text_is_italic(tmp_
     ws = wb[excel_io.QUESTION_SHEET]
     assert ws.cell(row=1, column=idx["QID"]).alignment.horizontal == "center"
     assert ws.cell(row=2, column=idx["ValidationType"]).alignment.horizontal == "center"
+    assert (
+        ws.cell(row=2, column=idx["QuestionConfigJSON"]).alignment.horizontal == "left"
+    )
     assert ws.cell(row=2, column=idx["ishtml_en"]).alignment.horizontal == "center"
     assert ws.cell(row=2, column=idx["text_en"]).font.italic is True
 

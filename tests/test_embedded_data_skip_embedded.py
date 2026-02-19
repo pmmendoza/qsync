@@ -88,10 +88,23 @@ def _remove_embedded_row(xlsx_path: Path, field: str) -> None:
 
 
 def _find_base_col(headers, prefix):
-    for h in headers:
-        if str(h).startswith(f"{prefix}_") and str(h).endswith("_MD"):
-            return headers.index(h)
-    return headers.index(f"{prefix}_en_MD")
+    prefix_lower = str(prefix).lower()
+    for i, header in enumerate(headers):
+        label = str(header or "")
+        label_lower = label.lower()
+        if label_lower.startswith(f"{prefix_lower}_") and (
+            label_lower.endswith("_md") or label_lower.count("_") == 1
+        ):
+            return i
+    for fallback in (
+        f"{prefix}_en_MD",
+        f"{prefix}_EN_MD",
+        f"{prefix_lower}_en",
+        f"{prefix_lower}_EN",
+    ):
+        if fallback in headers:
+            return headers.index(fallback)
+    raise ValueError(f"Base column for {prefix!r} not found in headers: {headers!r}")
 
 
 def _update_question_text(xlsx_path: Path, qid: str, text: str) -> None:

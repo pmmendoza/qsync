@@ -69,6 +69,14 @@ FLOW_METADATA_COLUMNS = (
     "QuestionOrder",
     "QuestionOrderInBlock",
 )
+QUESTION_CONFIG_JSON_COLUMN = "QuestionConfigJSON"
+LEGACY_QUESTION_CONFIG_COLUMNS = (
+    "ForceResponseMode",
+    "ValidationType",
+    "ValidationSettingsJSON",
+    "RandomizationType",
+    "RandomizationSettingsJSON",
+)
 CENTER_ALIGN_HEADER_NAMES = {
     "QID",
     "BlockName",
@@ -184,6 +192,128 @@ def _dump_randomization_settings_json(extras: dict[str, object]) -> str:
     if not extras:
         return ""
     return json.dumps(extras, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _normalize_validation_settings_for_config(
+    settings: dict[str, object] | None,
+) -> dict[str, object]:
+    raw = settings if isinstance(settings, dict) else {}
+    force_mode = _normalize_force_response_mode(raw.get("ForceResponse"))
+    validation_type = _normalize_validation_type(raw.get("Type"))
+    normalized: dict[str, object] = {
+        "ForceResponse": force_mode,
+        "Type": validation_type,
+    }
+    extras = _validation_settings_extra_dict(raw)
+    if force_mode == "OFF":
+        extras.pop("ForceResponseType", None)
+    for key in sorted(extras.keys()):
+        normalized[key] = extras[key]
+    return normalized
+
+
+def _normalize_randomization_settings_for_config(
+    settings: dict[str, object] | None,
+) -> dict[str, object]:
+    raw = settings if isinstance(settings, dict) else {}
+    randomization_type = _normalize_randomization_type(raw.get("Type"))
+    normalized: dict[str, object] = {"Type": randomization_type}
+    extras = _randomization_settings_extra_dict(raw)
+    for key in sorted(extras.keys()):
+        normalized[key] = extras[key]
+    return normalized
+
+
+def _question_config_dict(
+    *,
+    validation_settings: dict[str, object] | None,
+    randomization_settings: dict[str, object] | None,
+) -> dict[str, dict[str, object]]:
+    return {
+        "Validation": _normalize_validation_settings_for_config(validation_settings),
+        "Randomization": _normalize_randomization_settings_for_config(
+            randomization_settings
+        ),
+    }
+
+
+def _dump_question_config_json(
+    *,
+    validation_settings: dict[str, object] | None,
+    randomization_settings: dict[str, object] | None,
+) -> str:
+    config = _question_config_dict(
+        validation_settings=validation_settings,
+        randomization_settings=randomization_settings,
+    )
+    return json.dumps(config, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _load_json_object_lenient(raw: object) -> dict[str, object]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _build_question_config_json_from_legacy_values(
+    *,
+    force_response_mode: object,
+    validation_type: object,
+    validation_settings_json: object,
+    randomization_type: object,
+    randomization_settings_json: object,
+) -> str:
+    validation_settings: dict[str, object] = {
+        "ForceResponse": _normalize_force_response_mode(force_response_mode),
+        "Type": _normalize_validation_type(validation_type),
+    }
+    for key, value in _load_json_object_lenient(validation_settings_json).items():
+        key_str = str(key or "").strip()
+        if not key_str or key_str in {"ForceResponse", "Type"}:
+            continue
+        if value is None:
+            continue
+        validation_settings[key_str] = value
+
+    randomization_settings: dict[str, object] = {
+        "Type": _normalize_randomization_type(randomization_type),
+    }
+    for key, value in _load_json_object_lenient(randomization_settings_json).items():
+        key_str = str(key or "").strip()
+        if not key_str or key_str == "Type":
+            continue
+        if value is None:
+            continue
+        randomization_settings[key_str] = value
+
+    return _dump_question_config_json(
+        validation_settings=validation_settings,
+        randomization_settings=randomization_settings,
+    )
+
+
+def _extract_force_response_from_question_config_json(
+    config_json: object, *, fallback_mode: object = "OFF"
+) -> str:
+    fallback = _normalize_force_response_mode(fallback_mode)
+    text = str(config_json or "").strip()
+    if not text:
+        return fallback
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return fallback
+    if not isinstance(parsed, dict):
+        return fallback
+    validation = parsed.get("Validation")
+    if isinstance(validation, dict):
+        return _normalize_force_response_mode(validation.get("ForceResponse"))
+    return _normalize_force_response_mode(parsed.get("ForceResponse"))
 
 
 def _coerce_bool_cell(value: object, *, default: bool = False) -> bool:
@@ -437,7 +567,8 @@ def _column_guide(base_language: str = "EN") -> dict:
             (
                 "RequiredResponse",
                 "System",
-                "Read-only marker derived from ForceResponseMode (TRUE when required/requested).",
+                "Read-only marker derived from ForceResponseMode "
+                "(TRUE when ON/RequestResponse).",
             ),
             (
                 "ForceResponseMode",
@@ -452,7 +583,7 @@ def _column_guide(base_language: str = "EN") -> dict:
             (
                 "ValidationSettingsJSON",
                 "Editable",
-                "JSON object for additional Validation.Settings keys (excluding ForceResponse and Type).",
+                "JSON object for additional Validation settings (excluding ForceResponse and Type).",
             ),
             (
                 "RandomizationType",
@@ -462,7 +593,14 @@ def _column_guide(base_language: str = "EN") -> dict:
             (
                 "RandomizationSettingsJSON",
                 "Editable",
-                "JSON object for additional Randomization keys (excluding Type).",
+                "JSON object for additional Randomization settings (excluding Type).",
+            ),
+            (
+                QUESTION_CONFIG_JSON_COLUMN,
+                "System",
+                "Read-only canonical mirror of response settings. Canonical shape: "
+                '{"Validation":{"ForceResponse":"OFF|ON|RequestResponse","Type":"None|..."},'
+                '"Randomization":{"Type":"None|..."}}.',
             ),
             (text_md, "Editable", f"{base_upper} wording in restricted Markdown."),
             (
@@ -1043,6 +1181,7 @@ class QuestionRow:
     question_type: str
     data_export_tag: str
     required_response: bool
+    question_config_json: str | None
     force_response_mode: str
     validation_type: str
     validation_settings_json: str | None
@@ -1444,6 +1583,64 @@ def _migrate_legacy_question_text_columns(
                     new_html_cell.value = old_html
 
 
+def _drop_columns_by_name(ws: Worksheet, names: Sequence[str]) -> None:
+    headers, _ = _iter_sheet_rows(ws)
+    if not headers:
+        return
+    targets = set(str(name or "") for name in names)
+    indices = [
+        idx + 1
+        for idx, header in enumerate(headers)
+        if str(header or "") in targets
+    ]
+    for col_idx in sorted(indices, reverse=True):
+        ws.delete_cols(col_idx)
+
+
+def _migrate_legacy_question_config_columns(ws: Worksheet) -> None:
+    headers, _ = _iter_sheet_rows(ws)
+    if not headers:
+        return
+    idx = {str(name or ""): i + 1 for i, name in enumerate(headers)}
+    if QUESTION_CONFIG_JSON_COLUMN not in idx:
+        return
+    if not any(name in idx for name in LEGACY_QUESTION_CONFIG_COLUMNS):
+        return
+
+    config_col = idx[QUESTION_CONFIG_JSON_COLUMN]
+    for row_idx in range(2, ws.max_row + 1):
+        config_cell = ws.cell(row=row_idx, column=config_col)
+        if config_cell.value is not None and str(config_cell.value).strip():
+            continue
+        config_cell.value = _build_question_config_json_from_legacy_values(
+            force_response_mode=(
+                ws.cell(row=row_idx, column=idx["ForceResponseMode"]).value
+                if "ForceResponseMode" in idx
+                else "OFF"
+            ),
+            validation_type=(
+                ws.cell(row=row_idx, column=idx["ValidationType"]).value
+                if "ValidationType" in idx
+                else "None"
+            ),
+            validation_settings_json=(
+                ws.cell(row=row_idx, column=idx["ValidationSettingsJSON"]).value
+                if "ValidationSettingsJSON" in idx
+                else ""
+            ),
+            randomization_type=(
+                ws.cell(row=row_idx, column=idx["RandomizationType"]).value
+                if "RandomizationType" in idx
+                else "None"
+            ),
+            randomization_settings_json=(
+                ws.cell(row=row_idx, column=idx["RandomizationSettingsJSON"]).value
+                if "RandomizationSettingsJSON" in idx
+                else ""
+            ),
+        )
+
+
 def _ensure_columns(ws: Worksheet, required: List[str]) -> Dict[str, int]:
     """Ensure required columns exist in order; return mapping name -> 0-based index."""
 
@@ -1804,6 +2001,10 @@ def build_question_rows(
         randomization_settings_json = _dump_randomization_settings_json(
             _randomization_settings_extra_dict(randomization)
         )
+        question_config_json = _dump_question_config_json(
+            validation_settings=settings,
+            randomization_settings=randomization,
+        )
 
         if is_markdown_safe_html(text_html):
             text_md = html_to_md(text_html)
@@ -1823,6 +2024,7 @@ def build_question_rows(
             question_type=qtype,
             data_export_tag=tag,
             required_response=_is_required_response(force_mode),
+            question_config_json=question_config_json,
             force_response_mode=force_mode,
             validation_type=validation_type,
             validation_settings_json=validation_settings_json or None,
@@ -2863,6 +3065,7 @@ def _init_questions_sheet(
         "ValidationSettingsJSON",
         "RandomizationType",
         "RandomizationSettingsJSON",
+        QUESTION_CONFIG_JSON_COLUMN,
         *text_columns,
         "OptionsPreview",
         "SubitemsPreview",
@@ -2872,6 +3075,7 @@ def _init_questions_sheet(
     if headers and "QuestionKey" in headers:
         ws.delete_cols(headers.index("QuestionKey") + 1)
     col_index = _ensure_columns(ws, required_cols)
+    _migrate_legacy_question_config_columns(ws)
     _migrate_legacy_question_text_columns(
         ws,
         languages=languages,
@@ -2963,6 +3167,16 @@ def _init_questions_sheet(
                 randomization_settings_cell.value = (
                     row_data.randomization_settings_json
                 )
+            config_cell = ws.cell(
+                row=row_idx, column=col_index[QUESTION_CONFIG_JSON_COLUMN] + 1
+            )
+            config_cell.value = _build_question_config_json_from_legacy_values(
+                force_response_mode=force_mode_cell.value,
+                validation_type=validation_type_cell.value,
+                validation_settings_json=validation_settings_cell.value,
+                randomization_type=randomization_type_cell.value,
+                randomization_settings_json=randomization_settings_cell.value,
+            )
             effective_force_mode = (
                 force_mode_cell.value
                 if force_mode_cell.value is not None
@@ -3082,6 +3296,11 @@ def _init_questions_sheet(
                     column=col_index["RandomizationSettingsJSON"] + 1,
                     value=row_data.randomization_settings_json,
                 )
+            ws.cell(
+                row=new_row_idx,
+                column=col_index[QUESTION_CONFIG_JSON_COLUMN] + 1,
+                value=row_data.question_config_json,
+            )
 
             text_cell = ws.cell(
                 row=new_row_idx,
@@ -4707,6 +4926,7 @@ def _format_questions_sheet(ws: Worksheet) -> None:
             _wrap_column(ws, str(name))
     _wrap_column(ws, "ValidationSettingsJSON")
     _wrap_column(ws, "RandomizationSettingsJSON")
+    _wrap_column(ws, QUESTION_CONFIG_JSON_COLUMN)
     _wrap_column(ws, "OptionsPreview")
     _wrap_column(ws, "SubitemsPreview")
 
@@ -4834,6 +5054,7 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         "ValidationSettingsJSON": 48.0,
         "RandomizationType": 18.0,
         "RandomizationSettingsJSON": 48.0,
+        QUESTION_CONFIG_JSON_COLUMN: 70.0,
         "OptionsPreview": 60.0,
         "SubitemsPreview": 60.0,
     }
@@ -5633,6 +5854,51 @@ def _find_base_text_col(headers: List[str], prefix: str) -> tuple[str, str]:
     return fallback_md, fallback_html
 
 
+def _parse_question_config_json_strict(
+    raw: object, *, qid: str, source: str
+) -> dict[str, dict[str, object]]:
+    text = str(raw or "").strip()
+    if not text:
+        return _question_config_dict(
+            validation_settings={},
+            randomization_settings={},
+        )
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid {QUESTION_CONFIG_JSON_COLUMN} for {qid} ({source}): "
+            f"{exc.msg} at line {exc.lineno}, column {exc.colno}."
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"Invalid {QUESTION_CONFIG_JSON_COLUMN} for {qid} ({source}): expected a JSON object."
+        )
+    validation_raw = parsed.get("Validation")
+    randomization_raw = parsed.get("Randomization")
+    if validation_raw is None and randomization_raw is None:
+        validation_raw = parsed
+        randomization_raw = {}
+    if validation_raw is None:
+        validation_raw = {}
+    if randomization_raw is None:
+        randomization_raw = {}
+    if not isinstance(validation_raw, dict):
+        raise ValueError(
+            f"Invalid {QUESTION_CONFIG_JSON_COLUMN} for {qid} ({source}): "
+            "'Validation' must be a JSON object."
+        )
+    if not isinstance(randomization_raw, dict):
+        raise ValueError(
+            f"Invalid {QUESTION_CONFIG_JSON_COLUMN} for {qid} ({source}): "
+            "'Randomization' must be a JSON object."
+        )
+    return _question_config_dict(
+        validation_settings=validation_raw,
+        randomization_settings=randomization_raw,
+    )
+
+
 def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
     """Read QuestionRow objects from an existing workbook.
 
@@ -5651,6 +5917,7 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
         - `question_type`: Question type (MC, TE, Matrix, etc.).
         - `data_export_tag`: The DataExportTag / variable name.
         - `required_response`: Derived required-response marker.
+        - `question_config_json`: Canonical question config JSON payload.
         - `force_response_mode`: Validation force mode (`OFF`, `ON`, `RequestResponse`).
         - `validation_type`: Validation type (`None`, `MinChoices`, etc.).
         - `validation_settings_json`: JSON payload for additional validation settings.
@@ -5675,6 +5942,7 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
     ws = wb[QUESTION_SHEET]
     headers, data_rows = _iter_sheet_rows(ws)
     idx = {name: i for i, name in enumerate(headers)}
+    has_legacy_config_columns = any(name in idx for name in LEGACY_QUESTION_CONFIG_COLUMNS)
 
     text_md_col, text_html_col = _find_base_text_col(headers, "Text")
 
@@ -5693,6 +5961,38 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
         qid = str(qid_val).strip()
         if not qid:
             continue
+        config_raw = None
+        if has_legacy_config_columns:
+            config_raw = _build_question_config_json_from_legacy_values(
+                force_response_mode=_get(row, "ForceResponseMode"),
+                validation_type=_get(row, "ValidationType"),
+                validation_settings_json=_get(row, "ValidationSettingsJSON"),
+                randomization_type=_get(row, "RandomizationType"),
+                randomization_settings_json=_get(row, "RandomizationSettingsJSON"),
+            )
+        else:
+            config_raw = _get(row, QUESTION_CONFIG_JSON_COLUMN)
+            if config_raw is None or str(config_raw).strip() == "":
+                config_raw = _build_question_config_json_from_legacy_values(
+                    force_response_mode="OFF",
+                    validation_type="None",
+                    validation_settings_json="",
+                    randomization_type="None",
+                    randomization_settings_json="",
+                )
+        config = _parse_question_config_json_strict(config_raw, qid=qid, source="workbook")
+        validation = config.get("Validation", {})
+        randomization = config.get("Randomization", {})
+        force_mode = _normalize_force_response_mode(validation.get("ForceResponse"))
+        validation_type = _normalize_validation_type(validation.get("Type"))
+        validation_extras = _validation_settings_extra_dict(validation)
+        if force_mode == "OFF":
+            validation_extras.pop("ForceResponseType", None)
+        randomization_type = _normalize_randomization_type(randomization.get("Type"))
+        randomization_extras = _randomization_settings_extra_dict(randomization)
+        config_text = json.dumps(
+            config, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
         qr = QuestionRow(
             survey_id=str(_get(row, "SurveyID") or "").strip(),
             qid=qid,
@@ -5701,20 +6001,16 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
             data_export_tag=str(_get(row, "DataExportTag") or "").strip(),
             required_response=_coerce_bool_cell(
                 _get(row, "RequiredResponse"),
-                default=_is_required_response(_get(row, "ForceResponseMode")),
+                default=_is_required_response(force_mode),
             ),
-            force_response_mode=_normalize_force_response_mode(
-                _get(row, "ForceResponseMode")
-            ),
-            validation_type=_normalize_validation_type(_get(row, "ValidationType")),
-            validation_settings_json=(
-                str(_get(row, "ValidationSettingsJSON") or "").strip() or None
-            ),
-            randomization_type=_normalize_randomization_type(
-                _get(row, "RandomizationType")
-            ),
+            question_config_json=config_text,
+            force_response_mode=force_mode,
+            validation_type=validation_type,
+            validation_settings_json=_dump_validation_settings_json(validation_extras)
+            or None,
+            randomization_type=randomization_type,
             randomization_settings_json=(
-                str(_get(row, "RandomizationSettingsJSON") or "").strip() or None
+                _dump_randomization_settings_json(randomization_extras) or None
             ),
             text_en_md=str(_get(row, text_md_col) or ""),
             text_en_is_html=_coerce_bool_cell(_get(row, text_html_col)),
