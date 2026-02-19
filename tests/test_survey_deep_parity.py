@@ -110,7 +110,7 @@ def _canonical_for_split() -> dict:
         "SurveyID": "SV_SOURCE",
         "SurveyOptions": {
             "SurveyLanguage": "EN",
-            "AvailableLanguages": {"EN": True, "DE": True},
+            "AvailableLanguages": {"EN": [], "DE": []},
         },
         "Questions": {
             "QID1": {
@@ -143,7 +143,7 @@ def _split_for_de() -> dict:
         "SurveyID": "SV_SPLIT",
         "SurveyOptions": {
             "SurveyLanguage": "DE",
-            "AvailableLanguages": {"DE": True},
+            "AvailableLanguages": {"DE": []},
         },
         "Questions": {
             "QID1": {
@@ -226,6 +226,23 @@ def test_split_profile_webservice_aliases_are_normalized() -> None:
     split["SurveyFlow"]["Flow"][0]["RequestURL"] = "https://api.example.com/collect"
     split["SurveyFlow"]["Flow"][0]["RequestType"] = "POST"
 
+    report = compare_survey_definition_deep_parity(
+        canonical,
+        split,
+        profile="split",
+        manifest=_split_manifest(),
+    )
+    assert report.ok
+
+
+def test_split_profile_available_languages_false_markers_are_filtered() -> None:
+    canonical = _canonical_for_split()
+    split = _split_for_de()
+    split["SurveyOptions"]["AvailableLanguages"] = {
+        "DE": [],
+        "EN": False,
+        "FR": "0",
+    }
     report = compare_survey_definition_deep_parity(
         canonical,
         split,

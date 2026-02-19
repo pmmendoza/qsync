@@ -154,11 +154,26 @@ def _normalize_lang(value: object) -> str:
     return text
 
 
+def _language_flag_is_disabled(value: object) -> bool:
+    """Qualtrics language flags vary by endpoint; treat only explicit falsey markers as disabled."""
+
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value == 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"", "0", "false", "no", "off"}
+    # Some survey-definitions payloads encode enabled languages as empty lists, e.g. {"EN": []}.
+    return False
+
+
 def _parse_available_languages(value: object) -> list[str]:
     out: list[str] = []
     if isinstance(value, dict):
         for k, enabled in value.items():
-            if enabled in {False, 0, "0", "false", "False", None, ""}:
+            if _language_flag_is_disabled(enabled):
                 continue
             lang = _normalize_lang(k)
             if lang:
