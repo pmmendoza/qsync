@@ -644,12 +644,17 @@ def archive_survey_assets(
     files_moved = 0
     if EXCEL_DIR.exists():
         EXCEL_ARCHIVE.mkdir(parents=True, exist_ok=True)
-        for path in EXCEL_DIR.glob(f"{survey_id}-*.xlsx"):
-            if path.name.startswith("~$"):
-                continue
-            dest = EXCEL_ARCHIVE / f"{timestamp}__{path.name}"
-            path.rename(dest)
-            files_moved += 1
+        seen_excel: set[Path] = set()
+        for pattern in (f"{survey_id}-*.xlsx", f"*-{survey_id}.xlsx"):
+            for path in EXCEL_DIR.glob(pattern):
+                if path in seen_excel:
+                    continue
+                seen_excel.add(path)
+                if path.name.startswith("~$"):
+                    continue
+                dest = EXCEL_ARCHIVE / f"{timestamp}__{path.name}"
+                path.rename(dest)
+                files_moved += 1
     survey_cache_dir = _survey_definition_cache_dir()
     if survey_cache_dir.exists():
         SURVEY_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)

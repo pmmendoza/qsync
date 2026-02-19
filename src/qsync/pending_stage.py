@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from .config import resolve_root, resolve_scoped_dir
+from .survey_naming import resolve_survey_path, survey_named_candidate_paths
 
 # NOTE: These values are serialized on disk under surveys/pending/<dimension>/.
 # Keep in sync with call sites and migration logic.
@@ -282,13 +283,26 @@ class PendingStagedChanges:
         }
 
 
-def _unified_pending_path(survey_id: str, dimension: DimensionType) -> Path:
+def _unified_pending_path(
+    survey_id: str,
+    dimension: DimensionType,
+    *,
+    prefer_existing: bool = True,
+    migrate_existing: bool = False,
+) -> Path:
     """Get path to unified pending file."""
     root = resolve_root(required=False) or Path.cwd()
     surveys_dir = resolve_scoped_dir("surveys", root=root)
     pending_dir = surveys_dir / "pending" / dimension
-    safe_id = survey_id.strip() or "unknown"
-    return pending_dir / f"{safe_id}.json"
+    return resolve_survey_path(
+        pending_dir,
+        survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=root,
+        prefer_existing=prefer_existing,
+        migrate_existing=migrate_existing,
+    )
 
 
 def _legacy_pending_paths(survey_id: str, dimension: DimensionType) -> list[Path]:
@@ -380,7 +394,12 @@ def _migrate_legacy_pending(
 
 def save_pending(record: PendingStagedChanges) -> None:
     """Save pending record to unified location."""
-    path = _unified_pending_path(record.survey_id, record.dimension)
+    path = _unified_pending_path(
+        record.survey_id,
+        record.dimension,
+        prefer_existing=False,
+        migrate_existing=True,
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
 
     payload = record.to_dict()
@@ -416,7 +435,12 @@ def load_pending(
         Pending record if found, None otherwise
     """
     # Try unified path first
-    path = _unified_pending_path(survey_id, dimension)
+    path = _unified_pending_path(
+        survey_id,
+        dimension,
+        prefer_existing=True,
+        migrate_existing=False,
+    )
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -434,11 +458,20 @@ def load_pending(
 
 def clear_pending(survey_id: str, dimension: DimensionType) -> None:
     """Clear pending record for dimension."""
-    path = _unified_pending_path(survey_id, dimension)
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
+    root = resolve_root(required=False) or Path.cwd()
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    pending_dir = surveys_dir / "pending" / dimension
+    for path in survey_named_candidate_paths(
+        pending_dir,
+        survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=root,
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
     # Also try to clean up any legacy files
     for legacy_path in _legacy_pending_paths(survey_id, dimension):

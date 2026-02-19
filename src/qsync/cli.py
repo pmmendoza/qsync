@@ -1922,6 +1922,39 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "(affects credential checks and --check-api)."
         ),
     )
+    doctor_subs = p_doctor.add_subparsers(
+        dest="doctor_command",
+        metavar="DOCTOR_COMMAND",
+    )
+    p_doctor_setup = doctor_subs.add_parser(
+        "setup",
+        help="Plan/apply workspace layout migration to account-first directories",
+    )
+    p_doctor_setup.add_argument(
+        "--target-account",
+        default="all",
+        help="Account scope to migrate: all (default), default, or a specific account name.",
+    )
+    p_doctor_setup.add_argument(
+        "--apply",
+        action="store_true",
+        help="Execute the migration plan (default is dry-run preview).",
+    )
+    p_doctor_setup.add_argument(
+        "--undo",
+        type=Path,
+        help="Undo using a previously generated undo manifest JSON path.",
+    )
+    p_doctor_setup.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip interactive confirmation prompts for apply/undo.",
+    )
+    p_doctor_setup.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON to stdout (no other output).",
+    )
 
     # account
     p_account = subparsers.add_parser(
@@ -3927,6 +3960,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             pass
 
         if args.command == "doctor":
+            if getattr(args, "doctor_command", None) == "setup":
+                from .doctor_setup import handle_doctor_setup
+
+                handle_doctor_setup(args)
+                return
+
             from .config import (
                 ENV_PATH,
                 ROOT,

@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import io
+import re
 from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 from .api_push import send_api_request
 from .config import get_active_account, get_client_config, resolve_root, resolve_scoped_dir
 from .rich_support import progress_context, should_use_rich
+from .survey_naming import resolve_survey_path
 from .survey_inventory import load_focal_snapshot, load_existing_metadata
 from .survey_master_validation import validate_all_changes, format_validation_errors
 
@@ -54,7 +56,31 @@ def _rollback_dir() -> Path:
 
 
 def _rollback_survey_dir(survey_id: str) -> Path:
-    return _rollback_dir() / survey_id
+    root = _workspace_root()
+    return resolve_survey_path(
+        _rollback_dir(),
+        survey_id,
+        is_dir=True,
+        root=root,
+        prefer_existing=True,
+        migrate_existing=True,
+    )
+
+
+def _survey_id_from_named_segment(value: str) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if re.fullmatch(r"SV_[A-Za-z0-9]+", text):
+        return text
+    marker = "-SV_"
+    if marker not in text:
+        return None
+    suffix = text.rsplit(marker, 1)[-1]
+    candidate = f"SV_{suffix}"
+    if re.fullmatch(r"SV_[A-Za-z0-9]+", candidate):
+        return candidate
+    return None
 
 
 def _master_csv_path() -> Path:
@@ -410,7 +436,15 @@ def save_snapshot(survey_id: str, snapshot: dict) -> Path:
     snapshots_dir = _snapshots_dir()
     snapshots_dir.mkdir(parents=True, exist_ok=True)
 
-    snapshot_path = snapshots_dir / f"{survey_id}.json"
+    snapshot_path = resolve_survey_path(
+        snapshots_dir,
+        survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=_workspace_root(),
+        prefer_existing=False,
+        migrate_existing=True,
+    )
     snapshot_path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
 
     return snapshot_path
@@ -421,7 +455,15 @@ def load_snapshot(survey_id: str) -> Optional[dict]:
 
     Returns the snapshot dict, or None if not found.
     """
-    snapshot_path = _snapshots_dir() / f"{survey_id}.json"
+    snapshot_path = resolve_survey_path(
+        _snapshots_dir(),
+        survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=_workspace_root(),
+        prefer_existing=True,
+        migrate_existing=False,
+    )
     if not snapshot_path.exists():
         return None
 
@@ -583,7 +625,13 @@ def list_rollback_versions(survey_id: Optional[str] = None) -> List[Dict[str, An
         survey_ids = [survey_id]
     else:
         survey_ids = sorted(
-            [p.name for p in root.iterdir() if p.is_dir()],
+            {
+                sid
+                for p in root.iterdir()
+                if p.is_dir()
+                for sid in [(_survey_id_from_named_segment(p.name))]
+                if sid
+            }
         )
 
     entries: List[Dict[str, Any]] = []

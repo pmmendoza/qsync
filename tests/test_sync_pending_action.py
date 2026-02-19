@@ -500,6 +500,79 @@ class TestSyncPendingAction(unittest.TestCase):
         mock_sync_dimension.assert_called_once()
         self.assertEqual(mock_sync_dimension.call_args.kwargs["ignore_embedded"], True)
 
+    def test_sync_dimensions_once_auto_yes_stages_unstaged_dimensions(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        changes = SimpleNamespace(
+            survey_name="Test Survey",
+            dimensions=self._empty_unstaged(),
+        )
+        unstaged = self._empty_unstaged()
+        unstaged["js"] = DimensionChanges(
+            "js",
+            True,
+            "⚡ Unstaged: 1 JS file(s) changed",
+            {"QID1"},
+            status_kind="unstaged",
+            edit_count=1,
+        )
+        unstaged["flow"] = DimensionChanges(
+            "flow",
+            True,
+            "⚡ Unstaged: 1 change(s)",
+            set(),
+            status_kind="unstaged",
+            edit_count=1,
+        )
+
+        sync_results = {
+            "js": orchestrator.DimensionSyncResult(
+                dimension="js", success=True, applied_changes=True
+            ),
+            "flow": orchestrator.DimensionSyncResult(
+                dimension="flow", success=True, applied_changes=True
+            ),
+        }
+
+        def _sync_result(survey_id, dimension, **kwargs):
+            return sync_results[dimension]
+
+        with (
+            patch.object(orchestrator, "detect_survey_changes", return_value=changes),
+            patch.object(orchestrator, "detect_conflicts", return_value=[]),
+            patch.object(orchestrator, "detect_master_conflicts", return_value=[]),
+            patch.object(orchestrator, "_detect_unstaged_changes", return_value=unstaged),
+            patch.object(orchestrator, "_is_dimension_staged", return_value=False),
+            patch.object(orchestrator, "stage_dimension", return_value=True) as mock_stage,
+            patch.object(orchestrator, "sync_dimension", side_effect=_sync_result) as mock_sync,
+            patch.object(orchestrator, "_display_push_report"),
+            patch.object(orchestrator, "_orchestrated_publish"),
+            patch.object(orchestrator, "_get_inventory_cached", return_value={}),
+        ):
+            summary = orchestrator._sync_dimensions_once(
+                survey_id="SV_TEST",
+                dimensions=["js", "flow"],
+                interactive=False,
+                force_live=False,
+                force_preview=False,
+                auto_yes=True,
+                allow_drift=False,
+                skip_publish=True,
+                scope=None,
+                per_dimension=False,
+                allow_skip_embedded=True,
+            )
+
+        self.assertIsNotNone(summary)
+        self.assertEqual(
+            [call.args[1] for call in mock_stage.call_args_list],
+            ["js", "flow"],
+        )
+        for staged_call in mock_stage.call_args_list:
+            self.assertFalse(staged_call.kwargs["interactive"])
+        for sync_call in mock_sync.call_args_list:
+            self.assertTrue(sync_call.kwargs["prefer_pending"])
+
     def test_sync_dimensions_once_skips_stage_prompt_when_no_selected_changes(self):
         import qsync.sync_orchestrator as orchestrator
 

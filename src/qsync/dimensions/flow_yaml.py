@@ -229,11 +229,13 @@ def _convert_node_to_yaml(
 
     # WebService
     if node_type == "WebService":
+        url = node.get("URL", node.get("RequestURL", ""))
+        method = node.get("Method", node.get("RequestType", "GET"))
         return {
             "type": "WebService",
             "id": node.get("FlowID", ""),
-            "url": node.get("URL", ""),
-            "method": node.get("Method", "GET"),
+            "url": url,
+            "method": method,
             "raw_config": {
                 k: v
                 for k, v in node.items()
@@ -403,14 +405,26 @@ def _convert_node_from_yaml(node: dict) -> dict[str, Any]:
 
     # WebService
     if node_type == "WebService":
+        raw_config = node.get("raw_config", {})
+        if not isinstance(raw_config, dict):
+            raw_config = {}
+
+        uses_request_alias = "RequestURL" in raw_config or "RequestType" in raw_config
         result = {
             "Type": "WebService",
             "FlowID": node.get("id", ""),
-            "URL": node.get("url", ""),
-            "Method": node.get("method", "GET"),
         }
+
+        if uses_request_alias:
+            if "RequestURL" not in raw_config and "url" in node:
+                result["RequestURL"] = node.get("url", "")
+            if "RequestType" not in raw_config and "method" in node:
+                result["RequestType"] = node.get("method", "GET")
+        else:
+            result["URL"] = node.get("url", "")
+            result["Method"] = node.get("method", "GET")
+
         # Restore raw config
-        raw_config = node.get("raw_config", {})
         result.update(raw_config)
         return result
 

@@ -14,9 +14,14 @@ from .errors import QsyncConfigError, QsyncValidationError
 
 _ROOT_ENV_KEYS = ("QSYNC_ROOT", "QSYNC_DATA_DIR")
 _ACCOUNT_ENV_KEY = "QSYNC_ACCOUNT"
+_WORKSPACE_LAYOUT_ENV_KEY = "QSYNC_WORKSPACE_LAYOUT"
+_WORKSPACE_LAYOUT_PREF_KEY = "workspace_layout"
+WORKSPACE_LAYOUT_LEGACY = "legacy"
+WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1 = "account_root_v1"
 _SURVEY_CACHE_SUBDIR_ENV_KEY = "QSYNC_SURVEY_CACHE_SUBDIR"
 _SURVEY_CACHE_SUBDIR_PREF_KEY = "survey_cache_subdir"
-_DEFAULT_SURVEY_CACHE_SUBDIR = "caches"
+_DEFAULT_SURVEY_CACHE_SUBDIR_LEGACY = "caches"
+_DEFAULT_SURVEY_CACHE_SUBDIR_ACCOUNT_ROOT = "cache"
 _SURVEY_CACHE_SUBDIR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
@@ -50,11 +55,74 @@ except ModuleNotFoundError:  # pragma: no cover - used outside the workspace ins
         return data
 
 
+def validate_workspace_layout(layout: str | None) -> str:
+    """Validate and normalize workspace layout mode."""
+
+    raw = (layout or "").strip().lower().replace("-", "_")
+    aliases = {
+        "legacy": WORKSPACE_LAYOUT_LEGACY,
+        "accounts": WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1,
+        "account_root": WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1,
+        "account_root_v1": WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1,
+    }
+    normalized = aliases.get(raw)
+    if normalized:
+        return normalized
+    raise QsyncValidationError(
+        error_id="QSYNC-VALIDATION-LAYOUT-001",
+        problem=f"Invalid workspace layout: {layout!r}.",
+        why="qsync supports only known workspace layout modes.",
+        impact="Path resolution cannot continue safely with an unknown mode.",
+        action=(
+            "Use one of: `legacy`, `accounts`, or `account_root_v1` "
+            f"(via {_WORKSPACE_LAYOUT_ENV_KEY} or .qsync/preferences.json)."
+        ),
+        context={"layout": layout},
+        exit_code=2,
+    )
+
+
+def resolve_workspace_layout(*, root: Path | None = None) -> str:
+    """Resolve current workspace layout mode.
+
+    Precedence:
+    1) `QSYNC_WORKSPACE_LAYOUT` env override
+    2) workspace preference `.qsync/preferences.json` key `workspace_layout`
+    3) default: `legacy`
+    """
+
+    env_raw = (os.environ.get(_WORKSPACE_LAYOUT_ENV_KEY) or "").strip()
+    if env_raw:
+        return validate_workspace_layout(env_raw)
+
+    root_path = root or resolve_root(required=False) or Path.cwd()
+    try:
+        from .workspace_prefs import load_prefs
+
+        prefs, _err = load_prefs(root_path)
+        pref_raw = prefs.get(_WORKSPACE_LAYOUT_PREF_KEY)
+        if isinstance(pref_raw, str) and pref_raw.strip():
+            return validate_workspace_layout(pref_raw)
+    except Exception:
+        # Preferences are best-effort; fall back to default.
+        pass
+
+    return WORKSPACE_LAYOUT_LEGACY
+
+
 def discover_root(start: Path | None = None) -> Path | None:
     """Discover the qsync workspace root by searching parent directories."""
 
     start = start or Path.cwd()
     for candidate in _iter_parents(start):
+        # Account-first workspace layout.
+        if (candidate / "accounts" / "default" / "inventory.csv").exists():
+            return candidate
+        if (candidate / "accounts" / "default").is_dir() and (
+            candidate / ".qsync"
+        ).is_dir():
+            return candidate
+
         if (candidate / "surveys" / "inventory.csv").exists():
             return candidate
         if (candidate / "surveys" / "qualtrics_surveys.csv").exists():
@@ -111,7 +179,7 @@ def resolve_root(
         raise RuntimeError(
             "Could not resolve qsync workspace root. Provide `--root`, set `QSYNC_ROOT`, "
             "or run from within a workspace containing `surveys/inventory.csv` "
-            "(legacy: `surveys/qualtrics_surveys.csv`)."
+            "(legacy mode) or `accounts/default/inventory.csv` (account-root layout)."
         )
     return None
 
@@ -268,11 +336,44 @@ def resolve_scoped_dir(
     """
 
     root_path = root or resolve_root(required=False) or Path.cwd()
-    base = (root_path / dirname).resolve()
     selected = account if account is not None else get_active_account()
-    if selected:
-        scoped = validate_account_name(selected)
-        return (base / f".{scoped}").resolve()
+    if selected and str(selected).strip().lower() == "default":
+        selected = None
+
+    layout = resolve_workspace_layout(root=root_path)
+    dirname_path = Path(dirname)
+    parts = list(dirname_path.parts)
+    if not parts:
+        raise ValueError("resolve_scoped_dir() requires a non-empty dirname")
+
+    if layout == WORKSPACE_LAYOUT_LEGACY:
+        base = (root_path / dirname_path).resolve()
+        if selected:
+            scoped = validate_account_name(str(selected))
+            return (base / f".{scoped}").resolve()
+        return base
+
+    # account_root_v1 layout
+    account_name = validate_account_name(str(selected)) if selected else "default"
+    account_root = (root_path / "accounts" / account_name).resolve()
+
+    head = parts[0]
+    tail = parts[1:]
+    mapped_head = "js" if head == "survey_js" else head
+
+    if mapped_head == "surveys":
+        base = account_root
+    elif mapped_head == "export":
+        base = (account_root / "derived" / "export").resolve()
+    elif mapped_head == "responses":
+        base = (account_root / "derived" / "responses").resolve()
+    elif mapped_head == "tmp":
+        base = (account_root / "state" / "tmp").resolve()
+    else:
+        base = (account_root / mapped_head).resolve()
+
+    if tail:
+        return (base.joinpath(*tail)).resolve()
     return base
 
 
@@ -348,7 +449,10 @@ def resolve_survey_cache_subdir(
         # Preferences are best-effort; fall back to default.
         pass
 
-    return _DEFAULT_SURVEY_CACHE_SUBDIR
+    layout = resolve_workspace_layout(root=root_path)
+    if layout == WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1:
+        return _DEFAULT_SURVEY_CACHE_SUBDIR_ACCOUNT_ROOT
+    return _DEFAULT_SURVEY_CACHE_SUBDIR_LEGACY
 
 
 def resolve_survey_cache_dir(
@@ -359,18 +463,27 @@ def resolve_survey_cache_dir(
     """Resolve where survey definition JSON cache files should live.
 
     Behavior:
-    - Base path is account-scoped `surveys/` (or unscoped when no account).
-    - If `surveys/<cache_subdir>/` exists, return that directory.
-    - Otherwise, fall back to `surveys/`.
+    - Legacy layout: base path is account-scoped `surveys/`.
+    - Account-root layout: base path is `<account>/state/`.
+    - If `<base>/<cache_subdir>/` exists, return that directory.
+    - Otherwise, return the base fallback directory.
     """
 
     root_path = root or resolve_root(required=False) or Path.cwd()
     surveys_dir = resolve_scoped_dir("surveys", root=root_path, account=account)
+    layout = resolve_workspace_layout(root=root_path)
+    base_dir = surveys_dir if layout == WORKSPACE_LAYOUT_LEGACY else surveys_dir / "state"
     cache_subdir = resolve_survey_cache_subdir(root=root_path)
-    candidate = (surveys_dir / cache_subdir).resolve()
+    candidate = (base_dir / cache_subdir).resolve()
     if candidate.exists() and candidate.is_dir():
         return candidate
-    return surveys_dir
+
+    # Backward-compatible fallback: legacy default subdir name.
+    legacy_candidate = (base_dir / _DEFAULT_SURVEY_CACHE_SUBDIR_LEGACY).resolve()
+    if legacy_candidate.exists() and legacy_candidate.is_dir():
+        return legacy_candidate
+
+    return base_dir.resolve()
 
 
 def load_account_env(

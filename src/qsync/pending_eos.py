@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import resolve_root, resolve_scoped_dir
+from .survey_naming import resolve_survey_path, survey_named_candidate_paths
 
 
 def _now_iso() -> str:
@@ -74,12 +75,30 @@ def _pending_path(survey_id: str) -> Path:
     root = resolve_root(required=False) or Path.cwd()
     surveys_dir = resolve_scoped_dir("surveys", root=root)
     pending_dir = surveys_dir / "pending" / "eos"
-    safe_id = survey_id.strip() or "unknown"
-    return pending_dir / f"{safe_id}.json"
+    return resolve_survey_path(
+        pending_dir,
+        survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=root,
+        prefer_existing=True,
+        migrate_existing=False,
+    )
 
 
 def save_pending_eos(record: PendingEosRecord) -> None:
-    path = _pending_path(record.survey_id)
+    root = resolve_root(required=False) or Path.cwd()
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    pending_dir = surveys_dir / "pending" / "eos"
+    path = resolve_survey_path(
+        pending_dir,
+        record.survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=root,
+        prefer_existing=False,
+        migrate_existing=True,
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = record.to_dict()
     if not payload.get("created_at"):
@@ -102,8 +121,17 @@ def load_pending_eos(survey_id: str) -> PendingEosRecord | None:
 
 
 def clear_pending_eos(survey_id: str) -> None:
-    path = _pending_path(survey_id)
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
+    root = resolve_root(required=False) or Path.cwd()
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    pending_dir = surveys_dir / "pending" / "eos"
+    for path in survey_named_candidate_paths(
+        pending_dir,
+        survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=root,
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass

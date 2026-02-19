@@ -12,6 +12,7 @@ from .api_push import send_api_request
 from .config import get_client_config, resolve_root, resolve_scoped_dir
 from .qualtrics_client import load_cached_survey
 from .qualtrics_client import find_cached_survey_file
+from .survey_naming import resolve_survey_path
 from .survey_inventory import (
     INVENTORY_CSV,
     LEGACY_SURVEY_CACHE,
@@ -274,6 +275,7 @@ def hydrate_js_surfaces(
     cache = load_cached_survey(survey_id)
     payload = cache.payload.get("result") if isinstance(cache.payload, dict) else None
     payload = payload if isinstance(payload, dict) else cache.payload
+    survey_name = str(payload.get("SurveyName") or "").strip() or None
 
     qid_to_block = _qid_to_block_tag(payload)
 
@@ -290,8 +292,17 @@ def hydrate_js_surfaces(
     mapping_updates: dict[str, list[str]] = {}
 
     core_dir = root / "survey_js" / "core"
-    per_survey_dir = core_dir / survey_id
+    per_survey_dir = resolve_survey_path(
+        core_dir,
+        survey_id,
+        is_dir=True,
+        survey_name=survey_name,
+        root=root,
+        prefer_existing=True,
+        migrate_existing=True,
+    )
     per_survey_dir.mkdir(parents=True, exist_ok=True)
+    rel_prefix = per_survey_dir.name
 
     # Hydrate any existing hinted mapping: ensure the referenced file exists.
     for qid, hint, js_text in hinted:
@@ -332,7 +343,7 @@ def hydrate_js_surfaces(
             export_slug = _slugify_token(export_tag) or _slugify_token(qid)
             block_slug = _slugify_token(block_tag) or "UNBLOCKED"
             filename = f"{block_slug}__{export_slug}.js"
-            rel = f"{survey_id}/{filename}"
+            rel = f"{rel_prefix}/{filename}"
 
             target = per_survey_dir / filename
             if target.exists() and not overwrite_js:
@@ -353,7 +364,7 @@ def hydrate_js_surfaces(
             continue
 
         filename = _shared_file_name(h)
-        rel = f"{survey_id}/{filename}"
+        rel = f"{rel_prefix}/{filename}"
         target = per_survey_dir / filename
 
         if target.exists() and not overwrite_js:
@@ -616,18 +627,13 @@ def prepare_workspace(
                 from .eos_messages import extract_eos_message_refs
                 from .eos_messages import write_library_message_to_disk
                 from .eos_messages import find_message_contexts
+                from .eos_messages import message_dir
 
                 cache = load_cached_survey(survey_id)
                 refs = extract_eos_message_refs(survey_id, cache.payload)
                 missing_refs = []
                 for ref in refs:
-                    base = (
-                        root
-                        / "contents"
-                        / "qualtrics_library_messages"
-                        / ref.library_id
-                        / ref.message_id
-                    )
+                    base = message_dir(ref.library_id, ref.message_id)
                     meta_path = base / "meta.json"
                     keys_path = base / "messages" / "_keys.json"
                     if meta_path.exists() and keys_path.exists():

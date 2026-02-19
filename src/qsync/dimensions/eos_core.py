@@ -18,10 +18,12 @@ import requests
 
 from ..api_push import send_api_request
 from ..config import (
+    WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1,
     get_client_config,
     resolve_root,
     resolve_scoped_dir,
     resolve_survey_cache_dir,
+    resolve_workspace_layout,
 )
 from ..pending_stage import (
     PendingStagedChanges,
@@ -40,7 +42,8 @@ from ..drift_check import check_drift as run_drift_check, enforce_no_drift
 from ..push_safeguards import enforce_push_safeguards, SafeguardConfig
 from ..auto_publish import auto_publish_after_push
 
-LIB_MESSAGE_DIRNAME = "qualtrics_library_messages"
+LIB_MESSAGE_DIRNAME_LEGACY = "qualtrics_library_messages"
+LIB_MESSAGE_DIRNAME_CANONICAL = "library_messages"
 SURVEY_SOURCE = "SurveyFlow.EndSurvey.DisplayMessage"
 
 ERROR_ID_EOS_SHARED_MESSAGE = "QSYNC-EOS-SHARED-001"
@@ -161,8 +164,17 @@ def extract_eos_message_refs(
 
 def message_dir(library_id: str, message_id: str) -> Path:
     root = resolve_root(required=False) or Path.cwd()
+    layout = resolve_workspace_layout(root=root)
+    if layout == WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1:
+        surveys_dir = resolve_scoped_dir("surveys", root=root)
+        return (
+            surveys_dir
+            / LIB_MESSAGE_DIRNAME_CANONICAL
+            / library_id
+            / message_id
+        )
     contents_dir = resolve_scoped_dir("contents", root=root)
-    return contents_dir / LIB_MESSAGE_DIRNAME / library_id / message_id
+    return contents_dir / LIB_MESSAGE_DIRNAME_LEGACY / library_id / message_id
 
 
 def pull_eos_messages(

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .survey_naming import survey_slugged_key
 from .translations_utils import normalize_language_code, normalize_language_list
 from .dimensions.translations_language_blocks import (
     read_answer_display,
@@ -1218,11 +1219,17 @@ def write_coverage_report(
     source_survey_id: str,
     target_language: str,
     report: SliceCoverageReport,
+    source_survey_name: str | None = None,
 ) -> Path:
     slices = default_slices_dir(root)
+    source_ref = survey_slugged_key(
+        source_survey_id,
+        survey_name=source_survey_name,
+        root=root,
+    )
     path = (
         slices
-        / f"coverage__{source_survey_id}__{normalize_language_code(target_language)}.json"
+        / f"coverage__{source_ref}__{normalize_language_code(target_language)}.json"
     )
     payload = dict(report.to_json())
     payload["source_survey_id"] = source_survey_id
@@ -1252,8 +1259,13 @@ def write_slice_manifest(
     qsync_version: str,
 ) -> Path:
     slices = default_slices_dir(root)
+    source_ref = survey_slugged_key(
+        source_survey_id,
+        survey_name=source_survey_name,
+        root=root,
+    )
     path = (
-        slices / f"{source_survey_id}__{normalize_language_code(target_language)}.json"
+        slices / f"{source_ref}__{normalize_language_code(target_language)}.json"
     )
     payload: dict[str, Any] = {
         "source_survey_id": source_survey_id,
@@ -1294,7 +1306,12 @@ def write_batch_manifest(
 ) -> Path:
     slices_dir = default_slices_dir(root)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    path = slices_dir / f"batch__{source_survey_id}__{stamp}.json"
+    source_ref = survey_slugged_key(
+        source_survey_id,
+        survey_name=source_survey_name,
+        root=root,
+    )
+    path = slices_dir / f"batch__{source_ref}__{stamp}.json"
     payload: dict[str, Any] = {
         "source_survey_id": source_survey_id,
         "source_survey_name": source_survey_name,
@@ -1313,11 +1330,17 @@ def write_dry_run_qsf(
     source_survey_id: str,
     target_language: str,
     qsf: Mapping[str, Any],
+    source_survey_name: str | None = None,
 ) -> Path:
     slices = default_slices_dir(root)
+    source_ref = survey_slugged_key(
+        source_survey_id,
+        survey_name=source_survey_name,
+        root=root,
+    )
     path = (
         slices
-        / f"dryrun__{source_survey_id}__{normalize_language_code(target_language)}.qsf.json"
+        / f"dryrun__{source_ref}__{normalize_language_code(target_language)}.qsf.json"
     )
     write_json_with_backup(path, dict(qsf))
     return path

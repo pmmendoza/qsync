@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import resolve_root, resolve_scoped_dir
+from .survey_naming import resolve_survey_path, survey_named_candidate_paths
 
 ROOT = resolve_root(required=False) or Path.cwd()
 SURVEYS_DIR = resolve_scoped_dir("surveys", root=ROOT)
@@ -101,18 +102,34 @@ def _now_iso() -> str:
 
 
 def _pending_path(survey_id: str) -> Path:
-    safe_id = survey_id.strip() or "unknown"
-    return PENDING_DIR / f"{safe_id}.json"
+    return resolve_survey_path(
+        PENDING_DIR,
+        survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=ROOT,
+        prefer_existing=True,
+        migrate_existing=False,
+    )
 
 
 def save_pending(record: PendingPushRecord) -> None:
     """Write the pending push record for a survey under `surveys/pending/`."""
 
     PENDING_DIR.mkdir(parents=True, exist_ok=True)
+    path = resolve_survey_path(
+        PENDING_DIR,
+        record.survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=ROOT,
+        prefer_existing=False,
+        migrate_existing=True,
+    )
     payload = record.to_dict()
     if not payload.get("created_at"):
         payload["created_at"] = _now_iso()
-    _pending_path(record.survey_id).write_text(
+    path.write_text(
         json.dumps(payload, indent=2), encoding="utf-8"
     )
 
@@ -136,26 +153,48 @@ def load_pending(survey_id: str) -> PendingPushRecord | None:
 def clear_pending(survey_id: str) -> None:
     """Remove the pending push record for a survey (best-effort)."""
 
-    path = _pending_path(survey_id)
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
+    for path in survey_named_candidate_paths(
+        PENDING_DIR,
+        survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=ROOT,
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _pending_js_path(survey_id: str) -> Path:
-    safe_id = survey_id.strip() or "unknown"
-    return PENDING_JS_DIR / f"{safe_id}.json"
+    return resolve_survey_path(
+        PENDING_JS_DIR,
+        survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=ROOT,
+        prefer_existing=True,
+        migrate_existing=False,
+    )
 
 
 def save_js_pending(record: PendingJsRecord) -> None:
     """Write the pending JS record for a survey under `surveys/pending/js/`."""
 
     PENDING_JS_DIR.mkdir(parents=True, exist_ok=True)
+    path = resolve_survey_path(
+        PENDING_JS_DIR,
+        record.survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=ROOT,
+        prefer_existing=False,
+        migrate_existing=True,
+    )
     payload = record.to_dict()
     if not payload.get("created_at"):
         payload["created_at"] = _now_iso()
-    _pending_js_path(record.survey_id).write_text(
+    path.write_text(
         json.dumps(payload, indent=2), encoding="utf-8"
     )
 
@@ -179,8 +218,14 @@ def load_js_pending(survey_id: str) -> PendingJsRecord | None:
 def clear_js_pending(survey_id: str) -> None:
     """Remove the pending JS record for a survey (best-effort)."""
 
-    path = _pending_js_path(survey_id)
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
+    for path in survey_named_candidate_paths(
+        PENDING_JS_DIR,
+        survey_id,
+        suffix=".json",
+        is_dir=False,
+        root=ROOT,
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass

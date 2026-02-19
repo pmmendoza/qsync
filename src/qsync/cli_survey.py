@@ -5101,6 +5101,7 @@ def handle_slice_language(args: argparse.Namespace) -> None:
             source_survey_id=source_id,
             target_language=target_lang,
             report=report,
+            source_survey_name=source_name,
         )
         coverage_paths[target_lang] = coverage_path
 
@@ -5264,6 +5265,7 @@ def handle_slice_language(args: argparse.Namespace) -> None:
                 source_survey_id=source_id,
                 target_language=target_lang,
                 qsf=qsf_working,
+                source_survey_name=source_name,
             )
             success(
                 "[qsync:slice-language]",

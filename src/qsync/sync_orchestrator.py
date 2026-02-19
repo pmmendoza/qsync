@@ -542,7 +542,7 @@ def _run_autofix(dimension: str, survey_id: str) -> str:
         from .eos_messages import pull_eos_messages
 
         pull_eos_messages(survey_id=survey_id, allow_shared=True)
-        return "Pulled EOS messages to contents/qualtrics_library_messages"
+        return "Pulled EOS messages to local library_messages storage"
     if dimension == "flow":
         yaml_path = flow_dimension.pull(survey_id, force=True)
         return f"Pulled flow to {yaml_path}"

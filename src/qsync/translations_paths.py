@@ -3,10 +3,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .config import resolve_root, resolve_scoped_dir
+from .config import (
+    WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1,
+    resolve_root,
+    resolve_scoped_dir,
+    resolve_workspace_layout,
+)
+from .survey_naming import resolve_survey_path
 from .translations_utils import normalize_language_code
 
-TRANSLATIONS_DIRNAME = "qualtrics_survey_translations"
+TRANSLATIONS_DIRNAME_LEGACY = "qualtrics_survey_translations"
+TRANSLATIONS_DIRNAME_CANONICAL = "translations"
 TRANSLATIONS_KEYS_DIRNAME = "key_snapshots"
 
 
@@ -16,12 +23,24 @@ def workspace_root() -> Path:
 
 def translations_root(root: Path | None = None) -> Path:
     base = root or workspace_root()
+    layout = resolve_workspace_layout(root=base)
+    if layout == WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1:
+        surveys_dir = resolve_scoped_dir("surveys", root=base)
+        return surveys_dir / TRANSLATIONS_DIRNAME_CANONICAL
     contents_dir = resolve_scoped_dir("contents", root=base)
-    return contents_dir / TRANSLATIONS_DIRNAME
+    return contents_dir / TRANSLATIONS_DIRNAME_LEGACY
 
 
 def translation_dir(survey_id: str, root: Path | None = None) -> Path:
-    return translations_root(root) / str(survey_id).strip()
+    base_root = root or workspace_root()
+    return resolve_survey_path(
+        translations_root(base_root),
+        survey_id,
+        is_dir=True,
+        root=base_root,
+        prefer_existing=True,
+        migrate_existing=True,
+    )
 
 
 def translation_map_path(

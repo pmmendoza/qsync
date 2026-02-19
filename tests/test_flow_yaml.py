@@ -243,6 +243,58 @@ class TestYamlToFlow:
         assert len(branch["Flow"]) == 1
         assert len(branch["ElseFlow"]) == 1
 
+    def test_webservice_request_alias_round_trip(self):
+        """RequestURL/RequestType-based WebService nodes should round-trip losslessly."""
+        original = {
+            "Type": "Root",
+            "FlowID": "FL_ROOT",
+            "Flow": [
+                {
+                    "Type": "WebService",
+                    "FlowID": "FL_WS",
+                    "RequestType": "POST",
+                    "RequestURL": "https://api.example.com/ingest",
+                    "RequestParams": {"panel_id": "${e://Field/panel_id}"},
+                    "RequestHeaders": {"Authorization": "Bearer token"},
+                }
+            ],
+        }
+
+        yaml_content = flow_to_yaml(original, "SV_test")
+        restored = yaml_to_flow(yaml_content)
+        node = restored["Flow"][0]
+
+        assert node["RequestURL"] == original["Flow"][0]["RequestURL"]
+        assert node["RequestType"] == original["Flow"][0]["RequestType"]
+        assert node["RequestParams"] == original["Flow"][0]["RequestParams"]
+        assert node["RequestHeaders"] == original["Flow"][0]["RequestHeaders"]
+        assert "URL" not in node
+        assert "Method" not in node
+
+    def test_webservice_url_method_round_trip(self):
+        """URL/Method-based WebService nodes should keep canonical URL/Method fields."""
+        original = {
+            "Type": "Root",
+            "FlowID": "FL_ROOT",
+            "Flow": [
+                {
+                    "Type": "WebService",
+                    "FlowID": "FL_WS",
+                    "URL": "https://api.example.com/ingest",
+                    "Method": "PUT",
+                    "RequestParams": {"key": "value"},
+                }
+            ],
+        }
+
+        yaml_content = flow_to_yaml(original, "SV_test")
+        restored = yaml_to_flow(yaml_content)
+        node = restored["Flow"][0]
+
+        assert node["URL"] == original["Flow"][0]["URL"]
+        assert node["Method"] == original["Flow"][0]["Method"]
+        assert node["RequestParams"] == original["Flow"][0]["RequestParams"]
+
 
 class TestRoundTripTest:
     """Tests for the round_trip_test utility."""
