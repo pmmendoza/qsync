@@ -173,6 +173,15 @@ def test_account_adopt_moves_allowlisted_artifacts_and_preserves_shared_mapping(
     inventory.write_text("id,name,locked\nSV_1,Test,\n", encoding="utf-8")
     mapping = tmp_path / "surveys" / "qualtrics_api_key_mapping.csv"
     mapping.write_text("field_name,survey_master\nSurveyName,write\n", encoding="utf-8")
+    legacy_snapshot = (
+        tmp_path
+        / "surveys"
+        / "translation_key_snapshots"
+        / "SV_1"
+        / "before_EN.json"
+    )
+    legacy_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    legacy_snapshot.write_text("{}", encoding="utf-8")
     xlsx = tmp_path / "excel" / "SV_1-test.xlsx"
     xlsx.write_bytes(b"not-a-real-xlsx")
 
@@ -201,6 +210,16 @@ def test_account_adopt_moves_allowlisted_artifacts_and_preserves_shared_mapping(
 
     assert not xlsx.exists()
     assert (tmp_path / "excel" / ".damian" / xlsx.name).exists()
+    assert not legacy_snapshot.exists()
+    assert (
+        tmp_path
+        / "contents"
+        / ".damian"
+        / "qualtrics_survey_translations"
+        / "Test-SV_1"
+        / "key_snapshots"
+        / "before_EN.json"
+    ).exists()
 
     # Shared mapping stays unscoped.
     assert mapping.exists()

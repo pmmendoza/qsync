@@ -33,6 +33,39 @@ def test_translation_dir_migrates_legacy_survey_id_folder(tmp_path: Path) -> Non
     assert not legacy_dir.exists()
 
 
+def test_translation_key_snapshot_path_migrates_legacy_location(tmp_path: Path) -> None:
+    from qsync.translations_paths import (
+        translation_key_snapshot_path,
+        translations_root,
+    )
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\nSV_TEST,Demo Survey,false\n")
+
+    legacy_path = (
+        tmp_path
+        / "surveys"
+        / "translation_key_snapshots"
+        / "SV_TEST"
+        / "before_EN.json"
+    )
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text('{"keys":["QID1"]}', encoding="utf-8")
+
+    resolved = translation_key_snapshot_path("SV_TEST", "before", "EN", root=tmp_path)
+    expected = (
+        translations_root(tmp_path)
+        / "Demo_Survey-SV_TEST"
+        / "key_snapshots"
+        / "before_EN.json"
+    )
+
+    assert resolved == expected
+    assert resolved.exists()
+    assert resolved.read_text(encoding="utf-8") == '{"keys":["QID1"]}'
+    assert not legacy_path.exists()
+
+
 def test_pending_stage_save_migrates_legacy_filename(tmp_path: Path, monkeypatch) -> None:
     import qsync.pending_stage as pending_stage
 

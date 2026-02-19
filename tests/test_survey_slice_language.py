@@ -11,6 +11,7 @@ from qsync.survey_slice_language import (
     write_coverage_report,
     write_batch_manifest,
     write_slice_manifest,
+    write_split_baseline_snapshot,
 )
 
 
@@ -267,18 +268,59 @@ def test_write_reports_and_manifest(tmp_path: Path) -> None:
     assert data["source_survey_id"] == "SV_SRC"
     assert data["source_survey_name"] == "Source Survey"
     assert data["source_base_language"] == "EN"
+    assert data["manifest_version"] == 2
+    assert data["parity_profile"] == "split"
+    assert data["target_survey_id"] == "SV_NEW"
+    assert data["target_survey_name"] == "New Survey"
     assert data["new_survey_id"] == "SV_NEW"
     assert data["target_language"] == "DE"
+    assert data["target_country"] == "DE"
+    assert data["keep_languages_policy"] == "target-only"
     assert data["keep_languages_mode"] == "target-only"
     assert data["kept_languages"] == ["DE"]
     assert data["allow_incomplete"] is False
     assert data["allow_fallback"] is False
+    assert data["completion_redirect_url"] == ""
+    assert data["eos_policy"] == {}
+    assert data["expected_flow_overrides"] == []
+    assert data["canonical_translation_fingerprint"] == ""
+    assert data["baseline_snapshot_ref"] == ""
     assert data["fallback_filled_total"] == 0
     assert data["fallback_filled_sample"] == []
     assert data["coverage_report_path"] == str(coverage_path)
     assert data["qsf_sha256"] == "deadbeef"
     assert data["qsync_version"] == "0.0.0"
     assert "coverage" in data
+
+
+def test_write_split_baseline_snapshot(tmp_path: Path) -> None:
+    path = write_split_baseline_snapshot(
+        tmp_path,
+        source_survey_id="SV_SRC",
+        source_survey_name="Source Survey",
+        target_language="DE",
+        canonical_definition={
+            "SurveyID": "SV_SRC",
+            "SurveyOptions": {
+                "SurveyLanguage": "EN",
+                "AvailableLanguages": {"EN": True, "DE": True},
+            },
+            "Questions": {
+                "QID1": {
+                    "QuestionText": "Hello",
+                    "Language": {"DE": {"QuestionText": "Hallo"}},
+                }
+            },
+        },
+        canonical_translation_projection={"QID1_QuestionText": "Hallo"},
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["source_survey_id"] == "SV_SRC"
+    assert payload["target_language"] == "DE"
+    assert payload["canonical_projection_total"] == 1
+    assert payload["canonical_projection"]["QID1_QuestionText"] == "Hallo"
+    assert payload["canonical_translation_fingerprint"]
+    assert payload["normalized_definition_sha256"]
 
 
 def test_compute_slice_coverage_ignores_trash_block_qids() -> None:

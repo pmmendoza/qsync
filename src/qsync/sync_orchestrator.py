@@ -35,6 +35,7 @@ from .dimensions.types import DimensionChanges
 from .scope_filter import ScopeFilter
 from .survey_inventory import get_focal_survey_ids, load_inventory_record
 from .terminal_colors import Colors, colorize_unified_diff_lines
+from .rich_support import format_step_progress
 
 logger = logging.getLogger(__name__)
 
@@ -4060,7 +4061,7 @@ def _sync_dimensions_once(
 
     for idx, dimension in enumerate(dimensions_sorted, 1):
         print(
-            f"{Colors.BLUE}[Step {idx}/{total_dims}]{Colors.RESET} Pushing {Colors.BOLD}{dimension}{Colors.RESET} dimension..."
+            f"{Colors.BLUE}{format_step_progress(idx, total_dims, f'Pushing {dimension} dimension...')}{Colors.RESET}"
         )
 
         try:

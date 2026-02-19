@@ -178,6 +178,28 @@ def reset_timing_emitted() -> None:
     _TIMING_EMITTED.set(False)
 
 
+def is_interactive(args=None) -> bool:
+    """Return True if the session is interactive (TTY and --yes not set).
+
+    Use this helper instead of inline ``sys.stdin.isatty() and not args.yes``
+    checks so that pipe/CI environments are always treated as non-interactive
+    even when a caller forgets the TTY guard.
+
+    Args:
+        args: Parsed argument namespace (argparse.Namespace or similar).
+              If provided, a truthy ``args.yes`` attribute causes the
+              function to return False regardless of TTY state.
+
+    Returns:
+        True only when stdin is a TTY *and* --yes was not passed.
+    """
+    if not sys.stdin.isatty():
+        return False
+    if args is not None and getattr(args, "yes", False):
+        return False
+    return True
+
+
 def is_json_mode() -> bool:
     return (os.environ.get("QSYNC_JSON_MODE") or "").strip().lower() in {
         "1",

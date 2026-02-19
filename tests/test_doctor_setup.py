@@ -180,6 +180,11 @@ def test_doctor_setup_dry_run_apply_and_undo(
     assert prefs["workspace_layout"] == "account_root_v1"
     assert prefs["survey_cache_subdir"] == "cache"
 
+    # Migration idempotency: once applied, dry-run should have no remaining moves.
+    main(["--root", str(tmp_path), "doctor", "setup", "--json"])
+    post_apply_payload = json.loads(capsys.readouterr().out)
+    assert post_apply_payload["planned_moves"] == 0
+
     undo_manifest = str(apply_payload["undo_manifest"])
     main(
         [
@@ -200,3 +205,46 @@ def test_doctor_setup_dry_run_apply_and_undo(
     assert (tmp_path / "surveys" / "inventory.csv").exists()
     assert (tmp_path / "survey_js" / "core" / "core_logic.js").exists()
     assert (tmp_path / "contents" / "qualtrics_survey_translations" / "SV_1" / "EN.json").exists()
+
+
+def test_doctor_setup_apply_errors_do_not_flip_workspace_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from qsync.cli import main
+    import qsync.doctor_setup as doctor_setup
+
+    _touch_env_for_restore(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    ensure_qsync_workspace(tmp_path)
+
+    (tmp_path / "surveys" / "inventory.csv").write_text(
+        "id,name,locked\nSV_1,Example,\n", encoding="utf-8"
+    )
+    (tmp_path / "excel" / "SV_1.xlsx").write_bytes(b"xlsx")
+
+    def _failing_apply_moves(_moves):
+        return [], [], [{"src": "a", "dst": "b", "error": "forced failure"}]
+
+    monkeypatch.setattr(doctor_setup, "_apply_moves", _failing_apply_moves)
+
+    with pytest.raises(SystemExit) as exc:
+        main(
+            [
+                "--root",
+                str(tmp_path),
+                "doctor",
+                "setup",
+                "--apply",
+                "--yes",
+                "--json",
+            ]
+        )
+    assert exc.value.code == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    prefs_path = tmp_path / ".qsync" / "preferences.json"
+    assert not prefs_path.exists()
+    assert not (tmp_path / ".qsync" / "active_account.txt").exists()

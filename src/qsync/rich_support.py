@@ -13,7 +13,7 @@ import os
 import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Iterable, Iterator, Optional, Tuple
+from typing import Iterable, Iterator, Optional, Tuple, Any
 
 from .terminal_colors import colors_enabled
 
@@ -50,6 +50,51 @@ def _build_console():
     return Console(no_color=not colors_enabled())
 
 
+def canonical_text_progress_bar(
+    current: int,
+    total: int,
+    *,
+    width: int = 18,
+    done: str = "#",
+    todo: str = "-",
+) -> str:
+    """Return a deterministic ASCII progress bar.
+
+    Example: ``[######------------]  33% (1/3)``
+    """
+    safe_total = max(int(total), 0)
+    safe_current = max(int(current), 0)
+    safe_width = max(int(width), 4)
+    if safe_total <= 0:
+        return f"[{todo * safe_width}]   0% (0/0)"
+
+    clamped = min(safe_current, safe_total)
+    ratio = clamped / safe_total
+    filled = int(round(ratio * safe_width))
+    filled = max(0, min(filled, safe_width))
+    empty = safe_width - filled
+    pct = int(round(ratio * 100))
+    return f"[{done * filled}{todo * empty}] {pct:>3}% ({clamped}/{safe_total})"
+
+
+def format_step_progress(
+    step: int,
+    total: int,
+    label: str,
+    *,
+    width: int = 18,
+) -> str:
+    """Return a canonical single-line step progress message."""
+    safe_total = max(int(total), 0)
+    safe_step = max(int(step), 0)
+    bar = canonical_text_progress_bar(safe_step, safe_total, width=width)
+    remaining = max(safe_total - min(safe_step, safe_total), 0)
+    suffix = "step left" if remaining == 1 else "steps left"
+    if safe_total <= 0:
+        return f"Step {safe_step}: {label}"
+    return f"Step {safe_step}/{safe_total} {bar} | {remaining} {suffix} | {label}"
+
+
 def progress_active() -> bool:
     return bool(_RICH_PROGRESS_ACTIVE.get())
 
@@ -76,29 +121,12 @@ def track_iterable(iterable: Iterable, *, description: str) -> Iterable:
     except Exception:
         total = None
 
-    from rich.progress import (
-        Progress,
-        SpinnerColumn,
-        TextColumn,
-        BarColumn,
-        TaskProgressColumn,
-        TimeElapsedColumn,
-    )
-
     console = _build_console()
 
     def _generator() -> Iterator:
         token = _RICH_PROGRESS_ACTIVE.set(True)
         try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeElapsedColumn(),
-                console=console,
-                transient=True,
-            ) as progress:
+            with _canonical_progress(console=console) as progress:
                 task_id = progress.add_task(description, total=total)
                 for item in iterable:
                     yield item
@@ -118,28 +146,37 @@ def progress_context(
         yield None
         return
 
+    console = _build_console()
+    token = _RICH_PROGRESS_ACTIVE.set(True)
+    try:
+        with _canonical_progress(console=console) as progress:
+            task_id = progress.add_task(description, total=total)
+            yield (progress, task_id)
+    finally:
+        _RICH_PROGRESS_ACTIVE.reset(token)
+
+
+def _canonical_progress(*, console: Any):
+    """Create the canonical Rich progress renderer used across qsync."""
     from rich.progress import (
         Progress,
         SpinnerColumn,
         TextColumn,
         BarColumn,
         TaskProgressColumn,
+        MofNCompleteColumn,
         TimeElapsedColumn,
+        TimeRemainingColumn,
     )
 
-    console = _build_console()
-    token = _RICH_PROGRESS_ACTIVE.set(True)
-    try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            console=console,
-            transient=True,
-        ) as progress:
-            task_id = progress.add_task(description, total=total)
-            yield (progress, task_id)
-    finally:
-        _RICH_PROGRESS_ACTIVE.reset(token)
+    return Progress(
+        SpinnerColumn(style="cyan"),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(complete_style="green", finished_style="green"),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=True,
+    )

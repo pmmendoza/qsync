@@ -231,7 +231,16 @@ def _convert_node_to_yaml(
     if node_type == "WebService":
         url = node.get("URL", node.get("RequestURL", ""))
         method = node.get("Method", node.get("RequestType", "GET"))
-        return {
+        uses_request_alias = "RequestURL" in node or "RequestType" in node
+        raw_config_excluded = (
+            "Type",
+            "FlowID",
+            "URL",
+            "Method",
+            "RequestURL",
+            "RequestType",
+        )
+        result = {
             "type": "WebService",
             "id": node.get("FlowID", ""),
             "url": url,
@@ -239,9 +248,12 @@ def _convert_node_to_yaml(
             "raw_config": {
                 k: v
                 for k, v in node.items()
-                if k not in ("Type", "FlowID", "URL", "Method")
+                if k not in raw_config_excluded
             },
         }
+        if uses_request_alias:
+            result["request_alias"] = True
+        return result
 
     # EndSurvey
     if node_type == "EndSurvey":
@@ -409,7 +421,11 @@ def _convert_node_from_yaml(node: dict) -> dict[str, Any]:
         if not isinstance(raw_config, dict):
             raw_config = {}
 
-        uses_request_alias = "RequestURL" in raw_config or "RequestType" in raw_config
+        uses_request_alias = (
+            bool(node.get("request_alias"))
+            or "RequestURL" in raw_config
+            or "RequestType" in raw_config
+        )
         result = {
             "Type": "WebService",
             "FlowID": node.get("id", ""),

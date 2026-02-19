@@ -271,6 +271,39 @@ class TestYamlToFlow:
         assert "URL" not in node
         assert "Method" not in node
 
+    def test_webservice_request_alias_yaml_edits_are_preserved(self):
+        """Editing YAML `url`/`method` should update alias-form RequestURL/RequestType."""
+        original = {
+            "Type": "Root",
+            "FlowID": "FL_ROOT",
+            "Flow": [
+                {
+                    "Type": "WebService",
+                    "FlowID": "FL_WS",
+                    "RequestType": "POST",
+                    "RequestURL": "https://api.example.com/original",
+                    "RequestParams": {"panel_id": "${e://Field/panel_id}"},
+                }
+            ],
+        }
+
+        yaml_content = flow_to_yaml(original, "SV_test")
+        assert "request_alias: true" in yaml_content
+        assert "RequestURL" not in yaml_content
+        assert "RequestType" not in yaml_content
+
+        edited_yaml = yaml_content.replace(
+            "https://api.example.com/original", "https://api.example.com/edited"
+        ).replace("method: POST", "method: PUT")
+        restored = yaml_to_flow(edited_yaml)
+        node = restored["Flow"][0]
+
+        assert node["RequestURL"] == "https://api.example.com/edited"
+        assert node["RequestType"] == "PUT"
+        assert node["RequestParams"] == original["Flow"][0]["RequestParams"]
+        assert "URL" not in node
+        assert "Method" not in node
+
     def test_webservice_url_method_round_trip(self):
         """URL/Method-based WebService nodes should keep canonical URL/Method fields."""
         original = {

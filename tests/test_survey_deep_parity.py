@@ -94,3 +94,142 @@ def test_deep_parity_flow_changes_are_reported() -> None:
     assert not report.ok
     assert report.flow_changes, "Expected semantic flow changes on mismatch"
 
+
+def _split_manifest() -> dict:
+    return {
+        "manifest_version": 2,
+        "source_survey_id": "SV_SOURCE",
+        "target_survey_id": "SV_SPLIT",
+        "target_language": "DE",
+        "keep_languages_policy": "target-only",
+    }
+
+
+def _canonical_for_split() -> dict:
+    return {
+        "SurveyID": "SV_SOURCE",
+        "SurveyOptions": {
+            "SurveyLanguage": "EN",
+            "AvailableLanguages": {"EN": True, "DE": True},
+        },
+        "Questions": {
+            "QID1": {
+                "QuestionID": "QID1",
+                "QuestionText": "Hello",
+                "Choices": {"1": {"Display": "Yes"}},
+                "Language": {
+                    "DE": {
+                        "QuestionText": "Hallo",
+                        "Choices": {"1": {"Display": "Ja"}},
+                    }
+                },
+            }
+        },
+        "SurveyFlow": {
+            "Flow": [
+                {
+                    "Type": "WebService",
+                    "FlowID": "FL_WS",
+                    "URL": "https://api.example.com/collect",
+                    "Method": "POST",
+                }
+            ]
+        },
+    }
+
+
+def _split_for_de() -> dict:
+    return {
+        "SurveyID": "SV_SPLIT",
+        "SurveyOptions": {
+            "SurveyLanguage": "DE",
+            "AvailableLanguages": {"DE": True},
+        },
+        "Questions": {
+            "QID1": {
+                "QuestionID": "QID1",
+                "QuestionText": "Hallo",
+                "Choices": {"1": {"Display": "Ja"}},
+                "Language": {},
+            }
+        },
+        "SurveyFlow": {
+            "Flow": [
+                {
+                    "Type": "WebService",
+                    "FlowID": "FL_WS",
+                    "URL": "https://api.example.com/collect",
+                    "Method": "POST",
+                }
+            ]
+        },
+    }
+
+
+def test_split_profile_requires_manifest() -> None:
+    report = compare_survey_definition_deep_parity(
+        _canonical_for_split(),
+        _split_for_de(),
+        profile="split",
+    )
+    assert not report.ok
+    assert any("manifest" in item for item in report.hard_fail_paths)
+
+
+def test_split_profile_allows_translation_drift_with_manifest() -> None:
+    report = compare_survey_definition_deep_parity(
+        _canonical_for_split(),
+        _split_for_de(),
+        profile="split",
+        manifest=_split_manifest(),
+    )
+    assert report.ok
+    assert report.gate_results.get("translation") is True
+    assert report.gate_results.get("operational_policy") is True
+    assert report.gate_results.get("structural") is True
+
+
+def test_split_profile_hard_fails_unknown_path() -> None:
+    canonical = _canonical_for_split()
+    split = _split_for_de()
+    split["SurveyOptions"]["Skin"] = "skin_2"
+    report = compare_survey_definition_deep_parity(
+        canonical,
+        split,
+        profile="split",
+        manifest=_split_manifest(),
+    )
+    assert not report.ok
+    assert any("SurveyOptions.Skin" in item for item in report.hard_fail_paths)
+
+
+def test_split_profile_detects_translation_gate_mismatch() -> None:
+    canonical = _canonical_for_split()
+    split = _split_for_de()
+    split["Questions"]["QID1"]["QuestionText"] = "Guten Tag"
+    report = compare_survey_definition_deep_parity(
+        canonical,
+        split,
+        profile="split",
+        manifest=_split_manifest(),
+    )
+    assert not report.ok
+    assert report.gate_results.get("translation") is False
+    assert any("translation gate failed" in item for item in report.hard_fail_paths)
+
+
+def test_split_profile_webservice_aliases_are_normalized() -> None:
+    canonical = _canonical_for_split()
+    split = _split_for_de()
+    split["SurveyFlow"]["Flow"][0].pop("URL", None)
+    split["SurveyFlow"]["Flow"][0].pop("Method", None)
+    split["SurveyFlow"]["Flow"][0]["RequestURL"] = "https://api.example.com/collect"
+    split["SurveyFlow"]["Flow"][0]["RequestType"] = "POST"
+
+    report = compare_survey_definition_deep_parity(
+        canonical,
+        split,
+        profile="split",
+        manifest=_split_manifest(),
+    )
+    assert report.ok

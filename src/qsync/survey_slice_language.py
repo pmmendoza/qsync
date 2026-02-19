@@ -1197,6 +1197,28 @@ def sha256_of_qsf_upload_bytes(qsf: Mapping[str, Any]) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def sha256_of_json(payload: Mapping[str, Any]) -> str:
+    """Stable SHA256 for JSON payloads used in slice manifests/baselines."""
+
+    canonical = json.dumps(
+        dict(payload),
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def infer_target_country(target_language: str) -> str:
+    """Best-effort country hint from language code (e.g., DE or FR-CA -> DE/CA)."""
+
+    lang = normalize_language_code(target_language)
+    if "-" in lang:
+        suffix = lang.split("-", 1)[1].strip()
+        return suffix.upper() if suffix else ""
+    return lang.upper() if len(lang) == 2 else ""
+
+
 def write_json_with_backup(path: Path, payload: Mapping[str, Any]) -> None:
     serialized = json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True) + "\n"
     if path.exists():
@@ -1257,6 +1279,15 @@ def write_slice_manifest(
     report: SliceCoverageReport,
     qsf_sha256: str,
     qsync_version: str,
+    manifest_version: int = 2,
+    parity_profile: str = "split",
+    target_country: str | None = None,
+    keep_languages_policy: str | None = None,
+    completion_redirect_url: str | None = None,
+    eos_policy: Mapping[str, Any] | None = None,
+    expected_flow_overrides: Sequence[Mapping[str, Any]] | None = None,
+    canonical_translation_fingerprint: str | None = None,
+    baseline_snapshot_ref: str | None = None,
 ) -> Path:
     slices = default_slices_dir(root)
     source_ref = survey_slugged_key(
@@ -1268,16 +1299,31 @@ def write_slice_manifest(
         slices / f"{source_ref}__{normalize_language_code(target_language)}.json"
     )
     payload: dict[str, Any] = {
+        "manifest_version": int(manifest_version),
+        "parity_profile": str(parity_profile or "split"),
         "source_survey_id": source_survey_id,
         "source_survey_name": source_survey_name,
         "source_base_language": source_base_language,
+        "target_survey_id": new_survey_id,
+        "target_survey_name": new_survey_name,
         "target_language": normalize_language_code(target_language),
+        "target_country": str(
+            target_country
+            if target_country is not None
+            else infer_target_country(target_language)
+        ),
+        "keep_languages_policy": str(keep_languages_policy or keep_languages_mode),
         "new_survey_id": new_survey_id,
         "new_survey_name": new_survey_name,
         "keep_languages_mode": keep_languages_mode,
         "kept_languages": list(kept_languages),
         "allow_incomplete": bool(allow_incomplete),
         "allow_fallback": bool(allow_fallback),
+        "completion_redirect_url": str(completion_redirect_url or ""),
+        "eos_policy": dict(eos_policy or {}),
+        "expected_flow_overrides": [dict(entry) for entry in (expected_flow_overrides or [])],
+        "canonical_translation_fingerprint": str(canonical_translation_fingerprint or ""),
+        "baseline_snapshot_ref": str(baseline_snapshot_ref or ""),
         "fallback_filled_total": int(fallback_filled_total or 0),
         "fallback_filled_sample": list(fallback_filled_sample or []),
         "coverage": {
@@ -1290,6 +1336,47 @@ def write_slice_manifest(
         "qsf_sha256": qsf_sha256,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "qsync_version": qsync_version,
+    }
+    write_json_with_backup(path, payload)
+    return path
+
+
+def write_split_baseline_snapshot(
+    root: Path,
+    *,
+    source_survey_id: str,
+    source_survey_name: str,
+    target_language: str,
+    canonical_definition: Mapping[str, Any],
+    canonical_translation_projection: Mapping[str, Any],
+) -> Path:
+    from .survey_deep_parity import normalize_survey_definition_for_deep_parity
+
+    slices = default_slices_dir(root)
+    source_ref = survey_slugged_key(
+        source_survey_id,
+        survey_name=source_survey_name,
+        root=root,
+    )
+    path = (
+        slices / f"baseline__{source_ref}__{normalize_language_code(target_language)}.json"
+    )
+    normalized = normalize_survey_definition_for_deep_parity(
+        canonical_definition,
+        profile="cross_account",
+    )
+    projection_payload = dict(canonical_translation_projection)
+    payload: dict[str, Any] = {
+        "source_survey_id": source_survey_id,
+        "source_survey_name": source_survey_name,
+        "target_language": normalize_language_code(target_language),
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "canonical_translation_fingerprint": sha256_of_json(projection_payload),
+        "canonical_projection_total": len(projection_payload),
+        "canonical_projection": projection_payload,
+        "normalized_definition_sha256": sha256_of_json(
+            normalized if isinstance(normalized, dict) else {}
+        ),
     }
     write_json_with_backup(path, payload)
     return path

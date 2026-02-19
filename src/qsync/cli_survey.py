@@ -292,12 +292,12 @@ def handle_cleanup_embedded_data(args: argparse.Namespace) -> None:
     removed, details = _dedupe_embedded_data(flow, placeholder_only=placeholder_only)
 
     if removed == 0:
-        print("[cleanup-embedded-data] No duplicate embedded data rows found.")
+        print("[qsync:survey:cleanup-embedded-data] No duplicate embedded data rows found.")
         return
 
     scope = "placeholder duplicates only" if placeholder_only else "all duplicates"
     print(
-        f"[cleanup-embedded-data] Found {removed} duplicate embedded data row(s) "
+        f"[qsync:survey:cleanup-embedded-data] Found {removed} duplicate embedded data row(s) "
         f"({scope})."
     )
     for item in details[:10]:
@@ -308,7 +308,7 @@ def handle_cleanup_embedded_data(args: argparse.Namespace) -> None:
         print(f"  - ... {len(details) - 10} more")
 
     if dry_run:
-        print("[cleanup-embedded-data] Dry run only; no changes applied.")
+        print("[qsync:survey:cleanup-embedded-data] Dry run only; no changes applied.")
         return
 
     if not args.yes:
@@ -318,7 +318,7 @@ def handle_cleanup_embedded_data(args: argparse.Namespace) -> None:
             if not confirm(
                 f"Apply embedded data cleanup to {survey_id}?", default=True
             ):
-                print("[cleanup-embedded-data] Aborted.")
+                print("[qsync:survey:cleanup-embedded-data] Aborted.")
                 return
         except Exception:
             resp = (
@@ -327,7 +327,7 @@ def handle_cleanup_embedded_data(args: argparse.Namespace) -> None:
                 .lower()
             )
             if resp and resp not in {"y", "yes"}:
-                print("[cleanup-embedded-data] Aborted.")
+                print("[qsync:survey:cleanup-embedded-data] Aborted.")
                 return
 
     base, headers = get_client_config()
@@ -350,9 +350,9 @@ def handle_cleanup_embedded_data(args: argparse.Namespace) -> None:
             published=True,
             context={"origin": "qsync.cleanup.embedded_data"},
         )
-        print("[cleanup-embedded-data] Applied and published cleanup.")
+        print("[qsync:survey:cleanup-embedded-data] Applied and published cleanup.")
     else:
-        print("[cleanup-embedded-data] Applied cleanup (not published).")
+        print("[qsync:survey:cleanup-embedded-data] Applied cleanup (not published).")
 
 
 def handle_label(args: argparse.Namespace) -> None:
@@ -4933,13 +4933,16 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         compute_slice_coverage,
         resolve_keep_languages,
         slice_qsf_to_language,
+        sha256_of_json,
         warn_if_flow_text_present,
         write_coverage_report,
         write_dry_run_qsf,
         write_slice_manifest,
+        write_split_baseline_snapshot,
         write_batch_manifest,
         sha256_of_qsf_upload_bytes,
     )
+    from .translation_export import build_translation_map_from_cache
 
     import qsync
     import copy
@@ -5050,6 +5053,23 @@ def handle_slice_language(args: argparse.Namespace) -> None:
             f"ERROR: Failed to fetch source survey definition: {exc}",
         )
         sys.exit(1)
+
+    source_definition_for_manifest: dict[str, Any] = {}
+    try:
+        source_definition_for_manifest = fetch_survey_definition(
+            base,
+            headers,
+            source_id,
+            fmt="json",
+        )
+    except Exception as exc:
+        warn(
+            "[qsync:slice-language]",
+            (
+                "Could not fetch source survey-definition JSON for split manifest "
+                f"baseline capture ({exc}). Manifest fingerprints will be empty."
+            ),
+        )
 
     source_name = str(qsf_content.get("SurveyEntry", {}).get("SurveyName") or source_id)
     name_template = (getattr(args, "name", None) or "").strip()
@@ -5340,6 +5360,31 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         info("Edit Link:", edit_url)
 
         # Persist manifest for traceability.
+        canonical_translation_fingerprint = ""
+        baseline_snapshot_ref = ""
+        if source_definition_for_manifest:
+            try:
+                projection = build_translation_map_from_cache(
+                    source_definition_for_manifest,
+                    language=target_lang,
+                    base_language=report.base_language,
+                )
+                canonical_translation_fingerprint = sha256_of_json(projection)
+                baseline_snapshot = write_split_baseline_snapshot(
+                    root,
+                    source_survey_id=source_id,
+                    source_survey_name=str(source_name or source_id),
+                    target_language=target_lang,
+                    canonical_definition=source_definition_for_manifest,
+                    canonical_translation_projection=projection,
+                )
+                baseline_snapshot_ref = str(baseline_snapshot)
+            except Exception as exc:
+                warn(
+                    "[qsync:slice-language]",
+                    f"Failed to write split baseline snapshot for {target_lang}: {exc}",
+                )
+
         manifest_path = write_slice_manifest(
             root,
             source_survey_id=source_id,
@@ -5358,6 +5403,8 @@ def handle_slice_language(args: argparse.Namespace) -> None:
             report=report,
             qsf_sha256=qsf_sha256,
             qsync_version=str(getattr(qsync, "__version__", "0.0.0")),
+            canonical_translation_fingerprint=canonical_translation_fingerprint,
+            baseline_snapshot_ref=baseline_snapshot_ref,
         )
         dim("[qsync:slice-language]", f"Manifest: {manifest_path}")
         info("[qsync:slice-language]", "Next commands:")
@@ -5376,29 +5423,38 @@ def handle_slice_language(args: argparse.Namespace) -> None:
         )
 
         if verify_parity:
-            from .survey_parity import compare_qsf_parity
+            from .survey_deep_parity import compare_survey_definition_deep_parity
 
-            info("[qsync:slice-language]", "Running parity check (best-effort)...")
+            info(
+                "[qsync:slice-language]",
+                "Running deep parity check (profile=split; best-effort)...",
+            )
             try:
-                source_qsf = fetch_survey_definition(
-                    base, headers, source_id, fmt="qsf"
+                source_def = source_definition_for_manifest or fetch_survey_definition(
+                    base, headers, source_id, fmt="json"
                 )
-                target_qsf = fetch_survey_definition(base, headers, new_id, fmt="qsf")
-                parity = compare_qsf_parity(source_qsf, target_qsf)
-                ok = _emit_parity_report(
-                    result=parity,
+                target_def = fetch_survey_definition(base, headers, new_id, fmt="json")
+                report_deep = compare_survey_definition_deep_parity(
+                    source_def,
+                    target_def,
                     survey_a=source_id,
                     survey_b=new_id,
+                    write_artifacts_on_mismatch=True,
+                    profile="split",
+                    manifest_path=manifest_path,
+                )
+                ok = _emit_deep_parity_report(
+                    report=report_deep,
                     prefix="[qsync:slice-language:parity]",
                 )
                 if not ok:
                     raise SystemExit(
-                        "[qsync:slice-language] Parity check failed; see details above."
+                        "[qsync:slice-language] Deep parity check failed; see details above."
                     )
             except Exception as exc:
                 warn(
                     "[qsync:slice-language]",
-                    f"Parity check failed to run: {exc}",
+                    f"Deep parity check failed to run: {exc}",
                 )
 
         batch_entries.append(
@@ -5712,23 +5768,147 @@ def _emit_parity_report(*, result, survey_a: str, survey_b: str, prefix: str) ->
     return bool(result.ok)
 
 
+def _emit_deep_parity_report(*, report, prefix: str) -> bool:
+    from .terminal_output import success, warn, dim
+    from .dimensions.flow_diff import format_diff_for_display, format_diff_summary
+
+    if report.ok:
+        success(
+            prefix,
+            f"Deep parity OK (profile={report.profile}, hash={report.hash_a[:12]}).",
+        )
+        return True
+
+    warn(
+        prefix,
+        f"Deep parity FAILED (profile={report.profile}; normalized comparison mismatch).",
+    )
+    if report.section_counts:
+        parts = [
+            f"{k}={v}"
+            for k, v in sorted(
+                report.section_counts.items(),
+                key=lambda kv: (-kv[1], kv[0]),
+            )
+            if v
+        ]
+        if parts:
+            warn(prefix, f"Diff sections: {', '.join(parts)}")
+    warn(prefix, f"Diff count: {report.diff_count}")
+
+    if report.gate_results:
+        gate_parts = [
+            f"{name}={'ok' if bool(state) else 'fail'}"
+            for name, state in sorted(report.gate_results.items())
+        ]
+        warn(prefix, "Gates: " + ", ".join(gate_parts))
+
+    if report.hard_fail_paths:
+        warn(prefix, f"Hard-fail paths ({len(report.hard_fail_paths)}):")
+        for item in report.hard_fail_paths[:30]:
+            warn(prefix, f"  - {item}")
+        if len(report.hard_fail_paths) > 30:
+            dim(
+                prefix,
+                f"(hard-fail paths truncated; showing 30 of {len(report.hard_fail_paths)})",
+            )
+
+    if report.allowed_by_policy_paths:
+        dim(
+            prefix,
+            f"Allowed-by-policy paths: {len(report.allowed_by_policy_paths)}",
+        )
+        for item in report.allowed_by_policy_paths[:15]:
+            dim(prefix, f"  ~ {item}")
+        if len(report.allowed_by_policy_paths) > 15:
+            dim(
+                prefix,
+                f"(allowed paths truncated; showing 15 of {len(report.allowed_by_policy_paths)})",
+            )
+
+    if report.warning_paths:
+        warn(prefix, f"Warnings ({len(report.warning_paths)}):")
+        for item in report.warning_paths[:20]:
+            warn(prefix, f"  - {item}")
+        if len(report.warning_paths) > 20:
+            dim(
+                prefix,
+                f"(warning paths truncated; showing 20 of {len(report.warning_paths)})",
+            )
+
+    if report.policy_notes:
+        warn(prefix, f"Policy notes ({len(report.policy_notes)}):")
+        for note in report.policy_notes[:20]:
+            warn(prefix, f"  - {note}")
+        if len(report.policy_notes) > 20:
+            dim(
+                prefix,
+                f"(policy notes truncated; showing 20 of {len(report.policy_notes)})",
+            )
+
+    if report.diff_paths:
+        warn(prefix, "Diff paths (sample):")
+        for p in report.diff_paths[:50]:
+            warn(prefix, f"  - {p}")
+
+    if report.flow_changes:
+        warn(prefix, f"SurveyFlow: {format_diff_summary(report.flow_changes)}")
+        for line in format_diff_for_display(report.flow_changes, verbose=False)[:25]:
+            dim(prefix, line)
+        if len(report.flow_changes) > 25:
+            dim(
+                prefix,
+                f"(flow diffs truncated; showing 25 of {len(report.flow_changes)})",
+            )
+
+    if report.manifest_path:
+        dim(prefix, f"Manifest: {report.manifest_path}")
+
+    if report.artifacts:
+        dim(
+            prefix,
+            f"Artifacts: a={report.artifacts.get('a')} b={report.artifacts.get('b')}",
+        )
+        if report.artifacts.get("diff"):
+            dim(prefix, f"Unified diff: {report.artifacts.get('diff')}")
+
+    if getattr(report, "timings_ms", None):
+        timings = ", ".join(
+            f"{name}={value:.1f}ms"
+            for name, value in sorted(report.timings_ms.items())
+        )
+        dim(prefix, f"Timings: {timings}")
+
+    return False
+
+
 def handle_parity_check(args: argparse.Namespace) -> None:
     """Compare two surveys for parity (QSF-lite by default; deep via --deep)."""
 
-    from .terminal_output import header, info, error, success, warn, dim
+    from .terminal_output import header, info, error
 
     base, headers = _get_client_config_for_args(args)
 
     survey_a = getattr(args, "a", None) or ""
     survey_b = getattr(args, "b", None) or ""
     deep = bool(getattr(args, "deep", False))
+    split_alias = bool(getattr(args, "split_profile", False))
+    profile = str(getattr(args, "profile", "cross_account") or "cross_account")
+    manifest_path = getattr(args, "manifest", None)
+    if split_alias:
+        profile = "split"
     if not survey_a or not survey_b:
-        error("[qsync:parity-check]", "ERROR: --a and --b are required.")
+        error("[qsync:parity-check]", "ERROR: --source-id and --target-id are required.")
+        sys.exit(1)
+    if (split_alias or profile != "cross_account" or manifest_path) and not deep:
+        error(
+            "[qsync:parity-check]",
+            "ERROR: --profile/--split/--manifest require --deep.",
+        )
         sys.exit(1)
 
     if deep:
         from .survey_deep_parity import compare_survey_definition_deep_parity
-        from .dimensions.flow_diff import format_diff_for_display, format_diff_summary
 
         header("[qsync:parity-check]", "Fetching survey definitions (JSON)...")
         try:
@@ -5738,59 +5918,21 @@ def handle_parity_check(args: argparse.Namespace) -> None:
             error("[qsync:parity-check]", f"ERROR: Failed to fetch definitions: {exc}")
             sys.exit(1)
 
-        info("[qsync:parity-check]", f"Deep comparing {survey_a} vs {survey_b}...")
+        info(
+            "[qsync:parity-check]",
+            f"Deep comparing {survey_a} vs {survey_b} (profile={profile})...",
+        )
         report = compare_survey_definition_deep_parity(
             def_a,
             def_b,
             survey_a=survey_a,
             survey_b=survey_b,
             write_artifacts_on_mismatch=True,
+            profile=profile,
+            manifest_path=manifest_path,
         )
-        if report.ok:
-            success(
-                "[qsync:parity-check]",
-                f"Deep parity OK (hash={report.hash_a[:12]}).",
-            )
+        if _emit_deep_parity_report(report=report, prefix="[qsync:parity-check]"):
             return
-
-        warn(
-            "[qsync:parity-check]",
-            "Deep parity FAILED (normalized hashes differ).",
-        )
-        if report.section_counts:
-            parts = [
-                f"{k}={v}"
-                for k, v in sorted(report.section_counts.items(), key=lambda kv: (-kv[1], kv[0]))
-                if v
-            ]
-            if parts:
-                warn("[qsync:parity-check]", f"Diff sections: {', '.join(parts)}")
-        warn("[qsync:parity-check]", f"Diff count: {report.diff_count}")
-        if report.diff_paths:
-            warn("[qsync:parity-check]", "Diff paths (sample):")
-            for p in report.diff_paths[:50]:
-                warn("[qsync:parity-check]", f"  - {p}")
-
-        if report.flow_changes:
-            warn(
-                "[qsync:parity-check]",
-                f"SurveyFlow: {format_diff_summary(report.flow_changes)}",
-            )
-            for line in format_diff_for_display(report.flow_changes, verbose=False)[:25]:
-                dim("[qsync:parity-check]", line)
-            if len(report.flow_changes) > 25:
-                dim(
-                    "[qsync:parity-check]",
-                    f"(flow diffs truncated; showing 25 of {len(report.flow_changes)})",
-                )
-
-        if report.artifacts:
-            dim(
-                "[qsync:parity-check]",
-                f"Artifacts: a={report.artifacts.get('a')} b={report.artifacts.get('b')}",
-            )
-            if report.artifacts.get("diff"):
-                dim("[qsync:parity-check]", f"Unified diff: {report.artifacts.get('diff')}")
 
         sys.exit(2)
 
@@ -5978,6 +6120,12 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     copy_translations = not bool(getattr(args, "no_translations", False))
     verify = bool(getattr(args, "verify", False))
     verify_deep = bool(getattr(args, "verify_deep", False))
+    verify_deep_profile = str(
+        getattr(args, "verify_deep_profile", "cross_account") or "cross_account"
+    ).strip()
+    if bool(getattr(args, "verify_deep_split", False)):
+        verify_deep_profile = "split"
+    verify_deep_manifest = (getattr(args, "verify_deep_manifest", None) or "").strip()
 
     # Convenience alias: allow `--target-account default` to mean the primary
     # account credentials (QUALTRICS_BASE_URL + X-API-TOKEN), not TARGET_*.
@@ -6530,7 +6678,12 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         dim("    ✗", "Verify parity + translations (use --verify to enable)")
 
     if verify_deep:
-        success("    ✓", "Verify deep parity (survey-definitions) after copy")
+        success(
+            "    ✓",
+            f"Verify deep parity (survey-definitions, profile={verify_deep_profile}) after copy",
+        )
+        if verify_deep_manifest:
+            dim("      manifest:", verify_deep_manifest)
     else:
         dim("    ✗", "Verify deep parity (use --verify-deep to enable)")
 
@@ -6776,9 +6929,11 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
 
     if verify_deep:
         from .survey_deep_parity import compare_survey_definition_deep_parity
-        from .dimensions.flow_diff import format_diff_for_display, format_diff_summary
 
-        info("[copy-cross-account]", "Running deep parity check (survey-definitions)...")
+        info(
+            "[copy-cross-account]",
+            f"Running deep parity check (survey-definitions, profile={verify_deep_profile})...",
+        )
         try:
             source_def_deep = fetch_survey_definition(
                 source_base, source_headers, source_id, fmt="json"
@@ -6797,60 +6952,13 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
             survey_a=source_id,
             survey_b=new_id,
             write_artifacts_on_mismatch=True,
+            profile=verify_deep_profile,
+            manifest_path=verify_deep_manifest or None,
         )
-        if report.ok:
-            success(
-                "[copy-cross-account]",
-                f"Deep parity OK (hash={report.hash_a[:12]}).",
-            )
-        else:
-            warn(
-                "[copy-cross-account]",
-                "Deep parity FAILED (normalized hashes differ).",
-            )
-            if report.section_counts:
-                parts = [
-                    f"{k}={v}"
-                    for k, v in sorted(
-                        report.section_counts.items(),
-                        key=lambda kv: (-kv[1], kv[0]),
-                    )
-                    if v
-                ]
-                if parts:
-                    warn("[copy-cross-account]", f"Diff sections: {', '.join(parts)}")
-            warn("[copy-cross-account]", f"Diff count: {report.diff_count}")
-            if report.diff_paths:
-                warn("[copy-cross-account]", "Diff paths (sample):")
-                for p in report.diff_paths[:50]:
-                    warn("[copy-cross-account]", f"  - {p}")
-
-            if report.flow_changes:
-                warn(
-                    "[copy-cross-account]",
-                    f"SurveyFlow: {format_diff_summary(report.flow_changes)}",
-                )
-                for line in format_diff_for_display(
-                    report.flow_changes, verbose=False
-                )[:25]:
-                    dim("[copy-cross-account]", line)
-                if len(report.flow_changes) > 25:
-                    dim(
-                        "[copy-cross-account]",
-                        f"(flow diffs truncated; showing 25 of {len(report.flow_changes)})",
-                    )
-
-            if report.artifacts:
-                dim(
-                    "[copy-cross-account]",
-                    f"Artifacts: a={report.artifacts.get('a')} b={report.artifacts.get('b')}",
-                )
-                if report.artifacts.get("diff"):
-                    dim(
-                        "[copy-cross-account]",
-                        f"Unified diff: {report.artifacts.get('diff')}",
-                    )
-
+        if not _emit_deep_parity_report(
+            report=report,
+            prefix="[copy-cross-account]",
+        ):
             raise SystemExit(
                 "[copy-cross-account] Deep parity check failed; see diffs above."
             )
@@ -13162,12 +13270,28 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "parity-check",
         help="Compare two surveys for parity (flow/QID/tag-lite; optional deep)",
     )
-    p_parity.add_argument("--a", required=True, help="Survey ID A")
-    p_parity.add_argument("--b", required=True, help="Survey ID B")
+    p_parity.add_argument("--source-id", "--a", required=True, dest="a", help="Survey ID A (source)")
+    p_parity.add_argument("--target-id", "--b", required=True, dest="b", help="Survey ID B (target)")
     p_parity.add_argument(
         "--deep",
         action="store_true",
-        help="Run deep parity against survey-definitions JSON (strict; ignores only cross-account volatile fields).",
+        help="Run deep parity against survey-definitions JSON.",
+    )
+    p_parity.add_argument(
+        "--profile",
+        choices=["strict", "cross_account", "split"],
+        default="cross_account",
+        help="Deep parity profile (default: cross_account).",
+    )
+    p_parity.add_argument(
+        "--split",
+        dest="split_profile",
+        action="store_true",
+        help="Alias for '--profile split'.",
+    )
+    p_parity.add_argument(
+        "--manifest",
+        help="Path to split manifest JSON (required for split profile).",
     )
     p_parity.set_defaults(func=handle_parity_check)
 
@@ -13245,7 +13369,22 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     p_copy_xacct.add_argument(
         "--verify-deep",
         action="store_true",
-        help="After copy, verify deep parity against survey-definitions JSON (strict; ignores only cross-account volatile fields); exits non-zero on mismatch.",
+        help="After copy, verify deep parity against survey-definitions JSON; exits non-zero on mismatch.",
+    )
+    p_copy_xacct.add_argument(
+        "--verify-deep-profile",
+        choices=["strict", "cross_account", "split"],
+        default="cross_account",
+        help="Deep parity profile used with --verify-deep (default: cross_account).",
+    )
+    p_copy_xacct.add_argument(
+        "--verify-deep-split",
+        action="store_true",
+        help="Alias for '--verify-deep-profile split'.",
+    )
+    p_copy_xacct.add_argument(
+        "--verify-deep-manifest",
+        help="Split manifest path used for --verify-deep-profile split.",
     )
     p_copy_xacct.set_defaults(func=handle_copy_cross_account)
 
@@ -13334,6 +13473,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Prepare all focal surveys from surveys/inventory.csv",
     )
     sel.add_argument(
+        "--all-surveys",
         "--all",
         dest="all_surveys",
         action="store_true",
@@ -13596,7 +13736,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_prolific_auth.set_defaults(func=handle_prolific_auth)
 
-    # prolific-wiring (alias of qsync prolific ... for discoverability under survey)
+    # prolific-wiring: backward-compat alias of `qsync prolific`, kept for discoverability
+    # under the survey namespace.  Both registration sites (cli.py for `qsync prolific`
+    # and here for `qsync survey prolific-wiring`) call the same
+    # register_prolific_commands() from cli_prolific.py, so all subcommand parsers and
+    # set_defaults(func=...) handler bindings are shared -- no handler logic is duplicated.
     from .cli_prolific import register_prolific_commands
 
     register_prolific_commands(
@@ -14478,6 +14622,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Filter surveys by tag (e.g., --tag component=pre --tag stage=prod)",
     )
     p_master_preview.add_argument(
+        "--all-surveys",
         "--all",
         dest="all_surveys",
         action="store_true",
@@ -14506,6 +14651,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Filter surveys by tag (e.g., --tag component=pre --tag stage=prod)",
     )
     p_master_stage.add_argument(
+        "--all-surveys",
         "--all",
         dest="all_surveys",
         action="store_true",
@@ -14560,6 +14706,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Filter surveys by tag (e.g., --tag component=pre --tag stage=prod)",
     )
     p_master_apply.add_argument(
+        "--all-surveys",
         "--all",
         dest="all_surveys",
         action="store_true",
@@ -14592,6 +14739,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Push only this specific survey (by SurveyID)",
     )
     p_master_push.add_argument(
+        "--all-surveys",
         "--all",
         dest="all_surveys",
         action="store_true",

@@ -320,14 +320,14 @@ def _add_include_args(parser: argparse.ArgumentParser, *, include_js: bool) -> N
         action="append",
         dest="include_qids",
         default=[],
-        help="Limit to specific Qualtrics QIDs (can be repeated).",
+        help="Limit to specific Qualtrics QIDs (can be repeated)",
     )
     parser.add_argument(
         "--include-tag",
         action="append",
         dest="include_tags",
         default=[],
-        help="Limit to specific DataExportTag values (can be repeated).",
+        help="Limit to specific DataExportTag values (can be repeated)",
     )
     if include_js:
         parser.add_argument(
@@ -1857,12 +1857,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     parser.add_argument(
         "--root",
         type=Path,
-        help="Workspace root directory (contains surveys/, excel/, survey_js/, etc.).",
+        help="Workspace root directory (contains surveys/, excel/, survey_js/, etc.)",
     )
     parser.add_argument(
         "--env-path",
         type=Path,
-        help="Path to a .env file with credentials (overrides QSYNC_ENV_PATH and <root>/.env).",
+        help="Path to a .env file with credentials (overrides QSYNC_ENV_PATH and <root>/.env)",
     )
     parser.add_argument(
         "--account",
@@ -1880,12 +1880,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--version",
         "-V",
         action="store_true",
-        help="Print diagnostic version info and exit.",
+        help="Print diagnostic version info and exit",
     )
     parser.add_argument(
         "--allow-locked",
         action="store_true",
-        help="Bypass surveys/inventory.csv lock checks (dangerous).",
+        help="Bypass surveys/inventory.csv lock checks (dangerous)",
     )
     # Use `metavar` so help output doesn't inline every command in the Usage line.
     # With many subcommands, the default `{a,b,c,...}` form becomes unreadable.
@@ -1913,7 +1913,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_doctor.add_argument(
         "--check-api",
         action="store_true",
-        help="Call GET /whoami to validate credentials and detect datacenter mismatch (requires network).",
+        help="Call GET /whoami to validate credentials and detect datacenter mismatch (requires network)",
     )
     p_doctor.add_argument(
         "--account",
@@ -1933,27 +1933,27 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_doctor_setup.add_argument(
         "--target-account",
         default="all",
-        help="Account scope to migrate: all (default), default, or a specific account name.",
+        help="Account scope to migrate: all (default), default, or a specific account name",
     )
     p_doctor_setup.add_argument(
         "--apply",
         action="store_true",
-        help="Execute the migration plan (default is dry-run preview).",
+        help="Execute the migration plan (default is dry-run preview)",
     )
     p_doctor_setup.add_argument(
         "--undo",
         type=Path,
-        help="Undo using a previously generated undo manifest JSON path.",
+        help="Undo using a previously generated undo manifest JSON path",
     )
     p_doctor_setup.add_argument(
         "--yes",
         action="store_true",
-        help="Skip interactive confirmation prompts for apply/undo.",
+        help="Skip interactive confirmation prompts for apply/undo",
     )
     p_doctor_setup.add_argument(
         "--json",
         action="store_true",
-        help="Emit machine-readable JSON to stdout (no other output).",
+        help="Emit machine-readable JSON to stdout (no other output)",
     )
 
     # account
@@ -2074,12 +2074,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_account_cache_dir.add_argument(
         "value",
         nargs="?",
-        help="Set cache subfolder name (e.g. `caches` or `defs`).",
+        help="Set cache subfolder name (e.g. `caches` or `defs`)",
     )
     p_account_cache_dir.add_argument(
         "--clear",
         action="store_true",
-        help="Clear workspace preference and revert to default `caches` resolution.",
+        help="Clear workspace preference and revert to default `caches` resolution",
     )
     p_account_cache_dir.add_argument(
         "--json",
@@ -2096,7 +2096,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_settings.add_argument(
         "--tui",
         action="store_true",
-        help="Launch Textual settings screen (requires qsync[tui]).",
+        help="Launch Textual settings screen (requires qsync[tui])",
     )
     p_settings.set_defaults(func=handle_settings)
 
@@ -2134,7 +2134,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_onboard.add_argument(
         "--root",
         type=Path,
-        help="Workspace root directory (overrides current directory).",
+        help="Workspace root directory (overrides current directory)",
     )
     p_onboard.add_argument(
         "--token",
@@ -2184,46 +2184,46 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_self_update.add_argument(
         "--extras",
         action="append",
-        help="Comma-separated extras to install (e.g., tui,langcheck).",
+        help="Comma-separated extras to install (e.g., tui,langcheck)",
     )
     p_self_update.add_argument(
         "--all-extras",
         action="store_true",
-        help="Install all available extras.",
+        help="Install all available extras",
     )
     p_self_update.add_argument(
         "--repo",
-        help="GitHub repo URL or owner/name (default: QSYNC_UPDATE_REPO or upstream).",
+        help="GitHub repo URL or owner/name (default: QSYNC_UPDATE_REPO or upstream)",
     )
     p_self_update.add_argument(
         "--ref",
-        help="Git ref to install (branch, tag, or SHA; default: main).",
+        help="Git ref to install (branch, tag, or SHA; default: main)",
     )
     p_self_update.add_argument(
         "--pipx",
         action="store_true",
-        help="Force pipx reinstall (auto-detected by default).",
+        help="Force pipx reinstall (auto-detected by default)",
     )
     p_self_update.add_argument(
         "--pip",
         action="store_true",
-        help="Force pip install (auto-detected by default).",
+        help="Force pip install (auto-detected by default)",
     )
     p_self_update.add_argument(
         "--yes",
         action="store_true",
-        help="Run without confirmation prompts.",
+        help="Run without confirmation prompts",
     )
     p_self_update.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the install command without executing it.",
+        help="Print the install command without executing it",
     )
 
     # compare
     p_compare = subparsers.add_parser(
         "compare",
-        help="Compare two surveys (items + JS + metadata) using cached or refreshed definitions.",
+        help="Compare two surveys (items + JS + metadata) using cached or refreshed definitions",
     )
     p_compare.add_argument("--source-id", required=True, help="Source SurveyID")
     p_compare.add_argument("--target-id", required=True, help="Target SurveyID")
@@ -2247,7 +2247,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Skip questions with these DataExportTag values (can repeat)",
     )
     p_compare.add_argument(
-        "--json-output", type=Path, help="Optional path to write JSON report"
+        "--report-path", "--json-output", dest="json_output", type=Path, help="Optional path to write JSON report"
     )
     p_compare.add_argument(
         "--fail-on",
@@ -2349,7 +2349,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_apply.add_argument(
         "--allow-dangerous",
         action="store_true",
-        help="Allow dangerous embedded data edits (fields without defaults).",
+        help="Allow dangerous embedded data edits (fields without defaults)",
     )
     p_apply.add_argument(
         "--allow-drift",
@@ -2455,9 +2455,19 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "stage", help="Stage changes to local cache"
     )
     _add_common_args(p_items_stage, include_xlsx=True)
-    p_items_stage.add_argument("--yes", action="store_true")
-    p_items_stage.add_argument("--embedded-data-only", action="store_true")
-    p_items_stage.add_argument("--allow-dangerous", action="store_true")
+    p_items_stage.add_argument(
+        "--yes", action="store_true", help="Skip interactive confirmation prompt"
+    )
+    p_items_stage.add_argument(
+        "--embedded-data-only",
+        action="store_true",
+        help="Only stage Embedded_Data changes",
+    )
+    p_items_stage.add_argument(
+        "--allow-dangerous",
+        action="store_true",
+        help="Allow dangerous embedded data edits (fields without defaults)",
+    )
     p_items_stage.add_argument("--scope", help=_SCOPE_HELP_ITEMS)
     p_items_stage.add_argument(
         "--allow-externally-managed-qids",
@@ -2557,7 +2567,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_items_edit.add_argument(
         "--text-file",
-        help="Read --text content from a file (useful for multiline edits).",
+        help="Read --text content from a file (useful for multiline edits)",
     )
     p_items_edit.add_argument(
         "--text-format",
@@ -2591,16 +2601,30 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_items_push.add_argument(
         "--survey-id", help="Target survey ID (omit to select interactively)"
     )
-    p_items_push.add_argument("--yes", action="store_true")
-    p_items_push.add_argument("--force-live", action="store_true")
+    p_items_push.add_argument(
+        "--yes", action="store_true", help="Skip interactive confirmation prompt"
+    )
+    p_items_push.add_argument(
+        "--force-live",
+        action="store_true",
+        help="Allow pushes even when finished responses exist",
+    )
     p_items_push.add_argument("--force-preview", action="store_true")
-    p_items_push.add_argument("--no-publish", action="store_true")
+    p_items_push.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip publishing after pushing question updates",
+    )
     p_items_push.add_argument(
         "--allow-delete",
         action="store_true",
         help="Allow destructive structural deletes if staged (enforced at push time)",
     )
-    p_items_push.add_argument("--dry-run", action="store_true")
+    p_items_push.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview push actions without applying",
+    )
     p_items_push.add_argument("--scope", help=_SCOPE_HELP_ITEMS)
     p_items_push.add_argument(
         "--allow-externally-managed-qids",
@@ -2640,11 +2664,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_sync.add_argument(
         "--tui",
         action="store_true",
-        help="Launch Textual sync wizard (requires TUI dependencies; keeps default sync flow unchanged).",
+        help="Launch Textual sync wizard (requires TUI dependencies; keeps default sync flow unchanged)",
     )
     p_sync.add_argument(
+        "--all-focal",
         "--all",
         action="store_true",
+        dest="all",
         help="Process all focal surveys without prompting (for automation)",
     )
     p_sync.add_argument(
@@ -2917,7 +2943,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_js_push.add_argument(
         "--push-all",
         action="store_true",
-        help="Ignore staged JS and push all mapped QIDs (still filtered by include flags).",
+        help="Ignore staged JS and push all mapped QIDs (still filtered by include flags)",
     )
     p_js_push.add_argument(
         "--force-live",
@@ -2979,17 +3005,17 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         parser.add_argument(
             "--allow-shared-message-edit",
             action="store_true",
-            help="Allow edits even if a library message is detected as shared (local scan only).",
+            help="Allow edits even if a library message is detected as shared (local scan only)",
         )
         parser.add_argument(
             "--include-backups-scan",
             action="store_true",
-            help="Also scan surveys/backups when detecting shared message usage (local-only).",
+            help="Also scan surveys/backups when detecting shared message usage (local-only)",
         )
         parser.add_argument(
             "--yes",
             action="store_true",
-            help="Skip interactive confirmations (required for push).",
+            help="Skip interactive confirmations (required for push)",
         )
 
     # eos pull
@@ -3051,11 +3077,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_eos_repair.add_argument(
         "--source-base-url",
-        help="Source Qualtrics base URL for cross-account EOS repair (host only).",
+        help="Source Qualtrics base URL for cross-account EOS repair (host only)",
     )
     p_eos_repair.add_argument(
         "--source-api-key",
-        help="Source Qualtrics API token for cross-account EOS repair.",
+        help="Source Qualtrics API token for cross-account EOS repair",
     )
     p_eos_repair.add_argument(
         "--auto-source",
@@ -3084,12 +3110,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_eos_repair.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview cross-account EOS repair actions without writing to Qualtrics.",
+        help="Preview cross-account EOS repair actions without writing to Qualtrics",
     )
     p_eos_repair.add_argument(
         "--no-publish",
         action="store_true",
-        help="Skip publishing after cross-account EOS SurveyFlow rewrites.",
+        help="Skip publishing after cross-account EOS SurveyFlow rewrites",
     )
 
     # eos stage (renamed from apply)
@@ -3101,7 +3127,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_eos_stage.add_argument(
         "--allow-destructive",
         action="store_true",
-        help="Allow destructive key deletions (missing message keys) for push.",
+        help="Allow destructive key deletions (missing message keys) for push",
     )
     p_eos_stage.add_argument(
         "--scope",
@@ -3117,7 +3143,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_eos_apply.add_argument(
         "--allow-destructive",
         action="store_true",
-        help="Allow destructive key deletions (missing message keys) for push.",
+        help="Allow destructive key deletions (missing message keys) for push",
     )
 
     # eos push
@@ -3166,7 +3192,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_eos_refs.add_argument(
         "--include-backups-scan",
         action="store_true",
-        help="Also scan surveys/backups (local-only).",
+        help="Also scan surveys/backups (local-only)",
     )
     p_eos_refs.add_argument(
         "--json",
@@ -3260,8 +3286,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     _add_flow_common_args(p_flow_preview)
     p_flow_preview.add_argument(
+        "--detailed",
         "--verbose",
         action="store_true",
+        dest="verbose",
         help="Include detailed diff output with old/new values",
     )
     p_flow_preview.add_argument(
@@ -4973,12 +5001,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
         # flow command dispatcher
         if args.command == "flow":
-            from .terminal_output import error, header, info, success, warn
+            from .terminal_output import error, header, info, is_interactive, success, warn
             from .dimensions import flow as flow_dimension
             from .survey_inventory import get_focal_survey_ids
 
             yes = bool(getattr(args, "yes", False))
-            interactive = sys.stdin.isatty() and not yes
+            interactive = is_interactive(args)
 
             if args.flow_command == "pull":
                 use_all_focal = bool(getattr(args, "all_focal", False))
@@ -5146,6 +5174,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 return
 
             if args.translations_command == "apply":
+                from .terminal_output import warn
+
+                warn(
+                    "[DEPRECATION] 'translations apply' is deprecated. Use 'translations stage' instead."
+                )
                 handle_translations_apply(args)
                 return
 
@@ -5591,7 +5624,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             from .scope_filter import ScopeFilter
             import time
 
-            from .terminal_output import info, error, dim, format_elapsed
+            from .terminal_output import info, error, dim, format_elapsed, is_interactive
 
             json_output = bool(getattr(args, "json", False))
             survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
@@ -5675,7 +5708,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     summary = sync_survey(
                         survey_id=survey_id,
                         dimensions=dimensions,
-                        interactive=not bool(args.yes),
+                        interactive=is_interactive(args),
                         force_live=bool(args.force_live),
                         force_preview=bool(args.force_preview),
                         auto_yes=bool(args.yes),
@@ -5726,7 +5759,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 if not json_output:
                     info("[qsync:sync]", "Syncing focal surveys...")
                 success = sync_focal_surveys(
-                    interactive=not bool(args.yes),
+                    interactive=is_interactive(args),
                     force_live=bool(args.force_live),
                     force_preview=bool(args.force_preview),
                     auto_yes=bool(args.yes),
@@ -5873,7 +5906,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 return
 
             if args.items_command == "stage":
-                from .terminal_output import info, warn
+                from .terminal_output import info, is_interactive, warn
                 from .pending_stage import PendingStagedChanges, save_pending
                 from .dimensions.items import _build_pending_payload_from_workbook
 
@@ -5895,7 +5928,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     include_tags=include_tags,
                     ignore_embedded=bool(getattr(args, "embedded_data_only", False)),
                     allow_drift=bool(getattr(args, "allow_drift", False)),
-                    interactive=not bool(getattr(args, "yes", False)),
+                    interactive=is_interactive(args),
                     allow_dangerous=bool(getattr(args, "allow_dangerous", False)),
                     existing=None,
                 )

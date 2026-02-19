@@ -16,6 +16,7 @@ from .interactive_menu import (
     select_from_list,
     should_use_questionary,
 )
+from .rich_support import format_step_progress
 
 QUALTRICS_DOC_DATACENTER_ID = "https://www.qualtrics.com/support/integrations/api-integration/finding-qualtrics-ids/#LocatingtheDatacenterID"
 QUALTRICS_DOC_API_TOKEN = "https://www.qualtrics.com/support/integrations/api-integration/overview/#GeneratingAnAPIToken"
@@ -66,8 +67,9 @@ def _menu_choice_text(label: str, done: bool) -> str:
 
 def _step_banner(step: int, total: int, title: str) -> None:
     print()
-    print(f"Step {step} of {total}: {title}")
-    print("-" * (len(title) + 12))
+    line = format_step_progress(step, total, title, width=22)
+    print(line)
+    print("-" * len(line))
 
 
 def _detect_existing_workspace(root: Path) -> Dict[str, bool]:

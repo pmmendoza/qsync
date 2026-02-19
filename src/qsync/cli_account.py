@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ from .workspace_prefs import (
     set_workspace_active_account,
     set_workspace_survey_cache_subdir,
 )
+from .survey_naming import resolve_survey_path
 
 
 def _root() -> Path:
@@ -336,6 +338,25 @@ def _iter_unscoped_children(dir_: Path) -> Iterable[Path]:
     return children
 
 
+_SURVEY_ID_RE = re.compile(r"^SV_[A-Za-z0-9]+$")
+
+
+def _survey_id_from_named_segment(value: str) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if _SURVEY_ID_RE.fullmatch(text):
+        return text
+    marker = "-SV_"
+    if marker not in text:
+        return None
+    suffix = text.rsplit(marker, 1)[-1]
+    candidate = f"SV_{suffix}"
+    if _SURVEY_ID_RE.fullmatch(candidate):
+        return candidate
+    return None
+
+
 def _build_adopt_move_plan(root: Path, *, account: str) -> list[MoveItem]:
     """Return a conservative move plan from unscoped -> scoped dirs."""
 
@@ -381,13 +402,38 @@ def _build_adopt_move_plan(root: Path, *, account: str) -> list[MoveItem]:
             "archive",
             "flow",
             "slices",
-            "translation_key_snapshots",
             "qualtrics_master_snapshots",
             "qualtrics_master_rollback",
         ):
             src = surveys_base / name
             if src.exists() and src.is_dir():
                 moves.append(MoveItem(src=src, dst=surveys_dst / name))
+        legacy_snapshots_src = surveys_base / "translation_key_snapshots"
+        if legacy_snapshots_src.exists() and legacy_snapshots_src.is_dir():
+            translations_dst_root = (
+                resolve_scoped_dir("contents", root=root, account=account)
+                / "qualtrics_survey_translations"
+            )
+            fallback_dst_root = surveys_dst / "translation_key_snapshots"
+            for src in sorted(legacy_snapshots_src.iterdir()):
+                if src.is_file():
+                    moves.append(MoveItem(src=src, dst=fallback_dst_root / src.name))
+                    continue
+                if not src.is_dir():
+                    continue
+                survey_id = _survey_id_from_named_segment(src.name)
+                if not survey_id:
+                    moves.append(MoveItem(src=src, dst=fallback_dst_root / src.name))
+                    continue
+                dst_survey_dir = resolve_survey_path(
+                    translations_dst_root,
+                    survey_id,
+                    is_dir=True,
+                    root=root,
+                    prefer_existing=True,
+                    migrate_existing=False,
+                )
+                moves.append(MoveItem(src=src, dst=dst_survey_dir / "key_snapshots"))
         backups_src = surveys_cache_src / "backups"
         if backups_src.exists() and backups_src.is_dir():
             moves.append(MoveItem(src=backups_src, dst=surveys_cache_dst / "backups"))

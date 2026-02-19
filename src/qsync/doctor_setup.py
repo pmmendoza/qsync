@@ -317,28 +317,43 @@ def _load_current_prefs(root: Path) -> dict[str, Any]:
     return dict(prefs)
 
 
-def _set_post_migration_preferences(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def _write_active_account_file(root: Path, active_account: str) -> None:
+    active = str(active_account or "").strip() or "default"
+    state_dir = _state_dir(root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "active_account.txt").write_text(active + "\n", encoding="utf-8")
+
+
+def _planned_post_migration_preferences(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     before = _load_current_prefs(root)
     after = dict(before)
     after["workspace_layout"] = WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1
     after["survey_cache_subdir"] = "cache"
-    save_prefs(root, after)
-
-    active = str(after.get("active_account") or "default").strip() or "default"
-    state_dir = _state_dir(root)
-    state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "active_account.txt").write_text(active + "\n", encoding="utf-8")
     return before, after
+
+
+def _apply_post_migration_preferences(
+    root: Path,
+    *,
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        save_prefs(root, dict(after))
+        _write_active_account_file(root, str(after.get("active_account") or "default"))
+        return dict(after)
+    except Exception:
+        # Best-effort rollback: if post-migration preference writes fail, keep the
+        # workspace in its original preference state.
+        _restore_preferences(root, before)
+        _write_active_account_file(root, str(before.get("active_account") or "default"))
+        raise
 
 
 def _set_post_undo_preferences(root: Path, expected: dict[str, Any]) -> None:
     _restore_preferences(root, expected)
-    state_dir = _state_dir(root)
-    state_dir.mkdir(parents=True, exist_ok=True)
-    active = str(expected.get("active_account") or "").strip()
-    if not active:
-        active = "default"
-    (state_dir / "active_account.txt").write_text(active + "\n", encoding="utf-8")
+    active = str(expected.get("active_account") or "").strip() or "default"
+    _write_active_account_file(root, active)
 
 
 def _manifest_payload(
@@ -468,8 +483,25 @@ def _handle_apply(
 
     _acquire_lock(root)
     try:
-        prefs_before, prefs_after = _set_post_migration_preferences(root)
+        prefs_before, prefs_target = _planned_post_migration_preferences(root)
         moved, conflicts, errors = _apply_moves(moves)
+        prefs_after = dict(prefs_before)
+
+        if not errors:
+            try:
+                prefs_after = _apply_post_migration_preferences(
+                    root,
+                    before=prefs_before,
+                    after=prefs_target,
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(
+                    {
+                        "src": "<preferences>",
+                        "dst": str(_state_dir(root)),
+                        "error": str(exc),
+                    }
+                )
 
         stamp = _stamp()
         migrations_dir = _migrations_dir(root)
