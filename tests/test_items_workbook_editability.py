@@ -168,6 +168,36 @@ def _all_surfaces_payload() -> dict:
     }
 
 
+def _minimal_payload_no_embedded_or_sbs() -> dict:
+    return {
+        "result": {
+            "SurveyID": "SV_MIN",
+            "SurveyOptions": {
+                "SurveyLanguage": "EN",
+                "AvailableLanguages": {"EN": True},
+            },
+            "SurveyFlow": {"Flow": [{"Type": "Standard", "ID": "BL_1"}]},
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Standard",
+                    "ID": "BL_1",
+                    "Description": "Block 1",
+                    "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+                }
+            },
+            "Questions": {
+                "QID1": {
+                    "QuestionType": "TE",
+                    "Selector": "SL",
+                    "SubSelector": "TX",
+                    "QuestionText": "Hello",
+                    "DataExportTag": "Q1",
+                }
+            },
+        }
+    }
+
+
 def _write_cached(root: Path, survey_id: str, payload: dict) -> Path:
     surveys_dir = root / "surveys"
     backups_dir = surveys_dir / "backups"
@@ -264,7 +294,7 @@ def test_all_major_workbook_tables_mark_readonly_columns_gray(tmp_path: Path) ->
 
     wb = load_workbook(xlsx_path)
     checks = [
-        (excel_io.QUESTION_SHEET, "QID", "Text_en_MD"),
+        (excel_io.QUESTION_SHEET, "QID", "text_en"),
         (excel_io.OPTIONS_SHEET, "ChoiceId", "Label_en_MD"),
         (excel_io.SUBITEMS_SHEET, "AnswerId", "Label_en_MD"),
         (excel_io.SBS_COLUMNS_SHEET, "ColumnId", "Label_en_MD"),
@@ -350,3 +380,61 @@ def test_preview_and_apply_include_question_validation_settings(tmp_path: Path) 
         updated.get("result", {}).get("Questions", {}).get("QID1", {}).get("Randomization")
     )
     assert randomization == {"Type": "All", "TotalRandSubset": "2"}
+
+
+def test_questions_short_columns_are_center_aligned_and_html_text_is_italic(tmp_path: Path) -> None:
+    payload = _question_settings_payload()
+    xlsx_path = tmp_path / "SV_TEST.xlsx"
+    excel_io.init_workbook_from_survey("SV_TEST", payload, xlsx_path)
+
+    wb = load_workbook(xlsx_path)
+    ws = wb[excel_io.QUESTION_SHEET]
+    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    idx = {str(name): i + 1 for i, name in enumerate(headers)}
+
+    qid_row = 2
+    ws.cell(row=qid_row, column=idx["ishtml_en"]).value = True
+    excel_io._format_questions_sheet(ws)
+    wb.save(xlsx_path)
+
+    wb = load_workbook(xlsx_path)
+    ws = wb[excel_io.QUESTION_SHEET]
+    assert ws.cell(row=1, column=idx["QID"]).alignment.horizontal == "center"
+    assert ws.cell(row=2, column=idx["ValidationType"]).alignment.horizontal == "center"
+    assert ws.cell(row=2, column=idx["ishtml_en"]).alignment.horizontal == "center"
+    assert ws.cell(row=2, column=idx["text_en"]).font.italic is True
+
+
+def test_init_hides_empty_sbs_and_embedded_sheets(tmp_path: Path) -> None:
+    payload = _minimal_payload_no_embedded_or_sbs()
+    xlsx_path = tmp_path / "SV_MIN.xlsx"
+    excel_io.init_workbook_from_survey("SV_MIN", payload, xlsx_path)
+
+    wb = load_workbook(xlsx_path)
+    assert wb[excel_io.SBS_COLUMNS_SHEET].sheet_state == "hidden"
+    assert wb[excel_io.SBS_COLUMN_ANSWERS_SHEET].sheet_state == "hidden"
+    assert wb[excel_io.EMBEDDED_DATA_SHEET].sheet_state == "hidden"
+
+
+def test_refresh_unhides_sbs_and_embedded_sheets_when_rows_exist(tmp_path: Path) -> None:
+    xlsx_path = tmp_path / "SV_SURFACES.xlsx"
+    excel_io.init_workbook_from_survey(
+        "SV_SURFACES",
+        _minimal_payload_no_embedded_or_sbs(),
+        xlsx_path,
+    )
+    excel_io.init_workbook_from_survey("SV_SURFACES", _all_surfaces_payload(), xlsx_path)
+
+    wb = load_workbook(xlsx_path)
+    assert wb[excel_io.SBS_COLUMNS_SHEET].sheet_state == "visible"
+    assert wb[excel_io.SBS_COLUMN_ANSWERS_SHEET].sheet_state == "visible"
+    assert wb[excel_io.EMBEDDED_DATA_SHEET].sheet_state == "visible"
+
+    sbs_ws = wb[excel_io.SBS_COLUMNS_SHEET]
+    sbs_headers = [cell.value for cell in next(sbs_ws.iter_rows(min_row=1, max_row=1))]
+    sbs_idx = {str(name): i + 1 for i, name in enumerate(sbs_headers)}
+    assert sbs_ws.cell(row=1, column=sbs_idx["QID"]).alignment.horizontal == "center"
+    assert (
+        sbs_ws.cell(row=2, column=sbs_idx["Label_en_IsHTML"]).alignment.horizontal
+        == "center"
+    )

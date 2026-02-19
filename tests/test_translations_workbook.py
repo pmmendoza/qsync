@@ -187,8 +187,8 @@ def test_init_workbook_adds_translation_columns(tmp_path: Path) -> None:
     o_headers = [cell.value for cell in next(wb[OPTIONS_SHEET].iter_rows(max_row=1))]
     s_headers = [cell.value for cell in next(wb[SUBITEMS_SHEET].iter_rows(max_row=1))]
 
-    assert "Text_fr_MD" in q_headers
-    assert "Text_fr_IsHTML" in q_headers
+    assert "text_fr" in q_headers
+    assert "ishtml_fr" in q_headers
     assert "Label_fr_MD" in o_headers
     assert "Label_fr_IsHTML" in o_headers
     assert "Label_fr_MD" in s_headers
@@ -219,7 +219,7 @@ def test_init_workbook_populates_translation_cells(tmp_path: Path) -> None:
     q_ws = wb[QUESTION_SHEET]
     q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
     qid_idx = q_headers.index("QID") + 1
-    text_fr_idx = q_headers.index("Text_fr_MD") + 1
+    text_fr_idx = q_headers.index("text_fr") + 1
     q1_row = None
     q2_row = None
     for row in range(2, q_ws.max_row + 1):
@@ -278,7 +278,7 @@ def test_init_workbook_populates_translation_cells(tmp_path: Path) -> None:
     q_ws = wb[QUESTION_SHEET]
     q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
     qid_idx = q_headers.index("QID") + 1
-    text_fr_idx = q_headers.index("Text_fr_MD") + 1
+    text_fr_idx = q_headers.index("text_fr") + 1
     q1_row = None
     for row in range(2, q_ws.max_row + 1):
         qid = str(q_ws.cell(row=row, column=qid_idx).value or "").strip()
@@ -328,7 +328,7 @@ def test_workbook_doctor_flags_placeholder(tmp_path: Path, monkeypatch) -> None:
     wb = load_workbook(workbook_path)
     ws = wb[QUESTION_SHEET]
     headers = [cell.value for cell in next(ws.iter_rows(max_row=1))]
-    col_idx = headers.index("Text_fr_MD") + 1
+    col_idx = headers.index("text_fr") + 1
     ws.cell(row=2, column=col_idx).value = "Bonjour"
     wb.save(workbook_path)
 
@@ -368,7 +368,7 @@ def test_workbook_doctor_allows_empty_when_base_empty(
     # intentionally empty in the base language.
     q_ws = wb[QUESTION_SHEET]
     q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
-    q_fr_idx = q_headers.index("Text_fr_MD") + 1
+    q_fr_idx = q_headers.index("text_fr") + 1
     q_ws.cell(row=2, column=q_fr_idx).value = ""
 
     o_ws = wb[OPTIONS_SHEET]
@@ -509,7 +509,7 @@ def test_workbook_doctor_warns_large_delta(tmp_path: Path, monkeypatch) -> None:
     wb = load_workbook(workbook_path)
     ws = wb[QUESTION_SHEET]
     headers = [cell.value for cell in next(ws.iter_rows(max_row=1))]
-    col_idx = headers.index("Text_fr_MD") + 1
+    col_idx = headers.index("text_fr") + 1
     ws.cell(row=2, column=col_idx).value = "Court."
     wb.save(workbook_path)
 
@@ -544,9 +544,9 @@ def test_init_preserves_non_empty_cells(tmp_path: Path) -> None:
     en_idx = next(
         q_headers.index(h) + 1
         for h in q_headers
-        if str(h).startswith("Text_") and str(h).endswith("_MD")
+        if str(h).startswith("text_")
     )
-    fr_idx = q_headers.index("Text_fr_MD") + 1
+    fr_idx = q_headers.index("text_fr") + 1
     q_ws.cell(row=2, column=en_idx).value = "Custom EN"
     q_ws.cell(row=2, column=fr_idx).value = "Custom FR"
 
@@ -595,7 +595,7 @@ def test_workbook_doctor_rejects_overlong_values(tmp_path: Path, monkeypatch) ->
     wb = load_workbook(workbook_path)
     ws = wb[QUESTION_SHEET]
     headers = [cell.value for cell in next(ws.iter_rows(max_row=1))]
-    col_idx = headers.index("Text_fr_MD") + 1
+    col_idx = headers.index("text_fr") + 1
     ws.cell(row=2, column=col_idx).value = "x" * (
         QUALTRICS_TRANSLATION_VALUE_MAX_CHARS + 1
     )

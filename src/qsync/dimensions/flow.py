@@ -482,7 +482,7 @@ def push(
         refresh_survey_cache,
         ensure_backup,
     )
-    from ..push_safeguards import enforce_push_safeguards
+    from ..push_safeguards import SafeguardConfig, enforce_push_safeguards
 
     # Load pending changes
     pending = load_pending(survey_id, "flow")
@@ -543,11 +543,14 @@ def push(
 
     # Check push safeguards
     try:
-        enforce_push_safeguards(
+        config = SafeguardConfig(
             survey_id=survey_id,
+            dimension="flow",
             force_live=force_live,
-            interactive=interactive and not auto_yes,
+            force_preview=force_preview,
+            auto_yes=not (interactive and not auto_yes),
         )
+        enforce_push_safeguards(config)
     except Exception as e:
         print(f"[sync:flow] Push safeguard failed: {e}")
         return False

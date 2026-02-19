@@ -312,6 +312,10 @@ def handle_cleanup_embedded_data(args: argparse.Namespace) -> None:
         return
 
     if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit(
+                "[qsync:survey:cleanup-embedded-data] Non-interactive session requires --yes"
+            )
         try:
             from qsync.interactive_menu import confirm
 
@@ -469,7 +473,6 @@ _SURVEY_WRITE_PREFLIGHT_ACTIONS: dict[str, str] = {
 _SURVEY_MASTER_WRITE_PREFLIGHT_ACTIONS: dict[str, str] = {
     "pull": "survey-master-pull",
     "stage": "survey-master-stage",
-    "apply": "survey-master-apply",
     "push": "survey-master-push",
     "rollback": "survey-master-rollback",
 }
@@ -701,7 +704,6 @@ def handle_menu(args: argparse.Namespace) -> None:
                 "handle_push_question": "push-question",
                 "handle_master_pull": "survey-master-pull",
                 "handle_master_stage": "survey-master-stage",
-                "handle_master_apply": "survey-master-apply",
                 "handle_master_push": "survey-master-push",
                 "handle_master_rollback": "survey-master-rollback",
             }
@@ -13310,7 +13312,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "parity-check",
         help="Compare two surveys for parity (flow/QID/tag-lite; optional deep)",
     )
-    p_parity.add_argument("--source-id", "--a", required=True, dest="a", help="Survey ID A (source)")
+    p_parity.add_argument("--source-id", required=True, dest="a", help="Survey ID A (source)")
     p_parity.add_argument("--target-id", "--b", required=True, dest="b", help="Survey ID B (target)")
     p_parity.add_argument(
         "--deep",
@@ -14699,61 +14701,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_master_stage.set_defaults(func=handle_master_stage)
 
-    # master apply
-    p_master_apply = master_subs.add_parser(
-        "apply",
-        help="Legacy: apply changes directly from master CSV to Qualtrics (bypasses pending)",
-    )
-    p_master_apply.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Print per-survey status lines (disables progress bar)",
-    )
-    p_master_apply.add_argument(
-        "--mapping-csv",
-        type=Path,
-        dest="mapping_csv",
-        help="Path to a Qualtrics API field mapping CSV for Survey Master (overrides packaged defaults)",
-    )
-    p_master_apply.add_argument(
-        "--allow-dangerous",
-        action="store_true",
-        help="Allow changes to dangerous fields (isActive, redirect URLs, etc.)",
-    )
-    p_master_apply.add_argument(
-        "--force",
-        action="store_true",
-        help="Override drift detection (proceed even if values changed since last pull)",
-    )
-    p_master_apply.add_argument(
-        "--survey-id",
-        help="Apply only to this specific survey (by SurveyID); useful for testing",
-    )
-    p_master_apply.add_argument(
-        "--skip-drift",
-        action="store_true",
-        help="Skip drift detection (faster but riskier; assumes no concurrent changes)",
-    )
-    p_master_apply.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview what would be applied without actually writing changes",
-    )
-    p_master_apply.add_argument(
-        "--tag",
-        action="append",
-        dest="tags",
-        help="Filter surveys by tag (e.g., --tag component=pre --tag stage=prod)",
-    )
-    p_master_apply.add_argument(
-        "--all-surveys",
-        "--all",
-        dest="all_surveys",
-        action="store_true",
-        help="Include non-focal surveys from qualtrics_master.csv (default: focal-only)",
-    )
-    p_master_apply.set_defaults(func=handle_master_apply)
-
     # master push
     p_master_push = master_subs.add_parser(
         "push",
@@ -14870,7 +14817,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     p_master_rollback.set_defaults(func=handle_master_rollback)
 
     # Help output ordering: keep related commands together.
-    from .argparse_support import hide_subparser_choices, reorder_subparser_choices
+    from .argparse_support import reorder_subparser_choices
 
     reorder_subparser_choices(
         survey_subs,
@@ -14932,4 +14879,3 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "rollback",
         ],
     )
-    hide_subparser_choices(master_subs, ["apply"])

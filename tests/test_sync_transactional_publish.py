@@ -269,6 +269,79 @@ class TestOrchestratedPublish:
                     published=True,
                 )
 
+    def test_publish_auto_yes_activates_by_default(self):
+        """Publish should auto-activate unless explicitly disabled."""
+        dimension_results = {
+            "items": DimensionSyncResult(
+                dimension="items", success=True, applied_changes=True
+            ),
+        }
+
+        with (
+            patch("qsync.qualtrics_client.publish_survey_definition") as mock_publish,
+            patch("qsync.qualtrics_client.set_survey_active") as mock_activate,
+            patch(
+                "qsync.sync_orchestrator._generate_composite_publish_description"
+            ) as mock_desc,
+        ):
+            mock_desc.return_value = "Test description"
+            mock_publish.return_value = {
+                "result": {
+                    "metadata": {
+                        "versionID": "V_TEST",
+                        "versionNumber": 7,
+                        "creationDate": "2026-02-19T00:00:00Z",
+                    }
+                }
+            }
+
+            result = _orchestrated_publish(
+                survey_id="SV_test",
+                survey_ref="Test Survey (SV_test)",
+                dimension_results=dimension_results,
+                skip_publish=False,
+                interactive=False,
+                auto_yes=True,
+            )
+
+        assert result == "Test description"
+        mock_activate.assert_called_once_with(
+            survey_id="SV_test",
+            active=True,
+            context={"origin": "qsync.sync.publish_activate"},
+        )
+
+    def test_publish_can_disable_activation(self):
+        """Activation call is skipped when activate_on_publish is false."""
+        dimension_results = {
+            "items": DimensionSyncResult(
+                dimension="items", success=True, applied_changes=True
+            ),
+        }
+
+        with (
+            patch("qsync.qualtrics_client.publish_survey_definition") as mock_publish,
+            patch("qsync.qualtrics_client.set_survey_active") as mock_activate,
+            patch(
+                "qsync.sync_orchestrator._generate_composite_publish_description"
+            ) as mock_desc,
+        ):
+            mock_desc.return_value = "Test description"
+            mock_publish.return_value = {"result": {"metadata": {}}}
+
+            result = _orchestrated_publish(
+                survey_id="SV_test",
+                survey_ref="Test Survey (SV_test)",
+                dimension_results=dimension_results,
+                skip_publish=False,
+                interactive=False,
+                auto_yes=True,
+                activate_on_publish=False,
+            )
+
+        assert result == "Test description"
+        mock_activate.assert_not_called()
+
     def test_publish_only_after_all_success(self):
         """Test AC: Publish only if ALL dimensions succeeded."""
         all_success = {

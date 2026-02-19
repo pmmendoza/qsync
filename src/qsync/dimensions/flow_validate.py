@@ -8,6 +8,7 @@ This module validates flow structures before push to ensure:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -27,6 +28,7 @@ class ValidationContext:
     survey_id: str
     blocks: dict[str, dict]
     questions: dict[str, dict]
+    flow_qids: set[str]
 
 
 def validate_flow(
@@ -48,12 +50,6 @@ def validate_flow(
     """
     errors: list[str] = []
 
-    ctx = ValidationContext(
-        survey_id=survey_id,
-        blocks=blocks or {},
-        questions=questions or {},
-    )
-
     # Validate root structure
     if not isinstance(flow, dict):
         errors.append("Flow must be a dictionary")
@@ -63,6 +59,16 @@ def validate_flow(
     if not isinstance(flow_list, list):
         errors.append("Flow.Flow must be a list")
         raise FlowValidationError(errors)
+
+    blocks_map: dict[str, dict] = blocks or {}
+    questions_map: dict[str, dict] = questions or {}
+
+    ctx = ValidationContext(
+        survey_id=survey_id,
+        blocks=blocks_map,
+        questions=questions_map,
+        flow_qids=_collect_qids_in_flow(flow_list, blocks_map),
+    )
 
     # Track seen IDs for duplicate detection
     seen_ids: set[str] = set()
@@ -324,11 +330,33 @@ def _validate_branch_logic(
         expr_type = value.get("LogicType", "")
 
         if expr_type == "Question":
-            qid = value.get("QuestionID") or value.get("QuestionIDFromLocator", "")
-            if qid and ctx.questions and qid not in ctx.questions:
+            qid = _extract_logic_qid(value)
+            if not qid:
+                errors.append(
+                    f"{path}: Question condition is missing QuestionID/QuestionIDFromLocator"
+                )
+                continue
+
+            if ctx.questions and qid not in ctx.questions:
                 errors.append(
                     f"{path}: Question '{qid}' referenced in condition does not exist"
                 )
+                continue
+
+            if ctx.flow_qids and qid not in ctx.flow_qids:
+                errors.append(
+                    f"{path}: Question '{qid}' referenced in condition is not in SurveyFlow"
+                )
+                continue
+
+            q = ctx.questions.get(qid) or {}
+            _validate_question_choice_reference(
+                expr=value,
+                qid=qid,
+                question=q,
+                path=path,
+                errors=errors,
+            )
 
 
 def _validate_embedded_data_node(node: dict, path: str, errors: list[str]) -> None:
@@ -427,3 +455,139 @@ def _validate_web_service_node(node: dict, path: str, errors: list[str]) -> None
     if method is not None and method not in ("GET", "POST", "PUT", "DELETE", "PATCH"):
         # Don't error, just warn
         pass
+
+
+def _collect_qids_in_flow(flow_list: list, blocks: dict[str, dict]) -> set[str]:
+    """Collect QIDs from non-trash blocks that appear in SurveyFlow."""
+
+    block_ids: set[str] = set()
+    qids: set[str] = set()
+
+    def walk(nodes: Any) -> None:
+        if isinstance(nodes, list):
+            for node in nodes:
+                walk(node)
+            return
+        if not isinstance(nodes, dict):
+            return
+
+        node_type = str(nodes.get("Type") or "").strip()
+        if node_type in {"Block", "Standard"}:
+            block_id = str(nodes.get("ID") or "").strip()
+            if block_id:
+                block_ids.add(block_id)
+
+        for key in ("Flow", "Then", "Else", "ElseFlow"):
+            child = nodes.get(key)
+            if isinstance(child, (list, dict)):
+                walk(child)
+
+    walk(flow_list)
+
+    for block_id in block_ids:
+        block = blocks.get(block_id) or {}
+        if str(block.get("Type") or "").strip().lower() == "trash":
+            continue
+        elements = block.get("BlockElements") or block.get("Elements") or []
+        if not isinstance(elements, list):
+            continue
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            elem_type = str(elem.get("Type") or "").strip()
+            if elem_type not in {"", "Question"}:
+                continue
+            qid = str(elem.get("QuestionID") or "").strip()
+            if qid:
+                qids.add(qid)
+
+    return qids
+
+
+def _extract_logic_qid(expr: dict) -> str:
+    return str(
+        expr.get("QuestionID") or expr.get("QuestionIDFromLocator") or ""
+    ).strip()
+
+
+def _parse_qid_from_choice_locator(locator: str) -> str:
+    text = str(locator or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"q://([^/]+)/", text, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return str(match.group(1) or "").strip()
+
+
+def _parse_choice_id_from_locator(locator: str) -> str:
+    text = str(locator or "").strip()
+    if not text:
+        return ""
+    patterns = (
+        r"/SelectableChoice/([^/]+)\s*$",
+        r"/Choice/([^/]+)\s*$",
+        r"/Answer/([^/]+)\s*$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return str(match.group(1) or "").strip()
+    return ""
+
+
+def _expression_choice_id(expr: dict) -> str:
+    locator = str(expr.get("ChoiceLocator") or "").strip()
+    if locator:
+        from_locator = _parse_choice_id_from_locator(locator)
+        if from_locator:
+            return from_locator
+
+    right_operand = str(expr.get("RightOperand") or "").strip()
+    if right_operand and "/" not in right_operand:
+        return right_operand
+    return ""
+
+
+def _question_category_ids(question: dict) -> set[str]:
+    ids: set[str] = set()
+    for key in ("Choices", "Answers"):
+        container = question.get(key) or {}
+        if not isinstance(container, dict):
+            continue
+        for item_id in container.keys():
+            item = str(item_id or "").strip()
+            if item:
+                ids.add(item)
+    return ids
+
+
+def _validate_question_choice_reference(
+    *,
+    expr: dict,
+    qid: str,
+    question: dict,
+    path: str,
+    errors: list[str],
+) -> None:
+    operator = str(expr.get("Operator") or "").strip()
+    locator = str(expr.get("ChoiceLocator") or "").strip()
+    choice_id = _expression_choice_id(expr)
+
+    if locator:
+        locator_qid = _parse_qid_from_choice_locator(locator)
+        if locator_qid and locator_qid != qid:
+            errors.append(
+                f"{path}: ChoiceLocator question '{locator_qid}' does not match QuestionID '{qid}'"
+            )
+
+    if operator not in {"Selected", "NotSelected"} and not locator:
+        return
+    if not choice_id:
+        return
+
+    categories = _question_category_ids(question)
+    if categories and choice_id not in categories:
+        errors.append(
+            f"{path}: Question '{qid}' condition references missing category '{choice_id}'"
+        )

@@ -243,13 +243,14 @@ def _parse_randomization_extras_json(
 
 def _question_validation_settings_from_question(question: dict) -> dict[str, object]:
     settings = excel_io._validation_settings_dict(question)
+    force_mode = excel_io._normalize_force_response_mode(settings.get("ForceResponse"))
     normalized: dict[str, object] = {
-        "ForceResponse": excel_io._normalize_force_response_mode(
-            settings.get("ForceResponse")
-        ),
+        "ForceResponse": force_mode,
         "Type": excel_io._normalize_validation_type(settings.get("Type")),
     }
     extras = excel_io._validation_settings_extra_dict(settings)
+    if force_mode == "OFF":
+        extras.pop("ForceResponseType", None)
     for key in sorted(extras.keys()):
         normalized[key] = extras[key]
     return normalized
@@ -258,10 +259,9 @@ def _question_validation_settings_from_question(question: dict) -> dict[str, obj
 def _question_validation_settings_from_row(
     row: excel_io.QuestionRow,
 ) -> dict[str, object]:
+    force_mode = excel_io._normalize_force_response_mode(row.force_response_mode)
     normalized: dict[str, object] = {
-        "ForceResponse": excel_io._normalize_force_response_mode(
-            row.force_response_mode
-        ),
+        "ForceResponse": force_mode,
         "Type": excel_io._normalize_validation_type(row.validation_type),
     }
     extras = _parse_validation_extras_json(
@@ -269,6 +269,8 @@ def _question_validation_settings_from_row(
         qid=row.qid,
         source="workbook",
     )
+    if force_mode == "OFF":
+        extras.pop("ForceResponseType", None)
     for key in sorted(extras.keys()):
         normalized[key] = extras[key]
     return normalized
@@ -322,6 +324,8 @@ def _apply_question_validation_settings(
         if not key_str or key_str in {"ForceResponse", "Type"}:
             continue
         if value is None:
+            continue
+        if force == "OFF" and key_str == "ForceResponseType":
             continue
         payload[key_str] = value
     validation["Settings"] = payload
@@ -1002,15 +1006,7 @@ def _filter_qids_by_column(
     val_norm = (filter_value or "TRUE").strip().lower()
     qids: Set[str] = set()
     for qid, row in questions.items():
-        if filter_column == "InPre":
-            col_val = row.in_pre
-            if bool(col_val) == (val_norm in {"true", "1", "yes", "y"}):
-                qids.add(qid)
-        elif filter_column == "InPost":
-            col_val = row.in_post
-            if bool(col_val) == (val_norm in {"true", "1", "yes", "y"}):
-                qids.add(qid)
-        elif filter_column == "BlockName":
+        if filter_column == "BlockName":
             # Match block names case-insensitively
             col_val = (row.block_name or "").strip().lower()
             if col_val and col_val == val_norm:
@@ -1068,7 +1064,7 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
 
     - Adds/updates a `Dirty` column on relevant sheets.
     - Highlights the edited cell:
-      - Questions: Text_*_MD and question-level settings columns
+      - Questions: text_* and question-level settings columns
       - Options/Subitems/SBS_*: Label_*_MD
       - Embedded_Data: Value
     """
@@ -1252,7 +1248,7 @@ def _annotate_dirty_in_workbook(xlsx_path: Path, changes: List[PreviewChange]) -
         target_cols = [
             str(h)
             for h in headers
-            if str(h).startswith("Text_") and str(h).endswith("_MD")
+            if excel_io._is_question_text_md_header(str(h))
         ]
         for name in (
             "ForceResponseMode",
@@ -1900,7 +1896,7 @@ def preview_changes(
         survey_id: Qualtrics survey ID (e.g., `SV_xxx`).
         xlsx_path: Path to the Excel workbook for the survey.
         filter_column: Optional column on the Questions sheet used to scope QIDs
-            (e.g., `InPre`, `InPost`, `BlockName`).
+            (e.g., `BlockName`).
         filter_value: Optional value for the filter column (defaults to `"TRUE"`).
         include_qids: Optional explicit set of QIDs to include.
         include_tags: Optional explicit set of DataExportTags to include.

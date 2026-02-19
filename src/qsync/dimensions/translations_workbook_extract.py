@@ -7,6 +7,7 @@ from typing import Any, Iterable, Literal
 
 from openpyxl import load_workbook
 
+from .. import excel_io
 from ..errors import QsyncValidationError
 from ..excel_io import (
     OPTIONS_SHEET,
@@ -71,8 +72,15 @@ class TranslationChange:
 def resolve_languages_from_workbook(wb) -> list[str]:
     languages: list[str] = []
     seen: set[str] = set()
+    if QUESTION_SHEET in wb.sheetnames:
+        headers, _ = _iter_sheet_rows(wb[QUESTION_SHEET])
+        for code in excel_io._question_text_lang_columns_from_headers(headers).keys():
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            languages.append(code)
+
     for sheet_name, prefix in (
-        (QUESTION_SHEET, "Text"),
         (OPTIONS_SHEET, "Label"),
         (SUBITEMS_SHEET, "Label"),
         (SBS_COLUMNS_SHEET, "Label"),
@@ -165,8 +173,11 @@ def _extract_question_values(
     suffix = _language_suffix(language)
     if not suffix:
         return []
-    text_col = f"Text_{suffix}_MD"
-    html_col = f"Text_{suffix}_IsHTML"
+    text_col = excel_io._question_text_md_column(language)
+    html_col = excel_io._question_text_ishtml_column(language)
+    if text_col not in headers:
+        text_col = f"Text_{suffix}_MD"
+        html_col = f"Text_{suffix}_IsHTML"
     if text_col not in headers:
         return []
     text_idx = headers.index(text_col)

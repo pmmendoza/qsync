@@ -320,6 +320,10 @@ class TestSyncPendingAction(unittest.TestCase):
                 allow_drift=False,
                 skip_publish=True,
                 prefer_pending=True,
+                allow_structural_delete=False,
+                allow_eos_shared_edit=False,
+                allow_eos_destructive=False,
+                allow_master_dangerous=False,
             ),
         )
         self.assertEqual(
@@ -334,6 +338,10 @@ class TestSyncPendingAction(unittest.TestCase):
                 allow_drift=False,
                 skip_publish=True,
                 prefer_pending=True,
+                allow_structural_delete=False,
+                allow_eos_shared_edit=False,
+                allow_eos_destructive=False,
+                allow_master_dangerous=False,
             ),
         )
         mock_confirm.assert_called_once()
@@ -757,6 +765,120 @@ class TestSyncPendingAction(unittest.TestCase):
         mock_confirm.assert_called_once()
         mock_sync_once.assert_called_once()
         self.assertEqual(mock_sync_once.call_args.args[1], ["edf"])
+
+    def test_prompt_dimension_selection_allows_items_translations_pair(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        changes = orchestrator.SurveyChanges(
+            survey_id="SV_TEST",
+            survey_name="Test Survey",
+            dimensions={
+                "items": DimensionChanges(
+                    "items",
+                    True,
+                    "⚡ Unstaged: 1 change(s)",
+                    {"QID1"},
+                    status_kind="unstaged",
+                    edit_count=1,
+                ),
+                "edf": DimensionChanges("edf", False, "No changes", set()),
+                "js": DimensionChanges(
+                    "js",
+                    True,
+                    "⚡ Unstaged: 1 JS question(s) changed",
+                    {"QID1"},
+                    status_kind="unstaged",
+                    edit_count=1,
+                ),
+                "translations": DimensionChanges(
+                    "translations",
+                    True,
+                    "⚡ Unstaged: 2 change(s)",
+                    {"QID1"},
+                    status_kind="unstaged",
+                    edit_count=2,
+                ),
+                "eos": DimensionChanges("eos", False, "No changes", set()),
+                "flow": DimensionChanges("flow", False, "No changes", set()),
+                "master": DimensionChanges("master", False, "No changes", set()),
+            },
+        )
+
+        with (
+            patch.object(orchestrator, "_is_dimension_staged", return_value=False),
+            patch(
+                "qsync.interactive_menu.select_from_list",
+                return_value="pair:items+translations",
+            ),
+        ):
+            selected = orchestrator.prompt_dimension_selection(changes, interactive=True)
+
+        self.assertEqual(selected, ["items", "translations"])
+
+    def test_qid_mode_selection_allows_items_translations_pair(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        unstaged = {
+            "items": DimensionChanges(
+                "items",
+                True,
+                "⚡ Unstaged: 1 change(s)",
+                {"QID1"},
+                status_kind="unstaged",
+                edit_count=1,
+            ),
+            "js": DimensionChanges(
+                "js",
+                True,
+                "⚡ Unstaged: 1 JS question(s) changed",
+                {"QID1"},
+                status_kind="unstaged",
+                edit_count=1,
+            ),
+            "translations": DimensionChanges(
+                "translations",
+                True,
+                "⚡ Unstaged: 2 change(s)",
+                {"QID1"},
+                status_kind="unstaged",
+                edit_count=2,
+            ),
+        }
+
+        with patch(
+            "qsync.interactive_menu.select_from_list",
+            return_value="items + translations (recommended)",
+        ):
+            selected = orchestrator._prompt_qid_mode_dimension_selection(
+                unstaged,
+                allow_force=True,
+            )
+
+        self.assertEqual(selected, ["items", "translations"])
+
+    def test_conflict_resolution_allows_items_translations_pair(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        conflict = orchestrator.Conflict(
+            qid="QID1",
+            dimensions=["items", "js", "translations"],
+            descriptions={
+                "items": "item wording changed",
+                "js": "question JS changed",
+                "translations": "translation text changed",
+            },
+        )
+
+        with (
+            patch("qsync.rich_support.should_use_rich", return_value=False),
+            patch(
+                "qsync.interactive_menu.select_from_list",
+                return_value="apply_pair:items+translations",
+            ),
+        ):
+            selected = orchestrator.resolve_conflict_interactive(conflict)
+
+        self.assertEqual(selected, ["items", "translations"])
 
     def test_sync_survey_declining_fix_prompt_continues_to_menu_without_dimensions(self):
         import qsync.sync_orchestrator as orchestrator

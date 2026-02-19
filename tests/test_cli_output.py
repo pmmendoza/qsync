@@ -368,7 +368,7 @@ class QsyncCliOutputTests(unittest.TestCase):
 
             buf = io.StringIO()
             with redirect_stdout(buf):
-                main(["--root", str(root), "push", "--yes"])
+                main(["--root", str(root), "items", "push", "--yes"])
 
         out = buf.getvalue()
         mock_prompt.assert_called_once_with(None, allow_all_surveys=False)

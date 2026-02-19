@@ -103,7 +103,7 @@ def test_resolve_stage_languages_prefers_enabled_non_base(monkeypatch, tmp_path)
     workbook_path = tmp_path / "stale.xlsx"
     _write_workbook_with_question_columns(
         workbook_path,
-        ["Text_en_MD", "Text_en_IsHTML", "Text_de_MD", "Text_de_IsHTML"],
+        ["text_en", "ishtml_en", "text_de", "ishtml_de"],
     )
     payload = _survey_payload(base="EN", available=["EN", "FR"])
 
@@ -123,7 +123,7 @@ def test_translations_detect_warns_for_workbook_only_languages(monkeypatch, tmp_
     workbook_path = tmp_path / "workbook.xlsx"
     _write_workbook_with_question_columns(
         workbook_path,
-        ["Text_en_MD", "Text_en_IsHTML"],
+        ["text_en", "ishtml_en"],
     )
 
     monkeypatch.setattr(

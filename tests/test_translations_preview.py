@@ -106,7 +106,7 @@ def test_preview_translations_one_qid_change(tmp_path: Path, monkeypatch) -> Non
     q_ws = wb[QUESTION_SHEET]
     q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
     qid_idx = q_headers.index("QID") + 1
-    text_idx = q_headers.index("Text_fr_MD") + 1
+    text_idx = q_headers.index("text_fr") + 1
     for row in range(2, q_ws.max_row + 1):
         if str(q_ws.cell(row=row, column=qid_idx).value or "").strip() == "QID1":
             q_ws.cell(row=row, column=text_idx).value = "Bonjour"
@@ -129,7 +129,7 @@ def test_preview_translations_multiple_sheets(tmp_path: Path, monkeypatch) -> No
     q_ws = wb[QUESTION_SHEET]
     q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
     qid_idx = q_headers.index("QID") + 1
-    text_idx = q_headers.index("Text_fr_MD") + 1
+    text_idx = q_headers.index("text_fr") + 1
     for row in range(2, q_ws.max_row + 1):
         if str(q_ws.cell(row=row, column=qid_idx).value or "").strip() == "QID2":
             q_ws.cell(row=row, column=text_idx).value = "Bonjour 2"
@@ -173,7 +173,7 @@ def test_preview_translations_missing_language_blocks(
     q_ws = wb[QUESTION_SHEET]
     q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
     qid_idx = q_headers.index("QID") + 1
-    text_idx = q_headers.index("Text_fr_MD") + 1
+    text_idx = q_headers.index("text_fr") + 1
     for row in range(2, q_ws.max_row + 1):
         if str(q_ws.cell(row=row, column=qid_idx).value or "").strip() == "QID2":
             q_ws.cell(row=row, column=text_idx).value = "Bonjour missing"

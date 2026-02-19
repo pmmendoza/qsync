@@ -442,6 +442,9 @@ Usage: qsync sync [-h] [--survey-id SURVEY_ID] [--all]
                   [--refresh-workbooks]
                   [--allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS]
                   [--skip-refresh] [--allow-drift] [--allow-skip-embedded]
+                  [--allow-structural-delete] [--allow-shared-message-edit]
+                  [--allow-destructive-eos] [--allow-master-dangerous]
+                  [--activate-on-publish] [--no-activate-on-publish]
                   [--json]
 
 Options:
@@ -452,7 +455,8 @@ Options:
                         automation)
   --dimensions DIMENSIONS
                         Comma-separated dimensions to sync (default:
-                        auto-detect)
+                        auto-detect). Valid: items, edf, js, translations,
+                        eos, flow, master
   --scope SCOPE         Scope filter expression passed to per-dimension
                         workflows where supported (items/js/translations). See
                         docs/reference/scope-semantics.md.
@@ -464,7 +468,7 @@ Options:
                         --yes: push/discard/abort (default: abort)
   --force-live          Force push despite live responses
   --force-preview       Suppress preview-only response warnings
-  --skip-publish        Skip auto-publish step (no version snapshot)
+  --skip-publish        Skip publish step (do not publish the pushed version)
   --refresh-workbooks   Refresh Excel workbooks after successful sync (runs
                         qsync items pull)
   --allow-externally-managed-qids ALLOW_EXTERNALLY_MANAGED_QIDS
@@ -481,9 +485,35 @@ Options:
   --allow-skip-embedded
                         Allow sync to proceed when Embedded_Data is invalid by
                         skipping embedded defaults
+  --allow-structural-delete
+                        Allow pushing staged item structural deletes during
+                        sync
+  --allow-shared-message-edit
+                        Allow EOS shared-library message edits during sync
+  --allow-destructive-eos
+                        Allow EOS destructive key deletions during sync
+  --allow-master-dangerous
+                        Allow dangerous master-column changes during sync
+  --activate-on-publish
+                        Activate survey immediately after sync publish
+  --no-activate-on-publish
+                        Do not activate survey after sync publish
   --json                Emit machine-readable JSON when blocked by pending
                         changes
 ```
+
+### Sync Policy Defaults (`.env` / Environment)
+
+`qsync sync` supports persistent blocking-rule overrides via env keys (set in shell or workspace `.env`):
+
+- `QSYNC_SYNC_ALLOW_SKIP_EMBEDDED`
+- `QSYNC_SYNC_ALLOW_STRUCTURAL_DELETE`
+- `QSYNC_SYNC_ALLOW_SHARED_MESSAGE_EDIT`
+- `QSYNC_SYNC_ALLOW_DESTRUCTIVE_EOS`
+- `QSYNC_SYNC_ALLOW_MASTER_DANGEROUS`
+- `QSYNC_SYNC_ACTIVATE_ON_PUBLISH`
+
+Supported boolean values: `1/0`, `true/false`, `yes/no`, `on/off` (case-insensitive).
 
 ### CI Output (JSON)
 

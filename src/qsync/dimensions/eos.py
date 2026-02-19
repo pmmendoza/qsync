@@ -248,12 +248,14 @@ def stage(
     scope: Optional[ScopeFilter] = None,
     allow_drift: bool = False,
     interactive: bool = True,
+    allow_shared: bool = False,
+    allow_destructive: bool = False,
 ) -> bool:
     """Stage EOS message changes."""
     apply_eos_messages(
         survey_id=survey_id,
-        allow_shared=False,
-        allow_destructive=False,
+        allow_shared=allow_shared,
+        allow_destructive=allow_destructive,
     )
     return True
 
@@ -267,6 +269,8 @@ def push(
     auto_yes: bool,
     allow_drift: bool,
     skip_publish: bool,
+    allow_shared: bool = False,
+    allow_destructive: bool = False,
 ) -> bool:
     """Push staged EOS message changes."""
     pending = load_pending(survey_id, "eos")
@@ -274,10 +278,14 @@ def push(
         print("[sync:eos] No staged EOS changes found.")
         return True
 
+    if allow_destructive and isinstance(pending.payload, EosPendingPayload):
+        for op in pending.payload.operations or []:
+            op.allow_destructive = True
+
     push_eos_messages(
         survey_id=survey_id,
         record=pending,
-        allow_shared=False,
+        allow_shared=allow_shared,
         yes=True,
         force_live=force_live,
         force_preview=force_preview,

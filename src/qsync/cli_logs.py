@@ -225,9 +225,9 @@ def handle_stats(args: argparse.Namespace) -> None:
         for status, count in sorted_statuses:
             if isinstance(status, int):
                 status_color = success if status < 400 else error
-                print(status_color(f"  {status:10s} {count:5d}"))
+                print(status_color(f"  {status:<10} {count:5d}"))
             else:
-                print(error(f"  {status:10s} {count:5d}"))
+                print(error(f"  {str(status):10s} {count:5d}"))
 
         # Show log file
         log_file = log_reader.get_log_file_path()

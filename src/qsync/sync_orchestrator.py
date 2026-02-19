@@ -16,6 +16,7 @@ Created: 2026-01-22 for QSYNC-HARM-022 (Stage 3: Orchestration)
 
 import json
 import logging
+import os
 import re
 import shlex
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -48,6 +49,44 @@ ISSUE_DETAIL_MENU_THRESHOLD = 10
 
 _EMBEDDED_FIELD_TOKEN_RE = re.compile(r"\$\{e://Field/([^}]+)\}")
 _ISSUE_KEYS_SEEN: set[str] = set()
+
+_SYNC_ALLOW_SKIP_EMBEDDED_ENV = "QSYNC_SYNC_ALLOW_SKIP_EMBEDDED"
+_SYNC_ALLOW_STRUCTURAL_DELETE_ENV = "QSYNC_SYNC_ALLOW_STRUCTURAL_DELETE"
+_SYNC_ALLOW_SHARED_MESSAGE_EDIT_ENV = "QSYNC_SYNC_ALLOW_SHARED_MESSAGE_EDIT"
+_SYNC_ALLOW_DESTRUCTIVE_EOS_ENV = "QSYNC_SYNC_ALLOW_DESTRUCTIVE_EOS"
+_SYNC_ALLOW_MASTER_DANGEROUS_ENV = "QSYNC_SYNC_ALLOW_MASTER_DANGEROUS"
+_SYNC_ACTIVATE_ON_PUBLISH_ENV = "QSYNC_SYNC_ACTIVATE_ON_PUBLISH"
+_BOOL_TRUE_VALUES = {"1", "true", "t", "yes", "y", "on"}
+_BOOL_FALSE_VALUES = {"0", "false", "f", "no", "n", "off"}
+
+
+def _parse_bool_setting(raw: object | None) -> Optional[bool]:
+    if raw is None:
+        return None
+    token = str(raw).strip().lower()
+    if not token:
+        return None
+    if token in _BOOL_TRUE_VALUES:
+        return True
+    if token in _BOOL_FALSE_VALUES:
+        return False
+    return None
+
+
+def _resolve_sync_bool_setting(env_key: str, *, default: bool) -> bool:
+    """Resolve a sync policy bool from shell env or `.env` (best-effort)."""
+    if env_key in os.environ:
+        parsed = _parse_bool_setting(os.environ.get(env_key))
+        return default if parsed is None else parsed
+
+    try:
+        from .config import load_env
+
+        env = load_env()
+    except Exception:
+        env = {}
+    parsed = _parse_bool_setting(env.get(env_key))
+    return default if parsed is None else parsed
 
 
 @dataclass(frozen=True)
@@ -910,6 +949,11 @@ def resolve_conflict_interactive(conflict: Conflict) -> List[str]:
         "✓ Apply all (safe merge: items → edf → js → translations → eos → flow → master)"
     )
     safe_merge_order = ["items", "edf", "js", "translations", "eos", "flow", "master"]
+    pair_value = "apply_pair:items+translations"
+    pair_label = "Apply items + translations (recommended)"
+    can_apply_items_translations_pair = (
+        "items" in conflict.dimensions and "translations" in conflict.dimensions
+    )
 
     while True:
         items: list[MenuItem] = [
@@ -920,6 +964,14 @@ def resolve_conflict_interactive(conflict: Conflict) -> List[str]:
             )
             for dim in conflict.dimensions
         ]
+        if can_apply_items_translations_pair:
+            items.append(
+                MenuItem(
+                    label=pair_label,
+                    value=pair_value,
+                    enabled=True,
+                )
+            )
         items.append(MenuItem.separator("─" * 40))
         items.append(MenuItem(label=safe_merge_label, value="apply_all", enabled=True))
         items.append(MenuItem(label="🔍 View details", value="details", enabled=True))
@@ -937,6 +989,8 @@ def resolve_conflict_interactive(conflict: Conflict) -> List[str]:
             continue
         if selection == "apply_all":
             return [d for d in safe_merge_order if d in conflict.dimensions]
+        if selection == pair_value:
+            return [d for d in ("items", "translations") if d in conflict.dimensions]
         if isinstance(selection, str) and selection.startswith("apply:"):
             return [selection.split(":", 1)[1]]
 
@@ -1505,15 +1559,26 @@ def _prompt_qid_mode_dimension_selection(
     changed = [
         d for d in dims if unstaged[d].has_changes and not unstaged[d].error_detail
     ]
+    pair_label = "items + translations (recommended)"
+    can_apply_items_translations_pair = (
+        "items" in changed and "translations" in changed
+    )
 
     def build_force_choices() -> List[str]:
-        return [
+        choices = [
             f"items ({count_label(unstaged['items'])})",
             f"js ({count_label(unstaged['js'])})",
             f"translations ({count_label(unstaged['translations'])})",
-            "all (items/js/translations)",
-            "↩ Cancel",
         ]
+        if can_apply_items_translations_pair:
+            choices.append(pair_label)
+        choices.extend(
+            [
+                "all (items/js/translations)",
+                "↩ Cancel",
+            ]
+        )
+        return choices
 
     if not changed:
         print(
@@ -1527,11 +1592,15 @@ def _prompt_qid_mode_dimension_selection(
         )
         if selection is None or "Cancel" in selection:
             return []
+        if selection == pair_label:
+            return ["items", "translations"]
         if selection.startswith("all"):
             return dims
         return [selection.split(" ", 1)[0]]
 
     changed_choices = [f"{d} ({count_label(unstaged[d])})" for d in changed]
+    if can_apply_items_translations_pair:
+        changed_choices.append(pair_label)
     choices: List[str] = []
     choices.extend(changed_choices)
     if len(changed) > 1:
@@ -1547,6 +1616,8 @@ def _prompt_qid_mode_dimension_selection(
     )
     if selection is None or "Cancel" in selection:
         return []
+    if selection == pair_label:
+        return ["items", "translations"]
     if selection.startswith("all changed"):
         return changed
     if selection.startswith("Show all"):
@@ -1556,6 +1627,8 @@ def _prompt_qid_mode_dimension_selection(
         )
         if selection2 is None or "Cancel" in selection2:
             return []
+        if selection2 == pair_label:
+            return ["items", "translations"]
         if selection2.startswith("all"):
             return dims
         return [selection2.split(" ", 1)[0]]
@@ -1778,6 +1851,14 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
 
     staged_dims = [dim for dim in changed if _is_dimension_staged(changes.survey_id, dim)]
     staged_label = ", ".join(staged_dims)
+    pair_value = "pair:items+translations"
+    pair_label = "✓ items + translations together"
+    can_apply_items_translations_pair = (
+        "items" in changed
+        and "translations" in changed
+        and not bool(changes.dimensions["items"].error_detail)
+        and not bool(changes.dimensions["translations"].error_detail)
+    )
 
     fixable_issues = [
         dim
@@ -1836,6 +1917,15 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
                 )
             )
 
+        if can_apply_items_translations_pair:
+            items.append(
+                MenuItem(
+                    label=pair_label,
+                    value=pair_value,
+                    enabled=True,
+                )
+            )
+
         items.append(MenuItem.separator("─" * 60))
         items.append(MenuItem(label="✓ All changed dimensions", value="all", enabled=True))
         items.append(MenuItem(label="🔍 View details", value="details", enabled=True))
@@ -1877,6 +1967,8 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
         if selection == "details":
             _print_details()
             continue
+        if selection == pair_value:
+            return ["items", "translations"]
         if selection == "all":
             return changed
         if selection == "clear":
@@ -1922,6 +2014,8 @@ def stage_dimension(
     ignore_embedded: bool = False,
     allow_drift: bool = False,
     interactive: bool = True,
+    allow_eos_shared_edit: bool = False,
+    allow_eos_destructive: bool = False,
 ) -> bool:
     """Stage changes for a dimension without pushing.
 
@@ -1973,6 +2067,8 @@ def stage_dimension(
                 scope=scope,
                 allow_drift=allow_drift,
                 interactive=interactive,
+                allow_shared=allow_eos_shared_edit,
+                allow_destructive=allow_eos_destructive,
             )
 
         if dimension == "flow":
@@ -2016,6 +2112,10 @@ def sync_dimension(
     scope: Optional[ScopeFilter] = None,
     prefer_pending: bool | None = None,
     ignore_embedded: bool = False,
+    allow_structural_delete: bool = False,
+    allow_eos_shared_edit: bool = False,
+    allow_eos_destructive: bool = False,
+    allow_master_dangerous: bool = False,
 ) -> DimensionSyncResult:
     """Sync a single dimension for a survey (push staged changes).
 
@@ -2136,6 +2236,7 @@ def sync_dimension(
                 skip_publish=skip_publish,
                 prefer_pending=prefer_pending,
                 ignore_embedded=True if not ignore_embedded else ignore_embedded,
+                allow_delete=allow_structural_delete,
             )
 
         elif dimension == "edf":
@@ -2184,6 +2285,8 @@ def sync_dimension(
                 auto_yes=auto_yes,
                 allow_drift=allow_drift,
                 skip_publish=skip_publish,
+                allow_shared=allow_eos_shared_edit,
+                allow_destructive=allow_eos_destructive,
             )
 
         elif dimension == "flow":
@@ -2191,6 +2294,7 @@ def sync_dimension(
                 survey_id,
                 interactive=interactive,
                 force_live=force_live,
+                force_preview=force_preview,
                 auto_yes=auto_yes,
                 allow_drift=allow_drift,
                 skip_publish=skip_publish,
@@ -2230,6 +2334,7 @@ def sync_dimension(
                     force_live=force_live,
                     force_preview=force_preview,
                     auto_yes=auto_yes,
+                    allow_dangerous=allow_master_dangerous,
                 )
                 errors = list(push_result.get("errors") or [])
                 surveys_failed = int(push_result.get("surveys_failed") or 0)
@@ -3282,6 +3387,11 @@ def _resolve_staged_changes_interactive(
     skip_publish: bool,
     scope: Optional[ScopeFilter] = None,
     per_dimension: bool = False,
+    allow_structural_delete: bool = False,
+    allow_eos_shared_edit: bool = False,
+    allow_eos_destructive: bool = False,
+    allow_master_dangerous: bool = False,
+    activate_on_publish: bool = True,
 ) -> bool:
     from .interactive_menu import confirm, select_from_list
     from .qualtrics_client import refresh_survey_cache
@@ -3409,6 +3519,10 @@ def _resolve_staged_changes_interactive(
                     allow_drift=allow_drift,
                     skip_publish=True,  # Suppress per-dimension publish
                     prefer_pending=True,
+                    allow_structural_delete=allow_structural_delete,
+                    allow_eos_shared_edit=allow_eos_shared_edit,
+                    allow_eos_destructive=allow_eos_destructive,
+                    allow_master_dangerous=allow_master_dangerous,
                 )
 
             force_live_retry_dims = [
@@ -3441,6 +3555,10 @@ def _resolve_staged_changes_interactive(
                             allow_drift=allow_drift,
                             skip_publish=True,  # Suppress per-dimension publish
                             prefer_pending=True,
+                            allow_structural_delete=allow_structural_delete,
+                            allow_eos_shared_edit=allow_eos_shared_edit,
+                            allow_eos_destructive=allow_eos_destructive,
+                            allow_master_dangerous=allow_master_dangerous,
                         )
 
             # Display push report
@@ -3454,6 +3572,7 @@ def _resolve_staged_changes_interactive(
                 skip_publish=skip_publish,
                 interactive=True,
                 auto_yes=auto_yes,
+                activate_on_publish=activate_on_publish,
             )
 
             return True
@@ -3605,6 +3724,7 @@ def _orchestrated_publish(
     skip_publish: bool,
     interactive: bool,
     auto_yes: bool,
+    activate_on_publish: bool = True,
 ) -> Optional[str]:
     """Perform single orchestrated publish after all dimensions have pushed.
 
@@ -3619,8 +3739,10 @@ def _orchestrated_publish(
     Returns:
         Published version description, or None if skipped
     """
+    from datetime import datetime, timezone
+
     from .terminal_output import info, success, warn
-    from .qualtrics_client import publish_survey_definition
+    from .qualtrics_client import publish_survey_definition, set_survey_active
 
     if skip_publish:
         info("[sync:publish]", "Publishing skipped (--skip-publish)")
@@ -3646,12 +3768,12 @@ def _orchestrated_publish(
     elif interactive:
         from .interactive_menu import confirm
 
-        print(f"\n{Colors.BLUE}═══ Publish Survey ═══{Colors.RESET}")
+        print(f"\n{Colors.BLUE}═══ Publish Survey Version ═══{Colors.RESET}")
         print(f"{Colors.DIM}Survey:{Colors.RESET} {survey_ref}")
-        print(f"{Colors.DIM}Default description:{Colors.RESET} {default_desc}")
+        print(f"{Colors.DIM}Default version label:{Colors.RESET} {default_desc}")
         print()
 
-        should_publish = confirm(message="Create version snapshot?", default=True)
+        should_publish = confirm(message="Publish this version now?", default=True)
 
         if not should_publish:
             info("[sync:publish]", "Publishing skipped by user")
@@ -3682,12 +3804,59 @@ def _orchestrated_publish(
 
     # Publish
     try:
-        publish_survey_definition(
+        published_at_fallback = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        publish_response = publish_survey_definition(
             survey_id=survey_id,
             description=description,
             published=True,
         )
-        success("[sync:publish]", f"✓ Published: {description}")
+
+        metadata = (publish_response.get("result") or {}).get("metadata") or {}
+        version_id = str(metadata.get("versionID") or "").strip() or None
+        version_number_raw = metadata.get("versionNumber")
+        version_number = str(version_number_raw).strip() if version_number_raw is not None else None
+        created_at = str(metadata.get("creationDate") or "").strip() or published_at_fallback
+
+        version_parts: list[str] = []
+        if version_number:
+            version_parts.append(f"version #{version_number}")
+        if version_id:
+            version_parts.append(f"id={version_id}")
+        version_suffix = f" ({', '.join(version_parts)})" if version_parts else ""
+        success(
+            "[sync:publish]",
+            f"✓ Published version '{description}'{version_suffix} at {created_at}",
+        )
+
+        if activate_on_publish:
+            activated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            try:
+                activate_response = set_survey_active(
+                    survey_id=survey_id,
+                    active=True,
+                    context={"origin": "qsync.sync.publish_activate"},
+                )
+                active_result = (activate_response.get("result") or {}).get("isActive")
+                if active_result is False:
+                    warn(
+                        "[sync:publish]",
+                        "Publish succeeded but activation response reported isActive=false.",
+                    )
+                else:
+                    success(
+                        "[sync:publish]",
+                        f"✓ Activated survey (isActive=true) at {activated_at}",
+                    )
+            except Exception as activate_exc:
+                warn(
+                    "[sync:publish]",
+                    f"Publish succeeded but activation failed: {activate_exc}",
+                )
+                warn(
+                    "[sync:publish]",
+                    f"Run: qsync survey activate --survey-id {survey_id}",
+                )
+
         return description
     except Exception as e:
         warn("[sync:publish]", f"Failed to publish: {e}")
@@ -3709,6 +3878,11 @@ def _sync_dimensions_once(
     ignore_embedded: bool = False,
     allow_skip_embedded: bool = False,
     prefer_pending: bool | None = None,
+    allow_structural_delete: bool = False,
+    allow_eos_shared_edit: bool = False,
+    allow_eos_destructive: bool = False,
+    allow_master_dangerous: bool = False,
+    activate_on_publish: bool = True,
 ) -> Optional[SurveySyncSummary]:
     from .survey_ref import format_survey_ref
 
@@ -3903,6 +4077,8 @@ def _sync_dimensions_once(
                     ignore_embedded=skip_embedded if dim == "items" else False,
                     allow_drift=allow_drift,
                     interactive=interactive and not auto_yes,
+                    allow_eos_shared_edit=allow_eos_shared_edit,
+                    allow_eos_destructive=allow_eos_destructive,
                 )
 
                 if not stage_success:
@@ -3948,6 +4124,8 @@ def _sync_dimensions_once(
                     ignore_embedded=skip_embedded if dim == "items" else False,
                     allow_drift=allow_drift,
                     interactive=False,
+                    allow_eos_shared_edit=allow_eos_shared_edit,
+                    allow_eos_destructive=allow_eos_destructive,
                 )
                 if not stage_success:
                     print(f"{Colors.RED}✗ Failed to stage {dim}{Colors.RESET}")
@@ -4077,6 +4255,10 @@ def _sync_dimensions_once(
                 scope=scope,
                 prefer_pending=prefer_pending,
                 ignore_embedded=skip_embedded if dimension == "items" else False,
+                allow_structural_delete=allow_structural_delete,
+                allow_eos_shared_edit=allow_eos_shared_edit,
+                allow_eos_destructive=allow_eos_destructive,
+                allow_master_dangerous=allow_master_dangerous,
             )
         except Exception as e:
             dimension_results[dimension] = DimensionSyncResult(
@@ -4094,6 +4276,7 @@ def _sync_dimensions_once(
         skip_publish=skip_publish,
         interactive=interactive,
         auto_yes=auto_yes,
+        activate_on_publish=activate_on_publish,
     )
 
     record = _get_inventory_cached(survey_id)
@@ -4120,6 +4303,11 @@ def sync_survey(
     refresh_workbooks: bool = False,
     allow_drift: bool = False,
     allow_skip_embedded: bool = False,
+    allow_structural_delete: bool = False,
+    allow_shared_message_edit: bool = False,
+    allow_destructive_eos: bool = False,
+    allow_master_dangerous: bool = False,
+    activate_on_publish: Optional[bool] = None,
     json_output: bool = False,
     fix: Optional[str] = None,
 ) -> Optional[SurveySyncSummary]:
@@ -4139,6 +4327,11 @@ def sync_survey(
         refresh_workbooks: Refresh Excel workbooks after successful sync
         allow_drift: Allow drift during sync
         allow_skip_embedded: Allow skip-embedded pushes when EDF is invalid
+        allow_structural_delete: Allow pushing staged item structural deletes during sync
+        allow_shared_message_edit: Allow EOS shared-library message edits during sync
+        allow_destructive_eos: Allow EOS destructive key deletions during sync
+        allow_master_dangerous: Allow dangerous master-column changes during sync
+        activate_on_publish: Activate survey immediately after successful publish
         json_output: Emit machine-readable JSON for blocked runs
         fix: Optional non-interactive/interactive autofix selector:
              safe|all|all-safe, or type:<ISSUE_TYPE>
@@ -4153,6 +4346,49 @@ def sync_survey(
     summary_name: Optional[str] = None
 
     from .rich_support import rich_status
+
+    allow_skip_embedded = bool(
+        allow_skip_embedded
+        or _resolve_sync_bool_setting(
+            _SYNC_ALLOW_SKIP_EMBEDDED_ENV,
+            default=False,
+        )
+    )
+    allow_structural_delete = bool(
+        allow_structural_delete
+        or _resolve_sync_bool_setting(
+            _SYNC_ALLOW_STRUCTURAL_DELETE_ENV,
+            default=False,
+        )
+    )
+    allow_shared_message_edit = bool(
+        allow_shared_message_edit
+        or _resolve_sync_bool_setting(
+            _SYNC_ALLOW_SHARED_MESSAGE_EDIT_ENV,
+            default=False,
+        )
+    )
+    allow_destructive_eos = bool(
+        allow_destructive_eos
+        or _resolve_sync_bool_setting(
+            _SYNC_ALLOW_DESTRUCTIVE_EOS_ENV,
+            default=False,
+        )
+    )
+    allow_master_dangerous = bool(
+        allow_master_dangerous
+        or _resolve_sync_bool_setting(
+            _SYNC_ALLOW_MASTER_DANGEROUS_ENV,
+            default=False,
+        )
+    )
+    if activate_on_publish is None:
+        activate_on_publish = _resolve_sync_bool_setting(
+            _SYNC_ACTIVATE_ON_PUBLISH_ENV,
+            default=True,
+        )
+    else:
+        activate_on_publish = bool(activate_on_publish)
 
     # Detect staged changes
     with rich_status("Detecting staged changes..."):
@@ -4305,6 +4541,11 @@ def sync_survey(
                 per_dimension=per_dimension,
                 allow_skip_embedded=allow_skip_embedded,
                 prefer_pending=True,
+                allow_structural_delete=allow_structural_delete,
+                allow_eos_shared_edit=allow_shared_message_edit,
+                allow_eos_destructive=allow_destructive_eos,
+                allow_master_dangerous=allow_master_dangerous,
+                activate_on_publish=bool(activate_on_publish),
             )
         else:
             raise SystemExit(f"Unknown pending action: {pending_action}")
@@ -4327,6 +4568,11 @@ def sync_survey(
             scope=scope,
             per_dimension=per_dimension,
             allow_skip_embedded=allow_skip_embedded,
+            allow_structural_delete=allow_structural_delete,
+            allow_eos_shared_edit=allow_shared_message_edit,
+            allow_eos_destructive=allow_destructive_eos,
+            allow_master_dangerous=allow_master_dangerous,
+            activate_on_publish=bool(activate_on_publish),
         )
 
     # Interactive overview loop
@@ -4371,6 +4617,11 @@ def sync_survey(
                 skip_publish=skip_publish,
                 scope=scope,
                 per_dimension=per_dimension,
+                allow_structural_delete=allow_structural_delete,
+                allow_eos_shared_edit=allow_shared_message_edit,
+                allow_eos_destructive=allow_destructive_eos,
+                allow_master_dangerous=allow_master_dangerous,
+                activate_on_publish=bool(activate_on_publish),
             )
             if not resolved:
                 break
@@ -4389,6 +4640,11 @@ def sync_survey(
                 scope=scope,
                 per_dimension=per_dimension,
                 allow_skip_embedded=allow_skip_embedded,
+                allow_structural_delete=allow_structural_delete,
+                allow_eos_shared_edit=allow_shared_message_edit,
+                allow_eos_destructive=allow_destructive_eos,
+                allow_master_dangerous=allow_master_dangerous,
+                activate_on_publish=bool(activate_on_publish),
             )
             if summary:
                 dimension_results.update(summary.dimension_results)
@@ -4598,6 +4854,11 @@ def sync_survey(
                         per_dimension=per_dimension,
                         ignore_embedded=True,
                         allow_skip_embedded=allow_skip_embedded,
+                        allow_structural_delete=allow_structural_delete,
+                        allow_eos_shared_edit=allow_shared_message_edit,
+                        allow_eos_destructive=allow_destructive_eos,
+                        allow_master_dangerous=allow_master_dangerous,
+                        activate_on_publish=bool(activate_on_publish),
                     )
                     if summary:
                         dimension_results.update(summary.dimension_results)
@@ -4636,6 +4897,11 @@ def sync_survey(
                 per_dimension=per_dimension,
                 ignore_embedded=True,
                 allow_skip_embedded=allow_skip_embedded,
+                allow_structural_delete=allow_structural_delete,
+                allow_eos_shared_edit=allow_shared_message_edit,
+                allow_eos_destructive=allow_destructive_eos,
+                allow_master_dangerous=allow_master_dangerous,
+                activate_on_publish=bool(activate_on_publish),
             )
             if summary:
                 dimension_results.update(summary.dimension_results)
@@ -4662,6 +4928,11 @@ def sync_survey(
             scope=scope,
             per_dimension=per_dimension,
             allow_skip_embedded=allow_skip_embedded,
+            allow_structural_delete=allow_structural_delete,
+            allow_eos_shared_edit=allow_shared_message_edit,
+            allow_eos_destructive=allow_destructive_eos,
+            allow_master_dangerous=allow_master_dangerous,
+            activate_on_publish=bool(activate_on_publish),
         )
         if summary:
             dimension_results.update(summary.dimension_results)
@@ -4739,6 +5010,11 @@ def sync_focal_surveys(
     refresh_workbooks: bool = False,
     allow_drift: bool = False,
     allow_skip_embedded: bool = False,
+    allow_structural_delete: bool = False,
+    allow_shared_message_edit: bool = False,
+    allow_destructive_eos: bool = False,
+    allow_master_dangerous: bool = False,
+    activate_on_publish: Optional[bool] = None,
     json_output: bool = False,
     fix: Optional[str] = None,
 ) -> bool:
@@ -4757,6 +5033,11 @@ def sync_focal_surveys(
         refresh_workbooks: Refresh Excel workbooks after successful sync
         allow_drift: Allow drift during sync
         allow_skip_embedded: Allow skip-embedded pushes when EDF is invalid
+        allow_structural_delete: Allow pushing staged item structural deletes during sync
+        allow_shared_message_edit: Allow EOS shared-library message edits during sync
+        allow_destructive_eos: Allow EOS destructive key deletions during sync
+        allow_master_dangerous: Allow dangerous master-column changes during sync
+        activate_on_publish: Activate survey immediately after successful publish
         json_output: Emit machine-readable JSON for blocked runs
         fix: Optional non-interactive/interactive autofix selector:
              safe|all|all-safe, or type:<ISSUE_TYPE>
@@ -5331,6 +5612,11 @@ def sync_focal_surveys(
                     refresh_workbooks=refresh_workbooks,
                     allow_drift=allow_drift,
                     allow_skip_embedded=allow_skip_embedded,
+                    allow_structural_delete=allow_structural_delete,
+                    allow_shared_message_edit=allow_shared_message_edit,
+                    allow_destructive_eos=allow_destructive_eos,
+                    allow_master_dangerous=allow_master_dangerous,
+                    activate_on_publish=activate_on_publish,
                     json_output=json_output,
                 )
                 if summary:
@@ -5353,6 +5639,11 @@ def sync_focal_surveys(
                 refresh_workbooks=refresh_workbooks,
                 allow_drift=allow_drift,
                 allow_skip_embedded=allow_skip_embedded,
+                allow_structural_delete=allow_structural_delete,
+                allow_shared_message_edit=allow_shared_message_edit,
+                allow_destructive_eos=allow_destructive_eos,
+                allow_master_dangerous=allow_master_dangerous,
+                activate_on_publish=activate_on_publish,
                 json_output=json_output,
             )
             if summary:

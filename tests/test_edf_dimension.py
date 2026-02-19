@@ -102,6 +102,14 @@ def _remove_embedded_row(xlsx_path: Path, field: str) -> None:
 
 
 def _find_base_col(headers, prefix):
+    if prefix == "Text":
+        lang_map = excel_io._question_text_lang_columns_from_headers(headers)
+        if "EN" in lang_map:
+            return headers.index(lang_map["EN"][0])
+        if lang_map:
+            return headers.index(next(iter(lang_map.values()))[0])
+        if "text_en" in headers:
+            return headers.index("text_en")
     for h in headers:
         if str(h).startswith(f"{prefix}_") and str(h).endswith("_MD"):
             return headers.index(h)
@@ -130,7 +138,7 @@ def _update_question_translation_text(
     headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
     idx = {name: i for i, name in enumerate(headers)}
     qid_idx = idx["QID"]
-    col_name = f"Text_{str(language).lower()}_MD"
+    col_name = f"text_{str(language).lower()}"
     if col_name not in idx:
         raise KeyError(f"Missing translation column: {col_name}")
     text_idx = idx[col_name]
@@ -162,7 +170,7 @@ def _read_question_translation_text(
     headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
     idx = {name: i for i, name in enumerate(headers)}
     qid_idx = idx["QID"]
-    col_name = f"Text_{str(language).lower()}_MD"
+    col_name = f"text_{str(language).lower()}"
     if col_name not in idx:
         raise KeyError(f"Missing translation column: {col_name}")
     text_idx = idx[col_name]

@@ -137,7 +137,7 @@ def _resolve_translation_languages(
     Precedence (highest to lowest):
     1. Explicit --languages flag
     2. Staged/pending translations record
-    3. Workbook columns present (Text_XX_MD, Label_XX_MD)
+    3. Workbook columns present (text_xx, Label_XX_MD)
     4. Enabled languages in Qualtrics (API)
 
     When sources disagree and interactive=True, prompts user for resolution.
@@ -1178,7 +1178,10 @@ def _collect_workbook_keys(wb, language: str) -> set[tuple[str, str, str | None]
     if excel_io.QUESTION_SHEET in wb.sheetnames:
         ws = wb[excel_io.QUESTION_SHEET]
         headers, data_rows = excel_io._iter_sheet_rows(ws)
-        if headers and "QID" in headers and f"Text_{suffix}_MD" in headers:
+        question_lang_headers = (
+            excel_io._question_text_lang_columns_from_headers(headers) if headers else {}
+        )
+        if headers and "QID" in headers and language in question_lang_headers:
             qid_idx = headers.index("QID")
             for row in data_rows:
                 qid_val = row[qid_idx].value if qid_idx < len(row) else None

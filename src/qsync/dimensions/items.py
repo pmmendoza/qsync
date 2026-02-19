@@ -349,6 +349,7 @@ def push(
     skip_publish: bool,
     prefer_pending: bool | None = None,
     ignore_embedded: bool = False,
+    allow_delete: bool = False,
 ) -> bool:
     """Push staged items changes (re-stage from Excel if needed)."""
     resolver = WorkbookResolver()
@@ -375,11 +376,11 @@ def push(
         structural_ops = list(getattr(pending.payload, "structural_ops", None) or [])
     if structural_ops:
         # Structural ops are staged via `qsync items edit` and must not be silently cleared.
-        # Push add/edit ops via sync; refuse delete ops here (requires explicit allow flag in `qsync items push`).
+        # Delete ops require explicit opt-in so sync users do not accidentally remove options/subitems.
         has_deletes = any(
             op.get("op") in {"choice_remove", "answer_remove"} for op in structural_ops
         )
-        if has_deletes:
+        if has_deletes and not allow_delete:
             print(
                 "[sync:items] Structural deletes are staged. "
                 "Run `qsync items push --survey-id ... --allow-delete` to proceed."
@@ -399,7 +400,7 @@ def push(
             structural_ops=structural_ops,
             push_journal=dict(getattr(pending.payload, "push_journal", {}) or {}),
             interactive=interactive and not auto_yes,
-            allow_delete=False,
+            allow_delete=allow_delete,
             force_live=force_live,
             force_preview=force_preview,
             publish=(not skip_publish)

@@ -21,6 +21,7 @@ the SBS sheets.
 
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import dataclass
 import json
 import re
@@ -68,6 +69,23 @@ FLOW_METADATA_COLUMNS = (
     "QuestionOrder",
     "QuestionOrderInBlock",
 )
+CENTER_ALIGN_HEADER_NAMES = {
+    "QID",
+    "BlockName",
+    "BlockID",
+    "BlockOrder",
+    "QuestionOrder",
+    "QuestionOrderInBlock",
+    "QuestionType",
+    "DataExportTag",
+    "ExportTag",
+    "RequiredResponse",
+    "ForceResponseMode",
+    "ValidationType",
+    "ValidationSettingsJSON",
+    "RandomizationType",
+    "RandomizationSettingsJSON",
+}
 _QUESTION_VALIDATION_CORE_KEYS = {"ForceResponse", "Type"}
 _QUESTION_VALIDATION_TYPE_DEFAULT = "None"
 _QUESTION_RANDOMIZATION_CORE_KEYS = {"Type"}
@@ -286,6 +304,101 @@ def _translation_columns(
     return columns
 
 
+def _question_text_md_column(lang: str) -> str:
+    suffix = _language_suffix(lang) or "en"
+    return f"text_{suffix}"
+
+
+def _question_text_ishtml_column(lang: str) -> str:
+    suffix = _language_suffix(lang) or "en"
+    return f"ishtml_{suffix}"
+
+
+def _question_text_columns(
+    languages: Sequence[str] | None,
+    *,
+    base_language: str | None = None,
+) -> List[str]:
+    columns: List[str] = []
+    for lang in _ordered_languages(languages, base_language=base_language):
+        columns.append(_question_text_md_column(lang))
+        columns.append(_question_text_ishtml_column(lang))
+    return columns
+
+
+def _question_text_legacy_md_column(lang: str) -> str:
+    suffix = _language_suffix(lang) or "en"
+    return f"Text_{suffix}_MD"
+
+
+def _question_text_legacy_ishtml_column(lang: str) -> str:
+    suffix = _language_suffix(lang) or "en"
+    return f"Text_{suffix}_IsHTML"
+
+
+def _question_text_lang_columns_from_headers(
+    headers: Sequence[object],
+    *,
+    include_legacy: bool = True,
+) -> dict[str, tuple[str, str | None]]:
+    """Map language code -> (text col, ishtml col) for Questions sheet headers."""
+
+    header_names = [str(name or "") for name in headers]
+    header_set = set(header_names)
+    mapping: dict[str, tuple[str, str | None]] = {}
+
+    # Canonical headers.
+    for header in header_names:
+        if not header.startswith("text_"):
+            continue
+        suffix = header[len("text_") :].strip()
+        if not suffix:
+            continue
+        lang_code = _language_from_suffix(suffix)
+        html_name = f"ishtml_{suffix}"
+        mapping[lang_code] = (header, html_name if html_name in header_set else None)
+
+    # Backward compatibility with legacy Text_*_MD / Text_*_IsHTML headers.
+    if include_legacy:
+        for header in header_names:
+            if not header.startswith("Text_") or not header.endswith("_MD"):
+                continue
+            suffix = header[len("Text_") : -len("_MD")]
+            lang_code = _language_from_suffix(suffix)
+            if lang_code in mapping:
+                continue
+            html_name = f"Text_{suffix}_IsHTML"
+            mapping[lang_code] = (
+                header,
+                html_name if html_name in header_set else None,
+            )
+    return mapping
+
+
+def _is_question_text_md_header(header: str) -> bool:
+    name = str(header or "")
+    return name.startswith("text_") or (
+        name.startswith("Text_") and name.endswith("_MD")
+    )
+
+
+def _is_question_text_html_header(header: str) -> bool:
+    name = str(header or "")
+    return name.startswith("ishtml_") or (
+        name.startswith("Text_") and name.endswith("_IsHTML")
+    )
+
+
+def _question_text_md_header_from_html_header(header: str) -> str:
+    name = str(header or "")
+    if name.startswith("ishtml_"):
+        return f"text_{name[len('ishtml_'):]}"
+    if name.startswith("Text_") and name.endswith("_IsHTML"):
+        suffix = name[len("Text_") : -len("_IsHTML")]
+        return f"Text_{suffix}_MD"
+    return ""
+
+
 def _metadata_columns(keys: Sequence[str] | None = None) -> List[str]:
     columns: List[str] = []
     for key in keys or SURVEY_METADATA_KEYS:
@@ -298,8 +411,8 @@ def _column_guide(base_language: str = "EN") -> dict:
     """Build the column guide dict, using *base_language* for the base text columns."""
     base_suffix = _language_suffix(base_language) or "en"
     base_upper = _normalize_language_code(base_language) or "EN"
-    text_md = f"Text_{base_suffix}_MD"
-    text_html = f"Text_{base_suffix}_IsHTML"
+    text_md = _question_text_md_column(base_language)
+    text_html = _question_text_ishtml_column(base_language)
     label_md = f"Label_{base_suffix}_MD"
     label_html = f"Label_{base_suffix}_IsHTML"
     return {
@@ -363,8 +476,6 @@ def _column_guide(base_language: str = "EN") -> dict:
                 "System",
                 "Read-only preview of subitems / statements.",
             ),
-            ("InPre", "Flag", "TRUE if included in the pre-treatment survey."),
-            ("InPost", "Flag", "TRUE if included in the post-treatment survey."),
             (
                 "Dirty",
                 "System",
@@ -679,10 +790,12 @@ def _update_instructions_sheet(
         suffix = _language_suffix(lang)
         if not suffix:
             continue
+        text_md_col = _question_text_md_column(lang)
+        text_html_col = _question_text_ishtml_column(lang)
         ws.append(
             [
                 QUESTION_SHEET,
-                f"Text_{suffix}_MD",
+                text_md_col,
                 "Editable",
                 f"{lang} wording in restricted Markdown.",
             ]
@@ -690,9 +803,9 @@ def _update_instructions_sheet(
         ws.append(
             [
                 QUESTION_SHEET,
-                f"Text_{suffix}_IsHTML",
+                text_html_col,
                 "Flag",
-                f"TRUE when Text_{suffix}_MD should be treated as raw HTML.",
+                f"TRUE when {text_md_col} should be treated as raw HTML.",
             ]
         )
         ws.append(
@@ -937,8 +1050,6 @@ class QuestionRow:
     randomization_settings_json: str | None
     text_en_md: str | None
     text_en_is_html: bool
-    in_pre: bool
-    in_post: bool
     externally_managed_by: str | None = None
 
 
@@ -1260,6 +1371,77 @@ def _drop_stale_translation_columns(
     # Delete rightmost first so indices stay valid.
     for col_idx in sorted(stale_indices, reverse=True):
         ws.delete_cols(col_idx + 1)
+
+
+def _drop_stale_question_text_columns(
+    ws: Worksheet,
+    required_cols: List[str],
+) -> None:
+    """Remove stale question text columns (canonical + legacy naming)."""
+
+    headers, _ = _iter_sheet_rows(ws)
+    if not headers:
+        return
+    required_set = set(required_cols)
+    stale_indices: list[int] = []
+    for idx, name in enumerate(headers):
+        header = str(name or "")
+        is_question_text_col = (
+            header.startswith("text_")
+            or header.startswith("ishtml_")
+            or (
+                header.startswith("Text_")
+                and (header.endswith("_MD") or header.endswith("_IsHTML"))
+            )
+        )
+        if is_question_text_col and header not in required_set:
+            stale_indices.append(idx)
+    for col_idx in sorted(stale_indices, reverse=True):
+        ws.delete_cols(col_idx + 1)
+
+
+def _migrate_legacy_question_text_columns(
+    ws: Worksheet,
+    *,
+    languages: Sequence[str] | None,
+    base_language: str | None,
+) -> None:
+    """Copy legacy `Text_*_MD` values into canonical `text_*` columns."""
+
+    headers, _ = _iter_sheet_rows(ws)
+    if not headers:
+        return
+    idx = {str(name or ""): i + 1 for i, name in enumerate(headers)}
+    langs = _ordered_languages(languages, base_language=base_language)
+    for lang in langs:
+        legacy_md = _question_text_legacy_md_column(lang)
+        legacy_html = _question_text_legacy_ishtml_column(lang)
+        new_md = _question_text_md_column(lang)
+        new_html = _question_text_ishtml_column(lang)
+        if legacy_md not in idx or new_md not in idx:
+            continue
+        legacy_md_col = idx[legacy_md]
+        legacy_html_col = idx.get(legacy_html)
+        new_md_col = idx[new_md]
+        new_html_col = idx.get(new_html)
+        for row_idx in range(2, ws.max_row + 1):
+            old_text = ws.cell(row=row_idx, column=legacy_md_col).value
+            new_text_cell = ws.cell(row=row_idx, column=new_md_col)
+            if (
+                (new_text_cell.value is None or str(new_text_cell.value).strip() == "")
+                and old_text is not None
+                and str(old_text).strip() != ""
+            ):
+                new_text_cell.value = old_text
+            if legacy_html_col and new_html_col:
+                old_html = ws.cell(row=row_idx, column=legacy_html_col).value
+                new_html_cell = ws.cell(row=row_idx, column=new_html_col)
+                if (
+                    new_html_cell.value is None
+                    and old_html is not None
+                    and str(old_html).strip() != ""
+                ):
+                    new_html_cell.value = old_html
 
 
 def _ensure_columns(ws: Worksheet, required: List[str]) -> Dict[str, int]:
@@ -1612,10 +1794,11 @@ def build_question_rows(
         text_html = q.get("QuestionText") or ""
         settings = _validation_settings_dict(q)
         force_mode = _normalize_force_response_mode(settings.get("ForceResponse"))
+        validation_extras = _validation_settings_extra_dict(settings)
+        if force_mode == "OFF":
+            validation_extras.pop("ForceResponseType", None)
         validation_type = _normalize_validation_type(settings.get("Type"))
-        validation_settings_json = _dump_validation_settings_json(
-            _validation_settings_extra_dict(settings)
-        )
+        validation_settings_json = _dump_validation_settings_json(validation_extras)
         randomization = _randomization_settings_dict(q)
         randomization_type = _normalize_randomization_type(randomization.get("Type"))
         randomization_settings_json = _dump_randomization_settings_json(
@@ -1647,8 +1830,6 @@ def build_question_rows(
             randomization_settings_json=randomization_settings_json or None,
             text_en_md=text_md,
             text_en_is_html=is_html,
-            in_pre=False,
-            in_post=False,
             externally_managed_by=None,
         )
 
@@ -2617,6 +2798,9 @@ def init_workbook_from_survey(
     _format_sbs_column_answers_sheet(wb[SBS_COLUMN_ANSWERS_SHEET])
     _format_survey_metadata_sheet(wb[SURVEY_METADATA_SHEET])
     _format_embedded_data_sheet(wb[EMBEDDED_DATA_SHEET])
+    _set_optional_sheet_visibility(wb[SBS_COLUMNS_SHEET], hide_when_empty=True)
+    _set_optional_sheet_visibility(wb[SBS_COLUMN_ANSWERS_SHEET], hide_when_empty=True)
+    _set_optional_sheet_visibility(wb[EMBEDDED_DATA_SHEET], hide_when_empty=True)
 
     # Optional: add a System sheet for inspection of Timing/meta options.
     _populate_system_sheet(wb, survey_id, survey_payload)
@@ -2659,11 +2843,10 @@ def _init_questions_sheet(
 ) -> None:
     ws = _get_or_create_sheet(wb, QUESTION_SHEET)
 
-    base_suffix = _language_suffix(base_language) or "en"
-    base_text_col = f"Text_{base_suffix}_MD"
-    base_html_col = f"Text_{base_suffix}_IsHTML"
+    base_text_col = _question_text_md_column(base_language)
+    base_html_col = _question_text_ishtml_column(base_language)
 
-    text_columns = _translation_columns("Text", languages, base_language=base_language)
+    text_columns = _question_text_columns(languages, base_language=base_language)
     required_cols = [
         "SurveyID",
         "QID",
@@ -2683,14 +2866,18 @@ def _init_questions_sheet(
         *text_columns,
         "OptionsPreview",
         "SubitemsPreview",
-        "InPre",
-        "InPost",
     ]
     # Legacy clean-up: remove deprecated QuestionKey column.
     headers, _ = _iter_sheet_rows(ws)
     if headers and "QuestionKey" in headers:
         ws.delete_cols(headers.index("QuestionKey") + 1)
-    _drop_stale_translation_columns(ws, required_cols, prefixes=["Text"])
+    col_index = _ensure_columns(ws, required_cols)
+    _migrate_legacy_question_text_columns(
+        ws,
+        languages=languages,
+        base_language=base_language,
+    )
+    _drop_stale_question_text_columns(ws, required_cols)
     col_index = _ensure_columns(ws, required_cols)
 
     # Build index of existing rows by QID
@@ -2704,18 +2891,10 @@ def _init_questions_sheet(
             existing_rows[qid] = idx
 
     questions = survey_payload.get("result", {}).get("Questions", {})
-    text_lang_columns: dict[str, tuple[str, str | None]] = {}
-    for name in headers:
-        header = str(name or "")
-        if not header.startswith("Text_") or not header.endswith("_MD"):
-            continue
-        suffix = header[len("Text_") : -len("_MD")]
-        lang_code = _language_from_suffix(suffix)
-        is_html_name = f"Text_{suffix}_IsHTML"
-        text_lang_columns[lang_code] = (
-            header,
-            is_html_name if is_html_name in col_index else None,
-        )
+    text_lang_columns = _question_text_lang_columns_from_headers(
+        headers,
+        include_legacy=True,
+    )
 
     for qid, row_data in questions_map.items():
         q_json = questions.get(qid, {}) if isinstance(questions, dict) else {}
@@ -4127,6 +4306,97 @@ def _make_bold(cell) -> None:
         cell.font = Font(bold=True)
 
 
+def _set_horizontal_alignment(cell, horizontal: str) -> None:
+    """Set horizontal alignment while preserving existing vertical/wrap settings."""
+
+    current = cell.alignment if cell.alignment is not None else Alignment()
+    cell.alignment = Alignment(
+        horizontal=horizontal,
+        vertical=current.vertical or "center",
+        wrap_text=current.wrap_text,
+    )
+
+
+def _center_align_short_columns(ws: Worksheet, headers: Sequence[object]) -> None:
+    """Center-align short/system columns and all `*_IsHTML` boolean flag columns."""
+
+    center_headers: set[str] = set()
+    for name in headers:
+        header = str(name or "").strip()
+        if not header:
+            continue
+        if (
+            header in CENTER_ALIGN_HEADER_NAMES
+            or header.endswith("_IsHTML")
+            or header.startswith("ishtml_")
+        ):
+            center_headers.add(header)
+    if not center_headers:
+        return
+    for header in center_headers:
+        col_idx = next(
+            (idx for idx, name in enumerate(headers, start=1) if str(name or "") == header),
+            None,
+        )
+        if not col_idx:
+            continue
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=col_idx, max_col=col_idx):
+            _set_horizontal_alignment(row[0], "center")
+
+
+def _set_cell_italic(cell, italic: bool) -> None:
+    """Toggle italic while preserving the existing font family/size/weight."""
+
+    current = cell.font if cell.font is not None else Font()
+    updated = copy(current)
+    updated.italic = bool(italic)
+    cell.font = updated
+
+
+def _apply_html_md_italics(ws: Worksheet, headers: Sequence[object], *, prefix: str) -> None:
+    """Apply direct italics to `{prefix}_*_MD` cells when `{prefix}_*_IsHTML` is TRUE."""
+
+    if ws.max_row <= 1:
+        return
+    header_index = {str(name or ""): idx + 1 for idx, name in enumerate(headers)}
+    for name in headers:
+        header = str(name or "")
+        if prefix == "Text":
+            if not _is_question_text_html_header(header):
+                continue
+            md_name = _question_text_md_header_from_html_header(header)
+        else:
+            if not header.startswith(f"{prefix}_") or not header.endswith("_IsHTML"):
+                continue
+            md_name = f"{header[:-len('_IsHTML')]}_MD"
+        html_col = header_index.get(header)
+        md_col = header_index.get(md_name)
+        if not html_col or not md_col:
+            continue
+        for row_idx in range(2, ws.max_row + 1):
+            html_val = _coerce_bool_cell(
+                ws.cell(row=row_idx, column=html_col).value,
+                default=False,
+            )
+            _set_cell_italic(ws.cell(row=row_idx, column=md_col), html_val)
+
+
+def _sheet_has_data_rows(ws: Worksheet) -> bool:
+    if ws.max_row <= 1:
+        return False
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, values_only=True):
+        if any(value not in (None, "") for value in row):
+            return True
+    return False
+
+
+def _set_optional_sheet_visibility(ws: Worksheet, *, hide_when_empty: bool = True) -> None:
+    if hide_when_empty and not _sheet_has_data_rows(ws):
+        ws.sheet_state = "hidden"
+    else:
+        ws.sheet_state = "visible"
+
+
 def _wrap_column(ws: Worksheet, header_name: str) -> None:
     headers, _ = _iter_sheet_rows(ws)
     if not headers:
@@ -4136,7 +4406,12 @@ def _wrap_column(ws: Worksheet, header_name: str) -> None:
     col_idx = headers.index(header_name) + 1
     for row in ws.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
         cell = row[0]
-        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        current = cell.alignment if cell.alignment is not None else Alignment()
+        cell.alignment = Alignment(
+            wrap_text=True,
+            vertical=current.vertical or "top",
+            horizontal=current.horizontal or "left",
+        )
 
 
 def _autofit_rows(ws: Worksheet) -> None:
@@ -4261,9 +4536,7 @@ def _sort_sheet_by_qid_and_id(ws: Worksheet, id_header: str) -> None:
     field_idx = headers.index("Field") if "Field" in headers else None
 
     def sort_key(row):
-        qid_val = row[qid_idx].value
         id_val = row[id_idx].value
-        qid = str(qid_val or "")
         q_order_key = _question_order_sort_key(row, headers=headers, qid_idx=qid_idx)
         field_val = row[field_idx].value if field_idx is not None else "Answer"
         field = _normalize_subitem_field(field_val)
@@ -4430,22 +4703,22 @@ def _format_questions_sheet(ws: Worksheet) -> None:
 
     # Wrap long text (question text and options/subitems preview)
     for name in headers:
-        if str(name).startswith("Text_") and str(name).endswith("_MD"):
+        if _is_question_text_md_header(str(name)):
             _wrap_column(ws, str(name))
     _wrap_column(ws, "ValidationSettingsJSON")
     _wrap_column(ws, "RandomizationSettingsJSON")
     _wrap_column(ws, "OptionsPreview")
     _wrap_column(ws, "SubitemsPreview")
 
+    _center_align_short_columns(ws, headers)
+
     # Auto-fit row heights
     _autofit_rows(ws)
 
     # Boolean validations
     for name in headers:
-        if str(name).startswith("Text_") and str(name).endswith("_IsHTML"):
+        if _is_question_text_html_header(str(name)):
             _apply_boolean_validation(ws, str(name))
-    _apply_boolean_validation(ws, "InPre")
-    _apply_boolean_validation(ws, "InPost")
     _apply_list_validation(ws, "ForceResponseMode", ["OFF", "ON", "RequestResponse"])
     _apply_list_validation(
         ws,
@@ -4459,8 +4732,6 @@ def _format_questions_sheet(ws: Worksheet) -> None:
     )
 
     editable_headers = {
-        "InPre",
-        "InPost",
         "ForceResponseMode",
         "ValidationType",
         "ValidationSettingsJSON",
@@ -4469,9 +4740,7 @@ def _format_questions_sheet(ws: Worksheet) -> None:
     }
     for name in headers:
         header = str(name or "")
-        if header.startswith("Text_") and (
-            header.endswith("_MD") or header.endswith("_IsHTML")
-        ):
+        if _is_question_text_md_header(header) or _is_question_text_html_header(header):
             editable_headers.add(header)
     _apply_readonly_fill(ws, headers, editable_headers)
 
@@ -4487,18 +4756,18 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         required_idx = headers.index("RequiredResponse") + 1
         required_col = get_column_letter(required_idx)
         for name in headers:
-            if str(name).startswith("Text_") and str(name).endswith("_MD"):
+            if _is_question_text_md_header(str(name)):
                 text_idx = headers.index(name) + 1
                 text_col = get_column_letter(text_idx)
                 formula = f"=${required_col}2=TRUE"
                 rule = FormulaRule(formula=[formula], fill=_REQUIRED_FILL)
                 ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
 
-    # Conditional formatting: highlight HTML question text when Text_*_IsHTML is TRUE
+    # Conditional formatting: highlight HTML question text when ishtml_* is TRUE
     for name in headers:
-        if str(name).startswith("Text_") and str(name).endswith("_IsHTML"):
-            suffix = str(name)[len("Text_") : -len("_IsHTML")]
-            text_name = f"Text_{suffix}_MD"
+        header = str(name or "")
+        if _is_question_text_html_header(header):
+            text_name = _question_text_md_header_from_html_header(header)
             if text_name not in headers or max_row < 2:
                 continue
             html_idx = headers.index(name) + 1
@@ -4506,7 +4775,11 @@ def _format_questions_sheet(ws: Worksheet) -> None:
             html_col = get_column_letter(html_idx)
             text_col = get_column_letter(text_idx)
             formula = f"=${html_col}2=TRUE"
-            rule = FormulaRule(formula=[formula], fill=_HTML_FILL)
+            rule = FormulaRule(
+                formula=[formula],
+                fill=_HTML_FILL,
+                font=Font(italic=True),
+            )
             ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
 
     # Conditional formatting: highlight dirty question text when Dirty == 'Y'
@@ -4514,12 +4787,14 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         dirty_idx = headers.index("Dirty") + 1
         dirty_col = get_column_letter(dirty_idx)
         for name in headers:
-            if str(name).startswith("Text_") and str(name).endswith("_MD"):
+            if _is_question_text_md_header(str(name)):
                 text_idx = headers.index(name) + 1
                 text_col = get_column_letter(text_idx)
                 formula = f'=${dirty_col}2="Y"'
                 rule = FormulaRule(formula=[formula], fill=_DIRTY_FILL)
                 ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
+
+    _apply_html_md_italics(ws, headers, prefix="Text")
 
     # Add a simple Excel table style
     max_row = ws.max_row
@@ -4561,8 +4836,6 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         "RandomizationSettingsJSON": 48.0,
         "OptionsPreview": 60.0,
         "SubitemsPreview": 60.0,
-        "InPre": 8.0,
-        "InPost": 8.0,
     }
     for idx, name in enumerate(headers, start=1):
         key = str(name or "")
@@ -4570,9 +4843,9 @@ def _format_questions_sheet(ws: Worksheet) -> None:
         if w:
             ws.column_dimensions[get_column_letter(idx)].width = w
             continue
-        if key.startswith("Text_") and key.endswith("_MD"):
+        if _is_question_text_md_header(key):
             ws.column_dimensions[get_column_letter(idx)].width = 76.0
-        elif key.startswith("Text_") and key.endswith("_IsHTML"):
+        elif _is_question_text_html_header(key):
             ws.column_dimensions[get_column_letter(idx)].width = 16.0
 
 
@@ -4618,6 +4891,8 @@ def _format_options_sheet(ws: Worksheet) -> None:
         if str(name).startswith("Label_") and str(name).endswith("_MD"):
             _wrap_column(ws, str(name))
 
+    _center_align_short_columns(ws, headers)
+
     # Auto-fit row heights
     _autofit_rows(ws)
 
@@ -4653,7 +4928,11 @@ def _format_options_sheet(ws: Worksheet) -> None:
             html_col = get_column_letter(html_idx)
             text_col = get_column_letter(text_idx)
             formula = f"=${html_col}2=TRUE"
-            rule = FormulaRule(formula=[formula], fill=_HTML_FILL)
+            rule = FormulaRule(
+                formula=[formula],
+                fill=_HTML_FILL,
+                font=Font(italic=True),
+            )
             ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
 
     # Conditional formatting: highlight dirty option labels
@@ -4667,6 +4946,8 @@ def _format_options_sheet(ws: Worksheet) -> None:
                 formula = f'=${dirty_col}2="Y"'
                 rule = FormulaRule(formula=[formula], fill=_DIRTY_FILL)
                 ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
+
+    _apply_html_md_italics(ws, headers, prefix="Label")
 
     max_row = ws.max_row
     max_col = ws.max_column
@@ -4755,6 +5036,8 @@ def _format_subitems_sheet(ws: Worksheet) -> None:
         if str(name).startswith("Label_") and str(name).endswith("_MD"):
             _wrap_column(ws, str(name))
 
+    _center_align_short_columns(ws, headers)
+
     # Auto-fit row heights
     _autofit_rows(ws)
 
@@ -4770,6 +5053,7 @@ def _format_subitems_sheet(ws: Worksheet) -> None:
         ):
             editable_headers.add(header)
     _apply_readonly_fill(ws, headers, editable_headers)
+    _apply_html_md_italics(ws, headers, prefix="Label")
 
     max_row = ws.max_row
     max_col = ws.max_column
@@ -4855,6 +5139,8 @@ def _format_sbs_columns_sheet(ws: Worksheet) -> None:
         if str(name).startswith("Label_") and str(name).endswith("_MD"):
             _wrap_column(ws, str(name))
 
+    _center_align_short_columns(ws, headers)
+
     _autofit_rows(ws)
 
     for name in headers:
@@ -4887,7 +5173,11 @@ def _format_sbs_columns_sheet(ws: Worksheet) -> None:
             html_col = get_column_letter(html_idx)
             text_col = get_column_letter(text_idx)
             formula = f"=${html_col}2=TRUE"
-            rule = FormulaRule(formula=[formula], fill=_HTML_FILL)
+            rule = FormulaRule(
+                formula=[formula],
+                fill=_HTML_FILL,
+                font=Font(italic=True),
+            )
             ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
 
     if "Dirty" in headers and max_row >= 2:
@@ -4900,6 +5190,8 @@ def _format_sbs_columns_sheet(ws: Worksheet) -> None:
                 formula = f'=${dirty_col}2="Y"'
                 rule = FormulaRule(formula=[formula], fill=_DIRTY_FILL)
                 ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
+
+    _apply_html_md_italics(ws, headers, prefix="Label")
 
     max_col = ws.max_column
     if max_row >= 2 and max_col >= 1:
@@ -4984,6 +5276,8 @@ def _format_sbs_column_answers_sheet(ws: Worksheet) -> None:
         if str(name).startswith("Label_") and str(name).endswith("_MD"):
             _wrap_column(ws, str(name))
 
+    _center_align_short_columns(ws, headers)
+
     _autofit_rows(ws)
 
     for name in headers:
@@ -5016,7 +5310,11 @@ def _format_sbs_column_answers_sheet(ws: Worksheet) -> None:
             html_col = get_column_letter(html_idx)
             text_col = get_column_letter(text_idx)
             formula = f"=${html_col}2=TRUE"
-            rule = FormulaRule(formula=[formula], fill=_HTML_FILL)
+            rule = FormulaRule(
+                formula=[formula],
+                fill=_HTML_FILL,
+                font=Font(italic=True),
+            )
             ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
 
     if "Dirty" in headers and max_row >= 2:
@@ -5029,6 +5327,8 @@ def _format_sbs_column_answers_sheet(ws: Worksheet) -> None:
                 formula = f'=${dirty_col}2="Y"'
                 rule = FormulaRule(formula=[formula], fill=_DIRTY_FILL)
                 ws.conditional_formatting.add(f"{text_col}2:{text_col}{max_row}", rule)
+
+    _apply_html_md_italics(ws, headers, prefix="Label")
 
     max_col = ws.max_column
     if max_row >= 2 and max_col >= 1:
@@ -5102,6 +5402,8 @@ def _format_survey_metadata_sheet(ws: Worksheet) -> None:
         if str(name).endswith("_MD"):
             _wrap_column(ws, str(name))
 
+    _center_align_short_columns(ws, headers)
+
     _autofit_rows(ws)
 
     for name in headers:
@@ -5114,6 +5416,8 @@ def _format_survey_metadata_sheet(ws: Worksheet) -> None:
         if header.endswith("_MD") or header.endswith("_IsHTML"):
             editable_headers.add(header)
     _apply_readonly_fill(ws, headers, editable_headers)
+    for key in SURVEY_METADATA_KEYS:
+        _apply_html_md_italics(ws, headers, prefix=key)
 
     max_row = ws.max_row
     max_col = ws.max_column
@@ -5182,6 +5486,7 @@ def _format_embedded_data_sheet(ws: Worksheet) -> None:
 
     _wrap_column(ws, "Value")
     _wrap_column(ws, "WrittenByQIDs")
+    _center_align_short_columns(ws, headers)
     _autofit_rows(ws)
     _apply_readonly_fill(ws, headers, {"Value"})
 
@@ -5310,6 +5615,15 @@ def _find_base_text_col(headers: List[str], prefix: str) -> tuple[str, str]:
     Returns ``(md_col, html_col)`` — e.g. ``("Text_cs_MD", "Text_cs_IsHTML")``.
     Falls back to ``{prefix}_en_MD`` when no match is found.
     """
+    if prefix == "Text":
+        lang_map = _question_text_lang_columns_from_headers(headers, include_legacy=True)
+        if lang_map:
+            ordered = _ordered_languages(list(lang_map.keys()), base_language="EN")
+            first_lang = ordered[0] if ordered else next(iter(lang_map))
+            md_col, html_col = lang_map[first_lang]
+            return md_col, html_col or _question_text_ishtml_column(first_lang)
+        return _question_text_md_column("EN"), _question_text_ishtml_column("EN")
+
     fallback_md = f"{prefix}_en_MD"
     fallback_html = f"{prefix}_en_IsHTML"
     for h in headers:
@@ -5344,8 +5658,6 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
         - `randomization_settings_json`: JSON payload for additional randomization settings.
         - `text_en_md`: Base-language wording in Markdown or raw HTML.
         - `text_en_is_html`: True if `text_en_md` is raw HTML.
-        - `in_pre`: True if included in pre-treatment survey.
-        - `in_post`: True if included in post-treatment survey.
 
     Raises:
         FileNotFoundError: If the workbook does not exist.
@@ -5406,8 +5718,6 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
             ),
             text_en_md=str(_get(row, text_md_col) or ""),
             text_en_is_html=_coerce_bool_cell(_get(row, text_html_col)),
-            in_pre=_coerce_bool_cell(_get(row, "InPre")),
-            in_post=_coerce_bool_cell(_get(row, "InPost")),
             # Question wording is always editable via Excel; only options/subitems
             # are treated as externally managed via EXTERNALLY_MANAGED_TAGS.
             externally_managed_by=None,

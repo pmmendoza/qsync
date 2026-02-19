@@ -374,6 +374,43 @@ def publish_survey_definition(
         return {}
 
 
+def set_survey_active(
+    survey_id: str,
+    *,
+    active: bool = True,
+    context: Dict[str, Any] | None = None,
+    base_url: str | None = None,
+    headers: dict | None = None,
+) -> dict:
+    """Set survey active state (`isActive`) on the Qualtrics survey resource.
+
+    Calls:
+      PUT /surveys/{surveyId}
+    """
+    if base_url is None or headers is None:
+        base_url, headers = get_client_config()
+
+    verb = "activate" if active else "deactivate"
+    meta: Dict[str, Any] = {"isActive": bool(active)}
+    if context:
+        meta["context"] = context
+
+    resp = send_api_request(
+        action=f"qsync.survey.{verb}",
+        method="PUT",
+        base_url=base_url,
+        headers=headers,
+        path=f"surveys/{survey_id}",
+        survey_id=survey_id,
+        log_meta=meta,
+        json={"isActive": bool(active)},
+    )
+    try:
+        return resp.json()
+    except ValueError:
+        return {}
+
+
 def list_survey_versions(
     survey_id: str,
     *,

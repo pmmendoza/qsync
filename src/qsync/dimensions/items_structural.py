@@ -1573,7 +1573,7 @@ def _wipe_workbook_qid_cells(
     """Clear base-language workbook cells for a QID so init_workbook_from_survey can refill them.
 
     Strategy:
-    - Clear `Text_<BASE>_MD` / `Text_<BASE>_IsHTML` on Questions for the QID.
+    - Clear `text_<base>` / `ishtml_<base>` on Questions for the QID.
     - Clear `Label_<BASE>_MD` / `Label_<BASE>_IsHTML` on Options/Subitems/SBS sheets for the QID.
     - Then re-run `init_workbook_from_survey` to repopulate those now-empty cells from cache.
     """
@@ -1640,7 +1640,12 @@ def _wipe_workbook_qid_cells(
             "Questions",
             "QID",
             None,
-            [f"Text_{base_lang}_MD", f"Text_{base_lang}_IsHTML"],
+            [
+                excel_io._question_text_md_column(base_lang),
+                excel_io._question_text_ishtml_column(base_lang),
+                f"Text_{base_lang}_MD",
+                f"Text_{base_lang}_IsHTML",
+            ],
         )
     if "options" in surfaces:
         _clear_sheet_rows(

@@ -166,7 +166,7 @@ def test_diff_workbook_vs_cache_extracts_changes(tmp_path: Path) -> None:
     q_ws = wb[QUESTION_SHEET]
     q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
     q_row = _find_row(q_ws, "QID1")
-    q_text_idx = q_headers.index("Text_fr_MD") + 1
+    q_text_idx = q_headers.index("text_fr") + 1
     q_ws.cell(row=q_row, column=q_text_idx).value = "Question FR new"
 
     o_ws = wb[OPTIONS_SHEET]
@@ -294,7 +294,7 @@ def test_diff_workbook_vs_cache_ignores_markdown_roundtrip_noise(tmp_path: Path)
     q_ws = wb[QUESTION_SHEET]
     q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
     q_row = _find_row(q_ws, "QID1")
-    q_text_idx = q_headers.index("Text_fr_MD") + 1
+    q_text_idx = q_headers.index("text_fr") + 1
     q_ws.cell(row=q_row, column=q_text_idx).value = "- One\n- Two\n\n**After******"
     wb.save(workbook_path)
 

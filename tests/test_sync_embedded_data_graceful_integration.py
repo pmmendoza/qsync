@@ -98,6 +98,14 @@ def _remove_embedded_row(xlsx_path: Path, field: str) -> None:
 
 
 def _find_base_col(headers, prefix):
+    if prefix == "Text":
+        lang_map = excel_io._question_text_lang_columns_from_headers(headers)
+        if "EN" in lang_map:
+            return headers.index(lang_map["EN"][0])
+        if lang_map:
+            return headers.index(next(iter(lang_map.values()))[0])
+        if "text_en" in headers:
+            return headers.index("text_en")
     for h in headers:
         if str(h).startswith(f"{prefix}_") and str(h).endswith("_MD"):
             return headers.index(h)
@@ -113,7 +121,7 @@ def _update_question_text(
     idx = {name: i for i, name in enumerate(headers)}
     qid_idx = idx["QID"]
     en_idx = _find_base_col(headers, "Text")
-    fr_idx = idx["Text_fr_MD"]
+    fr_idx = idx["text_fr"]
     for row in ws.iter_rows(min_row=2, values_only=False):
         if str(row[qid_idx].value or "").strip() == qid:
             row[en_idx].value = text_en

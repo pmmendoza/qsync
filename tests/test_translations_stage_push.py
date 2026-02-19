@@ -149,7 +149,7 @@ def _write_workbook(tmp_path: Path, payload: dict) -> Path:
     ws = wb[QUESTION_SHEET]
     headers = [cell.value for cell in next(ws.iter_rows(max_row=1))]
     qid_idx = headers.index("QID") + 1
-    text_idx = headers.index("Text_fr_MD") + 1
+    text_idx = headers.index("text_fr") + 1
     for row in range(2, ws.max_row + 1):
         if str(ws.cell(row=row, column=qid_idx).value or "").strip() == "QID1":
             ws.cell(row=row, column=text_idx).value = "Bonjour"

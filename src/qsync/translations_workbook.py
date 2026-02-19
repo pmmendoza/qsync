@@ -10,6 +10,7 @@ from typing import Dict, Iterable, List, Mapping, Sequence
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
+from . import excel_io
 from .errors import QsyncValidationError
 from .excel_io import (
     OPTIONS_SHEET,
@@ -49,6 +50,35 @@ _HTML_HAZARD_RE = re.compile(
 
 def _format_cell_ref(sheet: str, row: int, col: int) -> str:
     return f"{sheet}!{get_column_letter(col)}{row}"
+
+
+def _question_text_md_header(language: str) -> str:
+    return excel_io._question_text_md_column(language)
+
+
+def _question_text_html_header(language: str) -> str:
+    return excel_io._question_text_ishtml_column(language)
+
+
+def _resolve_question_headers_for_language(
+    headers: Sequence[str],
+    language: str,
+) -> tuple[str | None, str | None]:
+    suffix = _language_suffix(language)
+    if not suffix:
+        return None, None
+
+    md_col = _question_text_md_header(language)
+    html_col = _question_text_html_header(language)
+    header_set = {str(h or "") for h in headers}
+    if md_col in header_set:
+        return md_col, html_col if html_col in header_set else None
+
+    legacy_md = f"Text_{suffix}_MD"
+    legacy_html = f"Text_{suffix}_IsHTML"
+    if legacy_md in header_set:
+        return legacy_md, legacy_html if legacy_html in header_set else None
+    return None, None
 
 
 def _build_header_index(ws) -> dict[str, int]:
@@ -100,7 +130,9 @@ def _locate_translation_key_cells(
             row_index = _build_row_index(ws, "QID")
             header_index = _build_header_index(ws)
             row = row_index.get(qid)
-            col = header_index.get(f"Text_{suffix}_MD")
+            col = header_index.get(_question_text_md_header(language))
+            if not col:
+                col = header_index.get(f"Text_{suffix}_MD")
             if row and col:
                 refs.append(_format_cell_ref(QUESTION_SHEET, int(row), int(col)))
         return refs
@@ -176,11 +208,11 @@ def _languages_from_headers(headers: Iterable[str], prefix: str) -> List[str]:
 
 def _resolve_languages_from_workbook(wb) -> List[str]:
     languages: List[str] = []
-    for sheet_name, prefix in (
-        (QUESTION_SHEET, "Text"),
-        (OPTIONS_SHEET, "Label"),
-        (SUBITEMS_SHEET, "Label"),
-    ):
+    if QUESTION_SHEET in wb.sheetnames:
+        headers, _ = _iter_sheet_rows(wb[QUESTION_SHEET])
+        for lang in excel_io._question_text_lang_columns_from_headers(headers).keys():
+            languages.append(lang)
+    for sheet_name, prefix in ((OPTIONS_SHEET, "Label"), (SUBITEMS_SHEET, "Label")):
         if sheet_name not in wb.sheetnames:
             continue
         headers, _ = _iter_sheet_rows(wb[sheet_name])
@@ -264,10 +296,8 @@ def populate_workbook_from_translation_maps(
             if not qid:
                 continue
             for lang in languages:
-                suffix = _language_suffix(lang)
-                md_col = f"Text_{suffix}_MD"
-                html_col = f"Text_{suffix}_IsHTML"
-                if md_col not in idx:
+                md_col, html_col = _resolve_question_headers_for_language(headers, lang)
+                if not md_col or md_col not in idx:
                     continue
                 cell = row[idx[md_col]]
                 if cell.value not in (None, "") and not overwrite:
@@ -382,10 +412,8 @@ def extract_translation_maps_from_workbook(
             if not qid:
                 continue
             for lang in languages:
-                suffix = _language_suffix(lang)
-                md_col = f"Text_{suffix}_MD"
-                html_col = f"Text_{suffix}_IsHTML"
-                if md_col not in idx:
+                md_col, html_col = _resolve_question_headers_for_language(headers, lang)
+                if not md_col or md_col not in idx:
                     continue
                 cell = row[idx[md_col]]
                 raw = cell.value
@@ -517,10 +545,8 @@ def read_translation_maps_from_workbook(
             if not qid:
                 continue
             for lang in languages:
-                suffix = _language_suffix(lang)
-                md_col = f"Text_{suffix}_MD"
-                html_col = f"Text_{suffix}_IsHTML"
-                if md_col not in idx:
+                md_col, html_col = _resolve_question_headers_for_language(headers, lang)
+                if not md_col or md_col not in idx:
                     continue
                 cell = row[idx[md_col]]
                 raw = cell.value

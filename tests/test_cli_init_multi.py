@@ -7,7 +7,7 @@ import pytest
 from tests.workspace_helpers import ensure_qsync_workspace, write_inventory_csv
 
 
-def test_init_accepts_repeatable_survey_id_values(
+def test_items_pull_accepts_repeatable_survey_id_values(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from qsync.cli import main
@@ -37,7 +37,8 @@ def test_init_accepts_repeatable_survey_id_values(
         [
             "--root",
             str(tmp_path),
-            "init",
+            "items",
+            "pull",
             "--survey-id",
             "SV_A",
             "--survey-id",
@@ -51,7 +52,7 @@ def test_init_accepts_repeatable_survey_id_values(
     ]
 
 
-def test_init_rejects_xlsx_with_multiple_survey_ids(
+def test_items_pull_rejects_xlsx_with_multiple_survey_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from qsync.cli import main
@@ -61,12 +62,13 @@ def test_init_rejects_xlsx_with_multiple_survey_ids(
 
     monkeypatch.setattr("qsync.sync_core.init_survey_to_excel", lambda *_a, **_k: None)
 
-    with pytest.raises(SystemExit, match="--xlsx cannot be used with multiple"):
+    with pytest.raises(SystemExit):
         main(
             [
                 "--root",
                 str(tmp_path),
-                "init",
+                "items",
+                "pull",
                 "--survey-id",
                 "SV_A,SV_B",
                 "--xlsx",

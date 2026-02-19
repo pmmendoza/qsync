@@ -165,6 +165,144 @@ class TestValidateFlow:
         # Should not raise
         validate_flow(flow, "SV_test", blocks=blocks)
 
+    def test_branch_question_reference_must_be_in_survey_flow(self):
+        """Question references must point to QIDs placed in SurveyFlow blocks."""
+        flow = {
+            "Type": "Root",
+            "FlowID": "FL_ROOT",
+            "Flow": [
+                {"Type": "Standard", "ID": "BL_main"},
+                {
+                    "Type": "Branch",
+                    "FlowID": "FL_2",
+                    "BranchLogic": {
+                        "Type": "BooleanExpression",
+                        "0": {
+                            "Type": "If",
+                            "0": {
+                                "Type": "Expression",
+                                "LogicType": "Question",
+                                "QuestionID": "QID2",
+                                "Operator": "Selected",
+                                "ChoiceLocator": "q://QID2/SelectableChoice/1",
+                            },
+                        },
+                    },
+                    "Flow": [{"Type": "Standard", "ID": "BL_then"}],
+                },
+            ],
+        }
+        blocks = {
+            "BL_main": {
+                "Type": "Default",
+                "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+            },
+            "BL_then": {"Type": "Default", "BlockElements": []},
+        }
+        questions = {
+            "QID1": {"Choices": {"1": {"Display": "Yes"}}},
+            "QID2": {"Choices": {"1": {"Display": "Yes"}}},
+        }
+
+        with pytest.raises(FlowValidationError) as exc_info:
+            validate_flow(flow, "SV_test", blocks=blocks, questions=questions)
+
+        assert "QID2" in str(exc_info.value)
+        assert "not in SurveyFlow" in str(exc_info.value)
+
+    def test_branch_question_selected_choice_must_exist(self):
+        """Selected/NotSelected conditions must reference valid choice IDs."""
+        flow = {
+            "Type": "Root",
+            "FlowID": "FL_ROOT",
+            "Flow": [
+                {"Type": "Standard", "ID": "BL_main"},
+                {
+                    "Type": "Branch",
+                    "FlowID": "FL_2",
+                    "BranchLogic": {
+                        "Type": "BooleanExpression",
+                        "0": {
+                            "Type": "If",
+                            "0": {
+                                "Type": "Expression",
+                                "LogicType": "Question",
+                                "QuestionID": "QID1",
+                                "Operator": "Selected",
+                                "ChoiceLocator": "q://QID1/SelectableChoice/3",
+                            },
+                        },
+                    },
+                    "Flow": [{"Type": "Standard", "ID": "BL_then"}],
+                },
+            ],
+        }
+        blocks = {
+            "BL_main": {
+                "Type": "Default",
+                "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+            },
+            "BL_then": {"Type": "Default", "BlockElements": []},
+        }
+        questions = {
+            "QID1": {
+                "Choices": {
+                    "1": {"Display": "A"},
+                    "2": {"Display": "B"},
+                }
+            }
+        }
+
+        with pytest.raises(FlowValidationError) as exc_info:
+            validate_flow(flow, "SV_test", blocks=blocks, questions=questions)
+
+        assert "QID1" in str(exc_info.value)
+        assert "missing category '3'" in str(exc_info.value)
+
+    def test_branch_choice_locator_qid_must_match_expression_qid(self):
+        """ChoiceLocator and QuestionID must not point at different questions."""
+        flow = {
+            "Type": "Root",
+            "FlowID": "FL_ROOT",
+            "Flow": [
+                {"Type": "Standard", "ID": "BL_main"},
+                {
+                    "Type": "Branch",
+                    "FlowID": "FL_2",
+                    "BranchLogic": {
+                        "Type": "BooleanExpression",
+                        "0": {
+                            "Type": "If",
+                            "0": {
+                                "Type": "Expression",
+                                "LogicType": "Question",
+                                "QuestionID": "QID1",
+                                "Operator": "Selected",
+                                "ChoiceLocator": "q://QID2/SelectableChoice/1",
+                            },
+                        },
+                    },
+                    "Flow": [{"Type": "Standard", "ID": "BL_then"}],
+                },
+            ],
+        }
+        blocks = {
+            "BL_main": {
+                "Type": "Default",
+                "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+            },
+            "BL_then": {"Type": "Default", "BlockElements": []},
+        }
+        questions = {
+            "QID1": {"Choices": {"1": {"Display": "A"}}},
+            "QID2": {"Choices": {"1": {"Display": "A"}}},
+        }
+
+        with pytest.raises(FlowValidationError) as exc_info:
+            validate_flow(flow, "SV_test", blocks=blocks, questions=questions)
+
+        assert "ChoiceLocator question 'QID2'" in str(exc_info.value)
+
 
 class TestValidateYamlStructure:
     """Tests for validate_yaml_structure function."""

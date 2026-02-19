@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Optional
 
 from .argparse_support import (
     QsyncArgumentParser,
-    hide_subparser_choices,
     reorder_subparser_choices,
 )
 
@@ -254,7 +253,7 @@ def _add_common_args(
         )
     parser.add_argument(
         "--filter-column",
-        help="Optional filter column on Questions sheet (e.g. InPre, InPost)",
+        help="Optional filter column on Questions sheet (e.g. BlockName)",
     )
     parser.add_argument(
         "--filter-value",
@@ -573,7 +572,7 @@ def _workspace_dirs_for_onboard_hint(args: argparse.Namespace) -> list[str]:
         return ["surveys", "survey_js"]
     if cmd == "sync":
         return ["surveys", "excel", "survey_js"]
-    if cmd in {"compare", "init", "preview", "apply", "push", "translations"}:
+    if cmd in {"compare", "translations"}:
         return ["surveys", "excel"]
     if cmd in {"export", "eos"}:
         return ["surveys"]
@@ -1648,7 +1647,7 @@ def _enforce_push_safeguards(
         if not force_preview_items:
             raise SystemExit(
                 f"[qsync:{dimension}] Survey has preview/test responses. "
-                "Re-run with --force-preview-items (or --force-live) to proceed."
+                "Re-run with --force-preview (or --force-live) to proceed."
             )
         print(
             f"[qsync:{dimension}] WARNING: pushing {survey_ref} items with preview/test responses -- {summary}. "
@@ -2262,136 +2261,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
 
     # init
-    p_init = subparsers.add_parser(
-        "init",
-        help="Initialise or refresh the Excel workbook for a survey from Qualtrics",
-    )
-    _add_common_args(
-        p_init,
-        include_xlsx=False,
-        survey_id_action="append",
-        survey_id_help=(
-            "Target survey ID(s) (repeatable/comma-separated; omit to select interactively)"
-        ),
-    )
-    p_init.add_argument(
-        "--xlsx",
-        type=Path,
-        help="Path to the Excel workbook (default: excel/<SurveyTitle>-<SurveyID>.xlsx)",
-    )
-    p_init.add_argument(
-        "--language",
-        action="append",
-        dest="language",
-        help="Add translation columns for a language (repeatable). If omitted, auto-detects all enabled languages from Qualtrics.",
-    )
-    p_init.add_argument(
-        "--languages",
-        help="Comma-separated language codes to add as translation columns. If omitted, auto-detects all enabled languages from Qualtrics.",
-    )
-    p_init.add_argument(
-        "--prune-orphans",
-        action="store_true",
-        help=(
-            "Delete orphan item rows in existing workbook sheets before refresh "
-            "(rows whose QID/Choice/Subitem keys are no longer present in the survey)."
-        ),
-    )
-
-    # preview
-    p_preview = subparsers.add_parser(
-        "preview",
-        help="Show what would change in Qualtrics based on the workbook",
-    )
-    _add_common_args(p_preview, include_xlsx=True)
-    p_preview.add_argument(
-        "--detailed",
-        action="store_true",
-        help="Print full old/new HTML for each detected change",
-    )
-    p_preview.add_argument(
-        "--embedded-data-only",
-        action="store_true",
-        help="Only show Embedded_Data changes",
-    )
-    p_preview.add_argument(
-        "--allow-drift",
-        action="store_true",
-        help="Allow preview against a drifted cache without prompting",
-    )
-
-    # apply
-    p_apply = subparsers.add_parser(
-        "apply",
-        help="Apply the changes from the workbook to Qualtrics",
-    )
-    _add_common_args(p_apply, include_xlsx=True)
-    p_apply.add_argument(
-        "--yes",
-        action="store_true",
-        help="Proceed without an interactive confirmation prompt",
-    )
-    p_apply.add_argument(
-        "--force-live",
-        action="store_true",
-        help="Allow pushes even if finished responses exist in Qualtrics",
-    )
-    p_apply.add_argument(
-        "--force-preview-items",
-        action="store_true",
-        help="Allow item pushes when only preview/test responses exist",
-    )
-    p_apply.add_argument(
-        "--embedded-data-only",
-        action="store_true",
-        help="Only apply Embedded_Data changes",
-    )
-    p_apply.add_argument(
-        "--allow-dangerous",
-        action="store_true",
-        help="Allow dangerous embedded data edits (fields without defaults)",
-    )
-    p_apply.add_argument(
-        "--allow-drift",
-        action="store_true",
-        help="Proceed even if cached survey differs from the live API",
-    )
-
-    # push
-    p_push = subparsers.add_parser(
-        "push",
-        help="Push staged wording changes from the cached JSON to Qualtrics",
-    )
-    p_push.add_argument(
-        "--survey-id",
-        help="Target Qualtrics Survey ID (omit to select interactively)",
-    )
-    p_push.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip the interactive confirmation prompt",
-    )
-    p_push.add_argument(
-        "--force-live",
-        action="store_true",
-        help="Allow pushes even if finished responses exist in Qualtrics",
-    )
-    p_push.add_argument(
-        "--force-preview-items",
-        action="store_true",
-        help="Allow item pushes when only preview/test responses exist",
-    )
-    p_push.add_argument(
-        "--allow-drift",
-        action="store_true",
-        help="Proceed even if cached survey differs from the live API",
-    )
-    p_push.add_argument(
-        "--no-publish",
-        action="store_true",
-        help="Skip publishing the survey after pushing question updates",
-    )
-
     # items command group
     p_items = subparsers.add_parser(
         "items",
@@ -2675,7 +2544,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_sync.add_argument(
         "--dimensions",
-        help="Comma-separated dimensions to sync (default: auto-detect)",
+        help=(
+            "Comma-separated dimensions to sync "
+            "(default: auto-detect; valid: items, edf, js, translations, eos, flow, master)"
+        ),
     )
     p_sync.add_argument(
         "--scope",
@@ -2710,7 +2582,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_sync.add_argument(
         "--skip-publish",
         action="store_true",
-        help="Skip auto-publish step (no version snapshot)",
+        help="Skip publish step (do not publish the pushed version)",
     )
     p_sync.add_argument(
         "--refresh-workbooks",
@@ -2741,6 +2613,41 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--allow-skip-embedded",
         action="store_true",
         help="Allow sync to proceed when Embedded_Data is invalid by skipping embedded defaults",
+    )
+    p_sync.add_argument(
+        "--allow-structural-delete",
+        action="store_true",
+        help="Allow pushing staged item structural deletes during sync",
+    )
+    p_sync.add_argument(
+        "--allow-shared-message-edit",
+        action="store_true",
+        help="Allow EOS shared-library message edits during sync",
+    )
+    p_sync.add_argument(
+        "--allow-destructive-eos",
+        action="store_true",
+        help="Allow EOS destructive key deletions during sync",
+    )
+    p_sync.add_argument(
+        "--allow-master-dangerous",
+        action="store_true",
+        help="Allow dangerous master-column changes during sync",
+    )
+    p_sync.set_defaults(activate_on_publish=None)
+    p_sync.add_argument(
+        "--activate-on-publish",
+        dest="activate_on_publish",
+        action="store_const",
+        const=True,
+        help="Activate survey immediately after sync publish",
+    )
+    p_sync.add_argument(
+        "--no-activate-on-publish",
+        dest="activate_on_publish",
+        action="store_const",
+        const=False,
+        help="Do not activate survey after sync publish",
     )
     p_sync.add_argument(
         "--json",
@@ -2885,43 +2792,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_js_stage.add_argument(
         "--scope",
         help=_SCOPE_HELP_JS,
-    )
-
-    # js apply (legacy alias for backward compatibility)
-    p_js_apply = js_subparsers.add_parser(
-        "apply",
-        help="[DEPRECATED: use 'stage'] Stage local QuestionJS changes into pending",
-    )
-    _add_js_common_args(p_js_apply)
-    p_js_apply.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Compute staged entries without writing pending changes",
-    )
-    p_js_apply.add_argument(
-        "--create-missing",
-        action="store_true",
-        help="Create QuestionJS blocks when they are missing",
-    )
-    p_js_apply.add_argument(
-        "--allow-diff",
-        action="store_true",
-        help="Overwrite cached JS even when substantive diffs exist",
-    )
-    p_js_apply.add_argument(
-        "--include-match",
-        action="store_true",
-        help="Also stage mapped QIDs whose cached JS already matches local files",
-    )
-    p_js_apply.add_argument(
-        "--no-include-match",
-        action="store_true",
-        help="Alias for default behavior (stage changed QIDs only)",
-    )
-    p_js_apply.add_argument(
-        "--allow-drift",
-        action="store_true",
-        help="Allow staging against a drifted cache without prompting",
     )
 
     # js push
@@ -3132,18 +3002,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_eos_stage.add_argument(
         "--scope",
         help=_SCOPE_HELP_EOS,
-    )
-
-    # eos apply (legacy alias for backward compatibility)
-    p_eos_apply = eos_subparsers.add_parser(
-        "apply",
-        help="[DEPRECATED: use 'stage'] Stage EOS message pushes under surveys/pending/eos/ (no API writes)",
-    )
-    _add_eos_common_args(p_eos_apply)
-    p_eos_apply.add_argument(
-        "--allow-destructive",
-        action="store_true",
-        help="Allow destructive key deletions (missing message keys) for push",
     )
 
     # eos push
@@ -3486,42 +3344,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         ),
     )
 
-    # translations apply (legacy alias for stage)
-    p_trans_apply = translations_subparsers.add_parser(
-        "apply",
-        help="(deprecated) Stage workbook translations (use `qsync translations stage`)",
-    )
-    p_trans_apply.add_argument(
-        "--survey-id",
-        dest="survey_id",
-        help="Target survey ID (omit to select interactively)",
-    )
-    p_trans_apply.add_argument(
-        "--language",
-        action="append",
-        dest="language",
-        help="Language code to apply (repeatable)",
-    )
-    p_trans_apply.add_argument(
-        "--languages",
-        help="Comma-separated language codes to apply",
-    )
-    p_trans_apply.add_argument(
-        "--allow-drift",
-        action="store_true",
-        help="Allow staging against a drifted cache without prompting",
-    )
-    p_trans_apply.add_argument(
-        "--yes",
-        action="store_true",
-        help="No-op (kept for CLI compatibility with `stage`)",
-    )
-    p_trans_apply.add_argument(
-        "--scope",
-        help=_SCOPE_HELP_TRANSLATIONS,
-    )
-
-    # translations stage (preferred)
+    # translations stage
     p_trans_stage = translations_subparsers.add_parser(
         "stage",
         help="Stage workbook translations into pending changes",
@@ -3857,7 +3680,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "push",
         ],
     )
-    hide_subparser_choices(js_subparsers, ["apply"])
     reorder_subparser_choices(
         eos_subparsers,
         [
@@ -3870,7 +3692,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "clone-shared",
         ],
     )
-    hide_subparser_choices(eos_subparsers, ["apply"])
     reorder_subparser_choices(
         translations_subparsers,
         [
@@ -3885,7 +3706,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "check-language",
         ],
     )
-    hide_subparser_choices(translations_subparsers, ["apply"])
 
     # Optional shell completion support (bash/zsh) via argcomplete.
     # Safe no-op when argcomplete is not installed.
@@ -4898,15 +4718,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     print(ln)
                 return
 
-            if args.eos_command in ("stage", "apply"):
-                # Emit deprecation warning for "apply"
-                if args.eos_command == "apply":
-                    from .terminal_output import warn
-
-                    warn(
-                        "[DEPRECATION] 'eos apply' is deprecated. Use 'eos stage' instead."
-                    )
-
+            if args.eos_command == "stage":
                 header("[qsync:eos]", "Staging EOS pushes (no API writes)...")
                 try:
                     record = apply_eos_messages(
@@ -5173,15 +4985,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 handle_translations_preview(args)
                 return
 
-            if args.translations_command == "apply":
-                from .terminal_output import warn
-
-                warn(
-                    "[DEPRECATION] 'translations apply' is deprecated. Use 'translations stage' instead."
-                )
-                handle_translations_apply(args)
-                return
-
             if args.translations_command == "stage":
                 handle_translations_apply(args)
                 return
@@ -5302,15 +5105,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     )
                 return
 
-            if args.js_command in ("stage", "apply"):
-                # Emit deprecation warning for "apply"
-                if args.js_command == "apply":
-                    from .terminal_output import warn
-
-                    warn(
-                        "[DEPRECATION] 'js apply' is deprecated. Use 'js stage' instead."
-                    )
-
+            if args.js_command == "stage":
                 from .drift_check import confirm_preview_drift
                 from .qualtrics_client import refresh_survey_cache
                 from .dimensions.js import _select_stage_entries
@@ -5431,6 +5226,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     if args.dry_run:
                         return
                     if not args.yes:
+                        if not sys.stdin.isatty():
+                            raise SystemExit(
+                                "[qsync:js] Non-interactive session requires --yes to push"
+                            )
                         try:
                             from .interactive_menu import confirm
 
@@ -5519,6 +5318,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     )
                     return
                 if not args.yes:
+                    if not sys.stdin.isatty():
+                        raise SystemExit(
+                            "[qsync:js] Non-interactive session requires --yes to push"
+                        )
                     try:
                         from .interactive_menu import confirm
 
@@ -5645,7 +5448,15 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             dimensions = None
             if getattr(args, "dimensions", None):
                 dimensions = [d.strip() for d in args.dimensions.split(",")]
-                valid_dims = {"items", "js", "translations", "eos", "flow"}
+                valid_dims = {
+                    "items",
+                    "edf",
+                    "js",
+                    "translations",
+                    "eos",
+                    "flow",
+                    "master",
+                }
                 invalid = [d for d in dimensions if d not in valid_dims]
                 if invalid:
                     error("[qsync:sync]", f"Invalid dimensions: {', '.join(invalid)}")
@@ -5721,6 +5532,19 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                         allow_skip_embedded=bool(
                             getattr(args, "allow_skip_embedded", False)
                         ),
+                        allow_structural_delete=bool(
+                            getattr(args, "allow_structural_delete", False)
+                        ),
+                        allow_shared_message_edit=bool(
+                            getattr(args, "allow_shared_message_edit", False)
+                        ),
+                        allow_destructive_eos=bool(
+                            getattr(args, "allow_destructive_eos", False)
+                        ),
+                        allow_master_dangerous=bool(
+                            getattr(args, "allow_master_dangerous", False)
+                        ),
+                        activate_on_publish=getattr(args, "activate_on_publish", None),
                         json_output=json_output,
                         fix=getattr(args, "fix", None),
                     )
@@ -5773,6 +5597,19 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     allow_skip_embedded=bool(
                         getattr(args, "allow_skip_embedded", False)
                     ),
+                    allow_structural_delete=bool(
+                        getattr(args, "allow_structural_delete", False)
+                    ),
+                    allow_shared_message_edit=bool(
+                        getattr(args, "allow_shared_message_edit", False)
+                    ),
+                    allow_destructive_eos=bool(
+                        getattr(args, "allow_destructive_eos", False)
+                    ),
+                    allow_master_dangerous=bool(
+                        getattr(args, "allow_master_dangerous", False)
+                    ),
+                    activate_on_publish=getattr(args, "activate_on_publish", None),
                     json_output=json_output,
                     fix=getattr(args, "fix", None),
                 )
@@ -6300,317 +6137,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 )
                 return
 
-        # Legacy commands (backward compatibility)
-        if args.command == "init":
-            survey_ids = _prompt_for_survey_ids_if_needed(
-                getattr(args, "survey_id", None),
-                allow_all_surveys=True,
-            )
-            if args.xlsx is not None and len(survey_ids) > 1:
-                raise SystemExit(
-                    "[qsync] ERROR: --xlsx cannot be used with multiple --survey-id values."
-                )
-            languages = _collect_languages_from_args(args)
-            for survey_id in survey_ids:
-                xlsx_path = args.xlsx if args.xlsx is not None else _default_xlsx_path(survey_id)
-                init_survey_to_excel(
-                    survey_id,
-                    xlsx_path,
-                    languages=languages,
-                    prune_orphans=bool(getattr(args, "prune_orphans", False)),
-                )
-            return
-
-        if args.command == "preview":
-            from .terminal_colors import colorize_unified_diff_lines
-            from .terminal_output import info, warn
-            from .drift_check import confirm_preview_drift
-            from .qualtrics_client import refresh_survey_cache
-
-            xlsx_path = args.xlsx or _default_xlsx_path(args.survey_id)
-            include_qids = _to_set(args.include_qids)
-            include_tags = _to_set(args.include_tags)
-
-            def _update_cache() -> None:
-                refresh_survey_cache(args.survey_id)
-                info("[qsync:preview]", "Refreshed cached survey definition from API.")
-
-            confirm_preview_drift(
-                survey_id=args.survey_id,
-                dimension="items",
-                allow_drift=bool(getattr(args, "allow_drift", False)),
-                interactive=sys.stdin.isatty(),
-                update_cache=_update_cache,
-            )
-            changes = preview_changes(
-                survey_id=args.survey_id,
-                xlsx_path=xlsx_path,
-                filter_column=args.filter_column,
-                filter_value=args.filter_value,
-                include_qids=include_qids,
-                include_tags=include_tags,
-                embedded_only=bool(args.embedded_data_only),
-                check_drift=False,
-            )
-            if not changes:
-                info(
-                    "[qsync:preview]", "No differences between Excel and cached survey."
-                )
-                return
-            info("[qsync:preview]", f"{len(changes)} change(s) detected.")
-            print()
-            info("[qsync:preview]", "Change overview:")
-            _summarize_preview(changes)
-            dangerous_embedded = [
-                c for c in changes if c.kind == "embedded" and c.is_dangerous
-            ]
-            if dangerous_embedded:
-                warn(
-                    "[qsync:preview]",
-                    f"{len(dangerous_embedded)} dangerous embedded data change(s) "
-                    "require --allow-dangerous to apply.",
-                )
-            if args.detailed:
-                print()
-                info("[qsync:preview]", "Detailed diffs (cached vs Excel):")
-                for change in changes:
-                    print("-" * 80)
-                    if change.kind == "embedded":
-                        flow = f", flow_id={change.flow_id}" if change.flow_id else ""
-                        header = f"{change.kind.upper()} field={change.field or change.qid}{flow}"
-                    else:
-                        header = f"{change.kind.upper()} qid={change.qid}"
-                    if change.choice_id is not None:
-                        header += f", choice_id={change.choice_id}"
-                    if change.answer_id is not None:
-                        header += f", answer_id={change.answer_id}"
-                    print(header)
-                    diff_lines = change.diff_lines or []
-                    if diff_lines:
-                        for line in colorize_unified_diff_lines(diff_lines):
-                            print("  " + line)
-                    else:
-                        old_html = (change.old_html or "").strip()
-                        new_html = (change.new_html or "").strip()
-                        print("  OLD:", old_html)
-                        print("  NEW:", new_html)
-            return
-
-        if args.command == "apply":
-            from .terminal_output import error, info, success, warn
-            from .dimensions.items import _build_pending_payload_from_workbook
-
-            xlsx_path = args.xlsx or _default_xlsx_path(args.survey_id)
-            include_qids = _to_set(args.include_qids)
-            include_tags = _to_set(args.include_tags)
-            pending = preview_changes(
-                survey_id=args.survey_id,
-                xlsx_path=xlsx_path,
-                filter_column=args.filter_column,
-                filter_value=args.filter_value,
-                include_qids=include_qids,
-                include_tags=include_tags,
-                embedded_only=bool(args.embedded_data_only),
-                check_drift=False,
-            )
-            if not pending:
-                info(
-                    "[qsync:apply]",
-                    "No differences between Excel and cached survey; skipping.",
-                )
-                return
-            dangerous_embedded = [
-                c for c in pending if c.kind == "embedded" and c.is_dangerous
-            ]
-            if dangerous_embedded and not args.allow_dangerous:
-                warn(
-                    "[qsync:apply]",
-                    f"{len(dangerous_embedded)} dangerous embedded data change(s) "
-                    "will be skipped unless --allow-dangerous is set.",
-                )
-            change_count = len(pending)
-            info("[qsync:apply]", f"{change_count} change(s) ready to stage.")
-            if not args.yes:
-                try:
-                    from .interactive_menu import confirm
-
-                    if not confirm(
-                        f"Stage {change_count} change(s) for {args.survey_id}?",
-                        default=True,
-                    ):
-                        warn("[qsync:apply]", "Aborted.")
-                        return
-                except Exception:
-                    resp = (
-                        input(
-                            f"Stage {change_count} change(s) for {args.survey_id}? [Y/n] "
-                        )
-                        .strip()
-                        .lower()
-                    )
-                    if resp and resp not in {"y", "yes"}:
-                        warn("[qsync:apply]", "Aborted.")
-                        return
-
-            payload = _build_pending_payload_from_workbook(
-                args.survey_id,
-                Path(xlsx_path),
-                scope_expr=None,
-                filter_column=args.filter_column,
-                filter_value=args.filter_value,
-                include_qids=include_qids,
-                include_tags=include_tags,
-                ignore_embedded=bool(args.embedded_data_only),
-                allow_drift=bool(getattr(args, "allow_drift", False)),
-                interactive=not bool(getattr(args, "yes", False)),
-                allow_dangerous=bool(args.allow_dangerous),
-                existing=None,
-            )
-            if payload:
-                record = PendingStagedChanges(
-                    survey_id=args.survey_id,
-                    dimension="items",
-                    payload=payload,
-                    schema_version=2,
-                )
-                save_pending(record)
-            else:
-                clear_pending(args.survey_id, "items")
-                success("[qsync:apply]", "No staged changes remain; pending cleared.")
-            return
-
-        if args.command == "push":
-            from .terminal_output import error, info, success, warn
-
-            survey_id = _prompt_for_survey_id_if_needed(
-                args.survey_id, allow_all_surveys=False
-            )
-            args.survey_id = survey_id
-            record = load_pending(survey_id, "items")
-            if record is None or not isinstance(record.payload, ItemsPendingPayload):
-                info(
-                    "[qsync:push]",
-                    f"No staged changes found for {survey_id}. Run 'qsync apply' first.",
-                )
-                return
-
-            qids = list(record.payload.qids or [])
-            embedded_fields = list(record.payload.embedded_fields or [])
-            if record.schema_version < 2 or not getattr(
-                record.payload, "changes", None
-            ):
-                if record.payload.workbook:
-                    wb_path = Path(record.payload.workbook)
-                    if wb_path.exists():
-                        from .dimensions.items import (
-                            _build_pending_payload_from_workbook,
-                        )
-
-                        rebuilt = _build_pending_payload_from_workbook(
-                            survey_id,
-                            wb_path,
-                            scope_expr=None,
-                            ignore_embedded=False,
-                            allow_drift=bool(getattr(args, "allow_drift", False)),
-                            interactive=not bool(args.yes),
-                            existing=record.payload,
-                        )
-                        if rebuilt:
-                            record.payload = rebuilt
-                            record.schema_version = 2
-                            save_pending(record)
-                            qids = list(rebuilt.qids or [])
-                            embedded_fields = list(rebuilt.embedded_fields or [])
-            if not qids and not embedded_fields:
-                warn("[qsync:push]", "Pending record is empty; clearing.")
-                clear_pending(survey_id, "items")
-                return
-
-            change_count = len(qids)
-            embedded_count = len(embedded_fields or [])
-            qid_list = ", ".join(qids)
-            if change_count and embedded_count:
-                info(
-                    "[qsync:push]",
-                    f"{change_count} staged question(s) and {embedded_count} embedded field(s) "
-                    f"ready to upload: {qid_list}.",
-                )
-            elif embedded_count:
-                info(
-                    "[qsync:push]",
-                    f"{embedded_count} embedded field(s) ready to upload.",
-                )
-            else:
-                info(
-                    "[qsync:push]",
-                    f"{change_count} staged question(s) ready to upload: {qid_list}.",
-                )
-            if not args.yes:
-                prompt_suffix = ""
-                if embedded_count and not change_count:
-                    prompt_suffix = f"{embedded_count} embedded field(s)"
-                elif embedded_count:
-                    prompt_suffix = f"{change_count} question(s) and {embedded_count} embedded field(s)"
-                else:
-                    prompt_suffix = f"{change_count} question(s)"
-                try:
-                    from .interactive_menu import confirm
-
-                    if not confirm(
-                        f"Push {prompt_suffix} to Qualtrics for {survey_id}?",
-                        default=True,
-                    ):
-                        warn("[qsync:push]", "Aborted.")
-                        return
-                except Exception:
-                    resp = (
-                        input(
-                            f"Push {prompt_suffix} to Qualtrics for {survey_id}? [Y/n] "
-                        )
-                        .strip()
-                        .lower()
-                    )
-                    if resp and resp not in {"y", "yes"}:
-                        warn("[qsync:push]", "Aborted.")
-                        return
-
-            # Safeguards are now handled inside push_staged_changes
-            try:
-                push_staged_changes(
-                    survey_id=survey_id,
-                    qids=qids,
-                    embedded_fields=embedded_fields,
-                    pending_changes=list(
-                        getattr(record.payload, "changes", None) or []
-                    ),
-                    workbook=record.payload.workbook,
-                    filter_column=record.payload.filter_column,
-                    filter_value=record.payload.filter_value,
-                    publish=not bool(getattr(args, "no_publish", False)),
-                    force_live=bool(args.force_live),
-                    force_preview=bool(args.force_preview_items),
-                    interactive=not bool(args.yes),
-                    allow_drift=bool(getattr(args, "allow_drift", False)),
-                )
-                from .qualtrics_client import refresh_survey_cache
-
-                refresh_survey_cache(survey_id)
-            except Exception:
-                error("[qsync:push]", "Wording push failed; pending changes preserved.")
-                raise
-            clear_pending(survey_id, "items")
-            if change_count and embedded_count:
-                success(
-                    "[qsync:push]",
-                    f"Uploaded {change_count} question(s) and {embedded_count} embedded field(s).",
-                )
-            elif embedded_count:
-                success("[qsync:push]", f"Uploaded {embedded_count} embedded field(s).")
-            else:
-                success(
-                    "[qsync:push]", f"Uploaded {change_count} question(s): {qid_list}."
-                )
-            return
     finally:
         _timer_cm.__exit__(*sys.exc_info())
 
