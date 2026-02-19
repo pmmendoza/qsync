@@ -1315,7 +1315,10 @@ def _run_translation_doctor_from_workbook(
 
     survey = load_cached_survey(survey_id)
     wb = load_workbook(workbook_path, data_only=True)
-    question_rows = excel_io.load_questions_from_workbook(workbook_path)
+    question_rows = excel_io.load_questions_from_workbook(
+        workbook_path,
+        base_language=get_base_language_from_options(survey.payload) or None,
+    )
 
     base_lang = normalize_language_code(base_language or "")
     if not base_lang:
@@ -1426,7 +1429,10 @@ def preview_translations(
         )
 
     survey = load_cached_survey(survey_id)
-    question_rows = excel_io.load_questions_from_workbook(workbook_path)
+    question_rows = excel_io.load_questions_from_workbook(
+        workbook_path,
+        base_language=get_base_language_from_options(survey.payload) or None,
+    )
     lang_list = _resolve_stage_languages(
         survey_id, survey.payload, workbook_path, languages
     )
@@ -1796,7 +1802,10 @@ def apply_translations(
         )
 
     survey = load_cached_survey(survey_id)
-    question_rows = excel_io.load_questions_from_workbook(workbook_path)
+    question_rows = excel_io.load_questions_from_workbook(
+        workbook_path,
+        base_language=get_base_language_from_options(survey.payload) or None,
+    )
     lang_list = _resolve_stage_languages(
         survey_id, survey.payload, workbook_path, languages
     )
@@ -1932,7 +1941,10 @@ def push_translations(
         )
 
     survey = load_cached_survey(survey_id)
-    question_rows = excel_io.load_questions_from_workbook(workbook_path)
+    question_rows = excel_io.load_questions_from_workbook(
+        workbook_path,
+        base_language=get_base_language_from_options(survey.payload) or None,
+    )
     lang_list = _resolve_stage_languages(
         survey_id, survey.payload, workbook_path, languages
     )

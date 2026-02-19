@@ -1924,7 +1924,11 @@ def preview_changes(
     # Self-heal system columns (SurveyID, QuestionType, DataExportTag, Code) if needed
     if self_heal_system_columns:
         _self_heal_system_columns(survey, Path(xlsx_path))
-    questions_excel = excel_io.load_questions_from_workbook(Path(xlsx_path))
+    base_language = excel_io._extract_base_language(survey.payload)
+    questions_excel = excel_io.load_questions_from_workbook(
+        Path(xlsx_path),
+        base_language=base_language,
+    )
     options_excel = excel_io.load_options_from_workbook(Path(xlsx_path))
     subitems_excel = excel_io.load_subitems_from_workbook(Path(xlsx_path))
     sbs_columns_excel = excel_io.load_sbs_columns_from_workbook(Path(xlsx_path))
@@ -2323,7 +2327,11 @@ def apply_changes(
     original_payload_text = survey.path.read_text(encoding="utf-8")
 
     try:
-        questions_excel = excel_io.load_questions_from_workbook(workbook_path)
+        base_language = excel_io._extract_base_language(survey.payload)
+        questions_excel = excel_io.load_questions_from_workbook(
+            workbook_path,
+            base_language=base_language,
+        )
         options_excel = excel_io.load_options_from_workbook(workbook_path)
         subitems_excel = excel_io.load_subitems_from_workbook(workbook_path)
         sbs_columns_excel = excel_io.load_sbs_columns_from_workbook(workbook_path)

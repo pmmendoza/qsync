@@ -4,10 +4,13 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 
 from qsync import excel_io
+from qsync.dimensions import items as items_dimension
 from qsync.sync_core import apply_changes, preview_changes
 
 
@@ -198,6 +201,38 @@ def _minimal_payload_no_embedded_or_sbs() -> dict:
     }
 
 
+def _fr_base_payload() -> dict:
+    return {
+        "result": {
+            "SurveyID": "SV_FR",
+            "SurveyOptions": {
+                "SurveyLanguage": "FR",
+                "AvailableLanguages": {"FR": True, "EN": True},
+            },
+            "SurveyFlow": {"Flow": [{"Type": "Standard", "ID": "BL_1"}]},
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Standard",
+                    "ID": "BL_1",
+                    "Description": "Block 1",
+                    "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+                }
+            },
+            "Questions": {
+                "QID1": {
+                    "QuestionType": "TE",
+                    "Selector": "SL",
+                    "SubSelector": "TX",
+                    "QuestionText": "Texte FR",
+                    "DataExportTag": "Q1",
+                    "QuestionDescription": "Q1",
+                    "Language": {"EN": {"QuestionText": "Text EN"}},
+                }
+            },
+        }
+    }
+
+
 def _write_cached(root: Path, survey_id: str, payload: dict) -> Path:
     surveys_dir = root / "surveys"
     backups_dir = surveys_dir / "backups"
@@ -287,6 +322,32 @@ def test_questions_sheet_includes_config_column_and_required_highlight(tmp_path:
         if has_required_rule:
             break
     assert has_required_rule
+
+
+def test_questions_refresh_clears_stale_readonly_fill_for_force_response(
+    tmp_path: Path,
+) -> None:
+    payload = _question_settings_payload()
+    xlsx_path = tmp_path / "SV_TEST.xlsx"
+    excel_io.init_workbook_from_survey("SV_TEST", payload, xlsx_path)
+
+    wb = load_workbook(xlsx_path)
+    ws = wb[excel_io.QUESTION_SHEET]
+    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    idx = {str(name): i + 1 for i, name in enumerate(headers)}
+    ws.cell(row=2, column=idx["ForceResponseMode"]).fill = PatternFill(
+        fill_type="solid",
+        fgColor=READONLY_RGB,
+    )
+    wb.save(xlsx_path)
+
+    # Refresh formatting via workbook update.
+    excel_io.init_workbook_from_survey("SV_TEST", payload, xlsx_path)
+
+    wb = load_workbook(xlsx_path)
+    ws = wb[excel_io.QUESTION_SHEET]
+    assert _fill_rgb(ws.cell(row=2, column=idx["ForceResponseMode"])) != READONLY_RGB
+    assert _fill_rgb(ws.cell(row=2, column=idx["RequiredResponse"])) == READONLY_RGB
 
 
 def test_all_major_workbook_tables_mark_readonly_columns_gray(tmp_path: Path) -> None:
@@ -443,3 +504,85 @@ def test_refresh_unhides_sbs_and_embedded_sheets_when_rows_exist(tmp_path: Path)
         sbs_ws.cell(row=2, column=sbs_idx["Label_en_IsHTML"]).alignment.horizontal
         == "center"
     )
+
+
+def test_preview_and_detect_changes_handle_non_en_base_without_en_text_column(
+    tmp_path: Path,
+) -> None:
+    payload = _fr_base_payload()
+    survey_id = "SV_FR"
+    _write_cached(tmp_path, survey_id, payload)
+
+    xlsx_path = tmp_path / "excel" / f"{survey_id}.xlsx"
+    xlsx_path.parent.mkdir(parents=True, exist_ok=True)
+    excel_io.init_workbook_from_survey(
+        survey_id,
+        payload,
+        xlsx_path,
+        languages=["FR"],
+    )
+
+    with patch("qsync.qualtrics_client._workspace_root", return_value=tmp_path):
+        changes = preview_changes(
+            survey_id,
+            xlsx_path,
+            check_drift=False,
+            annotate_dirty=False,
+            self_heal_system_columns=False,
+        )
+        detected = items_dimension.detect_changes(survey_id)
+
+    assert changes == []
+    assert detected.has_changes is False
+
+
+def test_load_questions_prefers_declared_base_language_column(tmp_path: Path) -> None:
+    payload = _fr_base_payload()
+    xlsx_path = tmp_path / "SV_FR.xlsx"
+    excel_io.init_workbook_from_survey(
+        "SV_FR",
+        payload,
+        xlsx_path,
+        languages=["FR", "EN"],
+    )
+
+    wb = load_workbook(xlsx_path)
+    ws = wb[excel_io.QUESTION_SHEET]
+    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    idx = {str(name): i + 1 for i, name in enumerate(headers)}
+    ws.cell(row=2, column=idx["text_fr"]).value = "BASE_FR"
+    ws.cell(row=2, column=idx["text_en"]).value = "TRANSLATION_EN"
+    wb.save(xlsx_path)
+
+    row_fr = excel_io.load_questions_from_workbook(
+        xlsx_path,
+        base_language="FR",
+    )["QID1"]
+    row_en = excel_io.load_questions_from_workbook(
+        xlsx_path,
+        base_language="EN",
+    )["QID1"]
+    row_default = excel_io.load_questions_from_workbook(xlsx_path)["QID1"]
+
+    assert row_fr.text_en_md == "BASE_FR"
+    assert row_en.text_en_md == "TRANSLATION_EN"
+    assert row_default.text_en_md == "BASE_FR"
+
+
+def test_load_questions_raises_actionable_error_when_text_columns_missing(
+    tmp_path: Path,
+) -> None:
+    payload = _question_settings_payload()
+    xlsx_path = tmp_path / "SV_TEST.xlsx"
+    excel_io.init_workbook_from_survey("SV_TEST", payload, xlsx_path)
+
+    wb = load_workbook(xlsx_path)
+    ws = wb[excel_io.QUESTION_SHEET]
+    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    for name in ("text_en", "ishtml_en"):
+        ws.delete_cols(headers.index(name) + 1, 1)
+        headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    wb.save(xlsx_path)
+
+    with pytest.raises(ValueError, match="Run `qsync items pull --survey-id"):
+        excel_io.load_questions_from_workbook(xlsx_path, base_language="EN")

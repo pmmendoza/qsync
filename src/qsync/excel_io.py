@@ -4670,16 +4670,24 @@ def _apply_readonly_fill(
     if ws.max_row <= 1:
         return
     read_only_indices = []
+    editable_indices = []
     for idx, name in enumerate(headers, start=1):
         header = str(name or "")
         if header not in editable_headers:
             read_only_indices.append(idx)
+        else:
+            editable_indices.append(idx)
     if not read_only_indices:
         return
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for idx in read_only_indices:
             if idx <= len(row):
                 row[idx - 1].fill = _READONLY_FILL
+        # Clear stale static fills on editable cells so workbook refresh can
+        # recover from older schema states that marked them read-only.
+        for idx in editable_indices:
+            if idx <= len(row):
+                row[idx - 1].fill = PatternFill(fill_type=None)
 
 
 _QID_NUM_RE = re.compile(r"^QID(?P<num>\d+)$", re.IGNORECASE)
@@ -5830,7 +5838,27 @@ def _populate_system_sheet(wb: Workbook, survey_id: str, survey_payload: dict) -
         ws.add_table(table)
 
 
-def _find_base_text_col(headers: List[str], prefix: str) -> tuple[str, str]:
+def _fallback_html_col_for_md(md_col: str, *, prefix: str) -> str:
+    name = str(md_col or "")
+    if prefix == "Text":
+        if name.startswith("text_"):
+            suffix = name[len("text_") :]
+            return f"ishtml_{suffix}"
+        if name.startswith("Text_") and name.endswith("_MD"):
+            suffix = name[len("Text_") : -len("_MD")]
+            return f"Text_{suffix}_IsHTML"
+    if name.startswith(f"{prefix}_") and name.endswith("_MD"):
+        suffix = name[len(prefix) + 1 : -len("_MD")]
+        return f"{prefix}_{suffix}_IsHTML"
+    return f"{prefix}_en_IsHTML"
+
+
+def _find_base_text_col(
+    headers: List[str],
+    prefix: str,
+    *,
+    base_language: str | None = None,
+) -> tuple[str, str]:
     """Find the first ``{prefix}_*_MD`` column and its ``_IsHTML`` companion.
 
     Returns ``(md_col, html_col)`` — e.g. ``("Text_cs_MD", "Text_cs_IsHTML")``.
@@ -5839,11 +5867,27 @@ def _find_base_text_col(headers: List[str], prefix: str) -> tuple[str, str]:
     if prefix == "Text":
         lang_map = _question_text_lang_columns_from_headers(headers, include_legacy=True)
         if lang_map:
-            ordered = _ordered_languages(list(lang_map.keys()), base_language="EN")
-            first_lang = ordered[0] if ordered else next(iter(lang_map))
+            preferred_lang = _normalize_language_code(base_language or "")
+            if preferred_lang and preferred_lang in lang_map:
+                md_col, html_col = lang_map[preferred_lang]
+                return md_col, html_col or _fallback_html_col_for_md(
+                    md_col, prefix=prefix
+                )
+            # No explicit base language match: pick the first discovered language
+            # from workbook header order instead of assuming EN.
+            first_lang = next(iter(lang_map))
             md_col, html_col = lang_map[first_lang]
-            return md_col, html_col or _question_text_ishtml_column(first_lang)
-        return _question_text_md_column("EN"), _question_text_ishtml_column("EN")
+            return md_col, html_col or _fallback_html_col_for_md(
+                md_col, prefix=prefix
+            )
+        if base_language:
+            return _question_text_md_column(base_language), _question_text_ishtml_column(
+                base_language
+            )
+        raise ValueError(
+            "Questions sheet is missing question text columns "
+            "(expected at least one `text_<lang>` column)."
+        )
 
     fallback_md = f"{prefix}_en_MD"
     fallback_html = f"{prefix}_en_IsHTML"
@@ -5899,7 +5943,11 @@ def _parse_question_config_json_strict(
     )
 
 
-def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
+def load_questions_from_workbook(
+    xlsx_path: Path,
+    *,
+    base_language: str | None = None,
+) -> Dict[str, QuestionRow]:
     """Read QuestionRow objects from an existing workbook.
 
     Parses the Questions sheet and returns a dictionary mapping each QID to its
@@ -5908,6 +5956,8 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
 
     Args:
         xlsx_path: Path to the workbook created by `qsync init`.
+        base_language: Optional survey base language code (e.g., `EN`, `FR`).
+            When provided, qsync resolves question text from that language column.
 
     Returns:
         Mapping of `QID -> QuestionRow`. Each QuestionRow contains:
@@ -5944,7 +5994,24 @@ def load_questions_from_workbook(xlsx_path: Path) -> Dict[str, QuestionRow]:
     idx = {name: i for i, name in enumerate(headers)}
     has_legacy_config_columns = any(name in idx for name in LEGACY_QUESTION_CONFIG_COLUMNS)
 
-    text_md_col, text_html_col = _find_base_text_col(headers, "Text")
+    try:
+        text_md_col, text_html_col = _find_base_text_col(
+            headers,
+            "Text",
+            base_language=base_language,
+        )
+    except Exception as exc:
+        raise ValueError(
+            "Unable to resolve Questions text columns from workbook. "
+            "Run `qsync items pull --survey-id ...` to refresh workbook columns "
+            f"(workbook: {xlsx_path.name})."
+        ) from exc
+    if text_md_col not in idx:
+        raise ValueError(
+            "Questions sheet is missing the base text column "
+            f"`{text_md_col}`. Run `qsync items pull --survey-id ...` to refresh "
+            f"workbook columns (workbook: {xlsx_path.name})."
+        )
 
     def _get(row, name, default=None):
         col = idx.get(name)

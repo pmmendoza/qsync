@@ -769,7 +769,13 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
     except Exception as e:
         # Don't log full error during detection - just return error status
         # Error will be shown in the table with explanation below
-        error_msg = str(e).split("\n")[0]  # First line only
+        if isinstance(e, KeyError) and e.args:
+            error_msg = (
+                f"Missing expected workbook key/column: {e.args[0]!r}. "
+                "Run `qsync items pull --survey-id ...` to refresh the workbook."
+            )
+        else:
+            error_msg = str(e).split("\n")[0]  # First line only
 
         # Create user-friendly explanation and check if auto-fix is safe
         safe_to_fix = False
@@ -4750,7 +4756,20 @@ def sync_survey(
                         f"{Colors.DIM}Run: qsync items pull --survey-id {survey_id}{Colors.RESET}"
                     )
                     continue
-                questions_excel = excel_io.load_questions_from_workbook(xlsx_path)
+                base_language = None
+                try:
+                    from .qualtrics_client import load_cached_survey
+
+                    survey_cache = load_cached_survey(survey_id)
+                    base_language = excel_io._extract_base_language(
+                        survey_cache.payload
+                    )
+                except Exception:
+                    base_language = None
+                questions_excel = excel_io.load_questions_from_workbook(
+                    xlsx_path,
+                    base_language=base_language,
+                )
                 qid_candidates = _collect_qid_candidates()
                 if not qid_candidates:
                     print(

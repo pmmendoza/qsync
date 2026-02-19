@@ -123,7 +123,10 @@ def detect_unstaged_changes(
                 status_kind="none",
                 edit_count=0,
             )
-        question_rows = excel_io.load_questions_from_workbook(workbook_path)
+        question_rows = excel_io.load_questions_from_workbook(
+            workbook_path,
+            base_language=base_language or None,
+        )
         changes = diff_workbook_vs_cache(
             survey.payload,
             workbook_path,
