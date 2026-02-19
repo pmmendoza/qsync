@@ -41,7 +41,7 @@ qsync js push    --survey-id SV_5AsKyAO5QqswBcq --force-live --yes
 
 - `js pull` rebuilds the mapping and verifies that the requested survey column exists.
 - `js preview` classifies every `(js_file, QID)` pair as `match`, `comments-only`, `diff`, `missing`, `trash`, or `unused`. The summary table now includes a `Δ(+/-)` column counting the diff lines and reports how many active JS blocks are unmatched.
-- `js stage` writes pending JS entries only (no cache mutation). Use `--allow-diff` to include substantive code diffs, and `--no-include-match` to skip identical blocks when you only care about missing QuestionJS entries.
+- `js stage` writes pending JS entries only (no cache mutation). By default it stages only changed QIDs (`diff`, `comments-only`, and `missing` when `--create-missing` is set). Use `--include-match` for a full mapped push surface, and `--allow-diff` to include substantive code diffs.
 - `js push` enforces the same safeguards as wording pushes: locked surveys are blocked, live responses require `--force-live`, preview responses trigger warnings/confirmations, and stale inventory triggers a quick live re-check.
 
 ## 4. Handling hint rows & unmapped QIDs

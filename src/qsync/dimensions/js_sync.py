@@ -240,9 +240,14 @@ def main(argv: Iterable[str] | None = None) -> None:
         help=f"Path to JS↔QID mapping CSV (default: {DEFAULT_MAPPING_CSV})",
     )
     parser.add_argument(
+        "--include-match",
+        action="store_true",
+        help="Also sync mapped QIDs whose cached JS already matches local files.",
+    )
+    parser.add_argument(
         "--no-include-match",
         action="store_true",
-        help="Only sync blocks with comment/whitespace differences (exclude exact matches).",
+        help="Alias for default behavior (sync changed QIDs only).",
     )
     parser.add_argument(
         "--dry-run",
@@ -279,7 +284,8 @@ def main(argv: Iterable[str] | None = None) -> None:
     sync_js_with_cached(
         survey_id=args.survey_id,
         mapping_csv=args.mapping,
-        include_match=not args.no_include_match,
+        include_match=bool(getattr(args, "include_match", False))
+        and not bool(args.no_include_match),
         dry_run=bool(args.dry_run),
         create_missing=bool(args.create_missing),
         allow_diff=bool(args.allow_diff),

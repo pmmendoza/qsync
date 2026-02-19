@@ -2809,9 +2809,14 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Overwrite cached JS even when substantive diffs exist",
     )
     p_js_stage.add_argument(
+        "--include-match",
+        action="store_true",
+        help="Also stage mapped QIDs whose cached JS already matches local files",
+    )
+    p_js_stage.add_argument(
         "--no-include-match",
         action="store_true",
-        help="Skip syncing when cached JS already matches",
+        help="Alias for default behavior (stage changed QIDs only)",
     )
     p_js_stage.add_argument(
         "--allow-drift",
@@ -2845,9 +2850,14 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Overwrite cached JS even when substantive diffs exist",
     )
     p_js_apply.add_argument(
+        "--include-match",
+        action="store_true",
+        help="Also stage mapped QIDs whose cached JS already matches local files",
+    )
+    p_js_apply.add_argument(
         "--no-include-match",
         action="store_true",
-        help="Skip syncing when cached JS already matches",
+        help="Alias for default behavior (stage changed QIDs only)",
     )
     p_js_apply.add_argument(
         "--allow-drift",
@@ -3225,6 +3235,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--visual",
         action="store_true",
         help="Generate Mermaid diagrams for visual diff",
+    )
+    p_flow_preview.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="Allow preview against a drifted baseline",
     )
 
     # flow stage
@@ -4972,6 +4987,16 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             if args.flow_command == "preview":
                 header("[qsync:flow]", "Previewing flow changes...")
                 try:
+                    from .drift_check import confirm_preview_drift
+
+                    confirm_preview_drift(
+                        survey_id=survey_id,
+                        dimension="flow",
+                        allow_drift=bool(getattr(args, "allow_drift", False)),
+                        interactive=interactive,
+                        update_cache=None,
+                    )
+
                     changes = flow_dimension.preview(
                         survey_id,
                         verbose=bool(getattr(args, "verbose", False)),
@@ -5242,7 +5267,8 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     include_qids=include_qids,
                     include_js=include_js,
                     scope_expr=scope_expr,
-                    include_match=not args.no_include_match,
+                    include_match=bool(getattr(args, "include_match", False))
+                    and not bool(args.no_include_match),
                     allow_diff=bool(args.allow_diff),
                     create_missing=bool(args.create_missing),
                     interactive=sys.stdin.isatty(),

@@ -52,7 +52,7 @@ def detect_changes(survey_id: str) -> DimensionChanges:
                     return DimensionChanges(
                         dimension="js",
                         has_changes=True,
-                        change_summary=f"✓ Staged: {len(pending.payload.entries)} entries",
+                        change_summary=f"✓ Staged: {len(pending.payload.entries)} question(s)",
                         affected_qids=qids,
                         status_kind="staged",
                         edit_count=len(pending.payload.entries or []),
@@ -70,7 +70,7 @@ def detect_changes(survey_id: str) -> DimensionChanges:
                 return DimensionChanges(
                     dimension="js",
                     has_changes=True,
-                    change_summary=f"✓ Staged: {len(pending.payload.entries)} entries",
+                    change_summary=f"✓ Staged: {len(pending.payload.entries)} question(s)",
                     affected_qids=qids,
                     status_kind="staged",
                     edit_count=len(pending.payload.entries or []),
@@ -93,7 +93,7 @@ def detect_changes(survey_id: str) -> DimensionChanges:
                 return DimensionChanges(
                     dimension="js",
                     has_changes=True,
-                    change_summary=f"⚡ Unstaged: {len(changes)} JS file(s) changed",
+                    change_summary=f"⚡ Unstaged: {len(changes)} JS question(s) changed",
                     affected_qids=qids,
                     status_kind="unstaged",
                     edit_count=len(changes),
@@ -209,7 +209,7 @@ def stage(
         include_qids=None,
         include_js=None,
         scope_expr=scope_expr,
-        include_match=True,
+        include_match=False,
         allow_diff=True,
         create_missing=False,
         interactive=interactive,

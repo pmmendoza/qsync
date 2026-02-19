@@ -2350,8 +2350,30 @@ def _summarize_pending_record(dimension: str, pending) -> str:
         return f"staged: {emb_count} field(s)"
 
     if dimension == "js":
-        count = len(payload.entries) if getattr(payload, "entries", None) else 0
-        return f"staged: {count} JS file(s)"
+        entries = list(getattr(payload, "entries", None) or [])
+        if not entries:
+            return "staged: 0 question(s)"
+
+        changed = 0
+        unchanged = 0
+        non_active = 0
+        for entry in entries:
+            status = ""
+            if isinstance(entry, dict):
+                status = str(entry.get("status") or "").strip().lower()
+            if status in {"match", "mapped"}:
+                unchanged += 1
+            elif status in {"trash", "unused"}:
+                non_active += 1
+            else:
+                changed += 1
+
+        parts = [f"{len(entries)} question(s)", f"{changed} changed"]
+        if unchanged:
+            parts.append(f"{unchanged} unchanged")
+        if non_active:
+            parts.append(f"{non_active} non-active")
+        return "staged: " + ", ".join(parts)
 
     if dimension == "translations":
         qid_count = len(payload.qids) if getattr(payload, "qids", None) else 0
@@ -2595,7 +2617,7 @@ def _detect_unstaged_js(
             return DimensionChanges(
                 dimension="js",
                 has_changes=True,
-                change_summary=f"⚡ Unstaged: {len(changes)} JS file(s) changed",
+                change_summary=f"⚡ Unstaged: {len(changes)} JS question(s) changed",
                 affected_qids=qids,
                 status_kind="unstaged",
                 edit_count=len(changes),
@@ -3849,8 +3871,6 @@ def _sync_dimensions_once(
             return None
 
         if unstaged_dims:
-            from .interactive_menu import confirm
-
             print(
                 f"\n{Colors.YELLOW}⚡ Unstaged dimensions:{Colors.RESET} {', '.join(unstaged_dims)}"
             )
@@ -3858,36 +3878,83 @@ def _sync_dimensions_once(
                 f"{Colors.DIM}These changes need to be staged before pushing.{Colors.RESET}"
             )
 
+            should_stage = True
             if interactive:
-                should_stage = confirm(message="Stage these changes now?", default=True)
+                from .interactive_menu import confirm
 
-                if not should_stage:
-                    print(f"{Colors.DIM}Staging cancelled by user.{Colors.RESET}")
+                should_stage = confirm(message="Stage these changes now?", default=True)
+            else:
+                print(
+                    f"{Colors.DIM}Auto-staging in non-interactive mode.{Colors.RESET}"
+                )
+
+            if not should_stage:
+                print(f"{Colors.DIM}Staging cancelled by user.{Colors.RESET}")
+                return None
+
+            # Stage each unstaged dimension
+            for dim in unstaged_dims:
+                print(f"\n[sync:stage] Staging {dim}...")
+                stage_success = stage_dimension(
+                    survey_id,
+                    dim,
+                    scope=scope,
+                    ignore_embedded=skip_embedded if dim == "items" else False,
+                    allow_drift=allow_drift,
+                    interactive=interactive and not auto_yes,
+                )
+
+                if not stage_success:
+                    print(f"{Colors.RED}✗ Failed to stage {dim}{Colors.RESET}")
                     return None
 
-                # Stage each unstaged dimension
-                for dim in unstaged_dims:
-                    print(f"\n[sync:stage] Staging {dim}...")
-                    stage_success = stage_dimension(
-                        survey_id,
-                        dim,
-                        scope=scope,
-                        ignore_embedded=skip_embedded if dim == "items" else False,
-                        allow_drift=allow_drift,
-                        interactive=interactive and not auto_yes,
-                    )
+                print(f"{Colors.GREEN}✓ Staged {dim}{Colors.RESET}")
 
-                    if not stage_success:
-                        print(f"{Colors.RED}✗ Failed to stage {dim}{Colors.RESET}")
-                        return None
+            # If we just staged in this same session, prefer pushing the staged payload.
+            # This avoids prompting “Excel differs from cache” immediately after staging,
+            # which is expected (Excel != cache is the reason we staged).
+            if prefer_pending is None:
+                prefer_pending = True
+    else:
+        # --yes path: stage unstaged dimensions automatically before push.
+        selected_unstaged = _detect_unstaged_changes(survey_id, scope=scope)
+        js_stale_pending = False
+        if "js" in dimensions_sorted and _is_dimension_staged(survey_id, "js"):
+            js_stale_pending = _js_pending_out_of_sync(survey_id, scope=scope)
 
-                    print(f"{Colors.GREEN}✓ Staged {dim}{Colors.RESET}")
+        unstaged_dims: List[str] = []
+        for dim in dimensions_sorted:
+            dim_info = selected_unstaged.get(dim)
+            has_unstaged = bool(
+                dim_info and dim_info.has_changes and dim_info.status_kind == "unstaged"
+            )
+            if has_unstaged:
+                unstaged_dims.append(dim)
 
-                # If we just staged in this same session, prefer pushing the staged payload.
-                # This avoids prompting “Excel differs from cache” immediately after staging,
-                # which is expected (Excel != cache is the reason we staged).
-                if prefer_pending is None:
-                    prefer_pending = True
+        if js_stale_pending and "js" in dimensions_sorted and "js" not in unstaged_dims:
+            unstaged_dims.append("js")
+
+        if unstaged_dims:
+            print(
+                f"\n[sync:stage] Auto-staging unstaged dimensions (--yes): {', '.join(unstaged_dims)}"
+            )
+            for dim in unstaged_dims:
+                print(f"\n[sync:stage] Staging {dim}...")
+                stage_success = stage_dimension(
+                    survey_id,
+                    dim,
+                    scope=scope,
+                    ignore_embedded=skip_embedded if dim == "items" else False,
+                    allow_drift=allow_drift,
+                    interactive=False,
+                )
+                if not stage_success:
+                    print(f"{Colors.RED}✗ Failed to stage {dim}{Colors.RESET}")
+                    return None
+                print(f"{Colors.GREEN}✓ Staged {dim}{Colors.RESET}")
+
+            if prefer_pending is None:
+                prefer_pending = True
 
     # Push approval menu (unless --yes bypasses all prompts)
     if not auto_yes and interactive:

@@ -1105,7 +1105,8 @@ usage: qsync js stage [-h] [--survey-id SURVEY_ID] [--mapping MAPPING]
                       [--include-qid INCLUDE_QIDS]
                       [--include-tag INCLUDE_TAGS] [--include-js INCLUDE_JS]
                       [--dry-run] [--create-missing] [--allow-diff]
-                      [--no-include-match] [--allow-drift] [--scope SCOPE]
+                      [--include-match] [--no-include-match]
+                      [--allow-drift] [--scope SCOPE]
 
 options:
   -h, --help            show this help message and exit
@@ -1124,7 +1125,9 @@ options:
   --dry-run             Compute staged entries without writing pending changes
   --create-missing      Create QuestionJS blocks when they are missing
   --allow-diff          Include substantive code diffs when staging
-  --no-include-match    Skip staging when cached JS already matches
+  --include-match       Also stage mapped QIDs whose cached JS already matches
+                        local files
+  --no-include-match    Alias for default behavior (stage changed QIDs only)
   --allow-drift         Allow staging against a drifted cache without
                         prompting
   --scope SCOPE         Scope filter expression (qid:<QID>,
