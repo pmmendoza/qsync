@@ -7,6 +7,7 @@ from qsync.error_catalog import get_docs_url, get_suggestion, is_recoverable
 class ErrorCatalogTests(unittest.TestCase):
     def test_status_suggestions_and_recoverable(self) -> None:
         self.assertIn("survey", get_suggestion(404))
+        self.assertIn("account status", get_suggestion(403))
         self.assertTrue(is_recoverable(500))
         self.assertFalse(is_recoverable(404))
         self.assertEqual(get_docs_url(), "appendices/logging_guide.md#troubleshooting")

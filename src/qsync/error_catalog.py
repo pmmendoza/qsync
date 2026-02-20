@@ -14,7 +14,10 @@ _ERROR_DOCS_URL_CANDIDATES = (
 _STATUS_SUGGESTIONS: dict[int, str] = {
     400: "Check the request payload/fields; re-run with corrected input.",
     401: "Verify X-API-TOKEN / credentials and re-run `qsync doctor`.",
-    403: "Check account permissions for this survey/resource.",
+    403: (
+        "Check account context/permissions for this survey/resource "
+        "(`qsync account status`, then `--account <name>` or `qsync account use <name>`)."
+    ),
     404: "Verify the survey ID or endpoint; refresh inventory if needed.",
     409: "Conflict detected; refresh state (inventory/master pull) and retry.",
     422: "Validation error; inspect field values and required parameters.",

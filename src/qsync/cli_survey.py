@@ -6495,7 +6495,7 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
                 suffix = f" … (+{len(empties) - 12} more)" if len(empties) > 12 else ""
                 warnings.append(f"[{lang}] Empty keys (sample): {sample}{suffix}")
 
-            errors.extend(_check_value_length_limit(normalized, lang))
+            warnings.extend(_check_value_length_limit(normalized, lang))
             ph_errors, ph_warnings = _check_placeholders(
                 base_map_scoped, normalized, lang
             )

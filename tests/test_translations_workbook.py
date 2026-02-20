@@ -572,7 +572,7 @@ def test_init_preserves_non_empty_cells(tmp_path: Path) -> None:
     assert o_ws.cell(row=2, column=o_fr_idx).value == "Custom FR Opt"
 
 
-def test_workbook_doctor_rejects_overlong_values(tmp_path: Path, monkeypatch) -> None:
+def test_workbook_doctor_warns_on_overlong_values(tmp_path: Path, monkeypatch) -> None:
     from qsync.translations import QUALTRICS_TRANSLATION_VALUE_MAX_CHARS
 
     payload = _survey_payload()
@@ -608,4 +608,4 @@ def test_workbook_doctor_rejects_overlong_values(tmp_path: Path, monkeypatch) ->
         workbook_path=workbook_path,
     )
 
-    assert any("length limit" in err.lower() for err in report.errors)
+    assert any("endpoint limit" in warn.lower() for warn in report.warnings)

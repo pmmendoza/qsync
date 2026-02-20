@@ -110,12 +110,16 @@ def _error_context_from_status(
     *,
     reason: str | None = None,
     detail: Any | None = None,
+    qualtrics_error_code: str | None = None,
+    qualtrics_error_message: str | None = None,
+    endpoint: str | None = None,
+    account_context: Mapping[str, Any] | None = None,
     retry_count: int = 0,
 ) -> dict[str, Any]:
     suggestion = get_suggestion(status)
     recoverable = is_recoverable(status)
     message = f"{status} {reason}".strip() if status is not None else (reason or "")
-    return {
+    context: dict[str, Any] = {
         "type": "HTTPError",
         "message": message,
         "reason": reason,
@@ -125,6 +129,15 @@ def _error_context_from_status(
         "suggestion": suggestion,
         "docs_url": get_docs_url(),
     }
+    if qualtrics_error_code:
+        context["qualtrics_error_code"] = qualtrics_error_code
+    if qualtrics_error_message:
+        context["qualtrics_error_message"] = qualtrics_error_message
+    if endpoint:
+        context["endpoint"] = endpoint
+    if account_context:
+        context["account_context"] = dict(account_context)
+    return context
 
 
 def _error_context_from_exception(
@@ -141,6 +154,193 @@ def _error_context_from_exception(
         "suggestion": suggestion,
         "docs_url": get_docs_url(),
     }
+
+
+def _extract_qualtrics_error(detail: Any) -> tuple[str | None, str | None]:
+    if not isinstance(detail, Mapping):
+        return None, None
+
+    code: str | None = None
+    message: str | None = None
+
+    meta = detail.get("meta")
+    if isinstance(meta, Mapping):
+        meta_error = meta.get("error")
+        if isinstance(meta_error, Mapping):
+            raw_code = meta_error.get("errorCode")
+            raw_message = meta_error.get("errorMessage")
+            code = str(raw_code).strip() if raw_code is not None else None
+            message = str(raw_message).strip() if raw_message is not None else None
+        if not code:
+            raw_code = meta.get("errorCode")
+            code = str(raw_code).strip() if raw_code is not None else None
+        if not message:
+            raw_message = meta.get("errorMessage")
+            message = str(raw_message).strip() if raw_message is not None else None
+
+    error = detail.get("error")
+    if not code and isinstance(error, Mapping):
+        raw_code = error.get("errorCode")
+        code = str(raw_code).strip() if raw_code is not None else None
+    if not message and isinstance(error, Mapping):
+        raw_message = error.get("errorMessage")
+        message = str(raw_message).strip() if raw_message is not None else None
+
+    if not message:
+        raw_message = detail.get("message")
+        message = str(raw_message).strip() if raw_message is not None else None
+
+    return code or None, message or None
+
+
+def _preview_detail(detail: Any, *, max_chars: int = 220) -> str | None:
+    if detail is None:
+        return None
+    if isinstance(detail, str):
+        text = detail.strip()
+    else:
+        try:
+            text = str(detail).strip()
+        except Exception:
+            return None
+    if not text:
+        return None
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1] + "…"
+
+
+def _account_context_for_error(base_url: str) -> dict[str, str]:
+    active_account = (os.environ.get("QSYNC_ACCOUNT") or "").strip() or "<default>"
+    return {
+        "base_url": (base_url or "").strip() or "<unset>",
+        "active_account": active_account,
+    }
+
+
+def _qualtrics_error_hints(
+    *,
+    status: int | None,
+    error_code: str | None,
+    endpoint: str,
+    base_url: str,
+) -> list[str]:
+    hints: list[str] = []
+
+    if error_code == "QVAL_3":
+        hints.append(
+            "The legacy translations endpoint has a hard 10,000-character value limit."
+        )
+        endpoint_lc = endpoint.lower()
+        if "surveys/" in endpoint_lc and "translations/" in endpoint_lc:
+            hints.append(
+                "For long translation text, use survey-definition question updates instead."
+            )
+
+    if error_code == "QMST_1":
+        hints.append(
+            "Qualtrics rejected the question payload; validate field names/types in the question JSON."
+        )
+
+    if status == 403:
+        account_context = _account_context_for_error(base_url)
+        hints.append(
+            "Forbidden for current credential context "
+            f"(base_url={account_context['base_url']}, account={account_context['active_account']})."
+        )
+        hints.append(
+            "Verify account selection with `qsync account status` and rerun with "
+            "`--account <name>` (or `qsync account use <name>`)."
+        )
+        hints.append(
+            "If running direct Python/pipx calls, export `QSYNC_ACCOUNT=<name>` first."
+        )
+
+    return hints
+
+
+def _format_http_error_message(
+    *,
+    status: int | None,
+    reason: str | None,
+    method: str,
+    endpoint: str,
+    detail: Any,
+    error_code: str | None,
+    error_message: str | None,
+    base_url: str,
+) -> str:
+    status_text = str(status) if status is not None else "unknown"
+    first_line = f"Qualtrics API error {status_text}"
+    if reason:
+        first_line += f" {reason}"
+    if error_code:
+        first_line += f" ({error_code})"
+
+    message = (error_message or "").strip()
+    detail_preview = _preview_detail(detail)
+    if message:
+        first_line += f": {message}"
+    elif detail_preview:
+        first_line += f": {detail_preview}"
+
+    lines = [first_line, f"Endpoint: {method} {endpoint}"]
+
+    for hint in _qualtrics_error_hints(
+        status=status,
+        error_code=error_code,
+        endpoint=endpoint,
+        base_url=base_url,
+    ):
+        lines.append(f"Hint: {hint}")
+
+    suggestion = get_suggestion(status)
+    if suggestion:
+        lines.append(f"Suggestion: {suggestion}")
+    return "\n".join(lines)
+
+
+def _extract_error_detail(
+    response: requests.Response, *, stream: bool = False
+) -> Any | None:
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    wants_json = ("application/json" in content_type) or content_type.endswith("+json")
+    if stream:
+        wants_json = False
+
+    if wants_json:
+        try:
+            return response.json()
+        except ValueError:
+            return None
+
+    raw: bytes = b""
+    try:
+        remaining = _ERROR_BODY_MAX_BYTES
+        chunks: list[bytes] = []
+        for chunk in response.iter_content(chunk_size=min(8192, remaining)):
+            if not chunk:
+                continue
+            chunks.append(chunk[:remaining])
+            remaining -= len(chunks[-1])
+            if remaining <= 0:
+                break
+        raw = b"".join(chunks)
+    except Exception:
+        raw = b""
+
+    encoding = response.encoding or "utf-8"
+    try:
+        text = raw.decode(encoding, errors="replace")
+    except LookupError:
+        text = raw.decode("utf-8", errors="replace")
+
+    truncated = len(raw) >= _ERROR_BODY_MAX_BYTES
+    return (
+        text + f"... <truncated to {_ERROR_BODY_MAX_BYTES} bytes>"
+        if truncated
+        else text
+    )
 
 
 def _log_before_sleep(retry_state: RetryCallState) -> None:
@@ -254,56 +454,36 @@ def send_api_request(
         raise
 
     if not response.ok:
+        detail = _extract_error_detail(
+            response, stream=bool(request_kwargs.get("stream"))
+        )
+        qualtrics_error_code, qualtrics_error_message = _extract_qualtrics_error(detail)
+        endpoint = path
+        if endpoint.startswith("http://") or endpoint.startswith("https://"):
+            endpoint = _normalise_path(endpoint)
+        account_context = (
+            _account_context_for_error(base_url) if response.status_code == 403 else None
+        )
+        formatted_error = _format_http_error_message(
+            status=response.status_code,
+            reason=response.reason,
+            method=method,
+            endpoint=endpoint,
+            detail=detail,
+            error_code=qualtrics_error_code,
+            error_message=qualtrics_error_message,
+            base_url=base_url,
+        )
+
         if log_event:
-            detail: Any
-            content_type = (response.headers.get("Content-Type") or "").lower()
-            wants_json = ("application/json" in content_type) or content_type.endswith(
-                "+json"
-            )
-            if request_kwargs.get("stream"):
-                wants_json = False
-
-            if wants_json:
-                try:
-                    detail = response.json()
-                except ValueError:
-                    detail = None
-            else:
-                detail = None
-
-            if detail is None:
-                raw: bytes = b""
-                try:
-                    remaining = _ERROR_BODY_MAX_BYTES
-                    chunks: list[bytes] = []
-                    for chunk in response.iter_content(chunk_size=min(8192, remaining)):
-                        if not chunk:
-                            continue
-                        chunks.append(chunk[:remaining])
-                        remaining -= len(chunks[-1])
-                        if remaining <= 0:
-                            break
-                    raw = b"".join(chunks)
-                except Exception:
-                    raw = b""
-
-                encoding = response.encoding or "utf-8"
-                try:
-                    text = raw.decode(encoding, errors="replace")
-                except LookupError:
-                    text = raw.decode("utf-8", errors="replace")
-
-                truncated = len(raw) >= _ERROR_BODY_MAX_BYTES
-                detail = (
-                    text + f"... <truncated to {_ERROR_BODY_MAX_BYTES} bytes>"
-                    if truncated
-                    else text
-                )
-
             error_context = _error_context_from_status(
                 response.status_code,
                 reason=response.reason,
                 detail=detail,
+                qualtrics_error_code=qualtrics_error_code,
+                qualtrics_error_message=qualtrics_error_message,
+                endpoint=f"{method} {endpoint}",
+                account_context=account_context,
                 retry_count=max(attempts - 1, 0),
             )
             log_push_event(
@@ -315,7 +495,7 @@ def send_api_request(
                 error=error_context,
                 meta=log_meta,
             )
-        response.raise_for_status()
+        raise requests.HTTPError(formatted_error, response=response)
 
     if log_event:
         final_meta: dict[str, Any] | None = dict(log_meta) if log_meta else None

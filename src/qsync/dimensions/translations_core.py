@@ -87,8 +87,10 @@ __all__ = [
 
 _PLACEHOLDER_RE = re.compile(r"\$\{e://Field/[^}]+\}")
 
-# Qualtrics API rejects individual translation values above this length.
-# Observed error: QVAL_3 "Parameter <key> exceeds maximum length of 10000."
+# Legacy Qualtrics translations endpoint (`/surveys/{surveyId}/translations/{lang}`)
+# rejects individual values above this length with `QVAL_3`.
+# The survey-definition question endpoint used by qsync push paths supports
+# much larger values, so this check is advisory only.
 QUALTRICS_TRANSLATION_VALUE_MAX_CHARS = 10_000
 
 
@@ -1085,7 +1087,11 @@ def _check_value_length_limit(
         if len(value) <= limit:
             continue
         errors.append(
-            f"[{language}] {key}: exceeds Qualtrics translation value length limit ({len(value)}>{limit})."
+            (
+                f"[{language}] {key}: exceeds legacy translations endpoint limit "
+                f"({len(value)}>{limit}; /surveys/{{surveyId}}/translations/{{lang}}). "
+                "Survey-definition question push may still succeed."
+            )
         )
         if len(errors) >= max_samples:
             break
@@ -1352,7 +1358,7 @@ def _run_translation_doctor_from_workbook(
             )
 
         if lang != base_lang:
-            errors.extend(_check_value_length_limit(full_map_str, lang))
+            warnings.extend(_check_value_length_limit(full_map_str, lang))
 
         if base_map_str and lang != base_lang:
             ph_errors, ph_warnings = _check_placeholders(
@@ -1831,7 +1837,7 @@ def apply_translations(
         base_map = build_base_value_map_for_keys(survey.payload, target_map.keys())
         base_map_str = {_translation_key_str(k): v for k, v in base_map.items()}
         target_map_str = {_translation_key_str(k): v for k, v in target_map.items()}
-        errors.extend(_check_value_length_limit(target_map_str, normalized_lang))
+        warnings.extend(_check_value_length_limit(target_map_str, normalized_lang))
         ph_errors, ph_warnings = _check_placeholders(
             base_map_str, target_map_str, normalized_lang
         )
