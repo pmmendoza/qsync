@@ -834,6 +834,168 @@ def test_move_question_before_anchor_same_block_keeps_correct_order(monkeypatch)
     assert qids == ["QID1", "QID2", "QID3"]
 
 
+def test_remove_question_dry_run_does_not_write(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    definition = {
+        "Questions": {
+            "QID1": {"QuestionID": "QID1", "QuestionType": "MC"},
+            "QID2": {"QuestionID": "QID2", "QuestionType": "MC"},
+        },
+        "Blocks": {
+            "BL_MAIN": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID1"},
+                    {"Type": "Question", "QuestionID": "QID2"},
+                ],
+            }
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_MAIN"}]},
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_preflight_question_writes",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda *_a, **_k: definition,
+    )
+
+    writes: list[str] = []
+    monkeypatch.setattr(
+        cli_survey,
+        "send_api_request",
+        lambda *_a, **_k: writes.append("write") or _Resp({"result": {}}),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        question_id=["QID2"],
+        dry_run=True,
+        force_live=False,
+        yes=False,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_remove_question(args)
+    assert writes == []
+
+
+def test_remove_question_updates_blocks_and_deletes_qids(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    definition = {
+        "Questions": {
+            "QID1": {"QuestionID": "QID1", "QuestionType": "MC"},
+            "QID2": {"QuestionID": "QID2", "QuestionType": "MC"},
+            "QID3": {"QuestionID": "QID3", "QuestionType": "MC"},
+        },
+        "Blocks": {
+            "BL_A": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID1"},
+                    {"Type": "Question", "QuestionID": "QID2"},
+                ],
+            },
+            "BL_B": {
+                "Type": "Standard",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID3"},
+                ],
+            },
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_A"}, {"Type": "Block", "ID": "BL_B"}]},
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TEST",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("example.qualtrics.com", {"X-API-TOKEN": "x"}),
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_preflight_question_writes",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda *_a, **_k: definition,
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_refresh_cache_after_question_write",
+        lambda **_kwargs: None,
+    )
+
+    block_updates: dict[str, dict[str, Any]] = {}
+    deleted: list[str] = []
+
+    def _send_api_request(*, method: str, path: str, json=None, **_kwargs):
+        if method == "PUT" and path.startswith("survey-definitions/SV_TEST/blocks/"):
+            block_id = Path(path).name
+            block_updates[block_id] = json or {}
+            return _Resp({"result": {"ok": True}})
+        if method == "DELETE" and path.startswith("survey-definitions/SV_TEST/questions/"):
+            deleted.append(Path(path).name)
+            return _Resp({"result": {"ok": True}})
+        raise AssertionError(f"Unexpected API call: {method} {path}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", _send_api_request)
+
+    args = argparse.Namespace(
+        survey_id="SV_TEST",
+        question_id=["QID2", "QID3"],
+        dry_run=False,
+        force_live=False,
+        yes=True,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_remove_question(args)
+
+    assert set(block_updates.keys()) == {"BL_A", "BL_B"}
+    block_a_qids = [
+        str(elem.get("QuestionID") or "")
+        for elem in block_updates["BL_A"].get("BlockElements", [])
+        if str(elem.get("Type") or "") == "Question"
+    ]
+    block_b_qids = [
+        str(elem.get("QuestionID") or "")
+        for elem in block_updates["BL_B"].get("BlockElements", [])
+        if str(elem.get("Type") or "") == "Question"
+    ]
+    assert block_a_qids == ["QID1"]
+    assert block_b_qids == []
+    assert deleted == ["QID2", "QID3"]
+
+
 def test_add_question_cross_account_preserves_source_order_and_filters_languages(
     monkeypatch,
 ) -> None:

@@ -699,6 +699,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                 "handle_prolific_wiring": "prolific-wiring",
                 "handle_add_question": "add-question",
                 "handle_move_question": "move-question",
+                "handle_remove_question": "remove-question",
                 "handle_add_page_break": "add-page-break",
                 "handle_remove_page_break": "remove-page-break",
                 "handle_push_question": "push-question",
@@ -3964,9 +3965,74 @@ def handle_menu(args: argparse.Namespace) -> None:
             ),
         )
 
+    def _menu_remove_question(*, preselected_survey_id: str | None = None) -> None:
+        survey_id = (preselected_survey_id or "").strip() or _pick_survey_id(
+            message="Pick a survey to remove question(s):"
+        )
+        if not survey_id:
+            return
+        definition = _fetch_definition_for_menu(survey_id)
+        if not definition:
+            return
+
+        while True:
+            qids = _pick_question_ids_from_definition(
+                definition,
+                message="Choose question(s) to remove:",
+            )
+            if qids is None:
+                return
+            if qids:
+                break
+            retry_pick = select_from_list(
+                "No questions selected to remove.",
+                ["Choose question(s) again", "↩ Back"],
+                instruction="Select at least one question to continue.",
+            )
+            if not retry_pick or retry_pick.endswith("Back"):
+                return
+
+        dry_run = select_from_list("Dry run?", ["No", "Yes"]) == "Yes"
+        force_live = False
+        publish = False
+        publish_description = ""
+        if not dry_run:
+            force_live = (
+                select_from_list(
+                    "Allow writes if finished responses exist?",
+                    ["No", "Yes"],
+                )
+                == "Yes"
+            )
+            publish = (
+                select_from_list("Publish after remove?", ["Yes", "No"]) == "Yes"
+            )
+            if publish:
+                publish_description = (
+                    input("Publish description (optional): ").strip() or ""
+                )
+
+        _run_action(
+            handle_remove_question,
+            argparse.Namespace(
+                survey_id=survey_id,
+                question_id=qids,
+                dry_run=bool(dry_run),
+                force_live=bool(force_live),
+                yes=False,
+                no_publish=not bool(publish),
+                publish_description=publish_description,
+                account=selected_account,
+                interactive_mode=True,
+            ),
+        )
+
     direct_structural = bool(getattr(args, "structural_edit", False))
     direct_add_question = bool(getattr(args, "add_question_interactive", False))
     direct_move_question = bool(getattr(args, "move_question_interactive", False))
+    direct_remove_question = bool(
+        getattr(args, "remove_question_interactive", False)
+    )
     direct_page_break = bool(getattr(args, "page_break_interactive", False))
     direct_survey_id = str(getattr(args, "survey_id", "") or "").strip() or None
     if sum(
@@ -3975,24 +4041,27 @@ def handle_menu(args: argparse.Namespace) -> None:
             direct_structural,
             direct_add_question,
             direct_move_question,
+            direct_remove_question,
             direct_page_break,
         )
     ) > 1:
         raise SystemExit(
             "[survey-menu] ERROR: choose only one direct mode: "
             "--structural-edit, --add-question-interactive, --move-question-interactive, "
-            "or --page-break-interactive."
+            "--remove-question-interactive, or --page-break-interactive."
         )
     if direct_survey_id and not (
         direct_structural
         or direct_add_question
         or direct_move_question
+        or direct_remove_question
         or direct_page_break
     ):
         raise SystemExit(
             "[survey-menu] ERROR: --survey-id requires one of "
             "--structural-edit, --add-question-interactive, "
-            "--move-question-interactive, --page-break-interactive."
+            "--move-question-interactive, --remove-question-interactive, "
+            "--page-break-interactive."
         )
     if direct_structural:
         _menu_items_structural_edits(preselected_survey_id=direct_survey_id)
@@ -4002,6 +4071,9 @@ def handle_menu(args: argparse.Namespace) -> None:
         return
     if direct_move_question:
         _menu_move_question(preselected_survey_id=direct_survey_id)
+        return
+    if direct_remove_question:
+        _menu_remove_question(preselected_survey_id=direct_survey_id)
         return
     if direct_page_break:
         _menu_page_breaks(preselected_survey_id=direct_survey_id)
@@ -4035,6 +4107,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             "edit-structural": _menu_items_structural_edits,
             "edit-add-question": _menu_add_question,
             "edit-move-question": _menu_move_question,
+            "edit-remove-question": _menu_remove_question,
             "edit-page-breaks": _menu_page_breaks,
             "edit-inspect-question": _menu_inspect_question,
             "edit-push-question": _menu_push_question,
@@ -4167,6 +4240,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Items: structural edits (stage → preview → push)",
                     "Add question(s) (clone template, insert in flow)",
                     "Move question(s) (reorder / move across blocks)",
+                    "Remove question(s) (delete selected QIDs)",
                     "Page breaks (add/remove in block flow)",
                     "Inspect question payload (local cache)",
                     "Push one question from local cache",
@@ -4183,6 +4257,8 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_add_question()
             elif choice.startswith("Move question"):
                 _menu_move_question()
+            elif choice.startswith("Remove question"):
+                _menu_remove_question()
             elif choice.startswith("Page breaks"):
                 _menu_page_breaks()
             elif choice.startswith("Inspect question"):
@@ -10421,6 +10497,151 @@ def handle_move_question(args: argparse.Namespace) -> None:
     print(f"[move-question] Moved question(s): {', '.join(qids)}")
 
 
+def handle_remove_question(args: argparse.Namespace) -> None:
+    """Delete one or more questions from a survey."""
+    survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select a survey to remove question(s):",
+    )
+    qids = _normalize_question_ids(getattr(args, "question_id", None))
+    if not qids:
+        raise SystemExit("[remove-question] ERROR: --question-id is required.")
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    force_live = bool(getattr(args, "force_live", False))
+    yes = bool(getattr(args, "yes", False))
+    no_publish = bool(getattr(args, "no_publish", False))
+
+    base_url, headers = _get_client_config_for_args(args)
+    force_live = _preflight_question_writes(
+        survey_id=survey_id,
+        base_url=base_url,
+        headers=headers,
+        dry_run=dry_run,
+        force_live=force_live,
+        interactive_override_prompt=bool(getattr(args, "interactive_mode", False)),
+        action_label="remove-question",
+        account_label=_resolve_account_from_args(args) or "default",
+    )
+
+    definition = fetch_survey_definition(base_url, headers, survey_id)
+    questions = definition.get("Questions")
+    if not isinstance(questions, dict):
+        raise SystemExit(
+            "[remove-question] ERROR: Survey definition has no Questions map."
+        )
+
+    missing = [qid for qid in qids if qid not in questions]
+    if missing:
+        raise SystemExit(
+            f"[remove-question] ERROR: Unknown question ID(s): {', '.join(missing)}"
+        )
+
+    qids_with_references: list[str] = []
+    qids_without_references: list[str] = []
+    total_block_references = 0
+    for qid in qids:
+        matches = _find_question_blocks(definition, qid, include_trash=True)
+        total_block_references += len(matches)
+        if matches:
+            qids_with_references.append(qid)
+        else:
+            qids_without_references.append(qid)
+
+    touched_blocks = _remove_qids_from_all_blocks(definition, qids)
+    print(
+        f"[remove-question] Plan: delete {len(qids)} question(s) from {survey_id}."
+    )
+    print(
+        f"[remove-question] Block references: {total_block_references} reference(s) across {len(touched_blocks)} block(s)."
+    )
+    if qids_without_references:
+        print(
+            "[remove-question] NOTE: these QIDs were not referenced by any block: "
+            + ", ".join(qids_without_references)
+        )
+
+    if dry_run:
+        print("[remove-question] DRY-RUN: no API writes performed.")
+        return
+
+    _confirm_noninteractive_safe(
+        yes=yes,
+        prompt=f"Delete {len(qids)} question(s) in {survey_id}?",
+    )
+
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise SystemExit(
+            "[remove-question] ERROR: Survey definition has no Blocks map."
+        )
+    for block_id in sorted(touched_blocks):
+        block_payload = blocks.get(block_id)
+        if not isinstance(block_payload, dict):
+            continue
+        _update_block(
+            survey_id=survey_id,
+            block_id=block_id,
+            block_payload=block_payload,
+            base_url=base_url,
+            headers=headers,
+            log_meta={
+                "operation": "remove-question",
+                "question_ids": qids,
+                "block_id": block_id,
+            },
+        )
+
+    deleted_qids: list[str] = []
+    for qid in qids:
+        send_api_request(
+            action="qsync.survey.question.delete",
+            method="DELETE",
+            base_url=base_url,
+            headers=headers,
+            path=f"survey-definitions/{survey_id}/questions/{qid}",
+            survey_id=survey_id,
+            log_meta={
+                "operation": "remove-question",
+                "question_id": qid,
+                "question_ids": qids,
+            },
+            timeout=60,
+        )
+        deleted_qids.append(qid)
+
+    if not no_publish:
+        description = (getattr(args, "publish_description", None) or "").strip()
+        if not description:
+            description = make_publish_description(
+                operation="remove-question",
+                changed_qids=deleted_qids,
+                count=len(deleted_qids),
+                label=f"{len(touched_blocks)} block(s)",
+                max_chars=SURVEY_VERSION_DESCRIPTION_MAX_CHARS,
+            )
+        publish_survey_definition(
+            survey_id,
+            description=description,
+            published=True,
+            context={
+                "origin": "qsync.cli_survey.remove-question",
+                "changed_qids": deleted_qids,
+                "updated_blocks": sorted(touched_blocks),
+            },
+            base_url=base_url,
+            headers=headers,
+        )
+
+    _refresh_cache_after_question_write(survey_id=survey_id, args=args)
+    print(f"[remove-question] Deleted question(s): {', '.join(deleted_qids)}")
+    if qids_with_references:
+        print(
+            f"[remove-question] Removed block references for: {', '.join(qids_with_references)}"
+        )
+
+
 def handle_add_page_break(args: argparse.Namespace) -> None:
     """Insert a Page Break element into a target survey block."""
     survey_id = _prompt_for_survey_id_api_if_needed(
@@ -13112,7 +13333,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "  Embedded/options: items structural edits, add-embedded-field, remove-embedded-field, rename-embedded-field, cleanup-embedded-data, prolific-auth\n"
             "  Prolific wiring: prolific-wiring (alias to qsync prolific)\n"
             "  Lifecycle/versions: publish, activate, deactivate, versions, version-fetch, rollback\n"
-            "  Utilities: inspect-question, add-question, move-question, add-page-break, remove-page-break, push-question\n"
+            "  Utilities: inspect-question, add-question, move-question, remove-question, add-page-break, remove-page-break, push-question\n"
             "  Exports: export-responses, export-translation, export-side-by-side\n"
             "  Bulk: master (group; has subcommands)\n"
             "  Admin: rename, delete\n"
@@ -13147,6 +13368,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Jump directly to guided move-question flow (skip category navigation).",
     )
     p_menu.add_argument(
+        "--remove-question-interactive",
+        action="store_true",
+        help="Jump directly to guided remove-question flow (skip category navigation).",
+    )
+    p_menu.add_argument(
         "--page-break-interactive",
         action="store_true",
         help="Jump directly to guided page-break flow (skip category navigation).",
@@ -13157,7 +13383,8 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Preselect SurveyID for direct interactive modes "
             "(--structural-edit/--add-question-interactive/"
-            "--move-question-interactive/--page-break-interactive)."
+            "--move-question-interactive/--remove-question-interactive/"
+            "--page-break-interactive)."
         ),
     )
     p_menu.add_argument(
@@ -14328,6 +14555,53 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Use credentials from `.env.<account>` under the workspace root.",
     )
     p_move_question.set_defaults(func=handle_move_question)
+
+    # remove-question
+    p_remove_question = survey_subs.add_parser(
+        "remove-question",
+        help="Delete one or more existing questions from a survey",
+    )
+    p_remove_question.add_argument(
+        "--survey-id",
+        dest="survey_id",
+        help="Target Qualtrics survey ID (omit to select interactively)",
+    )
+    p_remove_question.add_argument(
+        "--question-id",
+        action="append",
+        dest="question_id",
+        help="Question ID(s) to remove (repeatable, comma-separated)",
+    )
+    p_remove_question.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the plan without calling delete/update endpoints",
+    )
+    p_remove_question.add_argument(
+        "--force-live",
+        action="store_true",
+        help="Allow writes even if finished responses exist",
+    )
+    p_remove_question.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+    p_remove_question.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip publishing the survey after deleting questions",
+    )
+    p_remove_question.add_argument(
+        "--publish-description",
+        help=f"Publish description override (max {SURVEY_VERSION_DESCRIPTION_MAX_CHARS} chars).",
+    )
+    p_remove_question.add_argument(
+        "--account",
+        help="Use credentials from `.env.<account>` under the workspace root.",
+    )
+    p_remove_question.set_defaults(func=handle_remove_question)
 
     # add-page-break
     p_add_page_break = survey_subs.add_parser(
