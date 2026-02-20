@@ -78,7 +78,6 @@ __all__ = [
     "drift_translations",
     "_check_large_deltas",
     "_check_placeholders",
-    "_check_html_hazards",
     "_check_value_length_limit",
     "_coverage_stats",
     "_coverage_stats_with_allowed_empties",
@@ -87,12 +86,6 @@ __all__ = [
 
 
 _PLACEHOLDER_RE = re.compile(r"\$\{e://Field/[^}]+\}")
-# Basic HTML safety check for translation content. We intentionally scope the `on...=`
-# detection to *attribute-like* occurrences (word boundary), to avoid false positives
-# inside URLs like `...expirationTimestamp=...`.
-_HTML_HAZARD_RE = re.compile(
-    r"(<\s*script|<\s*form|\bon[a-z0-9_-]+\s*=)", re.IGNORECASE
-)
 
 # Qualtrics API rejects individual translation values above this length.
 # Observed error: QVAL_3 "Parameter <key> exceeds maximum length of 10000."
@@ -1078,16 +1071,6 @@ def _check_placeholders(
     return errors, warnings
 
 
-def _check_html_hazards(payload: Mapping[str, Any], language: str) -> list[str]:
-    errors: list[str] = []
-    for key, value in payload.items():
-        if not isinstance(value, str):
-            continue
-        if _HTML_HAZARD_RE.search(value):
-            errors.append(f"[{language}] {key}: HTML hazard detected")
-    return errors
-
-
 def _check_value_length_limit(
     payload: Mapping[str, Any],
     language: str,
@@ -1368,7 +1351,6 @@ def _run_translation_doctor_from_workbook(
                 f"[{lang}] Coverage incomplete: {coverage[lang]['filled']}/{coverage[lang]['total']} filled."
             )
 
-        errors.extend(_check_html_hazards(full_map_str, lang))
         if lang != base_lang:
             errors.extend(_check_value_length_limit(full_map_str, lang))
 
@@ -1849,7 +1831,6 @@ def apply_translations(
         base_map = build_base_value_map_for_keys(survey.payload, target_map.keys())
         base_map_str = {_translation_key_str(k): v for k, v in base_map.items()}
         target_map_str = {_translation_key_str(k): v for k, v in target_map.items()}
-        errors.extend(_check_html_hazards(target_map_str, normalized_lang))
         errors.extend(_check_value_length_limit(target_map_str, normalized_lang))
         ph_errors, ph_warnings = _check_placeholders(
             base_map_str, target_map_str, normalized_lang

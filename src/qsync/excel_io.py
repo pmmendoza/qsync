@@ -44,6 +44,7 @@ from .markdown_codec import (
     md_to_html,
     is_markdown_safe_html,
 )
+from .question_types import is_system_question
 
 QUESTION_SHEET = "Questions"
 OPTIONS_SHEET = "Options"
@@ -805,15 +806,15 @@ def _column_guide(base_language: str = "EN") -> dict:
             ),
         ],
         SYSTEM_SHEET: [
-            ("SurveyID", "System", "Qualtrics Survey ID for Timing/meta items."),
-            ("QID", "System", "Timing question ID."),
+            ("SurveyID", "System", "Qualtrics Survey ID for system items."),
+            ("QID", "System", "System question ID."),
             ("QuestionType", "System", "Qualtrics question type."),
-            ("DataExportTag", "System", "DataExportTag for the Timing item."),
-            ("ChoiceId", "System", "Choice ID inside the Timing question."),
+            ("DataExportTag", "System", "DataExportTag for the system item."),
+            ("ChoiceId", "System", "Choice ID inside the question (when present)."),
             (
                 "Display",
                 "System",
-                "HTML returned by Qualtrics for the Timing display.",
+                "Display HTML/text returned by Qualtrics.",
             ),
         ],
         SURVEY_METADATA_SHEET: [
@@ -1685,6 +1686,38 @@ def _externally_managed_note(script: str) -> str:
     return f"{_EXTERNALLY_MANAGED_NOTE_PREFIX}{script}, not directly in Excel."
 
 
+def _system_qids_from_questions(questions: object) -> set[str]:
+    if not isinstance(questions, dict):
+        return set()
+    system_qids: set[str] = set()
+    for raw_qid, question in questions.items():
+        qid = str(raw_qid or "").strip()
+        if not qid:
+            continue
+        if not isinstance(question, dict):
+            continue
+        if is_system_question(question):
+            system_qids.add(qid)
+    return system_qids
+
+
+def _delete_rows_for_qids(
+    ws: Worksheet,
+    *,
+    qid_col_idx: int | None,
+    qids: set[str],
+) -> None:
+    if qid_col_idx is None or not qids or ws.max_row < 2:
+        return
+    delete_rows: list[int] = []
+    for row in ws.iter_rows(min_row=2, values_only=False):
+        qid = str(row[qid_col_idx].value or "").strip()
+        if qid and qid in qids:
+            delete_rows.append(int(row[0].row))
+    for row_idx in sorted(set(delete_rows), reverse=True):
+        ws.delete_rows(row_idx, 1)
+
+
 @dataclass(frozen=True)
 class _QuestionFlowMeta:
     block_id: str
@@ -1986,6 +2019,8 @@ def build_question_rows(
     question_entries = _iter_question_entries_in_flow(survey_payload)
     for qid, block_name in question_entries:
         q = questions[qid]
+        if is_system_question(q):
+            continue
         qtype = q.get("QuestionType") or ""
         tag = q.get("DataExportTag") or ""
         text_html = q.get("QuestionText") or ""
@@ -2106,6 +2141,8 @@ def build_option_rows(
     for qid in ordered_qids:
         q = questions.get(qid)
         if not isinstance(q, dict):
+            continue
+        if is_system_question(q):
             continue
 
         qtype = q.get("QuestionType") or ""
@@ -2238,6 +2275,8 @@ def build_subitem_rows(
     for qid in ordered_qids:
         q = questions.get(qid)
         if not isinstance(q, dict):
+            continue
+        if is_system_question(q):
             continue
 
         qtype = q.get("QuestionType") or ""
@@ -3004,7 +3043,7 @@ def init_workbook_from_survey(
     _set_optional_sheet_visibility(wb[SBS_COLUMN_ANSWERS_SHEET], hide_when_empty=True)
     _set_optional_sheet_visibility(wb[EMBEDDED_DATA_SHEET], hide_when_empty=True)
 
-    # Optional: add a System sheet for inspection of Timing/meta options.
+    # Optional: add a System sheet for inspection of system/technical questions.
     _populate_system_sheet(wb, survey_id, survey_payload)
 
     # Document the workbook layout so we no longer rely on Excel comments.
@@ -3084,6 +3123,11 @@ def _init_questions_sheet(
     _drop_stale_question_text_columns(ws, required_cols)
     col_index = _ensure_columns(ws, required_cols)
 
+    questions = survey_payload.get("result", {}).get("Questions", {})
+    system_qids = _system_qids_from_questions(questions)
+    if system_qids:
+        _delete_rows_for_qids(ws, qid_col_idx=col_index.get("QID"), qids=system_qids)
+
     # Build index of existing rows by QID
     headers, data_rows = _iter_sheet_rows(ws)
     qid_col = col_index["QID"]
@@ -3094,7 +3138,6 @@ def _init_questions_sheet(
         if qid:
             existing_rows[qid] = idx
 
-    questions = survey_payload.get("result", {}).get("Questions", {})
     text_lang_columns = _question_text_lang_columns_from_headers(
         headers,
         include_legacy=True,
@@ -3424,15 +3467,39 @@ def _init_options_sheet(
         key = (str(qid_val).strip(), str(choice_val).strip())
         existing_rows[key] = idx
 
-    # Build a lookup of question types for system-only routing later
     questions = survey_payload.get("result", {}).get("Questions", {})
+    system_qids = _system_qids_from_questions(questions)
+    if system_qids:
+        _delete_rows_for_qids(ws, qid_col_idx=col_index.get("QID"), qids=system_qids)
+        headers, data_rows = _iter_sheet_rows(ws)
+        # Re-read language columns after possible row deletions so we stay in sync
+        # with the current sheet state.
+        label_lang_columns = {}
+        for name in headers:
+            header = str(name or "")
+            if not header.startswith("Label_") or not header.endswith("_MD"):
+                continue
+            suffix = header[len("Label_") : -len("_MD")]
+            lang_code = _language_from_suffix(suffix)
+            is_html_name = f"Label_{suffix}_IsHTML"
+            label_lang_columns[lang_code] = (
+                header,
+                is_html_name if is_html_name in col_index else None,
+            )
+
+    existing_rows = {}
+    for idx, row in enumerate(data_rows, start=2):
+        qid_val = row[qid_col].value
+        choice_val = row[choice_col].value
+        if qid_val is None or choice_val is None:
+            continue
+        key = (str(qid_val).strip(), str(choice_val).strip())
+        existing_rows[key] = idx
 
     for key, row_data in options_map.items():
         qid, choice_id = key
-        # Skip options for pure Timing/meta questions; they go to System sheet.
         q_json = questions.get(qid, {})
-        qtype = q_json.get("QuestionType")
-        if qtype == "Timing":
+        if is_system_question(q_json):
             continue
         if key in existing_rows:
             row_idx = existing_rows[key]
@@ -3617,6 +3684,24 @@ def _init_subitems_sheet(
             is_html_name if is_html_name in col_index else None,
         )
 
+    questions = survey_payload.get("result", {}).get("Questions", {})
+    system_qids = _system_qids_from_questions(questions)
+    if system_qids:
+        _delete_rows_for_qids(ws, qid_col_idx=col_index.get("QID"), qids=system_qids)
+        headers, data_rows = _iter_sheet_rows(ws)
+        label_lang_columns = {}
+        for name in headers:
+            header = str(name or "")
+            if not header.startswith("Label_") or not header.endswith("_MD"):
+                continue
+            suffix = header[len("Label_") : -len("_MD")]
+            lang_code = _language_from_suffix(suffix)
+            is_html_name = f"Label_{suffix}_IsHTML"
+            label_lang_columns[lang_code] = (
+                header,
+                is_html_name if is_html_name in col_index else None,
+            )
+
     qid_col = col_index["QID"]
     answer_col = col_index["AnswerId"]
     field_col = col_index.get("Field")
@@ -3630,8 +3715,6 @@ def _init_subitems_sheet(
         field = _normalize_subitem_field(field_val)
         key = (str(qid_val).strip(), field, str(answer_val).strip())
         existing_rows[key] = idx
-
-    questions = survey_payload.get("result", {}).get("Questions", {})
 
     for key, row_data in subitems_map.items():
         qid, field_key, answer_id = key
@@ -3768,6 +3851,8 @@ def _init_subitems_sheet(
     for qid in _ordered_qids_in_flow(survey_payload):
         q = questions.get(qid)
         if not isinstance(q, dict):
+            continue
+        if is_system_question(q):
             continue
         labels = q.get("Labels") or {}
         if not labels:
@@ -5770,12 +5855,14 @@ def _format_embedded_data_sheet(ws: Worksheet) -> None:
 
 
 def _populate_system_sheet(wb: Workbook, survey_id: str, survey_payload: dict) -> None:
-    """Populate a System sheet with non-editable info such as Timing/meta options."""
+    """Populate a System sheet with non-editable technical question details."""
 
     ws = _get_or_create_sheet(wb, SYSTEM_SHEET)
     ws.title = SYSTEM_SHEET
 
     questions = survey_payload.get("result", {}).get("Questions", {})
+    if not isinstance(questions, dict):
+        questions = {}
     headers = [
         "SurveyID",
         "QID",
@@ -5787,24 +5874,64 @@ def _populate_system_sheet(wb: Workbook, survey_id: str, survey_payload: dict) -
     ws.delete_rows(1, ws.max_row)
     ws.append(headers)
 
-    for qid, q in questions.items():
-        qtype = q.get("QuestionType")
-        if qtype != "Timing":
+    ordered_qids = _ordered_qids_in_flow(survey_payload)
+    if not ordered_qids:
+        ordered_qids = [str(qid) for qid in questions.keys()]
+    seen_qids: set[str] = set()
+
+    for qid in ordered_qids:
+        if qid in seen_qids:
             continue
+        seen_qids.add(qid)
+        q = questions.get(qid)
+        if not isinstance(q, dict):
+            continue
+        if not is_system_question(q):
+            continue
+
+        qtype = str(q.get("QuestionType") or "").strip()
         tag = q.get("DataExportTag") or ""
         choices = q.get("Choices") or {}
-        for choice_id, choice in choices.items():
-            display = choice.get("Display") or ""
-            ws.append(
-                [
-                    survey_id,
-                    qid,
-                    qtype,
-                    tag,
-                    choice_id,
-                    display,
-                ]
-            )
+        if isinstance(choices, dict) and choices:
+            ordered_choice_ids: list[str] = []
+            choice_order = q.get("ChoiceOrder")
+            if isinstance(choice_order, list) and choice_order:
+                ordered_choice_ids.extend(
+                    [str(cid) for cid in choice_order if str(cid) in choices]
+                )
+            for cid in choices.keys():
+                scid = str(cid)
+                if scid not in ordered_choice_ids:
+                    ordered_choice_ids.append(scid)
+
+            for choice_id in ordered_choice_ids:
+                choice = choices.get(choice_id)
+                if not isinstance(choice, dict):
+                    continue
+                display = choice.get("Display") or ""
+                ws.append(
+                    [
+                        survey_id,
+                        qid,
+                        qtype,
+                        tag,
+                        str(choice_id),
+                        display,
+                    ]
+                )
+            continue
+
+        display = q.get("QuestionText") or q.get("QuestionDescription") or ""
+        ws.append(
+            [
+                survey_id,
+                qid,
+                qtype,
+                tag,
+                "",
+                display,
+            ]
+        )
 
     # Make header row bold
     header_row = next(ws.iter_rows(min_row=1, max_row=1))

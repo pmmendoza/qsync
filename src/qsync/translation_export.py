@@ -23,6 +23,7 @@ from .flow_traversal import (
     walk_flow,
 )
 from .markdown_codec import is_markdown_safe_html, should_treat_as_html
+from .question_types import is_system_question_type
 from .qualtrics_client import (
     load_cached_survey,
     fetch_survey_definition_live,
@@ -1620,8 +1621,7 @@ def _collect_expected_translation_keys(
     keys: set[str] = set()
     for qid in sorted(active_qids or set(), key=str):
         q = questions.get(qid) or {}
-        qtype = str(q.get("QuestionType") or "").strip().lower()
-        if qtype == "timing":
+        if is_system_question_type(q.get("QuestionType")):
             continue
 
         qid_s = str(qid)
@@ -2404,11 +2404,17 @@ def _add_question(
                     return ""
         return base_value
 
-    # Timing and Meta questions are noise for translators; represent them compactly.
-    if qtype.strip().lower() in ("timing", "meta"):
-        block_label = (
-            "Timing Block" if qtype.strip().lower() == "timing" else "Meta Block"
-        )
+    # System/technical questions are noise for translators; represent compactly.
+    qtype_norm = qtype.strip().lower()
+    if is_system_question_type(qtype):
+        if qtype_norm == "timing":
+            block_label = "Timing Block"
+        elif qtype_norm in {"meta", "metainfo"}:
+            block_label = "Meta Block"
+        elif qtype_norm == "captcha":
+            block_label = "Captcha Block"
+        else:
+            block_label = "System Block"
         rows_to_render.append(("compact", block_label))
         table = doc.add_table(rows=len(rows_to_render), cols=1)
         try:
@@ -2428,7 +2434,7 @@ def _add_question(
                     validation_marker=str(marker_),
                 )
             elif kind == "compact":
-                # For Timing and Meta blocks
+                # For system/technical blocks
                 _add_system_note(cell, str(payload), depth=0)
         doc.add_paragraph("")  # spacing after the question
         return
@@ -6090,9 +6096,17 @@ def _render_question_html_full(
     if q.get("Randomization"):
         qt_abbrev = (qt_abbrev + "+R").strip()
 
-    # Timing and Meta questions are noise for translators; represent them compactly
-    if qtype.lower() in ("timing", "meta"):
-        block_label = "Timing Block" if qtype.lower() == "timing" else "Meta Block"
+    # System/technical questions are noise for translators; represent them compactly.
+    qtype_norm = qtype.lower()
+    if is_system_question_type(qtype):
+        if qtype_norm == "timing":
+            block_label = "Timing Block"
+        elif qtype_norm in {"meta", "metainfo"}:
+            block_label = "Meta Block"
+        elif qtype_norm == "captcha":
+            block_label = "Captcha Block"
+        else:
+            block_label = "System Block"
         indent = f'style="margin-left:{(depth + 1) * 20}px"'
         html = f'<div class="question" {indent}>\n'
         html += '<h3 class="question-header">'

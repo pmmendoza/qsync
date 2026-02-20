@@ -6140,7 +6140,6 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     from .terminal_output import header, info, success, warn, dim
     from .config import load_env, load_env_file, resolve_env_path
     from .translations import (
-        _check_html_hazards,
         _check_placeholders,
         _check_value_length_limit,
     )
@@ -6486,7 +6485,6 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
                 suffix = f" … (+{len(empties) - 12} more)" if len(empties) > 12 else ""
                 warnings.append(f"[{lang}] Empty keys (sample): {sample}{suffix}")
 
-            errors.extend(_check_html_hazards(normalized, lang))
             errors.extend(_check_value_length_limit(normalized, lang))
             ph_errors, ph_warnings = _check_placeholders(
                 base_map_scoped, normalized, lang

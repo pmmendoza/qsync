@@ -8,6 +8,7 @@ from qsync.excel_io import (
     SBS_COLUMN_ANSWERS_SHEET,
     SBS_COLUMNS_SHEET,
     SUBITEMS_SHEET,
+    SYSTEM_SHEET,
     build_option_rows,
     build_question_rows,
     build_subitem_rows,
@@ -471,3 +472,136 @@ def test_workbook_orders_by_flow_question_order_not_lexical_qid(tmp_path):
         if str(o_ws.cell(row=row, column=o_qid_idx).value or "").strip()
     ]
     assert o_qids[:2] == ["QID2", "QID100"]
+
+
+def _system_routing_payload() -> dict:
+    return {
+        "result": {
+            "SurveyID": "SV_SYSTEM",
+            "Blocks": {
+                "BL_MAIN": {
+                    "Type": "Standard",
+                    "Description": "Main Block",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": "QID1"},
+                        {"Type": "Question", "QuestionID": "QID31"},
+                        {"Type": "Question", "QuestionID": "QID44"},
+                        {"Type": "Question", "QuestionID": "QID55"},
+                    ],
+                },
+            },
+            "Questions": {
+                "QID1": {
+                    "QuestionType": "Matrix",
+                    "DataExportTag": "Q1",
+                    "QuestionText": "Main question",
+                    "Choices": {
+                        "1": {"Display": "Row 1"},
+                        "2": {"Display": "Row 2"},
+                    },
+                    "Answers": {
+                        "1": {"Display": "Yes"},
+                        "2": {"Display": "No"},
+                    },
+                },
+                "QID31": {
+                    "QuestionType": "Meta",
+                    "DataExportTag": "MetaInfo",
+                    "QuestionText": "Meta block",
+                    "Choices": {"1": {"Display": "Meta choice"}},
+                },
+                "QID44": {
+                    "QuestionType": "CAPTCHA",
+                    "DataExportTag": "CaptchaInfo",
+                    "QuestionText": "Captcha block",
+                    "Choices": {"1": {"Display": "Captcha prompt"}},
+                },
+                "QID55": {
+                    "QuestionType": "Timing",
+                    "DataExportTag": "Q_Time",
+                    "QuestionText": "Timing block",
+                    "Choices": {"1": {"Display": "Page Submit"}},
+                },
+            },
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_MAIN"}]},
+        }
+    }
+
+
+def _sheet_qids(wb, sheet_name: str) -> list[str]:
+    ws = wb[sheet_name]
+    headers = [cell.value for cell in next(ws.iter_rows(max_row=1))]
+    qid_idx = headers.index("QID") + 1
+    return [
+        str(ws.cell(row=row, column=qid_idx).value or "").strip()
+        for row in range(2, ws.max_row + 1)
+        if str(ws.cell(row=row, column=qid_idx).value or "").strip()
+    ]
+
+
+def test_system_question_types_are_routed_out_of_item_sheets(tmp_path):
+    payload = _system_routing_payload()
+
+    question_rows = build_question_rows("SV_SYSTEM", payload)
+    option_rows = build_option_rows("SV_SYSTEM", payload)
+    subitem_rows = build_subitem_rows("SV_SYSTEM", payload)
+
+    assert set(question_rows.keys()) == {"QID1"}
+    assert {qid for qid, _ in option_rows.keys()} == {"QID1"}
+    assert {qid for qid, _field, _answer in subitem_rows.keys()} == {"QID1"}
+
+    xlsx_path = tmp_path / "SV_SYSTEM.xlsx"
+    init_workbook_from_survey("SV_SYSTEM", payload, xlsx_path)
+    wb = load_workbook(xlsx_path)
+
+    assert set(_sheet_qids(wb, QUESTION_SHEET)) == {"QID1"}
+    assert set(_sheet_qids(wb, OPTIONS_SHEET)) == {"QID1"}
+    assert set(_sheet_qids(wb, SUBITEMS_SHEET)) == {"QID1"}
+
+    system_qids = set(_sheet_qids(wb, SYSTEM_SHEET))
+    assert {"QID31", "QID44", "QID55"}.issubset(system_qids)
+    assert "QID1" not in system_qids
+
+
+def test_init_workbook_prunes_legacy_system_rows_from_item_sheets(tmp_path):
+    payload = _system_routing_payload()
+    xlsx_path = tmp_path / "SV_SYSTEM_LEGACY.xlsx"
+    init_workbook_from_survey("SV_SYSTEM", payload, xlsx_path)
+
+    wb = load_workbook(xlsx_path)
+
+    q_ws = wb[QUESTION_SHEET]
+    q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
+    q_row = [None] * len(q_headers)
+    q_row[q_headers.index("QID")] = "QID44"
+    q_row[q_headers.index("QuestionType")] = "CAPTCHA"
+    q_row[q_headers.index("DataExportTag")] = "CaptchaInfo"
+    q_ws.append(q_row)
+
+    o_ws = wb[OPTIONS_SHEET]
+    o_headers = [cell.value for cell in next(o_ws.iter_rows(max_row=1))]
+    o_row = [None] * len(o_headers)
+    o_row[o_headers.index("QID")] = "QID44"
+    o_row[o_headers.index("ChoiceId")] = "1"
+    o_row[o_headers.index("QuestionType")] = "CAPTCHA"
+    o_row[o_headers.index("ExportTag")] = "CaptchaInfo"
+    o_ws.append(o_row)
+
+    s_ws = wb[SUBITEMS_SHEET]
+    s_headers = [cell.value for cell in next(s_ws.iter_rows(max_row=1))]
+    s_row = [None] * len(s_headers)
+    s_row[s_headers.index("QID")] = "QID44"
+    s_row[s_headers.index("AnswerId")] = "1"
+    s_row[s_headers.index("Field")] = "Answer"
+    s_row[s_headers.index("QuestionType")] = "CAPTCHA"
+    s_row[s_headers.index("ExportTag")] = "CaptchaInfo"
+    s_ws.append(s_row)
+
+    wb.save(xlsx_path)
+
+    init_workbook_from_survey("SV_SYSTEM", payload, xlsx_path)
+    wb = load_workbook(xlsx_path)
+
+    assert "QID44" not in _sheet_qids(wb, QUESTION_SHEET)
+    assert "QID44" not in _sheet_qids(wb, OPTIONS_SHEET)
+    assert "QID44" not in _sheet_qids(wb, SUBITEMS_SHEET)

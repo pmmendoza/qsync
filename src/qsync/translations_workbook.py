@@ -43,9 +43,6 @@ from .translations import (
 _TRANSLATION_KEY_RE = re.compile(
     r"^(?P<qid>QID[^_]+)_(?P<field>QuestionText|Choice|Answer)(?P<id>[0-9]+)?$"
 )
-_HTML_HAZARD_RE = re.compile(
-    r"(<\s*script|<\s*form|\bon[a-z0-9_-]+\s*=)", re.IGNORECASE
-)
 
 
 def _format_cell_ref(sheet: str, row: int, col: int) -> str:
@@ -702,25 +699,6 @@ def run_workbook_translation_doctor(
             )
             if summary:
                 warnings.append(f"[workbook:{lang}] {summary}")
-
-        for key, value in local_map.items():
-            if not isinstance(value, str):
-                continue
-            hazard = _HTML_HAZARD_RE.search(value)
-            if not hazard:
-                continue
-            refs = _locate_translation_key_cells(
-                wb_cells, translation_key=str(key), language=lang
-            )
-            location = f" (cell={refs[0]})" if refs else ""
-            detail = (
-                f"[workbook:{lang}] {key}: HTML hazard detected (matched {hazard.group(1)!r})"
-                f"{location}"
-            )
-            if base_lang and lang == base_lang:
-                warnings.append(detail + " [base-language]")
-            else:
-                errors.append(detail)
 
         if base_map and lang != base_lang:
             ph_errors, ph_warnings = _check_placeholders(base_map, local_map, lang)

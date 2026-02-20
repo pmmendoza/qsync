@@ -50,6 +50,7 @@ Thumbs.db
 /export/
 /responses/
 /tmp/
+/temp_testing/
 copy_history.log
 
 surveys/
@@ -60,7 +61,7 @@ logs/
 export/
 responses/
 .tmp/
+/temp_testing/
 /.qsync
 models/
-
 

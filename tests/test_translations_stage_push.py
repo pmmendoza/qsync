@@ -149,7 +149,20 @@ def _write_workbook(tmp_path: Path, payload: dict) -> Path:
     ws = wb[QUESTION_SHEET]
     headers = [cell.value for cell in next(ws.iter_rows(max_row=1))]
     qid_idx = headers.index("QID") + 1
-    text_idx = headers.index("text_fr") + 1
+    text_header = next(
+        (
+            str(header)
+            for header in headers
+            if str(header or "").lower() == "text_fr"
+            or (
+                str(header or "").startswith("Text_fr_")
+                and str(header or "").endswith("_MD")
+            )
+        ),
+        None,
+    )
+    assert text_header is not None
+    text_idx = headers.index(text_header) + 1
     for row in range(2, ws.max_row + 1):
         if str(ws.cell(row=row, column=qid_idx).value or "").strip() == "QID1":
             ws.cell(row=row, column=text_idx).value = "Bonjour"
@@ -271,6 +284,76 @@ def test_apply_translations_writes_pending_payload(tmp_path: Path, monkeypatch) 
         .get("FR", {})
     )
     assert lang_block == {}
+
+
+def test_apply_translations_allows_html_attributes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
+    payload = _survey_payload()
+    _write_inventory(tmp_path)
+    _write_cached_survey(tmp_path, payload)
+
+    resolver = WorkbookResolver()
+    workbook_path = resolver.default_path("SV_TEST")
+    workbook_path.parent.mkdir(parents=True, exist_ok=True)
+    init_workbook_from_survey("SV_TEST", payload, workbook_path, languages=["FR"])
+    wb = load_workbook(workbook_path)
+    ws = wb[QUESTION_SHEET]
+    headers = [cell.value for cell in next(ws.iter_rows(max_row=1))]
+    qid_idx = headers.index("QID") + 1
+    text_header = next(
+        (
+            str(header)
+            for header in headers
+            if str(header or "").lower() == "text_fr"
+            or (
+                str(header or "").startswith("Text_fr_")
+                and str(header or "").endswith("_MD")
+            )
+        ),
+        None,
+    )
+    assert text_header is not None
+    text_idx = headers.index(text_header) + 1
+    for row in range(2, ws.max_row + 1):
+        if str(ws.cell(row=row, column=qid_idx).value or "").strip() != "QID1":
+            continue
+        ws.cell(row=row, column=text_idx).value = (
+            '<a href="#" onclick="return false">Bonjour</a>'
+        )
+        break
+    wb.save(workbook_path)
+
+    from qsync import drift_check
+    from qsync.dimensions import translations_core
+
+    monkeypatch.setattr(
+        drift_check,
+        "check_drift",
+        lambda *args, **kwargs: drift_check.DriftReport(
+            has_drift=False,
+            summary="",
+            diff_lines=[],
+            recommendation="",
+            changed_count=0,
+        ),
+    )
+    monkeypatch.setattr(translations_core, "ensure_backup", lambda survey_id: None)
+    monkeypatch.setattr(
+        translations_core,
+        "_inventory_last_modified",
+        lambda survey_id: "2026-01-23T12:00:00Z",
+    )
+
+    record = apply_translations(
+        "SV_TEST",
+        ["FR"],
+        allow_drift=True,
+        interactive=False,
+    )
+    assert record is not None
+    assert record.payload.qids == ["QID1"]
 
 
 def test_push_translations_includes_language_blocks(
