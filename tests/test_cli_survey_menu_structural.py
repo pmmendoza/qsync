@@ -298,6 +298,91 @@ def test_edit_menu_move_question_routes_to_handler(
     assert ns.dry_run is True
 
 
+def test_edit_menu_move_question_reprompts_when_no_questions_selected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.list_surveys",
+        lambda base, headers: [{"id": "SV_1", "name": "Survey One"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey._pick_survey_id_from_records",
+        lambda **kwargs: "SV_1",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.fetch_survey_definition",
+        lambda base, headers, survey_id: {
+            "Questions": {
+                "QID1": {"QuestionText": "First question"},
+                "QID2": {"QuestionText": "Second question"},
+            },
+            "Blocks": {"BL_1": {"Type": "Standard", "BlockElements": []}},
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+        },
+    )
+
+    called = {}
+    multi_calls = {"count": 0}
+
+    def _capture(ns):
+        called["args"] = ns
+
+    def _multi_select(message: str, choices, instruction=None, default=None):
+        multi_calls["count"] += 1
+        if multi_calls["count"] == 1:
+            return []
+        return [str(choices[0])]
+
+    monkeypatch.setattr(interactive_menu, "multi_select_from_list", _multi_select)
+    monkeypatch.setattr("qsync.cli_survey.handle_move_question", _capture)
+
+    state = {"top_visits": 0}
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message.startswith("qsync survey menu"):
+            state["top_visits"] += 1
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
+            return "Move question(s) (reorder / move across blocks)"
+        if message == "No questions selected to move.":
+            return "Choose question(s) again"
+        if message == "Choose target block:":
+            return str(choices[0])
+        if message == "Choose where to move selected question(s) in the target block:":
+            return "slot:0"
+        if message == "Dry run?":
+            return "Yes"
+        return "Exit"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert multi_calls["count"] == 2
+    assert "args" in called
+    ns = called["args"]
+    assert ns.survey_id == "SV_1"
+    assert ns.question_id == ["QID1"]
+    assert ns.target_block_id == "BL_1"
+    assert ns.insert_index == 0
+    assert ns.position == "append"
+    assert ns.dry_run is True
+
+
 def test_edit_menu_add_page_break_routes_to_handler(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

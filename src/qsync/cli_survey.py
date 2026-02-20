@@ -3897,12 +3897,22 @@ def handle_menu(args: argparse.Namespace) -> None:
         if not definition:
             return
 
-        qids = _pick_question_ids_from_definition(
-            definition,
-            message="Choose question(s) to move:",
-        )
-        if not qids:
-            return
+        while True:
+            qids = _pick_question_ids_from_definition(
+                definition,
+                message="Choose question(s) to move:",
+            )
+            if qids is None:
+                return
+            if qids:
+                break
+            retry_pick = select_from_list(
+                "No questions selected to move.",
+                ["Choose question(s) again", "↩ Back"],
+                instruction="Select at least one question to continue.",
+            )
+            if not retry_pick or retry_pick.endswith("Back"):
+                return
 
         placement = _prompt_block_slot_placement(
             definition,
