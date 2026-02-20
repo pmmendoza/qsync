@@ -65,6 +65,26 @@ def _load_default_env_for_root(root: Path) -> dict[str, str]:
     return load_env(env_path)
 
 
+def _bootstrap_default_account_env(root: Path) -> Path | None:
+    """Best-effort create `.env.default` from `.env` when missing.
+
+    This lets users explicitly target the primary account via `--account default`
+    after switching to named accounts.
+    """
+
+    default_alias = resolve_account_env_path("default", root=root)
+    if default_alias.exists():
+        return None
+
+    src_env = resolve_env_path(root=root) or (root / ".env")
+    if not src_env.exists() or not src_env.is_file():
+        return None
+
+    default_alias.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_env, default_alias)
+    return default_alias
+
+
 def _discover_env_accounts(root: Path) -> list[str]:
     accounts: list[str] = []
     for path in sorted(root.glob(".env.*")):
@@ -245,13 +265,24 @@ def handle_account_use(args) -> None:
 
     # Validate env file is present and usable.
     _ = load_account_env(account, root=root)
+    bootstrapped_default_env: Path | None = None
+    if account != "default":
+        bootstrapped_default_env = _bootstrap_default_account_env(root)
 
     set_workspace_active_account(root, account)
 
     if getattr(args, "json", False):
-        print(json.dumps({"ok": True, "active_account": account}, ensure_ascii=False))
+        payload: dict[str, Any] = {"ok": True, "active_account": account}
+        if bootstrapped_default_env is not None:
+            payload["bootstrapped_default_env"] = str(bootstrapped_default_env)
+        print(json.dumps(payload, ensure_ascii=False))
         return
     print(f"[qsync:account:use] Active workspace account set to: {account}")
+    if bootstrapped_default_env is not None:
+        print(
+            "[qsync:account:use] Bootstrapped default account env alias: "
+            f"{bootstrapped_default_env.name}"
+        )
     print(f"[qsync:account:use] Next: run `qsync account status` or `qsync doctor`.")
 
 
@@ -628,6 +659,8 @@ def handle_account_adopt(args) -> None:
         if set_active:
             # Validate env file for safety before setting as active.
             _ = load_account_env(account, root=root)
+            if account != "default":
+                _bootstrap_default_account_env(root)
             set_workspace_active_account(root, account)
 
         print(f"  moved:   {moved}")

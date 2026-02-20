@@ -607,11 +607,13 @@ def handle_menu(args: argparse.Namespace) -> None:
         return
 
     root = _workspace_root()
-    selected_account: str | None = None  # None = inherited default/ambient account
+    selected_account: str | None = None  # None = inherited ambient account
     requested_account = str(getattr(args, "account", "") or "").strip()
     if requested_account:
         if requested_account.lower() == "default":
-            selected_account = None
+            # Explicit default account selection must bypass inherited ambient
+            # account context (for example a workspace-active named account).
+            selected_account = "default"
         else:
             try:
                 # Validate account + ensure credentials resolve before opening the menu.
@@ -622,7 +624,9 @@ def handle_menu(args: argparse.Namespace) -> None:
                 )
             selected_account = requested_account
 
-    # Cache survey lists per base_url for responsiveness within a menu session.
+    # Cache survey lists per account scope + base_url for responsiveness within a
+    # menu session. Scope is part of the cache key so accounts sharing the same
+    # base URL do not reuse each other's survey listings.
     survey_cache: dict[str, list[dict[str, Any]]] = {}
 
     def _resolve_menu_account() -> str | None:
@@ -633,24 +637,28 @@ def handle_menu(args: argparse.Namespace) -> None:
         except Exception:
             return None
 
-    def _resolve_menu_client() -> tuple[str, dict]:
-        account_scope = _resolve_menu_account()
-        if account_scope:
-            env = load_account_env(account_scope, root=root)
+    def _load_primary_env_for_menu() -> dict[str, str]:
+        from .config import load_env, resolve_env_path
+
+        env_path = resolve_env_path(root=root)
+        return load_env(env_path)
+
+    def _get_client_for_scope(account_scope: str | None) -> tuple[str, dict]:
+        scope = str(account_scope or "").strip()
+        if scope.lower() == "default":
+            return get_client_config(_load_primary_env_for_menu())
+        if scope:
+            env = load_account_env(scope, root=root)
             return get_client_config(env)
         return get_client_config()
 
+    def _resolve_menu_client() -> tuple[str, dict]:
+        return _get_client_for_scope(_resolve_menu_account())
+
     def _menu_account_base() -> str | None:
         try:
-            account_scope = _resolve_menu_account()
-            if account_scope:
-                env = load_account_env(account_scope, root=root)
-                return (env.get("QUALTRICS_BASE_URL") or "").strip() or None
-            from .config import load_env, resolve_env_path
-
-            env_path = resolve_env_path(root=root)
-            env = load_env(env_path)
-            return (env.get("QUALTRICS_BASE_URL") or "").strip() or None
+            base, _headers = _get_client_for_scope(_resolve_menu_account())
+            return base
         except Exception:
             return None
 
@@ -727,7 +735,8 @@ def handle_menu(args: argparse.Namespace) -> None:
             print(f"[survey-menu] ERROR: {exc}")
 
     def _require_default_account(*, action: str) -> bool:
-        if selected_account is None:
+        scope = str(_resolve_menu_account() or "").strip().lower()
+        if not scope or scope == "default":
             return True
         print(
             f"[survey-menu] '{action}' is workspace-mutating and is only supported on the default account in this menu."
@@ -743,7 +752,7 @@ def handle_menu(args: argparse.Namespace) -> None:
         if not selection or selection.endswith("Back"):
             return
         if selection == "default":
-            selected_account = None
+            selected_account = "default"
         else:
             selected_account = selection
         survey_cache.clear()
@@ -1057,7 +1066,7 @@ def handle_menu(args: argparse.Namespace) -> None:
         nonlocal selected_account
         prior = selected_account
         try:
-            selected_account = None if source_acct == "default" else source_acct
+            selected_account = source_acct
             survey_id = _pick_survey_id(message="Pick a source survey to copy:")
         finally:
             selected_account = prior
@@ -1084,7 +1093,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                 target_account=target_acct,
                 source_api_key="",
                 source_base_url="",
-                source_account=None if source_acct == "default" else source_acct,
+                source_account=source_acct,
                 activate=False,
                 publish=False,
                 publish_description="",
@@ -1475,7 +1484,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             if not picked_account or picked_account.endswith("Back"):
                 return
             if picked_account == "default":
-                target_scope = None
+                target_scope = "default"
                 target_label = "default"
             else:
                 target_scope = picked_account
@@ -2602,19 +2611,18 @@ def handle_menu(args: argparse.Namespace) -> None:
         return text[: max(0, limit - 3)].rstrip() + "..."
 
     def _get_client_for_account(*, account: str | None) -> tuple[str, dict]:
-        if account:
-            env = load_account_env(account, root=root)
-            return get_client_config(env)
-        return get_client_config()
+        return _get_client_for_scope(account)
 
     def _get_surveys_for_account(*, account: str | None) -> list[dict[str, Any]]:
         base, headers = _get_client_for_account(account=account)
-        cached = survey_cache.get(base)
+        scope_key = str(account or "").strip().lower() or "__ambient__"
+        cache_key = f"{scope_key}::{base}"
+        cached = survey_cache.get(cache_key)
         if cached is not None:
             return cached
         surveys = list_surveys(base, headers)
         surveys.sort(key=lambda x: x.get("creationDate", ""), reverse=True)
-        survey_cache[base] = surveys
+        survey_cache[cache_key] = surveys
         return surveys
 
     def _question_bank_index_path(*, account: str | None) -> Path:
@@ -3479,7 +3487,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                 if not picked_account or picked_account.endswith("Back"):
                     return
                 if picked_account == "default":
-                    source_account_scope = None
+                    source_account_scope = "default"
                     source_account = "default"
                 else:
                     source_account_scope = picked_account
@@ -4240,7 +4248,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Items: structural edits (stage → preview → push)",
                     "Add question(s) (clone template, insert in flow)",
                     "Move question(s) (reorder / move across blocks)",
-                    "Remove question(s) (delete selected QIDs)",
+                    "Remove question(s) (move selected QIDs to Trash)",
                     "Page breaks (add/remove in block flow)",
                     "Inspect question payload (local cache)",
                     "Push one question from local cache",
@@ -6256,22 +6264,27 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     verify_deep_manifest = (getattr(args, "verify_deep_manifest", None) or "").strip()
 
     # Convenience alias: allow `--target-account default` to mean the primary
-    # account credentials (QUALTRICS_BASE_URL + X-API-TOKEN), not TARGET_*.
-    # This is especially useful for the interactive menu flow.
+    # account credentials from `.env` (QUALTRICS_BASE_URL + X-API-TOKEN), not
+    # TARGET_* or ambient active-account credentials.
     target_is_default = False
     if target_account and target_account.lower() == "default":
         target_is_default = True
         target_account = None
 
-    # Mirror the alias for source as well (non-breaking; previously this errored
-    # by attempting to load `.env.default`).
+    # Mirror the alias for source as well.
+    source_is_default = False
     if source_account and source_account.lower() == "default":
+        source_is_default = True
         source_account = None
 
     # Read `.env` (if present) so this command can support TARGET_* defaults.
     root = resolve_root(required=False) or Path.cwd()
     env_path = resolve_env_path(root=root)
     file_env = load_env_file(env_path) if env_path else {}
+
+    def _load_primary_env() -> dict[str, str]:
+        # Passing an explicit env path bypasses ambient account selection.
+        return load_env(env_path)
 
     def _env_or_dotenv(key: str) -> str:
         raw = (os.environ.get(key) or "").strip()
@@ -6282,7 +6295,7 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
     # Resolve target credentials (do not silently fall back to the primary account).
     if target_is_default and (not target_base_url or not target_api_key):
         try:
-            default_base, default_headers = get_client_config()
+            default_base, default_headers = get_client_config(_load_primary_env())
         except Exception as exc:
             print(f"ERROR: Invalid default target credentials: {exc}")
             sys.exit(1)
@@ -6687,8 +6700,10 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
             else:
                 dim("[copy-cross-account]", "  No non-base languages copied.")
 
-    # Get source credentials (default account, unless overridden)
-    if source_account and (not source_base_url or not source_api_key):
+    # Get source credentials (ambient account by default, unless overridden).
+    if source_is_default:
+        source_env = _load_primary_env()
+    elif source_account and (not source_base_url or not source_api_key):
         source_env = load_account_env(source_account, root=root)
     else:
         source_env = load_env()
@@ -10498,7 +10513,7 @@ def handle_move_question(args: argparse.Namespace) -> None:
 
 
 def handle_remove_question(args: argparse.Namespace) -> None:
-    """Delete one or more questions from a survey."""
+    """Remove one or more questions from active blocks (move to Trash)."""
     survey_id = _prompt_for_survey_id_api_if_needed(
         survey_id=getattr(args, "survey_id", None),
         args=args,
@@ -10549,13 +10564,49 @@ def handle_remove_question(args: argparse.Namespace) -> None:
         else:
             qids_without_references.append(qid)
 
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise SystemExit(
+            "[remove-question] ERROR: Survey definition has no Blocks map."
+        )
+
+    trash_block_ids = [
+        str(block_id).strip()
+        for block_id, block_payload in blocks.items()
+        if isinstance(block_payload, dict)
+        and _is_trash_block(block_payload)
+        and str(block_id).strip()
+    ]
+    trash_block_id = sorted(trash_block_ids)[0] if trash_block_ids else None
+
     touched_blocks = _remove_qids_from_all_blocks(definition, qids)
-    print(
-        f"[remove-question] Plan: delete {len(qids)} question(s) from {survey_id}."
-    )
+    moved_to_trash = False
+    if trash_block_id:
+        trash_payload = blocks.get(trash_block_id)
+        if not isinstance(trash_payload, dict):
+            raise SystemExit(
+                f"[remove-question] ERROR: Trash block {trash_block_id} is not accessible."
+            )
+        trash_elements, _ = _block_elements_ref(trash_payload)
+        _insert_question_elements(
+            definition,
+            block_id=trash_block_id,
+            insert_index=len(trash_elements),
+            qids=qids,
+        )
+        touched_blocks.add(trash_block_id)
+        moved_to_trash = True
+    action_label = "move to Trash" if moved_to_trash else "remove from active blocks"
+    print(f"[remove-question] Plan: {action_label} for {len(qids)} question(s) in {survey_id}.")
     print(
         f"[remove-question] Block references: {total_block_references} reference(s) across {len(touched_blocks)} block(s)."
     )
+    if moved_to_trash and trash_block_id:
+        print(f"[remove-question] Trash block: {trash_block_id}")
+    if not moved_to_trash:
+        print(
+            "[remove-question] NOTE: No Trash block found; questions will be detached from blocks only."
+        )
     if qids_without_references:
         print(
             "[remove-question] NOTE: these QIDs were not referenced by any block: "
@@ -10571,11 +10622,6 @@ def handle_remove_question(args: argparse.Namespace) -> None:
         prompt=f"Delete {len(qids)} question(s) in {survey_id}?",
     )
 
-    blocks = definition.get("Blocks")
-    if not isinstance(blocks, dict):
-        raise SystemExit(
-            "[remove-question] ERROR: Survey definition has no Blocks map."
-        )
     for block_id in sorted(touched_blocks):
         block_payload = blocks.get(block_id)
         if not isinstance(block_payload, dict):
@@ -10593,31 +10639,15 @@ def handle_remove_question(args: argparse.Namespace) -> None:
             },
         )
 
-    deleted_qids: list[str] = []
-    for qid in qids:
-        send_api_request(
-            action="qsync.survey.question.delete",
-            method="DELETE",
-            base_url=base_url,
-            headers=headers,
-            path=f"survey-definitions/{survey_id}/questions/{qid}",
-            survey_id=survey_id,
-            log_meta={
-                "operation": "remove-question",
-                "question_id": qid,
-                "question_ids": qids,
-            },
-            timeout=60,
-        )
-        deleted_qids.append(qid)
+    removed_qids: list[str] = list(qids)
 
     if not no_publish:
         description = (getattr(args, "publish_description", None) or "").strip()
         if not description:
             description = make_publish_description(
                 operation="remove-question",
-                changed_qids=deleted_qids,
-                count=len(deleted_qids),
+                changed_qids=removed_qids,
+                count=len(removed_qids),
                 label=f"{len(touched_blocks)} block(s)",
                 max_chars=SURVEY_VERSION_DESCRIPTION_MAX_CHARS,
             )
@@ -10627,15 +10657,22 @@ def handle_remove_question(args: argparse.Namespace) -> None:
             published=True,
             context={
                 "origin": "qsync.cli_survey.remove-question",
-                "changed_qids": deleted_qids,
+                "changed_qids": removed_qids,
                 "updated_blocks": sorted(touched_blocks),
+                "moved_to_trash": moved_to_trash,
+                "trash_block_id": trash_block_id,
             },
             base_url=base_url,
             headers=headers,
         )
 
     _refresh_cache_after_question_write(survey_id=survey_id, args=args)
-    print(f"[remove-question] Deleted question(s): {', '.join(deleted_qids)}")
+    if moved_to_trash:
+        print(
+            f"[remove-question] Removed question(s) from active blocks and moved to Trash: {', '.join(removed_qids)}"
+        )
+    else:
+        print(f"[remove-question] Removed question(s) from blocks: {', '.join(removed_qids)}")
     if qids_with_references:
         print(
             f"[remove-question] Removed block references for: {', '.join(qids_with_references)}"
@@ -14559,7 +14596,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     # remove-question
     p_remove_question = survey_subs.add_parser(
         "remove-question",
-        help="Delete one or more existing questions from a survey",
+        help="Remove one or more questions from active blocks (moves them to Trash)",
     )
     p_remove_question.add_argument(
         "--survey-id",

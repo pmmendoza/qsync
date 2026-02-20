@@ -25,34 +25,74 @@ from qsync.api_push import send_api_request
 # ── Configuration ──────────────────────────────────────────────────────
 
 NEWSMEMORY_BLOCK_ID = "BL_bEBNoi3ynL4qR1A"
-NEWSMEMORY_FLOW_ID = "FL_12"
 
-# The 14 recognition pairs: (recog_qid, confidence_qid)
-RECOG_PAIRS = [
-    ("QID83",  "QID84"),   # pair 1
-    ("QID85",  "QID86"),   # pair 2
-    ("QID87",  "QID88"),   # pair 3
-    ("QID89",  "QID90"),   # pair 4
-    ("QID91",  "QID92"),   # pair 5
-    ("QID93",  "QID94"),   # pair 6
-    ("QID95",  "QID96"),   # pair 7
-    ("QID97",  "QID98"),   # pair 8
-    ("QID99",  "QID100"),  # pair 9
-    ("QID101", "QID102"),  # pair 10
-    ("QID103", "QID104"),  # pair 11
-    ("QID105", "QID106"),  # pair 12
-    ("QID107", "QID108"),  # pair 13
-    ("QID109", "QID110"),  # pair 14
-]
+# Profile definitions: pre-survey vs post-survey have different QID ranges
+PROFILES = {
+    "pre": {
+        "recog_pairs": [
+            ("QID83",  "QID84"),   # pair 1
+            ("QID85",  "QID86"),   # pair 2
+            ("QID87",  "QID88"),   # pair 3
+            ("QID89",  "QID90"),   # pair 4
+            ("QID91",  "QID92"),   # pair 5
+            ("QID93",  "QID94"),   # pair 6
+            ("QID95",  "QID96"),   # pair 7
+            ("QID97",  "QID98"),   # pair 8
+            ("QID99",  "QID100"),  # pair 9
+            ("QID101", "QID102"),  # pair 10
+            ("QID103", "QID104"),  # pair 11
+            ("QID105", "QID106"),  # pair 12
+            ("QID107", "QID108"),  # pair 13
+            ("QID109", "QID110"),  # pair 14
+        ],
+        # QIDs that come AFTER the recog pairs in the original block
+        "post_recog_qids": ["QID39", "QID78", "QID7", "QID37"],
+        # First recog QID (used to detect where pairs start)
+        "first_recog_qid": "QID83",
+    },
+    "post": {
+        "recog_pairs": [
+            ("QID90",  "QID91"),   # pair 1
+            ("QID92",  "QID93"),   # pair 2
+            ("QID94",  "QID95"),   # pair 3
+            ("QID96",  "QID97"),   # pair 4
+            ("QID98",  "QID99"),   # pair 5
+            ("QID100", "QID101"),  # pair 6
+            ("QID102", "QID103"),  # pair 7
+            ("QID104", "QID105"),  # pair 8
+            ("QID106", "QID107"),  # pair 9
+            ("QID108", "QID109"),  # pair 10
+            ("QID110", "QID111"),  # pair 11
+            ("QID112", "QID113"),  # pair 12
+            ("QID114", "QID115"),  # pair 13
+            ("QID116", "QID117"),  # pair 14
+        ],
+        # QIDs after recog pairs: timer + salience + timing
+        "post_recog_qids": ["QID39", "QID7", "QID37"],
+        # QID89 is intro text before pairs; QID90 is first actual pair QID
+        "first_recog_qid": "QID90",
+        # QID89 (newsmem_rec_text) is a static intro that stays in pre-recog
+        "pre_recog_includes": ["QID89"],
+    },
+}
 
-# QIDs that come AFTER the recog pairs in the original block
-POST_RECOG_QIDS = ["QID39", "QID78", "QID7", "QID37"]
 
-# All recog QIDs (flat set for quick lookup)
-ALL_RECOG_QIDS = set()
-for rq, cq in RECOG_PAIRS:
-    ALL_RECOG_QIDS.add(rq)
-    ALL_RECOG_QIDS.add(cq)
+def get_profile_config(profile_name: str) -> dict:
+    """Get the configuration for a profile."""
+    profile = PROFILES[profile_name]
+    recog_pairs = profile["recog_pairs"]
+    post_recog_qids = profile["post_recog_qids"]
+    all_recog_qids = set()
+    for rq, cq in recog_pairs:
+        all_recog_qids.add(rq)
+        all_recog_qids.add(cq)
+    return {
+        "recog_pairs": recog_pairs,
+        "post_recog_qids": post_recog_qids,
+        "all_recog_qids": all_recog_qids,
+        "first_recog_qid": profile["first_recog_qid"],
+        "pre_recog_includes": set(profile.get("pre_recog_includes", [])),
+    }
 
 
 def get_api_config(account: str) -> tuple[str, dict]:
@@ -178,11 +218,14 @@ def main():
     parser = argparse.ArgumentParser(description="Split recog pairs into randomized blocks")
     parser.add_argument("--survey-id", required=True, help="Target survey ID")
     parser.add_argument("--account", default="damian", help="qsync account name")
+    parser.add_argument("--profile", choices=["pre", "post"], default="pre",
+                        help="Survey profile: 'pre' (QID83-110) or 'post' (QID90-117)")
     parser.add_argument("--dry-run", action="store_true", help="Show plan without making changes")
     args = parser.parse_args()
 
     survey_id = args.survey_id
     dry_run = args.dry_run
+    cfg = get_profile_config(args.profile)
 
     print(f"=== Split recog blocks for {survey_id} ===")
     if dry_run:
@@ -209,20 +252,22 @@ def main():
     print(f"  Found newsmemory block with {len(nm_qids)} questions")
 
     # Verify all expected QIDs are present
-    expected_qids = ALL_RECOG_QIDS | set(POST_RECOG_QIDS)
+    expected_qids = cfg["all_recog_qids"] | set(cfg["post_recog_qids"])
     missing = expected_qids - set(nm_qids)
     if missing:
         raise SystemExit(f"ERROR: Missing QIDs in newsmemory block: {missing}")
-    print(f"  All 28 recog QIDs + 4 post-recog QIDs confirmed")
+    n_recog = len(cfg["all_recog_qids"])
+    n_post = len(cfg["post_recog_qids"])
+    print(f"  All {n_recog} recog QIDs + {n_post} post-recog QIDs confirmed")
 
     # ── Step 2: Trim the original newsmemory block ──
-    # Keep only pre-recog elements (everything before QID83)
+    # Keep only pre-recog elements (everything before first recog pair QID)
     print("\n[2/5] Trimming newsmemory block (keep pre-recog questions only)...")
     trimmed_elements = []
     for el in nm_elements:
         if el.get("Type") == "Question":
             qid = el["QuestionID"]
-            if qid in ALL_RECOG_QIDS or qid in POST_RECOG_QIDS:
+            if qid in cfg["all_recog_qids"] or qid in cfg["post_recog_qids"]:
                 break  # Stop at first recog question
         trimmed_elements.append(el)
 
@@ -233,10 +278,11 @@ def main():
     trimmed_block["BlockElements"] = trimmed_elements
     update_block(survey_id, NEWSMEMORY_BLOCK_ID, base_url, headers, trimmed_block, dry_run)
 
-    # ── Step 3: Create 14 pair blocks ──
-    print(f"\n[3/5] Creating 14 recog pair blocks...")
+    # ── Step 3: Create pair blocks ──
+    n_pairs = len(cfg["recog_pairs"])
+    print(f"\n[3/5] Creating {n_pairs} recog pair blocks...")
     pair_block_ids = []
-    for i, (recog_qid, conf_qid) in enumerate(RECOG_PAIRS, 1):
+    for i, (recog_qid, conf_qid) in enumerate(cfg["recog_pairs"], 1):
         desc = f"newsmem_recog_pair_{i:02d}"
         elements = [
             {"Type": "Question", "QuestionID": recog_qid},
@@ -251,7 +297,7 @@ def main():
     post_elements = []
     in_post = False
     for el in nm_elements:
-        if el.get("Type") == "Question" and el["QuestionID"] == POST_RECOG_QIDS[0]:
+        if el.get("Type") == "Question" and el["QuestionID"] == cfg["post_recog_qids"][0]:
             in_post = True
         if in_post:
             post_elements.append(el)
@@ -299,7 +345,7 @@ def main():
     randomizer_node = {
         "Type": "BlockRandomizer",
         "FlowID": next_flow_id(),
-        "SubSet": len(RECOG_PAIRS),  # Show all 14
+        "SubSet": n_pairs,  # Show all pairs
         "EvenPresentation": True,
         "Flow": randomizer_children,
     }
@@ -344,9 +390,9 @@ def main():
     # ── Summary ──
     print(f"\n=== Done! ===")
     print(f"  Original block trimmed to {len(pre_recog_qids)} pre-recog questions")
-    print(f"  Created 14 pair blocks (each with recog + confidence)")
+    print(f"  Created {n_pairs} pair blocks (each with recog + confidence)")
     print(f"  Created 1 post-recog block with {len(post_qids)} questions")
-    print(f"  Flow updated: newsmemory → BlockRandomizer(14 pairs) → newsmemory_post")
+    print(f"  Flow updated: newsmemory → BlockRandomizer({n_pairs} pairs) → newsmemory_post")
     if dry_run:
         print(f"\n  Re-run without --dry-run to apply changes.")
     else:

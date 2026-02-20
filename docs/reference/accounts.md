@@ -45,6 +45,8 @@ If you already have unscoped artifacts (default account layout) and want to migr
 - `qsync account status`: Show the resolved active account, where it came from, and the resolved scoped directories.
 - `qsync account list`: Discover `.env.<account>` files in the workspace root (best-effort validation).
 - `qsync account use <name>`: Persist `active_account=<name>` in `.qsync/preferences.json` for this workspace.
+  - On first switch to a named account, qsync also bootstraps `.env.default` from `.env` when `.env.default` is missing.
+  - This makes one-off commands like `qsync --account default …` work without manual setup.
 - `qsync account clear`: Remove `active_account` from `.qsync/preferences.json` (restores default behavior).
 - `qsync account adopt <name>`: Move allowlisted unscoped artifacts into `.<name>/` directories.
   - Use `--dry-run` first.

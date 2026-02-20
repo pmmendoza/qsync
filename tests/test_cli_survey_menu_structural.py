@@ -45,7 +45,7 @@ def test_embedded_options_menu_includes_structural_entry(
         for menu_choices in seen_edit_choices
     )
     assert any(
-        "Remove question(s) (delete selected QIDs)" in menu_choices
+        "Remove question(s) (move selected QIDs to Trash)" in menu_choices
         for menu_choices in seen_edit_choices
     )
     assert any(
@@ -435,7 +435,7 @@ def test_edit_menu_remove_question_routes_to_handler(
                 else "Exit"
             )
         if message == "Edit Questions & Content":
-            return "Remove question(s) (delete selected QIDs)"
+            return "Remove question(s) (move selected QIDs to Trash)"
         if message == "Dry run?":
             return "Yes"
         return "Exit"

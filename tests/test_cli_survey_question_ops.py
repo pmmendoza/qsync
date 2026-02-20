@@ -898,7 +898,7 @@ def test_remove_question_dry_run_does_not_write(monkeypatch) -> None:
     assert writes == []
 
 
-def test_remove_question_updates_blocks_and_deletes_qids(monkeypatch) -> None:
+def test_remove_question_updates_blocks_and_moves_qids_to_trash(monkeypatch) -> None:
     from qsync import cli_survey
 
     definition = {
@@ -921,8 +921,19 @@ def test_remove_question_updates_blocks_and_deletes_qids(monkeypatch) -> None:
                     {"Type": "Question", "QuestionID": "QID3"},
                 ],
             },
+            "BL_TRASH": {
+                "Type": "Trash",
+                "BlockElements": [
+                    {"Type": "Question", "QuestionID": "QID999"},
+                ],
+            },
         },
-        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_A"}, {"Type": "Block", "ID": "BL_B"}]},
+        "SurveyFlow": {
+            "Flow": [
+                {"Type": "Block", "ID": "BL_A"},
+                {"Type": "Block", "ID": "BL_B"},
+            ]
+        },
     }
 
     monkeypatch.setattr(
@@ -952,7 +963,7 @@ def test_remove_question_updates_blocks_and_deletes_qids(monkeypatch) -> None:
     )
 
     block_updates: dict[str, dict[str, Any]] = {}
-    deleted: list[str] = []
+    delete_calls: list[str] = []
 
     def _send_api_request(*, method: str, path: str, json=None, **_kwargs):
         if method == "PUT" and path.startswith("survey-definitions/SV_TEST/blocks/"):
@@ -960,7 +971,7 @@ def test_remove_question_updates_blocks_and_deletes_qids(monkeypatch) -> None:
             block_updates[block_id] = json or {}
             return _Resp({"result": {"ok": True}})
         if method == "DELETE" and path.startswith("survey-definitions/SV_TEST/questions/"):
-            deleted.append(Path(path).name)
+            delete_calls.append(path)
             return _Resp({"result": {"ok": True}})
         raise AssertionError(f"Unexpected API call: {method} {path}")
 
@@ -980,7 +991,7 @@ def test_remove_question_updates_blocks_and_deletes_qids(monkeypatch) -> None:
 
     cli_survey.handle_remove_question(args)
 
-    assert set(block_updates.keys()) == {"BL_A", "BL_B"}
+    assert set(block_updates.keys()) == {"BL_A", "BL_B", "BL_TRASH"}
     block_a_qids = [
         str(elem.get("QuestionID") or "")
         for elem in block_updates["BL_A"].get("BlockElements", [])
@@ -991,9 +1002,15 @@ def test_remove_question_updates_blocks_and_deletes_qids(monkeypatch) -> None:
         for elem in block_updates["BL_B"].get("BlockElements", [])
         if str(elem.get("Type") or "") == "Question"
     ]
+    trash_qids = [
+        str(elem.get("QuestionID") or "")
+        for elem in block_updates["BL_TRASH"].get("BlockElements", [])
+        if str(elem.get("Type") or "") == "Question"
+    ]
     assert block_a_qids == ["QID1"]
     assert block_b_qids == []
-    assert deleted == ["QID2", "QID3"]
+    assert trash_qids == ["QID999", "QID2", "QID3"]
+    assert delete_calls == []
 
 
 def test_add_question_cross_account_preserves_source_order_and_filters_languages(

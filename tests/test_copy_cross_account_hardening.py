@@ -319,6 +319,84 @@ def test_copy_cross_account_uses_source_account_env_file(
     assert "target.qualtrics.test" in used_bases
 
 
+def test_copy_cross_account_source_account_default_uses_primary_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync import cli_survey
+    import qsync.config
+
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=source-default.qualtrics.test",
+                "X-API-TOKEN=source-default-token",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env.damian").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=source-damian.qualtrics.test",
+                "X-API-TOKEN=source-damian-token",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("QSYNC_ACCOUNT", "damian")
+    monkeypatch.setattr(cli_survey, "resolve_root", lambda required=False: tmp_path)
+    monkeypatch.setattr(
+        qsync.config, "resolve_env_path", lambda root=None: (tmp_path / ".env").resolve()
+    )
+
+    used_bases: list[str] = []
+
+    def fake_get_client_config(env=None):
+        base = (env or {}).get("QUALTRICS_BASE_URL") or "missing"
+        token = (env or {}).get("X-API-TOKEN") or (env or {}).get("QUALTRICS_API_KEY")
+        used_bases.append(base)
+        return base, {"Accept": "application/json", "X-API-TOKEN": token}
+
+    monkeypatch.setattr(cli_survey, "get_client_config", fake_get_client_config)
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda base, headers, survey_id, fmt="qsf": {
+            "SurveyEntry": {"SurveyName": "SourceSurvey"},
+            "SurveyElements": [],
+        },
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "resolve_target_name_with_conflict",
+        lambda *_args, **_kwargs: ("New Survey", None),
+    )
+    monkeypatch.setattr(cli_survey, "prepare_qsf_for_import", lambda *a, **k: None)
+    monkeypatch.setattr(cli_survey, "upload_qsf_to_account", lambda *a, **k: "SV_NEW")
+
+    def fake_send_api_request(**kwargs):
+        if kwargs.get("path") == "whoami":
+            return _resp({"result": {"userId": "UR_TEST", "brandId": "test"}})
+        raise AssertionError(f"Unexpected API call: {kwargs}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", fake_send_api_request)
+
+    cli_survey.handle_copy_cross_account(
+        _ns(
+            source_account="default",
+            target_base_url="target.qualtrics.test",
+            target_api_key="target-token",
+        )
+    )
+
+    assert "source-default.qualtrics.test" in used_bases
+    assert "source-damian.qualtrics.test" not in used_bases
+    assert "target.qualtrics.test" in used_bases
+
+
 def test_copy_cross_account_force_overwrite_delete_is_lock_gated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

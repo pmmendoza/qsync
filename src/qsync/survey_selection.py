@@ -183,23 +183,29 @@ def _select_single_record(
     from .interactive_menu import MenuItem, select_from_list, text_input
 
     current_records = list(records)
+    browse_full_list = False
+    show_all_sentinel = "→ Continue to full list (show all)"
 
     while True:
         if not current_records:
             print("[qsync] No surveys available for selection.")
             return None
 
-        if len(current_records) > 60:
+        if len(current_records) > 60 and not browse_full_list:
             from .interactive_menu import autocomplete_from_list
 
             suggestions = [_format_survey_label(r) for r in current_records]
+            autocomplete_choices = [show_all_sentinel, *suggestions]
             suggestion = autocomplete_from_list(
                 message=message,
-                choices=suggestions,
-                instruction="Type to filter; press Enter to accept a match",
+                choices=autocomplete_choices,
+                instruction="Type to filter; press Enter to accept a match or show full list",
             )
             if suggestion is None:
                 return None
+            if suggestion == show_all_sentinel:
+                browse_full_list = True
+                continue
             if suggestion in suggestions:
                 return _strip_label_to_survey_id(suggestion)
             if _is_valid_survey_id(suggestion):

@@ -156,6 +156,82 @@ def test_account_use_and_clear_persist_preferences(
     assert "active_account" not in prefs
 
 
+def test_account_use_bootstraps_env_default_alias_when_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync.cli import main
+
+    _touch_env_for_restore(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    ensure_qsync_workspace(tmp_path)
+    _write_account_env(tmp_path, "damian", base_url="syd1.qualtrics.com")
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=iad1.qualtrics.com",
+                "X-API-TOKEN=default-secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    main(["--root", str(tmp_path), "account", "use", "damian"])
+
+    env_default = tmp_path / ".env.default"
+    assert env_default.exists()
+    assert env_default.read_text(encoding="utf-8") == (tmp_path / ".env").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_account_use_does_not_overwrite_existing_env_default_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync.cli import main
+
+    _touch_env_for_restore(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    ensure_qsync_workspace(tmp_path)
+    _write_account_env(tmp_path, "damian", base_url="syd1.qualtrics.com")
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=iad1.qualtrics.com",
+                "X-API-TOKEN=default-secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env.default").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=eu1.qualtrics.com",
+                "X-API-TOKEN=custom-default",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    main(["--root", str(tmp_path), "account", "use", "damian"])
+
+    assert (tmp_path / ".env.default").read_text(encoding="utf-8") == (
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=eu1.qualtrics.com",
+                "X-API-TOKEN=custom-default",
+            ]
+        )
+        + "\n"
+    )
+
+
 def test_account_adopt_moves_allowlisted_artifacts_and_preserves_shared_mapping(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
