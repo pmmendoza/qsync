@@ -302,6 +302,46 @@ def test_diff_workbook_vs_cache_ignores_markdown_roundtrip_noise(tmp_path: Path)
     assert changes == []
 
 
+def test_diff_workbook_vs_cache_ignores_markdown_style_only_noise(
+    tmp_path: Path,
+) -> None:
+    payload = _survey_payload()
+    payload["result"]["Questions"]["QID1"]["Language"]["FR"]["QuestionText"] = (
+        "Wat is het <strong>hoogste opleidingsniveau dat je succesvol hebt afgerond</strong>? "
+        "<em>(Als je nu studeert, kies dan het hoogste niveau dat je al hebt afgerond.)</em>"
+    )
+    workbook_path = tmp_path / "workbook.xlsx"
+    init_workbook_from_survey("SV_TEST", payload, workbook_path, languages=["FR"])
+
+    wb = load_workbook(workbook_path)
+    q_ws = wb[QUESTION_SHEET]
+    q_headers = [cell.value for cell in next(q_ws.iter_rows(max_row=1))]
+    q_row = _find_row(q_ws, "QID1")
+
+    text_header = next(
+        (
+            str(header)
+            for header in q_headers
+            if str(header or "").lower() == "text_fr"
+            or (
+                str(header or "").startswith("Text_fr_")
+                and str(header or "").endswith("_MD")
+            )
+        ),
+        None,
+    )
+    assert text_header is not None
+    q_text_idx = q_headers.index(text_header) + 1
+    q_ws.cell(row=q_row, column=q_text_idx).value = (
+        "Wat is het **hoogste opleidingsniveau dat je succesvol hebt afgerond**? "
+        "*(Als je nu studeert, kies dan het hoogste niveau dat je al hebt afgerond.)*"
+    )
+    wb.save(workbook_path)
+
+    changes = diff_workbook_vs_cache(payload, workbook_path, ["FR"])
+    assert changes == []
+
+
 def test_diff_workbook_vs_cache_extracts_sbs_column_changes(tmp_path: Path) -> None:
     payload = _sbs_survey_payload()
     workbook_path = tmp_path / "workbook_sbs.xlsx"

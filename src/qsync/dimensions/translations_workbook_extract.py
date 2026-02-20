@@ -654,15 +654,19 @@ def diff_workbook_vs_cache(
                 old = read_answer_display(question, value.language, value.item_id or "")
             else:
                 old = read_label_display(question, value.language, value.item_id or "")
+        old_text = _normalize_translation_compare(old)
+        new_text = _normalize_translation_compare(value.html_value)
         if value.is_html:
-            old_text = _normalize_translation_compare(old)
-            new_text = _normalize_translation_compare(value.html_value)
             if old_text == new_text:
                 continue
         else:
             md_old = normalize_markdown_for_compare(html_to_md(str(old or "")))
             md_new = normalize_markdown_for_compare(value.text)
             if md_old == md_new:
+                continue
+            # Markdown can differ syntactically (e.g. `_italic_` vs `*italic*`)
+            # while producing identical HTML. Skip these no-op changes.
+            if old_text == new_text:
                 continue
         changes.append(
             TranslationChange(

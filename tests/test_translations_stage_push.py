@@ -424,6 +424,73 @@ def test_push_translations_includes_language_blocks(
     assert lang_block.get("QuestionText") == "Bonjour"
 
 
+def test_push_translations_does_not_reprint_safeguard_warnings(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
+    payload = _survey_payload()
+    _write_inventory(tmp_path)
+    _write_cached_survey(tmp_path, payload)
+    _write_workbook(tmp_path, payload)
+
+    from qsync import drift_check
+    from qsync.dimensions import translations_core
+
+    monkeypatch.setattr(
+        drift_check,
+        "check_drift",
+        lambda *args, **kwargs: drift_check.DriftReport(
+            has_drift=False,
+            summary="",
+            diff_lines=[],
+            recommendation="",
+            changed_count=0,
+        ),
+    )
+    monkeypatch.setattr(translations_core, "ensure_backup", lambda survey_id: None)
+
+    apply_translations(
+        "SV_TEST",
+        ["FR"],
+        allow_drift=True,
+        interactive=False,
+    )
+
+    monkeypatch.setattr(
+        translations_core,
+        "enforce_push_safeguards",
+        lambda *args, **kwargs: SimpleNamespace(warnings=["dupe-warning"]),
+    )
+    monkeypatch.setattr(
+        translations_core,
+        "push_questions",
+        lambda survey, qids, context=None: None,
+    )
+    monkeypatch.setattr(
+        translations_core, "auto_publish_after_push", lambda *args, **kwargs: None
+    )
+
+    seen_warns: list[str] = []
+
+    def _fake_warn(prefix: str, message: str) -> None:
+        seen_warns.append(message)
+
+    monkeypatch.setattr(translations_core, "warn", _fake_warn)
+
+    pushed = push_translations(
+        survey_id="SV_TEST",
+        languages=["FR"],
+        allow_drift=True,
+        interactive=False,
+        publish=False,
+        force_live=True,
+        force_preview=True,
+    )
+
+    assert pushed == ["QID1"]
+    assert all(msg != "dupe-warning" for msg in seen_warns)
+
+
 def test_apply_translations_tracks_metadata_keys(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
     payload = _survey_payload()

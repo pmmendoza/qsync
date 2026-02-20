@@ -2080,10 +2080,7 @@ def push_translations(
         force_preview=force_preview,
         auto_yes=not interactive,
     )
-    safeguard_result = enforce_push_safeguards(config)
-    if safeguard_result.warnings:
-        for warning in safeguard_result.warnings:
-            warn("[qsync:translations]", warning)
+    enforce_push_safeguards(config)
 
     ensure_backup(survey_id)
     push_context = {
