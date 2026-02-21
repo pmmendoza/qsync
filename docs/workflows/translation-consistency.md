@@ -175,10 +175,10 @@ Classify changes before acting:
 
 - Structural changes (new questions, flow edits, DataExportTag changes):
   - Prefer: update the master, then re-slice new derived surveys, then update recruiting links.
-  - Use `qsync survey parity-check --a SV_MASTER --b SV_FR` to verify structure parity (or catch unintended drift).
+  - Use `qsync survey parity-check --source-id SV_MASTER --target-id SV_FR` to verify structure parity (or catch unintended drift).
 - Text-only changes (wording tweaks):
   - If derived surveys must keep the same SurveyIDs: update each derived survey via `qsync items`.
-  - Use `qsync survey export-side-by-side --a SV_MASTER --b SV_FR --label-a Master --label-b FR` to generate a single DOCX for review.
+  - Use `qsync survey export-side-by-side --source-id SV_MASTER --target-id SV_FR --label-a Master --label-b FR` to generate a single DOCX for review.
 - Operational changes (Header snippet, redirect URL, activation status):
   - Use `qsync survey prolific-auth` (snippet) or Survey Master (bulk options/status).
 
@@ -198,7 +198,7 @@ Example: you updated FR wording in the master survey (as FR translations) and no
    - `qsync items stage --survey-id <SV_FR> --yes`
    - `qsync items push --survey-id <SV_FR> --yes` (may require `--force-live` depending on responses)
 4. Verify:
-   - `qsync survey export-side-by-side --a SV_MASTER --b <SV_FR> --label-a Master --label-b FR`
+   - `qsync survey export-side-by-side --source-id SV_MASTER --target-id <SV_FR> --label-a Master --label-b FR`
 
 If the change also touches other surfaces, repeat for each:
 

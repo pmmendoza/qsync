@@ -361,6 +361,58 @@ class TestPushQuestionCLI(unittest.TestCase):
         self.assertNotEqual(ctx.exception.code, 0)
         mock_send_api.assert_not_called()
 
+    @patch("qsync.cli_survey.send_api_request")
+    @patch("qsync.cli_survey.get_client_config")
+    @patch("qsync.cli_survey._fetch_remote_question")
+    @patch("qsync.cli_survey.load_push_context")
+    @patch("qsync.cli_survey.find_cached_survey_file")
+    @patch("qsync.cli_survey.sys.stdin.isatty", return_value=False)
+    def test_non_interactive_requires_yes_before_push(
+        self,
+        _mock_isatty,
+        mock_find_cache,
+        mock_push_ctx,
+        mock_fetch_remote,
+        mock_config,
+        mock_send_api,
+    ):
+        """Non-interactive push-question must fail fast without --yes."""
+        mock_find_cache.return_value = self.survey_json
+        mock_config.return_value = ("test.qualtrics.com", {"X-API-TOKEN": "test"})
+        mock_fetch_remote.return_value = {
+            "QuestionID": "QID1",
+            "QuestionText": "Different",
+        }
+        mock_push_ctx.return_value = PushContext(
+            survey_id="SV_TEST",
+            survey_name="Test Survey",
+            preview_count=0,
+            response_count=0,
+            counts_source="test",
+            generated_at=None,
+            stale=False,
+            counts_unknown=False,
+        )
+
+        from qsync.cli_survey import handle_push_question
+        import argparse
+
+        args = argparse.Namespace(
+            survey_id="SV_TEST",
+            question_id="QID1",
+            survey_file=None,
+            dry_run=False,
+            force_live=False,
+            yes=False,
+            show_diff=False,
+            no_publish=False,
+        )
+
+        with self.assertRaises(SystemExit) as ctx:
+            handle_push_question(args)
+        self.assertEqual(ctx.exception.code, 2)
+        mock_send_api.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

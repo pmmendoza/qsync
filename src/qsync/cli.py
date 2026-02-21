@@ -481,6 +481,11 @@ def _prompt_for_survey_id_if_needed(
 
 
 def _prompt_confirmation(message: str) -> bool:
+    if not sys.stdin.isatty():
+        raise SystemExit(
+            "[qsync] Confirmation required but stdin is not interactive. "
+            "Re-run with --yes to proceed."
+        )
     try:
         from .interactive_menu import confirm
 
@@ -1811,11 +1816,69 @@ def _default_xlsx_path(survey_id: str) -> Path:
     return resolver.default_path(survey_id)
 
 
+def _raise_deprecated_flag_error(argv: list[str]) -> None:
+    if not argv:
+        return
+    command = argv[0]
+    tokens = set(argv)
+
+    if command == "compare" and "--json-output" in tokens:
+        raise SystemExit(
+            "[qsync:compare] ERROR: --json-output was removed. "
+            "Use --report-path <path>."
+        )
+
+    if command == "sync" and "--all" in tokens:
+        raise SystemExit(
+            "[qsync:sync] ERROR: --all was removed. Use --all-focal."
+        )
+
+    if command != "survey" or len(argv) < 2:
+        return
+
+    survey_command = argv[1]
+    if survey_command == "prepare" and "--all" in tokens:
+        raise SystemExit(
+            "[qsync:survey:prepare] ERROR: --all was removed. Use --all-surveys."
+        )
+
+    if survey_command == "master" and len(argv) >= 3:
+        master_command = argv[2]
+        if master_command in {"preview", "stage", "push"} and "--all" in tokens:
+            raise SystemExit(
+                f"[qsync:survey:master:{master_command}] ERROR: --all was removed. "
+                "Use --all-surveys."
+            )
+
+    if survey_command == "parity-check" and ("--a" in tokens or "--b" in tokens):
+        raise SystemExit(
+            "[qsync:survey:parity-check] ERROR: --a/--b were removed. "
+            "Use --source-id/--target-id."
+        )
+
+    if survey_command == "export-side-by-side" and (
+        "--a" in tokens or "--b" in tokens
+    ):
+        raise SystemExit(
+            "[qsync:survey:export-side-by-side] ERROR: --a/--b were removed. "
+            "Use --source-id/--target-id."
+        )
+
+
 def _main_impl(argv: Optional[list[str]] = None) -> None:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     root_flag, env_path_flag, color_flag, account_flag, cleaned_argv = (
         _extract_global_path_flags(raw_argv)
     )
+    yes_flag = False
+    yes_cleaned_argv: list[str] = []
+    for token in cleaned_argv:
+        if token in ("--yes", "-y"):
+            yes_flag = True
+            continue
+        yes_cleaned_argv.append(token)
+    cleaned_argv = yes_cleaned_argv
+    _raise_deprecated_flag_error(cleaned_argv)
 
     if "--version" in cleaned_argv or "-V" in cleaned_argv:
         _print_version()
@@ -1915,6 +1978,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         action="store_true",
         help="Bypass surveys/inventory.csv lock checks (dangerous)",
     )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        default=False,
+        help="Skip interactive confirmation prompts",
+    )
     # Use `metavar` so help output doesn't inline every command in the Usage line.
     # With many subcommands, the default `{a,b,c,...}` form becomes unreadable.
     subparsers = parser.add_subparsers(
@@ -1972,11 +2042,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--undo",
         type=Path,
         help="Undo using a previously generated undo manifest JSON path",
-    )
-    p_doctor_setup.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip interactive confirmation prompts for apply/undo",
     )
     p_doctor_setup.add_argument(
         "--json",
@@ -2059,11 +2124,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--dry-run",
         action="store_true",
         help="Print the move plan without changing anything",
-    )
-    p_account_adopt.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip typed confirmation prompt",
     )
     p_account_adopt.add_argument(
         "--merge",
@@ -2238,11 +2298,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Force pip install (auto-detected by default)",
     )
     p_self_update.add_argument(
-        "--yes",
-        action="store_true",
-        help="Run without confirmation prompts",
-    )
-    p_self_update.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the install command without executing it",
@@ -2275,7 +2330,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Skip questions with these DataExportTag values (can repeat)",
     )
     p_compare.add_argument(
-        "--report-path", "--json-output", dest="json_output", type=Path, help="Optional path to write JSON report"
+        "--report-path",
+        dest="json_output",
+        type=Path,
+        help="Optional path to write JSON report",
     )
     p_compare.add_argument(
         "--fail-on",
@@ -2331,7 +2389,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     p_items_preview = items_subparsers.add_parser("preview", help="Show workbook diffs")
     _add_common_args(p_items_preview, include_xlsx=True)
     p_items_preview.add_argument("--detailed", action="store_true", help="Full diffs")
-    p_items_preview.add_argument("--embedded-data-only", action="store_true")
+    p_items_preview.add_argument(
+        "--embedded-data-only",
+        action="store_true",
+        help="Only show Embedded_Data changes",
+    )
     p_items_preview.add_argument("--scope", help=_SCOPE_HELP_ITEMS)
     p_items_preview.add_argument(
         "--allow-externally-managed-qids",
@@ -2353,9 +2415,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "stage", help="Stage changes to local cache"
     )
     _add_common_args(p_items_stage, include_xlsx=True)
-    p_items_stage.add_argument(
-        "--yes", action="store_true", help="Skip interactive confirmation prompt"
-    )
     p_items_stage.add_argument(
         "--embedded-data-only",
         action="store_true",
@@ -2406,11 +2465,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         type=int,
         default=5,
         help="Number of `.bak` repair backups to retain (default: 5)",
-    )
-    p_items_repair_edf.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip confirmation prompt when applying the repair",
     )
 
     p_items_inspect = items_subparsers.add_parser(
@@ -2473,11 +2527,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Input format for --target question (default: md)",
     )
     p_items_edit.add_argument(
-        "--yes",
-        action="store_true",
-        help="Non-interactive mode (skip prompts); still requires allow flags for destructive actions",
-    )
-    p_items_edit.add_argument(
         "--allow-delete",
         action="store_true",
         help="Allow destructive deletes (required for non-interactive removes; re-checked at push time)",
@@ -2500,14 +2549,15 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--survey-id", help="Target survey ID (omit to select interactively)"
     )
     p_items_push.add_argument(
-        "--yes", action="store_true", help="Skip interactive confirmation prompt"
-    )
-    p_items_push.add_argument(
         "--force-live",
         action="store_true",
         help="Allow pushes even when finished responses exist",
     )
-    p_items_push.add_argument("--force-preview", action="store_true")
+    p_items_push.add_argument(
+        "--force-preview",
+        action="store_true",
+        help="Allow pushes when only preview/test responses exist",
+    )
     p_items_push.add_argument(
         "--no-publish",
         action="store_true",
@@ -2566,7 +2616,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     )
     p_sync.add_argument(
         "--all-focal",
-        "--all",
         action="store_true",
         dest="all",
         help="Process all focal surveys without prompting (for automation)",
@@ -2586,11 +2635,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--per-dimension",
         action="store_true",
         help="Preview and approve each dimension separately (default: batch per-survey)",
-    )
-    p_sync.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip all confirmation prompts (non-interactive)",
     )
     p_sync.add_argument(
         "--pending-action",
@@ -2855,11 +2899,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Force push to preview database even with responses",
     )
     p_js_push.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip confirmation prompts for JS pushes",
-    )
-    p_js_push.add_argument(
         "--no-publish",
         action="store_true",
         help="Skip publishing the survey after pushing QuestionJS updates",
@@ -2910,11 +2949,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "--include-backups-scan",
             action="store_true",
             help="Also scan surveys/backups when detecting shared message usage (local-only)",
-        )
-        parser.add_argument(
-            "--yes",
-            action="store_true",
-            help="Skip interactive confirmations (required for push)",
         )
 
     # eos pull
@@ -3074,8 +3108,18 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "references",
         help="List cached surveys that reference a given EOS library message (local scan)",
     )
-    p_eos_refs.add_argument("--library-id", required=True, dest="library_id")
-    p_eos_refs.add_argument("--message-id", required=True, dest="message_id")
+    p_eos_refs.add_argument(
+        "--library-id",
+        required=True,
+        dest="library_id",
+        help="EOS library ID (e.g., UR_xxx)",
+    )
+    p_eos_refs.add_argument(
+        "--message-id",
+        required=True,
+        dest="message_id",
+        help="EOS message ID within the library (e.g., MS_xxx)",
+    )
     p_eos_refs.add_argument(
         "--include-backups-scan",
         action="store_true",
@@ -3136,11 +3180,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             help=survey_id_help
             or "Target survey ID (omit to select interactively)",
             **survey_kwargs,
-        )
-        parser.add_argument(
-            "--yes",
-            action="store_true",
-            help="Skip interactive confirmations.",
         )
 
     # flow pull
@@ -3251,11 +3290,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             help=survey_id_help
             or "Target survey ID (omit to select interactively)",
             **survey_kwargs,
-        )
-        parser.add_argument(
-            "--yes",
-            action="store_true",
-            help="Skip interactive confirmations.",
         )
 
     p_blocks_pull = blocks_subparsers.add_parser(
@@ -3601,11 +3635,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Allow staging against a drifted cache without prompting",
     )
     p_trans_stage.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip prompts (staging is non-interactive by default)",
-    )
-    p_trans_stage.add_argument(
         "--scope",
         help=_SCOPE_HELP_TRANSLATIONS,
     )
@@ -3740,11 +3769,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         const="validate",
         dest="mode",
         help="Alias for --mode validate",
-    )
-    p_trans_push.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip confirmation prompt when pushing",
     )
     p_trans_push.add_argument(
         "--detailed",
@@ -3965,6 +3989,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             pass
 
     args = parser.parse_args(cleaned_argv)
+    args.yes = bool(getattr(args, "yes", False) or yes_flag)
     args._account_source = _ACCOUNT_CONTEXT_SOURCE
     if getattr(args, "root", None) is None and root_flag:
         args.root = root_flag
@@ -5996,7 +6021,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 if len(survey_ids) > 1 and bool(getattr(args, "all", False)) and not json_output:
                     info(
                         "[qsync:sync]",
-                        "--all is ignored when --survey-id values are provided.",
+                        "--all-focal is ignored when --survey-id values are provided.",
                     )
 
                 run_start = time.perf_counter()

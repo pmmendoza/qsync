@@ -5696,10 +5696,13 @@ def handle_export_side_by_side(args: argparse.Namespace) -> None:
     from .survey_parity import compare_qsf_parity
     from .interactive_menu import is_interactive
 
-    survey_a = str(getattr(args, "a", "") or "").strip()
-    survey_b = str(getattr(args, "b", "") or "").strip()
+    survey_a = str(getattr(args, "source_id", "") or "").strip()
+    survey_b = str(getattr(args, "target_id", "") or "").strip()
     if not survey_a or not survey_b:
-        error("[qsync:export-side-by-side]", "ERROR: --a and --b are required.")
+        error(
+            "[qsync:export-side-by-side]",
+            "ERROR: --source-id and --target-id are required.",
+        )
         sys.exit(1)
 
     output = getattr(args, "output", None)
@@ -6028,8 +6031,8 @@ def handle_parity_check(args: argparse.Namespace) -> None:
 
     base, headers = _get_client_config_for_args(args)
 
-    survey_a = getattr(args, "a", None) or ""
-    survey_b = getattr(args, "b", None) or ""
+    survey_a = getattr(args, "source_id", None) or ""
+    survey_b = getattr(args, "target_id", None) or ""
     deep = bool(getattr(args, "deep", False))
     split_alias = bool(getattr(args, "split_profile", False))
     profile = str(getattr(args, "profile", "cross_account") or "cross_account")
@@ -6868,6 +6871,11 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
 
     # Confirmation
     if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit(
+                "[copy-cross-account] ERROR: Confirmation required but stdin is not interactive. "
+                "Re-run with --yes to proceed."
+            )
         try:
             from qsync.interactive_menu import confirm
 
@@ -11036,6 +11044,13 @@ def handle_push_question(args: argparse.Namespace) -> None:
 
     # Confirm unless --yes
     if not yes:
+        if not sys.stdin.isatty():
+            print(
+                "[push-question] ERROR: Confirmation required but stdin is not interactive. "
+                "Re-run with --yes to proceed.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         try:
             from qsync.interactive_menu import confirm
 
@@ -11795,7 +11810,7 @@ def _resolve_translation_languages(
         problem="No languages specified.",
         why="This command requires --language/--languages or a pending translation list.",
         impact="Translation action aborted.",
-        action="Provide --language/--languages or run `qsync translations apply` to stage changes.",
+        action="Provide --language/--languages or run `qsync translations stage` to stage changes.",
         context={"survey_id": survey_id},
     )
 
@@ -12016,11 +12031,6 @@ def handle_translations_apply(args: argparse.Namespace) -> None:
     from .translations import apply_translations
 
     survey_id = args.survey_id
-    if getattr(args, "translations_command", "") == "apply":
-        warn(
-            "[qsync:translations]",
-            "Command `qsync translations apply` is deprecated. Use `qsync translations stage` instead.",
-        )
     _warn_legacy_translations(args)
     languages = _collect_languages_from_args(args) or None
     scope_expr = getattr(args, "scope", None)
@@ -12653,7 +12663,7 @@ def handle_master_preview(args: argparse.Namespace) -> None:
                 print(f"❌ Tag filter error: {e}", file=sys.stderr)
                 sys.exit(1)
 
-        # Default: focal-only (inventory-driven). Use --all to include non-focal.
+        # Default: focal-only (inventory-driven). Use --all-surveys to include non-focal.
         if not survey_id and not all_surveys:
             focal_snapshot = load_focal_snapshot()
             focal_ids = {sid for sid, is_focal in focal_snapshot.items() if is_focal}
@@ -12666,7 +12676,7 @@ def handle_master_preview(args: argparse.Namespace) -> None:
                 ]
                 if output_format == "text" and before != len(csv_rows):
                     print(
-                        f"[qsync:master-preview] Filtered to {len(csv_rows)}/{before} focal survey row(s) (use --all to include non-focal)"
+                        f"[qsync:master-preview] Filtered to {len(csv_rows)}/{before} focal survey row(s) (use --all-surveys to include non-focal)"
                     )
 
         result = preview_master(
@@ -12890,7 +12900,7 @@ def handle_master_stage(args: argparse.Namespace) -> None:
                 print(f"❌ Tag filter error: {e}", file=sys.stderr)
                 sys.exit(1)
 
-        # Default: focal-only (inventory-driven). Use --all to include non-focal.
+        # Default: focal-only (inventory-driven). Use --all-surveys to include non-focal.
         if not survey_id and not all_surveys:
             focal_snapshot = load_focal_snapshot()
             focal_ids = {sid for sid, is_focal in focal_snapshot.items() if is_focal}
@@ -12903,7 +12913,7 @@ def handle_master_stage(args: argparse.Namespace) -> None:
                 ]
                 if before != len(csv_rows):
                     print(
-                        f"[qsync:master-stage] Filtered to {len(csv_rows)}/{before} focal survey row(s) (use --all to include non-focal)"
+                        f"[qsync:master-stage] Filtered to {len(csv_rows)}/{before} focal survey row(s) (use --all-surveys to include non-focal)"
                     )
 
         result = stage_master(
@@ -13023,7 +13033,7 @@ def handle_master_apply(args: argparse.Namespace) -> None:
                 error("[qsync:master-apply]", f"Tag filter error: {e}")
                 sys.exit(1)
 
-        # Default: focal-only (inventory-driven). Use --all to include non-focal.
+        # Default: focal-only (inventory-driven). Use --all-surveys to include non-focal.
         if not survey_id and not all_surveys:
             focal_snapshot = load_focal_snapshot()
             focal_ids = {sid for sid, is_focal in focal_snapshot.items() if is_focal}
@@ -13037,7 +13047,7 @@ def handle_master_apply(args: argparse.Namespace) -> None:
                 if before != len(filtered_csv_rows):
                     info(
                         "[qsync:master-apply]",
-                        f"Filtered to {len(filtered_csv_rows)}/{before} focal survey row(s) (use --all to include non-focal)",
+                        f"Filtered to {len(filtered_csv_rows)}/{before} focal survey row(s) (use --all-surveys to include non-focal)",
                     )
 
         result = apply_master(
@@ -13537,11 +13547,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Write the rebased QSF to disk without importing a new survey",
     )
     p_slice.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip confirmation prompts (required for --allow-incomplete in non-interactive runs)",
-    )
-    p_slice.add_argument(
         "--verify-parity",
         action="store_true",
         help="Run a parity check between the source and newly created survey",
@@ -13579,8 +13584,18 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "parity-check",
         help="Compare two surveys for parity (flow/QID/tag-lite; optional deep)",
     )
-    p_parity.add_argument("--source-id", required=True, dest="a", help="Survey ID A (source)")
-    p_parity.add_argument("--target-id", "--b", required=True, dest="b", help="Survey ID B (target)")
+    p_parity.add_argument(
+        "--source-id",
+        required=True,
+        dest="source_id",
+        help="Survey ID A (source)",
+    )
+    p_parity.add_argument(
+        "--target-id",
+        required=True,
+        dest="target_id",
+        help="Survey ID B (target)",
+    )
     p_parity.add_argument(
         "--deep",
         action="store_true",
@@ -13663,9 +13678,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     p_copy_xacct.add_argument(
-        "--yes", action="store_true", help="Skip confirmation prompt"
-    )
-    p_copy_xacct.add_argument(
         "--no-translations",
         action="store_true",
         help="Do not copy survey translations (languages + strings) (default: copy translations).",
@@ -13708,15 +13720,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     p_delete.add_argument(
         "--account",
         help="Use credentials from `.env.<account>` under the workspace root.",
-    )
-    p_delete.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help=(
-            "Execute live deletes without interactive prompts. "
-            "Without --yes, delete runs as dry-run by default."
-        ),
     )
     p_delete.add_argument(
         "--force-live",
@@ -13783,15 +13786,9 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     sel.add_argument(
         "--all-surveys",
-        "--all",
         dest="all_surveys",
         action="store_true",
         help="Prepare all surveys from surveys/inventory.csv (can be slow)",
-    )
-    p_prepare.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip interactive prompts (still pull-only)",
     )
     p_prepare.add_argument(
         "--surfaces",
@@ -13980,11 +13977,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Remove duplicate embedded data entries for any field (dangerous)",
     )
-    p_cleanup.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip confirmation prompt",
-    )
     p_cleanup.set_defaults(func=handle_cleanup_embedded_data)
 
     # prolific-auth (Prolific authenticity checks)
@@ -14011,11 +14003,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--mode",
         choices=["append", "replace"],
         help="How to apply the snippet when Header already exists (default: prompt; non-interactive requires this or --yes)",
-    )
-    p_prolific_auth.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip prompts and use the recommended mode (replace if Prolific is already present; otherwise append)",
     )
     p_prolific_auth.add_argument(
         "--dry-run",
@@ -14104,11 +14091,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Path to a newline- or CSV-delimited list of Survey IDs",
     )
     p_activate.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip confirmation prompt",
-    )
-    p_activate.add_argument(
         "--dry-run",
         action="store_true",
         help="Show the intended change without calling the API",
@@ -14160,11 +14142,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--survey-ids-file",
         dest="survey_ids_file",
         help="Path to a newline- or CSV-delimited list of Survey IDs",
-    )
-    p_deactivate.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip confirmation prompt",
     )
     p_deactivate.add_argument(
         "--dry-run",
@@ -14299,11 +14276,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Allow rollback even if finished responses exist.",
     )
-    p_rollback.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip confirmation prompts.",
-    )
     p_rollback.set_defaults(func=handle_rollback)
 
     # inspect-question
@@ -14316,7 +14288,12 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         dest="survey_id",
         help="Qualtrics survey ID (omit to select interactively)",
     )
-    p_inspect.add_argument("--question-id", required=True, dest="question_id")
+    p_inspect.add_argument(
+        "--question-id",
+        required=True,
+        dest="question_id",
+        help="Question ID to inspect (e.g., QID15)",
+    )
     p_inspect.add_argument(
         "--survey-file",
         dest="survey_file",
@@ -14492,12 +14469,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Allow writes even if finished responses exist",
     )
     p_add_question.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt",
-    )
-    p_add_question.add_argument(
         "--no-publish",
         action="store_true",
         help="Skip publishing the survey after adding questions",
@@ -14568,12 +14539,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Allow writes even if finished responses exist",
     )
     p_move_question.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt",
-    )
-    p_move_question.add_argument(
         "--no-publish",
         action="store_true",
         help="Skip publishing the survey after moving questions",
@@ -14613,12 +14578,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--force-live",
         action="store_true",
         help="Allow writes even if finished responses exist",
-    )
-    p_remove_question.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt",
     )
     p_remove_question.add_argument(
         "--no-publish",
@@ -14685,12 +14644,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Allow writes even if finished responses exist",
     )
     p_add_page_break.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt",
-    )
-    p_add_page_break.add_argument(
         "--no-publish",
         action="store_true",
         help="Skip publishing the survey after adding page break(s)",
@@ -14742,12 +14695,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Allow writes even if finished responses exist",
     )
     p_remove_page_break.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt",
-    )
-    p_remove_page_break.add_argument(
         "--no-publish",
         action="store_true",
         help="Skip publishing the survey after removing page break(s)",
@@ -14791,12 +14738,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--force-live",
         action="store_true",
         help="Allow push even if survey has live responses",
-    )
-    p_push_q.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt",
     )
     p_push_q.add_argument(
         "--show-diff",
@@ -14847,8 +14788,12 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "export-side-by-side",
         help="Export two surveys side-by-side into a single DOCX",
     )
-    p_export_side.add_argument("--a", required=True, help="Survey ID A")
-    p_export_side.add_argument("--b", required=True, help="Survey ID B")
+    p_export_side.add_argument(
+        "--source-id", required=True, dest="source_id", help="Survey ID A"
+    )
+    p_export_side.add_argument(
+        "--target-id", required=True, dest="target_id", help="Survey ID B"
+    )
     p_export_side.add_argument(
         "--output",
         type=Path,
@@ -14979,7 +14924,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_master_preview.add_argument(
         "--all-surveys",
-        "--all",
         dest="all_surveys",
         action="store_true",
         help="Include non-focal surveys from qualtrics_master.csv (default: focal-only)",
@@ -15008,7 +14952,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_master_stage.add_argument(
         "--all-surveys",
-        "--all",
         dest="all_surveys",
         action="store_true",
         help="Include non-focal surveys from qualtrics_master.csv (default: focal-only)",
@@ -15041,7 +14984,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_master_push.add_argument(
         "--all-surveys",
-        "--all",
         dest="all_surveys",
         action="store_true",
         help="Push staged changes for all surveys with pending records (including non-focal)",
@@ -15060,12 +15002,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         "--force-preview",
         action="store_true",
         help="Skip preview response warnings",
-    )
-    p_master_push.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompts",
     )
     p_master_push.add_argument(
         "--allow-dangerous",
@@ -15122,11 +15058,6 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     p_master_rollback.add_argument(
         "--description",
         help="Description to use when publishing rollback changes",
-    )
-    p_master_rollback.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip confirmation prompt for non-dry-run rollbacks",
     )
     p_master_rollback.set_defaults(func=handle_master_rollback)
 

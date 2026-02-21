@@ -1066,7 +1066,7 @@ class SyncSurveyScreen(Screen):
                         "",
                         "Runs `qsync sync` without --survey-id.",
                         "Use additional sync args later for flags like:",
-                        "- --all, --scope, --dimensions, --yes, --pending-action, --fix",
+                        "- --all-focal, --scope, --dimensions, --yes, --pending-action, --fix",
                         "- --force-live/--force-preview, --skip-publish, --refresh-workbooks",
                         "- --skip-refresh, --allow-drift, --allow-skip-embedded, --json",
                     ]
@@ -1333,7 +1333,7 @@ class SyncConfirmScreen(Screen):
                     "",
                     "Coverage note:",
                     "- Add any CLI sync flags in 'additional args' for full parity.",
-                    "- Examples: --all --scope items:QID1 --yes --pending-action push --fix safe",
+                    "- Examples: --all-focal --scope items:QID1 --yes --pending-action push --fix safe",
                     "- Also supports: --force-live/--force-preview --skip-publish --refresh-workbooks",
                     "- And: --skip-refresh --allow-drift --allow-skip-embedded --json",
                     "",

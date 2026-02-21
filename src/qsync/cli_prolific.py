@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import re
+import sys
 import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -1390,6 +1391,11 @@ def handle_wire_apply(args: argparse.Namespace) -> None:
     _print_plan_summary(mode="apply", plan_rows=plan_rows, only_state=only_state)
 
     if not getattr(args, "yes", False):
+        if not sys.stdin.isatty():
+            raise SystemExit(
+                "[qsync:prolific] ERROR: Confirmation required but stdin is not interactive. "
+                "Re-run with --yes to proceed."
+            )
         typed = input("Type 'apply' to continue: ").strip()
         if typed != "apply":
             raise SystemExit("[qsync:prolific] Aborted.")
@@ -1590,6 +1596,11 @@ def handle_wire_rollback(args: argparse.Namespace) -> None:
         raise SystemExit(f"[qsync:prolific] ERROR: invalid journal payload in {journal_path}")
 
     if not getattr(args, "yes", False):
+        if not sys.stdin.isatty():
+            raise SystemExit(
+                "[qsync:prolific] ERROR: Confirmation required but stdin is not interactive. "
+                "Re-run with --yes to proceed."
+            )
         typed = input("Type 'rollback' to continue: ").strip()
         if typed != "rollback":
             raise SystemExit("[qsync:prolific] Aborted.")
@@ -1871,11 +1882,6 @@ def register_prolific_commands(
         help="Apply wiring changes for selected rows (default: APPROVED only)",
     )
     _add_wire_common_args(wire_apply)
-    wire_apply.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip typed confirmation prompt.",
-    )
     wire_apply_publish_group = wire_apply.add_mutually_exclusive_group()
     wire_apply_publish_group.add_argument(
         "--publish",
@@ -1931,11 +1937,6 @@ def register_prolific_commands(
         help="Operation ID from an apply journal (or a direct journal file path).",
     )
     _add_prolific_token_arg(wire_rollback)
-    wire_rollback.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip typed confirmation prompt.",
-    )
     wire_rollback.add_argument(
         "--publish",
         action="store_true",

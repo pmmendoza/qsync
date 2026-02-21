@@ -5413,7 +5413,7 @@ def sync_focal_surveys(
 
     # Select surveys to sync
     if process_all:
-        # --all flag: process all without prompting
+        # --all-focal flag: process all without prompting
         selected = surveys_to_process
     elif interactive and not auto_yes:
         # Interactive selection loop — returns to menu after fix/issue actions.

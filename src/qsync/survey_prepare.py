@@ -144,7 +144,7 @@ def resolve_target_surveys(
 
     if not interactive:
         raise RuntimeError(
-            "Provide --survey-id (or use --focal/--all in an interactive terminal)."
+            "Provide --survey-id (or use --focal/--all-surveys in an interactive terminal)."
         )
 
     from .survey_inventory import prompt_for_survey_ids

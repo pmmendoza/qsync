@@ -103,7 +103,7 @@ Options:
 ```text
 usage: qsync compare [-h] --source-id SOURCE_ID --target-id TARGET_ID
                      [--no-refresh] [--include-tag INCLUDE_TAGS]
-                     [--exclude-tag EXCLUDE_TAGS] [--json-output JSON_OUTPUT]
+                     [--exclude-tag EXCLUDE_TAGS] [--report-path JSON_OUTPUT]
                      [--fail-on {any,question,metadata}] [--with-diffs]
 
 options:
@@ -119,7 +119,7 @@ options:
   --exclude-tag EXCLUDE_TAGS
                         Skip questions with these DataExportTag values (can
                         repeat)
-  --json-output JSON_OUTPUT
+  --report-path JSON_OUTPUT
                         Optional path to write JSON report
   --fail-on {any,question,metadata}
                         Exit non-zero when mismatches exist (default: any)
@@ -435,7 +435,7 @@ Options:
 ## `qsync sync`
 
 ```text
-Usage: qsync sync [-h] [--survey-id SURVEY_ID] [--all]
+Usage: qsync sync [-h] [--survey-id SURVEY_ID] [--all-focal]
                   [--dimensions DIMENSIONS] [--scope SCOPE] [--per-dimension]
                   [--yes] [--pending-action {push,discard,abort}]
                   [--force-live] [--force-preview] [--skip-publish]
@@ -451,7 +451,7 @@ Options:
   -h, --help            show this help message and exit
   --survey-id SURVEY_ID
                         Target survey ID (omit to scan all focal surveys)
-  --all                 Process all focal surveys without prompting (for
+  --all-focal           Process all focal surveys without prompting (for
                         automation)
   --dimensions DIMENSIONS
                         Comma-separated dimensions to sync (default:
@@ -704,12 +704,14 @@ options:
 ## `qsync survey parity-check`
 
 ```text
-usage: qsync survey parity-check [-h] --a A --b B [--deep]
+usage: qsync survey parity-check [-h] --source-id SOURCE_ID --target-id TARGET_ID [--deep]
 
 options:
   -h, --help  show this help message and exit
-  --a A       Survey ID A
-  --b B       Survey ID B
+  --source-id SOURCE_ID
+              Survey ID A
+  --target-id TARGET_ID
+              Survey ID B
   --deep      Run deep parity against survey-definitions JSON (strict; ignores only cross-account volatile fields).
 ```
 
@@ -724,7 +726,7 @@ usage: qsync survey copy-cross-account [-h] [--target-api-key TARGET_API_KEY]
                                        [--source-account SOURCE_ACCOUNT]
                                        [--activate] [--publish]
                                        [--publish-description PUBLISH_DESCRIPTION]
-                                       [--force-overwrite] [--yes]
+                                       [--force-overwrite]
                                        [--no-translations]
                                        [--verify] [--verify-deep]
                                        source_survey_id new_name

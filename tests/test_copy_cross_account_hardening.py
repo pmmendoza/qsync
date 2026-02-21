@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -317,6 +317,71 @@ def test_copy_cross_account_uses_source_account_env_file(
 
     assert "source2.qualtrics.test" in used_bases
     assert "target.qualtrics.test" in used_bases
+
+
+def test_copy_cross_account_non_interactive_requires_yes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync import cli_survey
+    import qsync.config
+
+    monkeypatch.setattr(cli_survey, "resolve_root", lambda required=False: Path("/tmp"))
+    monkeypatch.setattr(qsync.config, "resolve_env_path", lambda root=None: None)
+    monkeypatch.setattr(qsync.config, "load_env_file", lambda path=None: {})
+    monkeypatch.setattr(
+        qsync.config,
+        "load_env",
+        lambda *args, **kwargs: {
+            "QUALTRICS_BASE_URL": "source.qualtrics.test",
+            "X-API-TOKEN": "source-token",
+        },
+    )
+
+    def fake_get_client_config(env=None):
+        base = (env or {}).get("QUALTRICS_BASE_URL") or "missing"
+        token = (env or {}).get("X-API-TOKEN") or (env or {}).get("QUALTRICS_API_KEY")
+        return base, {"Accept": "application/json", "X-API-TOKEN": token}
+
+    monkeypatch.setattr(cli_survey, "get_client_config", fake_get_client_config)
+    monkeypatch.setattr(
+        cli_survey,
+        "fetch_survey_definition",
+        lambda base, headers, survey_id, fmt="qsf": {
+            "SurveyEntry": {"SurveyName": "SourceSurvey"},
+            "SurveyElements": [],
+        },
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "resolve_target_name_with_conflict",
+        lambda *_args, **_kwargs: ("New Survey", None),
+    )
+    monkeypatch.setattr(cli_survey, "prepare_qsf_for_import", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli_survey,
+        "upload_qsf_to_account",
+        lambda *a, **k: pytest.fail("upload should not run before confirmation"),
+    )
+
+    def fake_send_api_request(**kwargs):
+        if kwargs.get("path") == "whoami":
+            return _resp({"result": {"userId": "UR_TEST", "brandId": "test"}})
+        return _resp({"result": {}})
+
+    monkeypatch.setattr(cli_survey, "send_api_request", fake_send_api_request)
+
+    with patch("qsync.cli_survey.sys.stdin.isatty", return_value=False):
+        with pytest.raises(SystemExit) as exc:
+            cli_survey.handle_copy_cross_account(
+                _ns(
+                    yes=False,
+                    target_base_url="target.qualtrics.test",
+                    target_api_key="target-token",
+                    no_translations=True,
+                )
+            )
+
+    assert "--yes" in str(exc.value)
 
 
 def test_copy_cross_account_source_account_default_uses_primary_env(

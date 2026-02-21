@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from qsync.cli_prolific import (
     MatchSurvey,
     WirePlanRow,
@@ -14,6 +16,7 @@ from qsync.cli_prolific import (
     exact_name_key,
     iter_rows_for_state,
     handle_wire_apply,
+    handle_wire_rollback,
 )
 
 
@@ -400,3 +403,112 @@ def test_wire_apply_defaults_to_publish_and_activate(monkeypatch, tmp_path) -> N
 
     assert publish_calls == [("SV_1", "Prolific wiring update")]
     assert activate_calls == ["SV_1"]
+
+
+def test_wire_apply_non_interactive_requires_yes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setattr(
+        "qsync.cli_prolific._resolve_prolific_token",
+        lambda args, account: "tok",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._resolve_matches_csv_path",
+        lambda args, account: tmp_path / "matches.csv",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._read_csv_rows",
+        lambda path: [{"state": "APPROVED", "prolific_study_id": "P1", "qualtrics_survey_id": "SV_1"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._get_client_config_for_account",
+        lambda account: ("example.qualtrics.com", {"X-API-TOKEN": "t"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._resolve_auth_snippet",
+        lambda args, account: "<script></script>",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._build_wire_plan_rows",
+        lambda **kwargs: [
+            WirePlanRow(
+                row={
+                    "prolific_study_id": "P1",
+                    "qualtrics_survey_id": "SV_1",
+                    "state": "APPROVED",
+                },
+                blocked_reason=None,
+                prolific_current_redirect_url="https://x",
+                prolific_desired_redirect_url="https://x",
+                qualtrics_current_eos_redirect_url="https://e",
+                qualtrics_desired_eos_redirect_url="https://e",
+                qualtrics_current_header="<h1>x</h1>",
+                qualtrics_new_header="<h1>x</h1>",
+                qualtrics_first_embedded_flow_id="FL_1",
+                qualtrics_first_embedded_fields=["PROLIFIC_PID", "STUDY_ID", "SESSION_ID"],
+                qualtrics_missing_embedded_fields=[],
+                options_payload={},
+            )
+        ],
+    )
+    monkeypatch.setattr("qsync.cli_prolific._print_plan_summary", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "qsync.cli_prolific._write_journal",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("journal write should not execute")),
+    )
+    monkeypatch.setattr("qsync.cli_prolific.sys.stdin.isatty", lambda: False)
+
+    args = argparse.Namespace(
+        account=None,
+        prolific_token=None,
+        matches=None,
+        only_state="APPROVED",
+        auth_snippet=None,
+        auth_snippet_file=None,
+        auth_token=None,
+        yes=False,
+        publish=None,
+        activate=None,
+        publish_description="Prolific wiring update",
+        continue_on_error=False,
+        json=False,
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        handle_wire_apply(args)
+    assert "--yes" in str(exc.value)
+
+
+def test_wire_rollback_non_interactive_requires_yes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    journal_path = tmp_path / "journal.json"
+    journal_path.write_text(
+        '{\"rows\":[{\"status\":\"success\",\"prolific_study_id\":\"P1\",\"qualtrics_survey_id\":\"SV_1\",\"before\":{}}]}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "qsync.cli_prolific._resolve_prolific_token",
+        lambda args, account: "tok",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_prolific._resolve_journal_path",
+        lambda account, op_id_or_path: journal_path,
+    )
+    monkeypatch.setattr("qsync.cli_prolific.sys.stdin.isatty", lambda: False)
+
+    args = argparse.Namespace(
+        account=None,
+        prolific_token=None,
+        op_id="op123",
+        yes=False,
+        publish=False,
+        activate=False,
+        publish_description="Prolific wiring rollback",
+        json=False,
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        handle_wire_rollback(args)
+    assert "--yes" in str(exc.value)

@@ -9,8 +9,8 @@ import pytest
 
 def _ns(**kwargs: Any) -> argparse.Namespace:
     defaults = dict(
-        a="SV_SOURCE",
-        b="SV_TARGET",
+        source_id="SV_SOURCE",
+        target_id="SV_TARGET",
         deep=False,
         profile="cross_account",
         split_profile=False,
