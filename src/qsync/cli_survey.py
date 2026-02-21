@@ -1261,6 +1261,158 @@ def handle_menu(args: argparse.Namespace) -> None:
             ),
         )
 
+    def _menu_replace_question(*, preselected_survey_id: str | None = None) -> None:
+        target_survey_id = (preselected_survey_id or "").strip() or _pick_survey_id(
+            message="Pick target survey to replace a question in:"
+        )
+        if not target_survey_id:
+            return
+        target_definition = _fetch_definition_for_menu(target_survey_id)
+        if not target_definition:
+            return
+        target_question_id = _pick_question_id_from_definition(
+            target_definition,
+            message="Pick target question to replace:",
+        )
+        if not target_question_id:
+            return
+
+        source_scope = select_from_list(
+            "Replacement source account:",
+            [
+                f"Current account ({_account_label()})",
+                "Another linked account",
+                "↩ Back",
+            ],
+        )
+        if not source_scope or source_scope.endswith("Back"):
+            return
+
+        source_account_scope = _resolve_menu_account()
+        source_account_arg: str | None = None
+        if source_scope.startswith("Another"):
+            discovered = _discover_account_env_files(root=root)
+            picked_account = select_from_list(
+                "Pick source account:",
+                ["default", *discovered, "↩ Back"],
+            )
+            if not picked_account or picked_account.endswith("Back"):
+                return
+            if picked_account == "default":
+                source_account_scope = "default"
+                source_account_arg = "default"
+            else:
+                source_account_scope = picked_account
+                source_account_arg = picked_account
+
+        if (
+            source_scope.startswith("Current account")
+            and source_account_scope == _resolve_menu_account()
+        ):
+            source_survey_pick = select_from_list(
+                "Replacement source survey:",
+                [
+                    f"Use same survey ({target_survey_id})",
+                    "Pick another survey",
+                    "↩ Back",
+                ],
+            )
+            if not source_survey_pick or source_survey_pick.endswith("Back"):
+                return
+            if source_survey_pick.startswith("Use same survey"):
+                source_survey_id = target_survey_id
+            else:
+                source_surveys = _get_surveys_for_account(account=source_account_scope)
+                if not source_surveys:
+                    print("[survey-menu] No surveys found in source account.")
+                    return
+                source_survey_id = _pick_survey_id_from_records(
+                    message="Pick source survey:",
+                    records=source_surveys,
+                )
+                if not source_survey_id:
+                    return
+        else:
+            source_surveys = _get_surveys_for_account(account=source_account_scope)
+            if not source_surveys:
+                print("[survey-menu] No surveys found in source account.")
+                return
+            source_survey_id = _pick_survey_id_from_records(
+                message="Pick source survey:",
+                records=source_surveys,
+            )
+            if not source_survey_id:
+                return
+
+        source_definition = (
+            target_definition
+            if source_survey_id == target_survey_id
+            and source_account_scope == _resolve_menu_account()
+            else _fetch_definition_for_menu(source_survey_id, account=source_account_scope)
+        )
+        if not source_definition:
+            return
+        source_question_id = _pick_question_id_from_definition(
+            source_definition,
+            message="Pick source question to copy from:",
+        )
+        if not source_question_id:
+            return
+
+        replace_data_export_tag = (
+            select_from_list(
+                "Replace target DataExportTag with source tag?",
+                [
+                    "No (keep target DataExportTag)",
+                    "Yes (copy source DataExportTag)",
+                ],
+            )
+            == "Yes (copy source DataExportTag)"
+        )
+        dry_run = select_from_list("Dry run?", ["No", "Yes"]) == "Yes"
+        force_live = False
+        show_diff = True
+        publish = False
+        publish_description = ""
+        if not dry_run:
+            force_live = (
+                select_from_list(
+                    "Allow writes if finished responses exist?",
+                    ["No", "Yes"],
+                )
+                == "Yes"
+            )
+            show_diff = (
+                select_from_list("Show diff output?", ["Yes", "No"]) == "Yes"
+            )
+            publish = (
+                select_from_list("Publish after replace?", ["Yes", "No"]) == "Yes"
+            )
+            if publish:
+                publish_description = (
+                    input("Publish description (optional): ").strip() or ""
+                )
+
+        _run_action(
+            handle_replace_question,
+            argparse.Namespace(
+                survey_id=target_survey_id,
+                question_id=target_question_id,
+                source_account=source_account_arg,
+                source_survey_id=source_survey_id,
+                source_question_id=source_question_id,
+                dry_run=bool(dry_run),
+                force_live=bool(force_live),
+                yes=False,
+                show_diff=bool(show_diff),
+                replace_data_export_tag=bool(replace_data_export_tag),
+                no_publish=not bool(publish),
+                publish_description=publish_description,
+                account=selected_account,
+                interactive_mode=True,
+            ),
+        )
+
     def _menu_stage_by_qid() -> None:
         if not _require_default_account(action="stage-by-qid"):
             return
@@ -4047,6 +4199,9 @@ def handle_menu(args: argparse.Namespace) -> None:
     direct_remove_question = bool(
         getattr(args, "remove_question_interactive", False)
     )
+    direct_replace_question = bool(
+        getattr(args, "replace_question_interactive", False)
+    )
     direct_page_break = bool(getattr(args, "page_break_interactive", False))
     direct_survey_id = str(getattr(args, "survey_id", "") or "").strip() or None
     if sum(
@@ -4056,25 +4211,29 @@ def handle_menu(args: argparse.Namespace) -> None:
             direct_add_question,
             direct_move_question,
             direct_remove_question,
+            direct_replace_question,
             direct_page_break,
         )
     ) > 1:
         raise SystemExit(
             "[survey-menu] ERROR: choose only one direct mode: "
             "--structural-edit, --add-question-interactive, --move-question-interactive, "
-            "--remove-question-interactive, or --page-break-interactive."
+            "--remove-question-interactive, --replace-question-interactive, "
+            "or --page-break-interactive."
         )
     if direct_survey_id and not (
         direct_structural
         or direct_add_question
         or direct_move_question
         or direct_remove_question
+        or direct_replace_question
         or direct_page_break
     ):
         raise SystemExit(
             "[survey-menu] ERROR: --survey-id requires one of "
             "--structural-edit, --add-question-interactive, "
             "--move-question-interactive, --remove-question-interactive, "
+            "--replace-question-interactive, "
             "--page-break-interactive."
         )
     if direct_structural:
@@ -4088,6 +4247,9 @@ def handle_menu(args: argparse.Namespace) -> None:
         return
     if direct_remove_question:
         _menu_remove_question(preselected_survey_id=direct_survey_id)
+        return
+    if direct_replace_question:
+        _menu_replace_question(preselected_survey_id=direct_survey_id)
         return
     if direct_page_break:
         _menu_page_breaks(preselected_survey_id=direct_survey_id)
@@ -4125,6 +4287,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             "edit-page-breaks": _menu_page_breaks,
             "edit-inspect-question": _menu_inspect_question,
             "edit-push-question": _menu_push_question,
+            "edit-replace-question": _menu_replace_question,
             "edit-stage-by-qid": _menu_stage_by_qid,
             # Flow / embedded / integrations
             "flow-add-embedded": lambda: _menu_embedded_field("add-embedded-field"),
@@ -4246,7 +4409,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             _menu_context(
                 "Survey Menu > Edit Questions & Content",
                 "Question-level content edits (safe staged workflow).",
-                "Items structural edits, add/move/page-break edits, inspect/push utilities, QID-scoped staging",
+                "Items structural edits, add/move/remove/replace/page-break edits, inspect/push utilities, QID-scoped staging",
             )
             choice = select_from_list(
                 "Edit Questions & Content",
@@ -4255,6 +4418,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                     "Add question(s) (clone template, insert in flow)",
                     "Move question(s) (reorder / move across blocks)",
                     "Remove question(s) (move selected QIDs to Trash)",
+                    "Replace question payload (source survey/QID → target QID)",
                     "Page breaks (add/remove in block flow)",
                     "Inspect question payload (local cache)",
                     "Push one question from local cache",
@@ -4273,6 +4437,8 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_move_question()
             elif choice.startswith("Remove question"):
                 _menu_remove_question()
+            elif choice.startswith("Replace question payload"):
+                _menu_replace_question()
             elif choice.startswith("Page breaks"):
                 _menu_page_breaks()
             elif choice.startswith("Inspect question"):
@@ -9516,6 +9682,56 @@ def _list_enabled_languages_for_survey(
     return out
 
 
+def _normalize_and_filter_question_language_block(
+    payload: dict[str, Any],
+    *,
+    enabled_languages: list[str] | None,
+) -> tuple[int, int]:
+    """Normalize/validate a question payload Language block in-place.
+
+    Returns:
+        tuple[int, int]: (dropped_not_enabled_count, malformed_entry_count)
+    """
+
+    lang_block = payload.get("Language")
+    if lang_block is None:
+        return (0, 0)
+    if not isinstance(lang_block, Mapping):
+        payload.pop("Language", None)
+        return (0, 1)
+
+    enabled_set = {
+        _normalize_language_code_token(lang) for lang in (enabled_languages or [])
+    }
+    filtered_langs: dict[str, Any] = {}
+    dropped = 0
+    malformed = 0
+
+    for lang_key, lang_value in lang_block.items():
+        lang_key_raw = str(lang_key or "").strip()
+        normalized_lang = _normalize_language_code_token(lang_key_raw)
+        if not lang_key_raw or not normalized_lang:
+            malformed += 1
+            continue
+        if enabled_languages is not None and normalized_lang not in enabled_set:
+            dropped += 1
+            continue
+        if isinstance(lang_value, Mapping):
+            filtered_langs[lang_key_raw] = copy.deepcopy(dict(lang_value))
+        elif isinstance(lang_value, str):
+            # Best-effort fallback for legacy payload shapes.
+            filtered_langs[lang_key_raw] = {"QuestionText": lang_value}
+            malformed += 1
+        else:
+            malformed += 1
+
+    if filtered_langs:
+        payload["Language"] = filtered_langs
+    else:
+        payload.pop("Language", None)
+    return (dropped, malformed)
+
+
 def _collect_choice_texts(args: argparse.Namespace) -> list[str]:
     values: list[str] = []
     raw = getattr(args, "choice_text", None)
@@ -10107,45 +10323,16 @@ def handle_add_question(args: argparse.Namespace) -> None:
             )
         except Exception:
             target_langs = None
-    target_lang_set = {
-        _normalize_language_code_token(lang) for lang in (target_langs or [])
-    }
     dropped_language_total = 0
     malformed_language_total = 0
 
     for payload in planned_payloads:
-        lang_block = payload.get("Language")
-        if lang_block is not None:
-            if not isinstance(lang_block, Mapping):
-                malformed_language_total += 1
-                payload.pop("Language", None)
-            else:
-                filtered_langs: dict[str, Any] = {}
-                dropped = 0
-                malformed = 0
-                for lang_key, lang_value in lang_block.items():
-                    lang_key_raw = str(lang_key or "").strip()
-                    normalized_lang = _normalize_language_code_token(lang_key_raw)
-                    if not lang_key_raw or not normalized_lang:
-                        malformed += 1
-                        continue
-                    if target_langs is not None and normalized_lang not in target_lang_set:
-                        dropped += 1
-                        continue
-                    if isinstance(lang_value, Mapping):
-                        filtered_langs[lang_key_raw] = copy.deepcopy(dict(lang_value))
-                    elif isinstance(lang_value, str):
-                        # Best-effort fallback for legacy shape payloads.
-                        filtered_langs[lang_key_raw] = {"QuestionText": lang_value}
-                        malformed += 1
-                    else:
-                        malformed += 1
-                dropped_language_total += dropped
-                malformed_language_total += malformed
-                if filtered_langs:
-                    payload["Language"] = filtered_langs
-                else:
-                    payload.pop("Language", None)
+        dropped, malformed = _normalize_and_filter_question_language_block(
+            payload,
+            enabled_languages=target_langs,
+        )
+        dropped_language_total += dropped
+        malformed_language_total += malformed
 
         base_tag = explicit_tag or str(payload.get("DataExportTag") or "").strip()
         if base_tag:
@@ -11106,6 +11293,212 @@ def handle_push_question(args: argparse.Namespace) -> None:
 
     print(
         f"[push-question] Successfully pushed {question_id} to survey {format_survey_ref(survey_id)}"
+    )
+
+
+def handle_replace_question(args: argparse.Namespace) -> None:
+    """Replace one target question payload with a source question payload."""
+
+    target_survey_id = _prompt_for_survey_id_api_if_needed(
+        survey_id=getattr(args, "survey_id", None),
+        args=args,
+        message="Select target survey to replace question in:",
+    )
+    target_question_id = str(getattr(args, "question_id", "") or "").strip()
+    source_survey_id = str(getattr(args, "source_survey_id", "") or "").strip()
+    source_question_id = str(getattr(args, "source_question_id", "") or "").strip()
+    source_account = str(getattr(args, "source_account", "") or "").strip() or None
+
+    if not target_question_id:
+        raise SystemExit("[replace-question] ERROR: --question-id is required.")
+    if not source_survey_id:
+        raise SystemExit("[replace-question] ERROR: --source-survey-id is required.")
+    if not source_question_id:
+        raise SystemExit("[replace-question] ERROR: --source-question-id is required.")
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    force_live = bool(getattr(args, "force_live", False))
+    yes = bool(getattr(args, "yes", False))
+    show_diff = bool(getattr(args, "show_diff", False))
+    replace_data_export_tag = bool(getattr(args, "replace_data_export_tag", False))
+    no_publish = bool(getattr(args, "no_publish", False))
+
+    base_url, headers = _get_client_config_for_args(args)
+    force_live = _preflight_question_writes(
+        survey_id=target_survey_id,
+        base_url=base_url,
+        headers=headers,
+        dry_run=dry_run,
+        force_live=force_live,
+        interactive_override_prompt=bool(getattr(args, "interactive_mode", False)),
+        action_label="replace-question",
+        account_label=_resolve_account_from_args(args) or "default",
+    )
+
+    target_definition = fetch_survey_definition(base_url, headers, target_survey_id)
+    target_questions = target_definition.get("Questions")
+    if not isinstance(target_questions, dict):
+        raise SystemExit(
+            "[replace-question] ERROR: Target survey definition has no Questions map."
+        )
+    target_question = target_questions.get(target_question_id)
+    if not isinstance(target_question, dict):
+        raise SystemExit(
+            f"[replace-question] ERROR: Target question {target_question_id} was not found."
+        )
+
+    source_base, source_headers = _resolve_source_client_for_add_question(
+        args=args,
+        target_base_url=base_url,
+        target_headers=headers,
+    )
+    source_definition = fetch_survey_definition(source_base, source_headers, source_survey_id)
+    source_questions = source_definition.get("Questions")
+    if not isinstance(source_questions, dict):
+        raise SystemExit(
+            "[replace-question] ERROR: Source survey definition has no Questions map."
+        )
+    source_question = source_questions.get(source_question_id)
+    if not isinstance(source_question, dict):
+        raise SystemExit(
+            f"[replace-question] ERROR: Source question {source_question_id} was not found."
+        )
+
+    replacement_payload = copy.deepcopy(source_question)
+    replacement_payload["QuestionID"] = target_question_id
+    if "QuestionId" in replacement_payload:
+        replacement_payload["QuestionId"] = target_question_id
+
+    if not replace_data_export_tag:
+        target_tag = str(target_question.get("DataExportTag") or "").strip()
+        if target_tag:
+            replacement_payload["DataExportTag"] = target_tag
+
+    target_langs: list[str] | None = None
+    if not dry_run:
+        try:
+            target_langs = _list_enabled_languages_for_survey(
+                base_url=base_url,
+                headers=headers,
+                survey_id=target_survey_id,
+            )
+        except Exception:
+            target_langs = None
+    dropped_langs, malformed_langs = _normalize_and_filter_question_language_block(
+        replacement_payload,
+        enabled_languages=target_langs,
+    )
+
+    source_ref = f"{source_survey_id}:{source_question_id}"
+    if source_account:
+        source_ref = f"{source_ref} (account={source_account})"
+    print(
+        f"[replace-question] Plan: replace {target_question_id} in {target_survey_id} "
+        f"with {source_ref}."
+    )
+    if not replace_data_export_tag and str(target_question.get("DataExportTag") or "").strip():
+        print(
+            "[replace-question] DataExportTag policy: preserving target DataExportTag "
+            "(use --replace-data-export-tag to copy source tag)."
+        )
+    if dropped_langs > 0:
+        print(
+            f"[replace-question] NOTE: filtered {dropped_langs} translation language block(s) "
+            "not enabled in target survey."
+        )
+    if malformed_langs > 0:
+        print(
+            f"[replace-question] NOTE: normalized or dropped {malformed_langs} malformed "
+            "translation language block entries."
+        )
+
+    remote_pretty = _format_question(target_question)
+    local_pretty = _format_question(replacement_payload)
+    if remote_pretty == local_pretty:
+        print(
+            f"[replace-question] Target {target_question_id} is already in sync with source payload."
+        )
+        return
+
+    if show_diff or not yes:
+        print(
+            f"\n[replace-question] Diff (target current → replacement) for {target_question_id}:"
+        )
+        diff_lines = list(
+            unified_diff(
+                remote_pretty.splitlines(),
+                local_pretty.splitlines(),
+                fromfile="target-current",
+                tofile="replacement",
+                lineterm="",
+            )
+        )
+        for line in diff_lines[:100]:
+            print(line)
+        if len(diff_lines) > 100:
+            print(f"... ({len(diff_lines) - 100} more lines)")
+        print()
+
+    if dry_run:
+        print(
+            f"[replace-question] DRY-RUN: would replace {target_question_id} in {target_survey_id}."
+        )
+        return
+
+    _confirm_noninteractive_safe(
+        yes=yes,
+        prompt=(
+            f"Replace {target_question_id} in {target_survey_id} with "
+            f"{source_survey_id}:{source_question_id}?"
+        ),
+    )
+
+    send_api_request(
+        action="qsync.survey.replace.question",
+        method="PUT",
+        base_url=base_url,
+        headers=headers,
+        path=f"survey-definitions/{target_survey_id}/questions/{target_question_id}",
+        survey_id=target_survey_id,
+        log_meta={
+            "operation": "replace-question",
+            "target_question_id": target_question_id,
+            "source_survey_id": source_survey_id,
+            "source_question_id": source_question_id,
+            "source_account": source_account or "",
+            "changed_qids": [target_question_id],
+        },
+        json=replacement_payload,
+    )
+
+    if not no_publish:
+        description = (getattr(args, "publish_description", None) or "").strip()
+        if not description:
+            description = make_publish_description(
+                operation="replace-question",
+                changed_qids=[target_question_id],
+                count=1,
+                label=f"from {source_survey_id}:{source_question_id}",
+                max_chars=SURVEY_VERSION_DESCRIPTION_MAX_CHARS,
+            )
+        publish_survey_definition(
+            target_survey_id,
+            description=description,
+            published=True,
+            context={
+                "origin": "qsync.cli_survey.replace-question",
+                "target_question_id": target_question_id,
+                "source_survey_id": source_survey_id,
+                "source_question_id": source_question_id,
+            },
+            base_url=base_url,
+            headers=headers,
+        )
+
+    _refresh_cache_after_question_write(survey_id=target_survey_id, args=args)
+    print(
+        "[replace-question] Successfully replaced "
+        f"{target_question_id} in {target_survey_id}."
     )
 
 
@@ -13379,7 +13772,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "  Embedded/options: items structural edits, add-embedded-field, remove-embedded-field, rename-embedded-field, cleanup-embedded-data, prolific-auth\n"
             "  Prolific wiring: prolific-wiring (alias to qsync prolific)\n"
             "  Lifecycle/versions: publish, activate, deactivate, versions, version-fetch, rollback\n"
-            "  Utilities: inspect-question, add-question, move-question, remove-question, add-page-break, remove-page-break, push-question\n"
+            "  Utilities: inspect-question, add-question, move-question, remove-question, add-page-break, remove-page-break, push-question, replace-question\n"
             "  Exports: export-responses, export-translation, export-side-by-side\n"
             "  Bulk: master (group; has subcommands)\n"
             "  Admin: rename, delete\n"
@@ -13419,6 +13812,11 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Jump directly to guided remove-question flow (skip category navigation).",
     )
     p_menu.add_argument(
+        "--replace-question-interactive",
+        action="store_true",
+        help="Jump directly to guided replace-question flow (skip category navigation).",
+    )
+    p_menu.add_argument(
         "--page-break-interactive",
         action="store_true",
         help="Jump directly to guided page-break flow (skip category navigation).",
@@ -13430,6 +13828,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "Preselect SurveyID for direct interactive modes "
             "(--structural-edit/--add-question-interactive/"
             "--move-question-interactive/--remove-question-interactive/"
+            "--replace-question-interactive/"
             "--page-break-interactive)."
         ),
     )
@@ -14755,6 +15154,74 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     p_push_q.set_defaults(func=handle_push_question)
 
+    # replace-question
+    p_replace_q = survey_subs.add_parser(
+        "replace-question",
+        help="Replace one target question with a source question payload",
+    )
+    p_replace_q.add_argument(
+        "--survey-id",
+        dest="survey_id",
+        help="Target Qualtrics survey ID (omit to select interactively)",
+    )
+    p_replace_q.add_argument(
+        "--question-id",
+        dest="question_id",
+        help="Target question ID to replace (e.g., QID15)",
+    )
+    p_replace_q.add_argument(
+        "--source-account",
+        dest="source_account",
+        help=(
+            "Optional source account for source question lookup "
+            "(defaults to target/current account; use 'default' for primary .env)."
+        ),
+    )
+    p_replace_q.add_argument(
+        "--source-survey-id",
+        dest="source_survey_id",
+        help="Source survey ID that contains the replacement question",
+    )
+    p_replace_q.add_argument(
+        "--source-question-id",
+        dest="source_question_id",
+        help="Source question ID to copy payload from (e.g., QID28)",
+    )
+    p_replace_q.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show diff and plan without pushing",
+    )
+    p_replace_q.add_argument(
+        "--force-live",
+        action="store_true",
+        help="Allow replace even if survey has live responses",
+    )
+    p_replace_q.add_argument(
+        "--show-diff",
+        action="store_true",
+        help="Always show diff (even with --yes)",
+    )
+    p_replace_q.add_argument(
+        "--replace-data-export-tag",
+        action="store_true",
+        help="Also replace target DataExportTag with source tag (default preserves target tag)",
+    )
+    p_replace_q.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip publishing after replacing question definition",
+    )
+    p_replace_q.add_argument(
+        "--publish-description",
+        help=f"Publish description override (max {SURVEY_VERSION_DESCRIPTION_MAX_CHARS} chars).",
+    )
+    p_replace_q.add_argument(
+        "--account",
+        help="Use credentials from `.env.<account>` under the workspace root.",
+    )
+    p_replace_q.set_defaults(func=handle_replace_question)
+
     # export-responses
     p_export = survey_subs.add_parser(
         "export-responses",
@@ -15105,6 +15572,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "add-page-break",
             "remove-page-break",
             "push-question",
+            "replace-question",
             # Exports
             "export-responses",
             "export-translation",

@@ -607,7 +607,7 @@ console.print(Columns([before_panel, after_panel]))
 **Approval gates (implementation):**
 - [x] **Approve adopting Textual as the real TUI foundation (installed via `qsync[tui]`)**
 - [x] **Approve adding a `qsync tui` entrypoint** (recommended: separate app; lowest risk to existing CLI)
-- [ ] **Approve adding `--tui/--no-tui/--tui=auto` to `qsync sync`** (optional: conservative auto-selection in interactive TTY only)
+- [x] **Approve adding `--tui/--no-tui/--tui=auto` to `qsync sync`** (optional: conservative auto-selection in interactive TTY only)
 - [ ] **Approve migrating “live preview panel” and “`?` overlay help” work into Textual screens** (Element 3 Stage 2 + Element 4 Stage 3)
 
 **Potential value lost by moving UI work into Textual:** adds a dependency (optional extra) and a second UI layer to maintain.  
@@ -651,8 +651,8 @@ console.print(Columns([before_panel, after_panel]))
   - [x] **← Back** where meaningful (not just Cancel)
   - [x] live-updating right pane context while navigating
   - [x] `?` help overlay (or a Help screen) with shortcuts and workflow hints
-- [ ] Non-TTY / `--json` / `--yes` never starts the TUI (always CLI behavior)
-  - Current state: `qsync tui` and `qsync survey menu --tui` are guarded for interactive TTY + JSON mode; `qsync sync --tui/--no-tui/--tui=auto` is not implemented yet.
+- [x] Non-TTY / `--json` / `--yes` never starts the TUI (always CLI behavior)
+  - Current state: `qsync sync` supports `--tui`, `--no-tui`, and `--tui=auto`; auto mode falls back to CLI in non-TTY/`--yes`/`--json`.
 - [x] Without the `tui` extra installed, `qsync tui` prints an install hint and exits non-zero
 
 **Definition of Done (pilot):**
@@ -1158,8 +1158,8 @@ Rationale: makes intent explicit and reduces accidental corruption.
    Implemented: TUI survey menu now exposes native quick actions across survey-menu categories and blocks default-account-only actions with explicit disabled reasons.
 2. [x] **Element 13 (shared survey picker parity everywhere)**  
    Implemented for TUI sync/pull flows with shared picker semantics (details/manual/regex path).
-3. [ ] **Element 8 follow-up (`qsync sync --tui/--no-tui/--tui=auto`) + guided sync options screen**  
-   Deferred for now (explicitly excluded in the current implementation request).
+3. [x] **Element 8 follow-up (`qsync sync --tui/--no-tui/--tui=auto`) + guided sync options screen**  
+   Implemented for parser/runtime flag semantics; guided option controls remain available in the TUI sync confirmation screen via additional sync args.
 4. [x] **Element 12 (`qsync settings` command center)**  
    Implemented as `qsync settings` plus a dedicated TUI Settings screen.
 5. [x] **Element 4 Stage 3 + Element 3 Stage 2 (screen-local help overlays and richer in-pane previews)**  

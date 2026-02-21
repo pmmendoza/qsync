@@ -2734,6 +2734,46 @@ def _build_pending_abort_guidance(
     return message, payload
 
 
+def _build_noninteractive_yes_required_guidance(
+    *,
+    survey_id: str,
+    dimensions: list[str],
+    scope_expr: Optional[str],
+) -> tuple[str, dict[str, object]]:
+    scope_token = _quote_scope_expr(scope_expr)
+
+    base_tokens = ["qsync", "sync", "--survey-id", survey_id]
+    if dimensions:
+        base_tokens.extend(["--dimensions", ",".join(dimensions)])
+    if scope_token:
+        base_tokens.extend(["--scope", scope_token])
+
+    review_cmd = " ".join(base_tokens)
+    run_cmd = " ".join([*base_tokens, "--yes"])
+
+    payload = {
+        "error": "noninteractive_yes_required",
+        "survey_id": survey_id,
+        "dimensions": list(dimensions),
+        "next_commands": {
+            "interactive_review": review_cmd,
+            "noninteractive_run": run_cmd,
+        },
+    }
+
+    lines = [
+        "[qsync:sync] Non-interactive sync detected.",
+        "",
+        "Why this was blocked:",
+        "  qsync sync can stage/push remote mutations; non-interactive runs require explicit --yes.",
+        "",
+        "How to proceed:",
+        f"  interactive review: {review_cmd}",
+        f"  non-interactive run: {run_cmd}",
+    ]
+    return "\n".join(lines), payload
+
+
 def _detect_unstaged_items(
     survey_id: str,
     *,
@@ -4660,6 +4700,24 @@ def sync_survey(
         if not dimensions:
             print(f"[sync] No dimensions selected for {survey_ref}")
             return None
+        actionable_dims = [
+            dim
+            for dim in dimensions
+            if changes.dimensions.get(dim) and changes.dimensions[dim].has_changes
+        ]
+        if not actionable_dims:
+            print(f"[sync] No staged or unstaged changes detected for {survey_ref}")
+            return None
+        if not auto_yes:
+            message, payload = _build_noninteractive_yes_required_guidance(
+                survey_id=survey_id,
+                dimensions=actionable_dims,
+                scope_expr=scope.expression if scope else None,
+            )
+            if json_output:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                raise SystemExit(1)
+            raise SystemExit(message)
         return _sync_dimensions_once(
             survey_id,
             dimensions,

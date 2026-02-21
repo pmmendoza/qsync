@@ -19,6 +19,7 @@ qsync sync --survey-id SV_xxx
 
 > [!TIP]
 > `qsync sync` is designed to be the only command most users need day-to-day. It orchestrates items, JS, EOS, blocks, flow, and translations workflows automatically.
+> In non-interactive runs (CI/pipes), use `--yes` for mutating sync operations.
 
 ## When to use qsync
 

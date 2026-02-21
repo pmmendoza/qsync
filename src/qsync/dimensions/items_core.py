@@ -1386,6 +1386,7 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
 
     - For Questions: SurveyID, QuestionType, DataExportTag.
     - For Options:  SurveyID, QuestionType, Code.
+    - For Subitems: SurveyID, QuestionType, ExportTag, Field.
     - For SBS sheets: SurveyID, QuestionType, ExportTag.
 
     When mismatches are found, print a warning and reset the Excel cell to the
@@ -1574,6 +1575,116 @@ def _self_heal_system_columns(survey: SurveyCache, xlsx_path: Path) -> None:
                 f"{excel_io.OPTIONS_SHEET} has {len(unknown_choice_rows)} orphan row(s) "
                 f"with unknown choices that will be ignored for syncing ({samples}). "
                 f"Next: run `qsync items pull --survey-id {survey.survey_id} --prune-orphans` "
+                "to remove stale workbook rows."
+            )
+
+    # Subitems sheet
+    if excel_io.SUBITEMS_SHEET in wb.sheetnames:
+        ws_s = wb[excel_io.SUBITEMS_SHEET]
+        headers, _ = excel_io._iter_sheet_rows(ws_s)
+        idx = {name: i for i, name in enumerate(headers)}
+        unknown_qids_subitems: list[tuple[int, str]] = []
+        unknown_subitem_rows: list[tuple[int, str, str, str]] = []
+
+        for row in ws_s.iter_rows(min_row=2, values_only=False):
+            qid_cell = row[idx.get("QID")] if "QID" in idx else None
+            answer_cell = row[idx.get("AnswerId")] if "AnswerId" in idx else None
+            if qid_cell is None or answer_cell is None:
+                continue
+            qid = str(qid_cell.value or "").strip()
+            answer_id = str(answer_cell.value or "").strip()
+            if not qid or not answer_id:
+                continue
+
+            field_raw = (
+                row[idx["Field"]].value
+                if "Field" in idx and idx.get("Field") is not None
+                else "Answer"
+            )
+            field = excel_io._normalize_subitem_field(field_raw)
+
+            q_json = questions.get(qid)
+            if not q_json:
+                unknown_qids_subitems.append((int(qid_cell.row), qid))
+                continue
+
+            qtype = (q_json.get("QuestionType") or "").strip()
+            selector = (q_json.get("Selector") or "").strip()
+            if field == "Label":
+                container = q_json.get("Labels") or {}
+            elif qtype == "Matrix" or (qtype == "SBS" and selector == "SBSMatrix"):
+                container = q_json.get("Choices") or {}
+            else:
+                container = q_json.get("Answers") or {}
+
+            if not isinstance(container, dict) or answer_id not in container:
+                unknown_subitem_rows.append((int(answer_cell.row), qid, field, answer_id))
+                continue
+
+            expected_survey_id = survey.survey_id
+            expected_qtype = q_json.get("QuestionType") or ""
+            expected_tag = q_json.get("DataExportTag") or ""
+
+            if "SurveyID" in idx:
+                cell = row[idx["SurveyID"]]
+                if str(cell.value or "").strip() != expected_survey_id:
+                    _warn(
+                        "System column SurveyID changed in Subitems "
+                        f"row {cell.row} (QID={qid}, Field={field}, AnswerId={answer_id}); resetting. "
+                        "Next: avoid editing system columns in Excel."
+                    )
+                    cell.value = expected_survey_id
+
+            if "QuestionType" in idx:
+                cell = row[idx["QuestionType"]]
+                if str(cell.value or "").strip() != expected_qtype:
+                    _warn(
+                        "System column QuestionType changed in Subitems "
+                        f"row {cell.row} (QID={qid}, Field={field}, AnswerId={answer_id}); resetting. "
+                        "Next: avoid editing system columns in Excel."
+                    )
+                    cell.value = expected_qtype
+
+            if "ExportTag" in idx:
+                cell = row[idx["ExportTag"]]
+                if str(cell.value or "").strip() != expected_tag:
+                    _warn(
+                        "System column ExportTag changed in Subitems "
+                        f"row {cell.row} (QID={qid}, Field={field}, AnswerId={answer_id}); resetting. "
+                        "Next: avoid editing system columns in Excel."
+                    )
+                    cell.value = expected_tag
+
+            if "Field" in idx:
+                cell = row[idx["Field"]]
+                normalized = excel_io._normalize_subitem_field(cell.value)
+                if normalized != field or str(cell.value or "").strip() != field:
+                    _warn(
+                        "System column Field changed in Subitems "
+                        f"row {cell.row} (QID={qid}, AnswerId={answer_id}); resetting. "
+                        "Next: avoid editing system columns in Excel."
+                    )
+                    cell.value = field
+
+        if unknown_qids_subitems:
+            _warn(
+                f"{excel_io.SUBITEMS_SHEET} has {len(unknown_qids_subitems)} orphan row(s) "
+                f"with unknown QID that will be ignored for syncing "
+                f"({_row_samples(unknown_qids_subitems)}). "
+                f"Next: run `qsync items pull --survey-id {survey.survey_id} --prune-orphans` "
+                "to remove stale workbook rows."
+            )
+        if unknown_subitem_rows:
+            samples = ", ".join(
+                f"row {row_no} (QID={qid}, Field={field}, AnswerId={answer_id})"
+                for row_no, qid, field, answer_id in unknown_subitem_rows[:3]
+            )
+            if len(unknown_subitem_rows) > 3:
+                samples = f"{samples}, +{len(unknown_subitem_rows) - 3} more"
+            _warn(
+                f"{excel_io.SUBITEMS_SHEET} has {len(unknown_subitem_rows)} orphan row(s) "
+                "with unknown AnswerId/LabelId that will be ignored for syncing "
+                f"({samples}). Next: run `qsync items pull --survey-id {survey.survey_id} --prune-orphans` "
                 "to remove stale workbook rows."
             )
 

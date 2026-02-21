@@ -1670,3 +1670,180 @@ def test_add_question_interactive_force_live_override(monkeypatch) -> None:
 
     cli_survey.handle_add_question(args)
     assert created["count"] == 1
+
+
+def test_replace_question_dry_run_does_not_write(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    target_definition = {
+        "Questions": {
+            "QID90": {
+                "QuestionID": "QID90",
+                "QuestionType": "MC",
+                "QuestionText": "Old target text",
+                "DataExportTag": "target_tag",
+            }
+        }
+    }
+    source_definition = {
+        "Questions": {
+            "QID12": {
+                "QuestionID": "QID12",
+                "QuestionType": "MC",
+                "QuestionText": "Source text",
+                "DataExportTag": "source_tag",
+            }
+        }
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TARGET",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("target.qualtrics.com", {"X-API-TOKEN": "target"}),
+    )
+    monkeypatch.setattr(cli_survey, "ensure_unlocked", lambda _sid: None)
+    monkeypatch.setattr(cli_survey, "load_push_context", lambda *_a, **_k: _PushCtx())
+
+    def _fetch(base, headers, survey_id):
+        if survey_id == "SV_TARGET":
+            return target_definition
+        if survey_id == "SV_SOURCE":
+            return source_definition
+        raise AssertionError(f"Unexpected survey fetch: {survey_id}")
+
+    monkeypatch.setattr(cli_survey, "fetch_survey_definition", _fetch)
+
+    writes: list[str] = []
+    monkeypatch.setattr(
+        cli_survey,
+        "send_api_request",
+        lambda *_a, **_k: writes.append("write") or _Resp({"result": {}}),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TARGET",
+        question_id="QID90",
+        source_account=None,
+        source_survey_id="SV_SOURCE",
+        source_question_id="QID12",
+        dry_run=True,
+        force_live=False,
+        yes=True,
+        show_diff=False,
+        replace_data_export_tag=False,
+        no_publish=True,
+        publish_description=None,
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_replace_question(args)
+    assert writes == []
+
+
+def test_replace_question_pushes_payload_and_preserves_target_tag(monkeypatch) -> None:
+    from qsync import cli_survey
+
+    target_definition = {
+        "Questions": {
+            "QID90": {
+                "QuestionID": "QID90",
+                "QuestionType": "MC",
+                "QuestionText": "Old target text",
+                "DataExportTag": "target_tag",
+                "Language": {"EN": {"QuestionText": "Old target text"}},
+            }
+        }
+    }
+    source_definition = {
+        "Questions": {
+            "QID12": {
+                "QuestionID": "QID12",
+                "QuestionType": "Matrix",
+                "QuestionText": "Source text",
+                "DataExportTag": "source_tag",
+                "Language": {
+                    "EN": {"QuestionText": "Source text"},
+                    "XX": {"QuestionText": "Unsupported language"},
+                },
+            }
+        }
+    }
+
+    monkeypatch.setattr(
+        cli_survey,
+        "_prompt_for_survey_id_api_if_needed",
+        lambda **_kwargs: "SV_TARGET",
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "_get_client_config_for_args",
+        lambda _args: ("target.qualtrics.com", {"X-API-TOKEN": "target"}),
+    )
+    monkeypatch.setattr(cli_survey, "ensure_unlocked", lambda _sid: None)
+    monkeypatch.setattr(cli_survey, "load_push_context", lambda *_a, **_k: _PushCtx())
+
+    def _fetch(base, headers, survey_id):
+        if survey_id == "SV_TARGET":
+            return target_definition
+        if survey_id == "SV_SOURCE":
+            return source_definition
+        raise AssertionError(f"Unexpected survey fetch: {survey_id}")
+
+    monkeypatch.setattr(cli_survey, "fetch_survey_definition", _fetch)
+
+    put_payload: dict[str, Any] = {}
+
+    def _send_api_request(*, method: str, path: str, json=None, **_kwargs):
+        if method == "GET" and path == "surveys/SV_TARGET/languages":
+            return _Resp({"result": {"AvailableLanguages": {"EN": True}}})
+        if method == "PUT" and path == "survey-definitions/SV_TARGET/questions/QID90":
+            put_payload.clear()
+            put_payload.update(json or {})
+            return _Resp({"result": {"ok": True}})
+        raise AssertionError(f"Unexpected API call: {method} {path}")
+
+    monkeypatch.setattr(cli_survey, "send_api_request", _send_api_request)
+
+    published: list[str] = []
+    monkeypatch.setattr(
+        cli_survey,
+        "publish_survey_definition",
+        lambda survey_id, **_kwargs: published.append(survey_id),
+    )
+    monkeypatch.setattr(
+        cli_survey,
+        "download_survey_definition",
+        lambda survey_id, **_kwargs: Path(f"/tmp/{survey_id}.json"),
+    )
+
+    args = argparse.Namespace(
+        survey_id="SV_TARGET",
+        question_id="QID90",
+        source_account=None,
+        source_survey_id="SV_SOURCE",
+        source_question_id="QID12",
+        dry_run=False,
+        force_live=False,
+        yes=True,
+        show_diff=False,
+        replace_data_export_tag=False,
+        no_publish=False,
+        publish_description="replace payload",
+        account=None,
+        interactive_mode=False,
+    )
+
+    cli_survey.handle_replace_question(args)
+
+    assert put_payload["QuestionID"] == "QID90"
+    assert put_payload["QuestionType"] == "Matrix"
+    assert put_payload["QuestionText"] == "Source text"
+    assert put_payload["DataExportTag"] == "target_tag"
+    assert list((put_payload.get("Language") or {}).keys()) == ["EN"]
+    assert published == ["SV_TARGET"]

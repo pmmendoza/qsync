@@ -49,6 +49,10 @@ def test_embedded_options_menu_includes_structural_entry(
         for menu_choices in seen_edit_choices
     )
     assert any(
+        "Replace question payload (source survey/QID → target QID)" in menu_choices
+        for menu_choices in seen_edit_choices
+    )
+    assert any(
         "Page breaks (add/remove in block flow)" in menu_choices
         for menu_choices in seen_edit_choices
     )
@@ -136,6 +140,80 @@ def test_edit_menu_add_question_routes_to_handler(
     assert ns.insert_index == 0
     assert ns.after_qid is None
     assert ns.page_break_mode == "none"
+    assert ns.dry_run is True
+
+
+def test_edit_menu_replace_question_routes_to_handler(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.list_surveys",
+        lambda base, headers: [{"id": "SV_1", "name": "Survey One"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey._pick_survey_id_from_records",
+        lambda **kwargs: "SV_1",
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.fetch_survey_definition",
+        lambda base, headers, survey_id: {
+            "Questions": {"QID1": {"QuestionText": "Only question"}},
+            "Blocks": {"BL_1": {"Type": "Standard", "BlockElements": []}},
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+        },
+    )
+
+    called = {}
+
+    def _capture(ns):
+        called["args"] = ns
+
+    monkeypatch.setattr("qsync.cli_survey.handle_replace_question", _capture)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    state = {"top_visits": 0}
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message.startswith("qsync survey menu"):
+            state["top_visits"] += 1
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
+            return "Replace question payload (source survey/QID → target QID)"
+        if message == "Replacement source account:":
+            return "Current account (default)"
+        if message == "Replacement source survey:":
+            return "Use same survey (SV_1)"
+        if message == "Replace target DataExportTag with source tag?":
+            return "No (keep target DataExportTag)"
+        if message == "Dry run?":
+            return "Yes"
+        return str(choices[0]) if choices else "Exit"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert "args" in called
+    ns = called["args"]
+    assert ns.survey_id == "SV_1"
+    assert ns.question_id == "QID1"
+    assert ns.source_survey_id == "SV_1"
+    assert ns.source_question_id == "QID1"
+    assert ns.replace_data_export_tag is False
     assert ns.dry_run is True
 
 
@@ -814,6 +892,71 @@ def test_direct_add_question_mode_accepts_preselected_survey(
     assert ns.target_block_id == "BL_1"
     assert ns.insert_index == 0
     assert ns.after_qid is None
+    assert ns.dry_run is True
+
+
+def test_direct_replace_question_mode_accepts_preselected_survey(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.fetch_survey_definition",
+        lambda base, headers, survey_id: {
+            "Questions": {"QID1": {"QuestionText": "Only question"}},
+            "Blocks": {"BL_1": {"Type": "Standard", "BlockElements": []}},
+            "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+        },
+    )
+
+    called = {}
+
+    def _capture(ns):
+        called["args"] = ns
+
+    monkeypatch.setattr("qsync.cli_survey.handle_replace_question", _capture)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message == "Replacement source account:":
+            return "Current account (default)"
+        if message == "Replacement source survey:":
+            return "Use same survey (SV_1)"
+        if message == "Replace target DataExportTag with source tag?":
+            return "No (keep target DataExportTag)"
+        if message == "Dry run?":
+            return "Yes"
+        return str(choices[0]) if choices else "Exit"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(
+        argparse.Namespace(
+            tui=False,
+            structural_edit=False,
+            add_question_interactive=False,
+            move_question_interactive=False,
+            remove_question_interactive=False,
+            replace_question_interactive=True,
+            page_break_interactive=False,
+            survey_id="SV_1",
+            account=None,
+        )
+    )
+
+    assert "args" in called
+    ns = called["args"]
+    assert ns.survey_id == "SV_1"
+    assert ns.question_id == "QID1"
+    assert ns.source_survey_id == "SV_1"
+    assert ns.source_question_id == "QID1"
     assert ns.dry_run is True
 
 

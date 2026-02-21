@@ -63,6 +63,7 @@ Global flags:
 
 ```text
 qsync sync [--survey-id ...] [--all-focal] [--dimensions ...] [--scope ...]
+           [--tui[=on|auto] | --no-tui]
            [--pending-action push|discard|abort]
            [--force-live] [--force-preview] [--skip-publish]
            [--refresh-workbooks] [--allow-drift] [--json] [--fix ...]
@@ -73,6 +74,11 @@ Notes:
 - Valid dimensions: `items, edf, js, translations, eos, blocks, flow, master`
 - `--yes` is global (put before or after subcommands)
 - `--fix` supports `safe|all|all-safe|type:<ISSUE_TYPE>`
+- Non-interactive sync that would mutate now requires explicit `--yes`.
+- TUI mode:
+  - `--tui` forces Textual sync wizard.
+  - `--tui=auto` starts Textual only in interactive TTY (falls back to CLI for `--yes`, `--json`, or non-TTY).
+  - `--no-tui` forces CLI sync flow.
 
 ## Items
 
@@ -142,7 +148,7 @@ Key command families:
 
 - inventory/cache: `list`, `label`, `focal`, `inventory`, `pull`, `prepare`
 - copy/derive: `copy`, `slice-language`, `copy-cross-account`, `slice-registry`, `parity-check`
-- edits/utilities: `add-question`, `move-question`, `remove-question`, `add-page-break`, `remove-page-break`, `inspect-question`, `push-question`
+- edits/utilities: `add-question`, `move-question`, `remove-question`, `add-page-break`, `remove-page-break`, `inspect-question`, `push-question`, `replace-question`
 - lifecycle: `publish`, `activate`, `deactivate`, `versions`, `version-fetch`, `rollback`
 - exports: `export-responses`, `export-translation`, `export-side-by-side`
 - bulk: `master`

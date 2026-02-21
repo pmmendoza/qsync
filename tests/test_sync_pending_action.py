@@ -937,6 +937,62 @@ class TestSyncPendingAction(unittest.TestCase):
         mock_select.assert_called_once()
         self.assertFalse(mock_sync_once.called)
 
+    def test_sync_survey_noninteractive_requires_yes_for_mutating_dims(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        dims = self._empty_unstaged()
+        dims["items"] = DimensionChanges(
+            "items",
+            True,
+            "⚡ Unstaged: 1 change(s)",
+            {"QID1"},
+            status_kind="unstaged",
+            edit_count=1,
+        )
+        changes = orchestrator.SurveyChanges(
+            survey_id="SV_TEST",
+            survey_name="Test Survey",
+            dimensions=dims,
+        )
+
+        with (
+            patch.object(orchestrator, "detect_survey_changes", return_value=changes),
+            patch.object(orchestrator, "list_pending", return_value={}),
+        ):
+            with self.assertRaises(SystemExit) as exc:
+                orchestrator.sync_survey(
+                    survey_id="SV_TEST",
+                    dimensions=None,
+                    interactive=False,
+                    auto_yes=False,
+                )
+
+        message = str(exc.exception)
+        self.assertIn("non-interactive", message.lower())
+        self.assertIn("--yes", message)
+
+    def test_sync_survey_noninteractive_without_changes_is_noop_without_yes(self):
+        import qsync.sync_orchestrator as orchestrator
+
+        changes = orchestrator.SurveyChanges(
+            survey_id="SV_TEST",
+            survey_name="Test Survey",
+            dimensions=self._empty_unstaged(),
+        )
+
+        with (
+            patch.object(orchestrator, "detect_survey_changes", return_value=changes),
+            patch.object(orchestrator, "list_pending", return_value={}),
+        ):
+            result = orchestrator.sync_survey(
+                survey_id="SV_TEST",
+                dimensions=None,
+                interactive=False,
+                auto_yes=False,
+            )
+
+        self.assertIsNone(result)
+
 
 if __name__ == "__main__":
     unittest.main()

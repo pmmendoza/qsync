@@ -531,6 +531,7 @@ def _should_offer_workspace_onboard_hint(args: argparse.Namespace) -> bool:
             "version-fetch",
             "rollback",
             "push-question",
+            "replace-question",
             "export-responses",
             "export-translation",
         }
@@ -1167,7 +1168,9 @@ _HELP_TOPICS: dict[str, tuple[str, str]] = {
                 "",
                 "Start here:",
                 "- qsync sync --survey-id SV_...              (guided sync for one survey)",
-                "- qsync sync --tui                           (same sync entrypoint, TUI mode)",
+                "- qsync sync --tui                           (force TUI mode)",
+                "- qsync sync --tui=auto                      (use TUI only when safe in interactive TTY)",
+                "- qsync sync --no-tui                        (force CLI mode)",
                 "- qsync tui --sync                           (direct TUI entrypoint)",
                 "",
                 "Dimension workflows (manual control):",
@@ -2609,11 +2612,26 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "Omit to scan focal surveys."
         ),
     )
-    p_sync.add_argument(
+    sync_tui_group = p_sync.add_mutually_exclusive_group()
+    sync_tui_group.add_argument(
         "--tui",
-        action="store_true",
-        help="Launch Textual sync wizard (requires TUI dependencies; keeps default sync flow unchanged)",
+        nargs="?",
+        const="on",
+        choices=["on", "auto"],
+        dest="tui_mode",
+        help=(
+            "Sync UI mode: --tui forces Textual wizard; --tui=auto starts Textual only in interactive TTY "
+            "(and falls back to CLI for --yes/--json/non-TTY)."
+        ),
     )
+    sync_tui_group.add_argument(
+        "--no-tui",
+        action="store_const",
+        const="off",
+        dest="tui_mode",
+        help="Force standard CLI sync flow (disable Textual mode).",
+    )
+    p_sync.set_defaults(tui_mode="off")
     p_sync.add_argument(
         "--all-focal",
         action="store_true",
@@ -5939,10 +5957,6 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
         # sync command (orchestrator)
         if args.command == "sync":
-            if bool(getattr(args, "tui", False)):
-                _handle_tui(args)
-                return
-
             from .sync_orchestrator import (
                 sync_survey,
                 sync_focal_surveys,
@@ -5951,9 +5965,42 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             from .scope_filter import ScopeFilter
             import time
 
-            from .terminal_output import info, error, dim, format_elapsed, is_interactive
+            from .terminal_output import (
+                info,
+                error,
+                dim,
+                warn,
+                format_elapsed,
+                is_interactive,
+            )
 
             json_output = bool(getattr(args, "json", False))
+            tui_mode = str(getattr(args, "tui_mode", "off") or "off").strip().lower()
+            interactive_terminal = is_interactive(args)
+
+            if tui_mode == "on":
+                if bool(getattr(args, "yes", False)) or json_output:
+                    warn(
+                        "[qsync:sync]",
+                        "--tui is ignored when --yes or --json is set; running CLI sync.",
+                    )
+                elif not interactive_terminal:
+                    warn(
+                        "[qsync:sync]",
+                        "--tui requires an interactive TTY; running CLI sync.",
+                    )
+                else:
+                    _handle_tui(args)
+                    return
+            elif tui_mode == "auto":
+                if (
+                    not bool(getattr(args, "yes", False))
+                    and not json_output
+                    and interactive_terminal
+                ):
+                    _handle_tui(args)
+                    return
+
             survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
 
             # Parse scope filter if provided

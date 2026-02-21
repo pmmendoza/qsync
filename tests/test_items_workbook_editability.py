@@ -375,6 +375,69 @@ def test_all_major_workbook_tables_mark_readonly_columns_gray(tmp_path: Path) ->
         assert _fill_rgb(ws.cell(row=2, column=idx[editable_col])) != READONLY_RGB
 
 
+def test_subitems_self_heal_resets_system_columns_and_warns_for_orphans(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = _all_surfaces_payload()
+    survey_id = "SV_SURFACES"
+    _write_cached(tmp_path, survey_id, payload)
+
+    xlsx_path = tmp_path / "excel" / f"{survey_id}.xlsx"
+    xlsx_path.parent.mkdir(parents=True, exist_ok=True)
+    excel_io.init_workbook_from_survey(survey_id, payload, xlsx_path)
+
+    wb = load_workbook(xlsx_path)
+    ws = wb[excel_io.SUBITEMS_SHEET]
+    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    idx = {str(name): i for i, name in enumerate(headers)}
+
+    target_row = None
+    for r in range(2, ws.max_row + 1):
+        qid = str(ws.cell(row=r, column=idx["QID"] + 1).value or "").strip()
+        answer_id = str(ws.cell(row=r, column=idx["AnswerId"] + 1).value or "").strip()
+        if qid == "QID2" and answer_id == "1":
+            target_row = r
+            break
+    assert target_row is not None
+
+    ws.cell(row=target_row, column=idx["SurveyID"] + 1).value = "SV_WRONG"
+    ws.cell(row=target_row, column=idx["QuestionType"] + 1).value = "TE"
+    ws.cell(row=target_row, column=idx["ExportTag"] + 1).value = "WRONG_TAG"
+
+    orphan_row = [None] * len(headers)
+    orphan_row[idx["SurveyID"]] = survey_id
+    orphan_row[idx["QID"]] = "QID2"
+    orphan_row[idx["AnswerId"]] = "999"
+    orphan_row[idx["QuestionType"]] = "Matrix"
+    orphan_row[idx["ExportTag"]] = "M1"
+    if "Field" in idx:
+        orphan_row[idx["Field"]] = "Answer"
+    if "Label_en_MD" in idx:
+        orphan_row[idx["Label_en_MD"]] = "orphan statement"
+    ws.append(orphan_row)
+    wb.save(xlsx_path)
+
+    with patch("qsync.qualtrics_client._workspace_root", return_value=tmp_path):
+        _ = preview_changes(
+            survey_id,
+            xlsx_path,
+            check_drift=False,
+            annotate_dirty=False,
+        )
+
+    out = capsys.readouterr().out
+    assert "System column SurveyID changed in Subitems" in out
+    assert "System column QuestionType changed in Subitems" in out
+    assert "System column ExportTag changed in Subitems" in out
+    assert "Subitems has 1 orphan row(s) with unknown AnswerId/LabelId" in out
+
+    wb = load_workbook(xlsx_path)
+    ws = wb[excel_io.SUBITEMS_SHEET]
+    assert ws.cell(row=target_row, column=idx["SurveyID"] + 1).value == survey_id
+    assert ws.cell(row=target_row, column=idx["QuestionType"] + 1).value == "Matrix"
+    assert ws.cell(row=target_row, column=idx["ExportTag"] + 1).value == "M1"
+
+
 def test_preview_and_apply_include_question_validation_settings(tmp_path: Path) -> None:
     payload = _question_settings_payload()
     survey_id = "SV_TEST"
