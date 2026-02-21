@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
+import io
 import json
 import os
 import platform
@@ -11,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -1868,6 +1871,151 @@ def _raise_deprecated_flag_error(argv: list[str]) -> None:
         )
 
 
+def _resolve_sync_inventory_max_age_minutes(override: int | None = None) -> int:
+    """Resolve the staleness threshold used for pre-sync inventory refresh."""
+
+    if override is not None:
+        return max(int(override), 1)
+    raw = (os.environ.get("QSYNC_SYNC_INVENTORY_MAX_AGE_MINUTES") or "").strip()
+    if raw:
+        try:
+            return max(int(raw), 1)
+        except ValueError:
+            pass
+    return 30
+
+
+def _inventory_age_minutes() -> tuple[Path, float | None]:
+    """Return `(inventory_csv_path, age_minutes)` where `age_minutes=None` means missing."""
+
+    from .config import resolve_root, resolve_scoped_dir
+
+    root = resolve_root(required=False) or Path.cwd()
+    surveys_dir = resolve_scoped_dir("surveys", root=root)
+    canonical = surveys_dir / "inventory.csv"
+    legacy = surveys_dir / "qualtrics_surveys.csv"
+    if canonical.exists():
+        path = canonical
+    elif legacy.exists():
+        path = legacy
+    else:
+        path = canonical
+    if not path.exists():
+        return path, None
+    try:
+        age_seconds = max(time.time() - path.stat().st_mtime, 0.0)
+    except OSError:
+        return path, None
+    return path, age_seconds / 60.0
+
+
+def _refresh_inventory_before_sync(
+    *,
+    survey_ids: list[str],
+    refresh_inventory_flag: bool,
+    no_refresh_inventory_flag: bool,
+    interactive_terminal: bool,
+    json_output: bool,
+    max_age_minutes: int,
+) -> None:
+    """Optionally refresh inventory before `qsync sync` run.
+
+    Behavior:
+    - `--refresh-inventory` always attempts refresh (and fails hard on error).
+    - `--no-refresh-inventory` never refreshes.
+    - default auto-refreshes when inventory is missing/stale.
+    """
+
+    from .config import get_client_config
+    from .survey_inventory import refresh_inventory
+    from .terminal_output import dim, error, info, warn
+
+    inventory_path, age_minutes = _inventory_age_minutes()
+    is_stale = age_minutes is None or age_minutes > float(max_age_minutes)
+
+    if json_output and not refresh_inventory_flag:
+        # Keep JSON output deterministic: no implicit pre-sync chatter.
+        return
+
+    if no_refresh_inventory_flag:
+        if is_stale and not json_output:
+            age_text = "missing" if age_minutes is None else f"{age_minutes:.1f}m old"
+            warn(
+                "[qsync:sync]",
+                "Inventory refresh skipped by --no-refresh-inventory "
+                f"(inventory: {inventory_path}, {age_text}). "
+                "Next: run `qsync survey inventory` before sync if survey selection/counts look stale.",
+            )
+        return
+
+    should_refresh = bool(refresh_inventory_flag or is_stale)
+    if not should_refresh:
+        return
+
+    reason = (
+        "--refresh-inventory"
+        if refresh_inventory_flag
+        else (
+            "missing inventory"
+            if age_minutes is None
+            else f"inventory age {age_minutes:.1f}m > {max_age_minutes}m"
+        )
+    )
+    if not json_output:
+        info(
+            "[qsync:sync]",
+            f"Refreshing inventory before sync ({reason})...",
+        )
+
+    survey_filter = list(survey_ids) if survey_ids else None
+    counts_scope = None if survey_filter else "focal"
+
+    try:
+        base_url, headers = get_client_config()
+        if json_output:
+            # Suppress refresh chatter during machine-readable flows.
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                refresh_inventory(
+                    base_url,
+                    headers,
+                    survey_filter=survey_filter,
+                    counts_scope=counts_scope,
+                    progress=False,
+                    quiet=True,
+                )
+        else:
+            refresh_inventory(
+                base_url,
+                headers,
+                survey_filter=survey_filter,
+                counts_scope=counts_scope,
+                progress=bool(interactive_terminal),
+                quiet=False,
+            )
+    except Exception as exc:
+        if refresh_inventory_flag:
+            error(
+                "[qsync:sync]",
+                f"Failed to refresh inventory (--refresh-inventory): {exc}",
+            )
+            raise SystemExit(1)
+        if not json_output:
+            warn(
+                "[qsync:sync]",
+                "Inventory auto-refresh failed; continuing with current local inventory. "
+                f"Error: {exc}",
+            )
+        return
+
+    if not json_output:
+        dim(
+            "[qsync:sync]",
+            f"Inventory refresh complete ({'targeted' if survey_filter else 'full'}).",
+        )
+
+
 def _main_impl(argv: Optional[list[str]] = None) -> None:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     root_flag, env_path_flag, color_flag, account_flag, cleaned_argv = (
@@ -2067,6 +2215,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         handle_account_adopt,
         handle_account_cache_dir,
         handle_account_clear,
+        handle_account_ensure_default_alias,
         handle_account_list,
         handle_account_status,
         handle_account_use,
@@ -2106,6 +2255,20 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Emit machine-readable JSON to stdout (no other output)",
     )
     p_account_use.set_defaults(func=handle_account_use)
+
+    p_account_ensure_default_alias = account_subs.add_parser(
+        "ensure-default-alias",
+        help=(
+            "Ensure `.env.default` exists with minimal primary credentials "
+            "(QUALTRICS_BASE_URL + X-API-TOKEN)"
+        ),
+    )
+    p_account_ensure_default_alias.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON to stdout (no other output)",
+    )
+    p_account_ensure_default_alias.set_defaults(func=handle_account_ensure_default_alias)
 
     p_account_clear = account_subs.add_parser(
         "clear",
@@ -2637,6 +2800,23 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         action="store_true",
         dest="all",
         help="Process all focal surveys without prompting (for automation)",
+    )
+    sync_inventory_group = p_sync.add_mutually_exclusive_group()
+    sync_inventory_group.add_argument(
+        "--refresh-inventory",
+        action="store_true",
+        help=(
+            "Refresh inventory before sync (targeted to --survey-id when provided; "
+            "otherwise refreshes focal inventory)."
+        ),
+    )
+    sync_inventory_group.add_argument(
+        "--no-refresh-inventory",
+        action="store_true",
+        help=(
+            "Skip pre-sync inventory refresh even when local inventory is stale "
+            "(default auto-refresh threshold: 30 minutes)."
+        ),
     )
     p_sync.add_argument(
         "--dimensions",
@@ -4025,6 +4205,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
     from .terminal_colors import set_color_mode
     from .terminal_output import operation_timer, reset_timing_emitted
+    from .push_logger import push_log_scope, set_session_id
 
     if os.environ.get("NO_COLOR") is not None:
         set_color_mode("never")
@@ -4035,6 +4216,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     if getattr(args, "json", False):
         os.environ["QSYNC_JSON_MODE"] = "1"
 
+    args._log_session_id = set_session_id()
+    command_name = str(getattr(args, "command", "") or "").strip().replace("-", ".")
+    parent_action = f"qsync.{command_name}" if command_name else None
+    _log_scope_cm = push_log_scope(parent_action)
+    _log_scope_cm.__enter__()
     _timer_cm = operation_timer(f"[qsync:{args.command}]")
     _timer_cm.__enter__()
     try:
@@ -4123,7 +4309,9 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             account = (getattr(args, "account", None) or "").strip() or None
             if not account:
                 account = get_active_account()
-            if account:
+            if account and account.lower() == "default":
+                env_path = resolve_env_path(root=root) or (root / ".env")
+            elif account:
                 env_path = resolve_account_env_path(account, root=root)
             else:
                 env_path = resolve_env_path(root=root) or ENV_PATH
@@ -6002,6 +6190,18 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     return
 
             survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
+            _refresh_inventory_before_sync(
+                survey_ids=survey_ids,
+                refresh_inventory_flag=bool(
+                    getattr(args, "refresh_inventory", False)
+                ),
+                no_refresh_inventory_flag=bool(
+                    getattr(args, "no_refresh_inventory", False)
+                ),
+                interactive_terminal=interactive_terminal,
+                json_output=json_output,
+                max_age_minutes=_resolve_sync_inventory_max_age_minutes(),
+            )
 
             # Parse scope filter if provided
             scope = None
@@ -6710,6 +6910,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 return
 
     finally:
+        _log_scope_cm.__exit__(*sys.exc_info())
         _timer_cm.__exit__(*sys.exc_info())
 
 

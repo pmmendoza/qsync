@@ -172,6 +172,7 @@ def test_account_use_bootstraps_env_default_alias_when_missing(
             [
                 "QUALTRICS_BASE_URL=iad1.qualtrics.com",
                 "X-API-TOKEN=default-secret",
+                "EXTRA_SHOULD_NOT_COPY=1",
             ]
         )
         + "\n",
@@ -182,8 +183,92 @@ def test_account_use_bootstraps_env_default_alias_when_missing(
 
     env_default = tmp_path / ".env.default"
     assert env_default.exists()
-    assert env_default.read_text(encoding="utf-8") == (tmp_path / ".env").read_text(
-        encoding="utf-8"
+    assert env_default.read_text(encoding="utf-8") == (
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=iad1.qualtrics.com",
+                "X-API-TOKEN=default-secret",
+            ]
+        )
+        + "\n"
+    )
+
+
+def test_account_use_default_bootstraps_env_default_alias_when_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qsync.cli import main
+
+    _touch_env_for_restore(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    ensure_qsync_workspace(tmp_path)
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=iad1.qualtrics.com",
+                "X-API-TOKEN=default-secret",
+                "EXTRA_SHOULD_NOT_COPY=1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    main(["--root", str(tmp_path), "account", "use", "default"])
+
+    env_default = tmp_path / ".env.default"
+    assert env_default.exists()
+    assert env_default.read_text(encoding="utf-8") == (
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=iad1.qualtrics.com",
+                "X-API-TOKEN=default-secret",
+            ]
+        )
+        + "\n"
+    )
+    prefs = json.loads((tmp_path / ".qsync" / "preferences.json").read_text(encoding="utf-8"))
+    assert prefs.get("active_account") == "default"
+
+
+def test_account_ensure_default_alias_creates_minimal_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from qsync.cli import main
+
+    _touch_env_for_restore(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    ensure_qsync_workspace(tmp_path)
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=iad1.qualtrics.com",
+                "QUALTRICS_API_KEY=default-secret",
+                "EXTRA_SHOULD_NOT_COPY=1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    main(["--root", str(tmp_path), "account", "ensure-default-alias", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["created"] is True
+
+    assert (tmp_path / ".env.default").read_text(encoding="utf-8") == (
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=iad1.qualtrics.com",
+                "X-API-TOKEN=default-secret",
+            ]
+        )
+        + "\n"
     )
 
 

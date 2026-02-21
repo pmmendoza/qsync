@@ -94,6 +94,25 @@ def test_load_account_env_accepts_target_token_keys(tmp_path: Path) -> None:
     assert env["X-API-TOKEN"] == "secret"
 
 
+def test_load_account_env_default_uses_primary_env_without_env_default(tmp_path: Path) -> None:
+    from qsync.config import load_account_env
+
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=iad1.qualtrics.com",
+                "X-API-TOKEN=secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    env = load_account_env("default", root=tmp_path)
+    assert env["QUALTRICS_BASE_URL"] == "iad1.qualtrics.com"
+    assert env["X-API-TOKEN"] == "secret"
+
+
 def test_survey_list_account_uses_account_env_and_skips_inventory_ordering(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -267,6 +286,36 @@ def test_doctor_check_api_account_uses_account_env(
     assert calls, "Expected /whoami call"
     assert calls[0]["base_url"] == "iad1.qualtrics.com"
     assert calls[0]["path"] == "whoami"
+
+
+def test_doctor_account_default_uses_primary_env_when_alias_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from qsync.cli import main
+
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=iad1.qualtrics.com",
+                "X-API-TOKEN=secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert not (tmp_path / ".env.default").exists()
+
+    monkeypatch.delenv("QSYNC_ACCOUNT", raising=False)
+
+    main(["--root", str(tmp_path), "doctor", "--json", "--account", "default"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["account"] == "default"
+    assert payload["env_path"] == str((tmp_path / ".env").resolve())
+    assert payload["qualtrics_base_url"] == "iad1.qualtrics.com"
 
 
 def test_survey_pull_account_uses_account_env(

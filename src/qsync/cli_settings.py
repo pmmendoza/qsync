@@ -12,6 +12,7 @@ import time
 from .cli_account import (
     handle_account_cache_dir,
     handle_account_clear,
+    handle_account_ensure_default_alias,
     handle_account_list,
     handle_account_status,
     handle_account_use,
@@ -68,6 +69,7 @@ def handle_settings(args: argparse.Namespace) -> None:
                 "List accounts",
                 "Set active account",
                 "Clear active account",
+                "Ensure default alias",
                 "Refresh inventory (no counts)",
                 "Refresh inventory (focal counts)",
                 "Prepare surfaces",
@@ -117,6 +119,13 @@ def handle_settings(args: argparse.Namespace) -> None:
             _run_timed(
                 "account clear",
                 lambda: handle_account_clear(argparse.Namespace(json=False)),
+            )
+            continue
+
+        if choice == "Ensure default alias":
+            _run_timed(
+                "account ensure-default-alias",
+                lambda: handle_account_ensure_default_alias(argparse.Namespace(json=False)),
             )
             continue
 

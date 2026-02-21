@@ -507,15 +507,38 @@ def load_account_env(
     *,
     root: Path | None = None,
 ) -> Dict[str, str]:
-    """Load credentials/settings from `.env.<account>` under the workspace root.
+    """Load credentials/settings for an explicit account selector.
 
     This is intentionally strict: it does not merge credentials from the process
     environment, so selecting an account is deterministic and doesn't get
     accidentally overridden by exported `QUALTRICS_BASE_URL` / `X-API-TOKEN`.
+
+    Special case:
+    - `account="default"` maps to the primary `.env` credentials.
     """
 
-    env_path = resolve_account_env_path(account, root=root)
+    root_path = root or resolve_root(required=False) or Path.cwd()
+    selected = validate_account_name(account)
+    if selected.lower() == "default":
+        env_path = resolve_env_path(root=root_path) or (root_path / ".env").resolve()
+    else:
+        env_path = resolve_account_env_path(selected, root=root_path)
     if not env_path.exists():
+        if selected.lower() == "default":
+            raise QsyncConfigError(
+                error_id="QSYNC-CONFIG-ACCOUNTENV-004",
+                problem=f"Default env file not found: {env_path.name}",
+                why="`--account default` maps to the workspace primary `.env` credentials.",
+                impact="The command cannot run against the selected account.",
+                action=(
+                    f"Create `{env_path}` with at least:\n"
+                    "  QUALTRICS_BASE_URL=iad1.qualtrics.com\n"
+                    "  X-API-TOKEN=<token>\n"
+                    "(or use QUALTRICS_API_KEY instead of X-API-TOKEN)."
+                ),
+                context={"env_path": str(env_path), "account": selected},
+                exit_code=1,
+            )
         raise QsyncConfigError(
             error_id="QSYNC-CONFIG-ACCOUNTENV-001",
             problem=f"Account env file not found: {env_path.name}",
@@ -527,7 +550,7 @@ def load_account_env(
                 "  X-API-TOKEN=<token>\n"
                 "(or use QUALTRICS_API_KEY instead of X-API-TOKEN)."
             ),
-            context={"env_path": str(env_path), "account": validate_account_name(account)},
+            context={"env_path": str(env_path), "account": selected},
             exit_code=1,
         )
 
@@ -564,7 +587,11 @@ def load_account_env(
                 "  QUALTRICS_BASE_URL=iad1.qualtrics.com\n"
                 "  X-API-TOKEN=<token>"
             ),
-            context={"env_path": str(env_path), "missing": ", ".join(missing), "account": validate_account_name(account)},
+            context={
+                "env_path": str(env_path),
+                "missing": ", ".join(missing),
+                "account": selected,
+            },
             exit_code=1,
         )
 
@@ -575,7 +602,7 @@ def load_account_env(
             why="qsync constructs API URLs as `https://<QUALTRICS_BASE_URL>/API/v3/...`.",
             impact="A value like `https://iad1.qualtrics.com` would produce an invalid URL.",
             action=f"Edit `{env_path}` and set `QUALTRICS_BASE_URL` to host-only (e.g. `iad1.qualtrics.com`).",
-            context={"env_path": str(env_path), "account": validate_account_name(account)},
+            context={"env_path": str(env_path), "account": selected},
             exit_code=1,
         )
 

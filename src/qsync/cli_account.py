@@ -53,7 +53,9 @@ def _root() -> Path:
 
 
 def _format_account_label(account: str | None) -> str:
-    return account if account else "default (.env)"
+    if not account or account.strip().lower() == "default":
+        return "default (.env)"
+    return account
 
 
 def _load_default_env_for_root(root: Path) -> dict[str, str]:
@@ -67,7 +69,7 @@ def _load_default_env_for_root(root: Path) -> dict[str, str]:
 
 
 def _bootstrap_default_account_env(root: Path) -> Path | None:
-    """Best-effort create `.env.default` from `.env` when missing.
+    """Best-effort create `.env.default` from primary `.env` credentials.
 
     This lets users explicitly target the primary account via `--account default`
     after switching to named accounts.
@@ -81,8 +83,31 @@ def _bootstrap_default_account_env(root: Path) -> Path | None:
     if not src_env.exists() or not src_env.is_file():
         return None
 
+    file_env = load_env_file(src_env)
+    base_url = (
+        (file_env.get("QUALTRICS_BASE_URL") or "").strip()
+        or (file_env.get("TARGET_QUALTRICS_BASE_URL") or "").strip()
+    )
+    api_token = (
+        (file_env.get("X-API-TOKEN") or "").strip()
+        or (file_env.get("QUALTRICS_API_KEY") or "").strip()
+        or (file_env.get("TARGET_X-API-TOKEN") or "").strip()
+        or (file_env.get("TARGET_QUALTRICS_API_KEY") or "").strip()
+    )
+    if not base_url or not api_token:
+        return None
+
     default_alias.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src_env, default_alias)
+    default_alias.write_text(
+        "\n".join(
+            [
+                f"QUALTRICS_BASE_URL={base_url}",
+                f"X-API-TOKEN={api_token}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return default_alias
 
 
@@ -95,6 +120,8 @@ def _discover_env_accounts(root: Path) -> list[str]:
             continue
         raw = path.name.split(".env.", 1)[-1].strip()
         if not raw or raw == path.name:
+            continue
+        if raw.lower() == "default":
             continue
         accounts.append(raw)
     return accounts
@@ -157,13 +184,13 @@ def handle_account_status(args) -> None:
     env_ok: bool | None = None
     env_error: str | None = None
     try:
-        if active:
+        if active and active.strip().lower() != "default":
             env_path = resolve_account_env_path(active, root=root)
             env = load_account_env(active, root=root)
             base_url = (env.get("QUALTRICS_BASE_URL") or "").strip() or None
             env_ok = True
         else:
-            env_path = resolve_env_path(root=root)
+            env_path = resolve_env_path(root=root) or (root / ".env")
             env = _load_default_env_for_root(root)
             base_url = (env.get("QUALTRICS_BASE_URL") or "").strip() or None
             env_ok = bool(base_url)
@@ -264,11 +291,12 @@ def handle_account_use(args) -> None:
     root = _root()
     account = validate_account_name(str(getattr(args, "account") or ""))
 
+    # Ensure a stable explicit alias for the primary `.env` account.
+    # This keeps `--account default` usable after users adopt/switch accounts.
+    bootstrapped_default_env = _bootstrap_default_account_env(root)
+
     # Validate env file is present and usable.
     _ = load_account_env(account, root=root)
-    bootstrapped_default_env: Path | None = None
-    if account != "default":
-        bootstrapped_default_env = _bootstrap_default_account_env(root)
 
     set_workspace_active_account(root, account)
 
@@ -284,7 +312,48 @@ def handle_account_use(args) -> None:
             "[qsync:account:use] Bootstrapped default account env alias: "
             f"{bootstrapped_default_env.name}"
         )
-    print(f"[qsync:account:use] Next: run `qsync account status` or `qsync doctor`.")
+    print("[qsync:account:use] Next: run `qsync account status` or `qsync doctor`.")
+
+
+def handle_account_ensure_default_alias(args) -> None:
+    root = _root()
+    alias_path = resolve_account_env_path("default", root=root)
+    created_path = _bootstrap_default_account_env(root)
+    created = created_path is not None
+
+    if not created and not alias_path.exists():
+        src_env = resolve_env_path(root=root) or (root / ".env")
+        raise QsyncConfigError(
+            error_id="QSYNC-CONFIG-DEFAULTALIAS-001",
+            problem="Unable to create `.env.default` alias from primary `.env`.",
+            why=(
+                "The primary `.env` must exist and include both "
+                "`QUALTRICS_BASE_URL` and an API token."
+            ),
+            impact=(
+                "A compatibility alias could not be created for workflows that "
+                "explicitly target `default`."
+            ),
+            action=(
+                f"Ensure `{src_env}` exists and includes:\n"
+                "  QUALTRICS_BASE_URL=iad1.qualtrics.com\n"
+                "  X-API-TOKEN=<token>\n"
+                "(or QUALTRICS_API_KEY), then rerun this command."
+            ),
+            context={"root": str(root), "source_env": str(src_env), "alias": str(alias_path)},
+            exit_code=1,
+        )
+
+    payload = {"ok": True, "env_path": str(alias_path), "created": created}
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False))
+        return
+
+    print("[qsync:account:ensure-default-alias]")
+    print(f"  env_path: {alias_path}")
+    print(f"  created: {created}")
+    if not created:
+        print("  note: `.env.default` already existed.")
 
 
 def handle_account_clear(args) -> None:

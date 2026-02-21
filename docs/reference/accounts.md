@@ -14,7 +14,11 @@ Credential resolution order:
 Notes:
 - `--env-path` only affects the default account.
 - Named accounts always load `<root>/.env.<name>`.
+- `--account default` maps to the primary `<root>/.env` (it does not require `.env.default`).
 - `qsync account use` stores workspace preference only; it does not export shell env vars.
+- `qsync account use <name>` bootstraps `.env.default` when missing, writing only:
+  - `QUALTRICS_BASE_URL`
+  - `X-API-TOKEN` (derived from either `X-API-TOKEN` or `QUALTRICS_API_KEY`)
 
 ## Layout Modes
 
@@ -52,6 +56,7 @@ Shared (not account-scoped):
 - `qsync account status`: show active account resolution and scoped directories.
 - `qsync account list`: list discoverable `.env.<account>` files.
 - `qsync account use <name>`: persist active account in workspace preferences.
+- `qsync account ensure-default-alias`: create `.env.default` from primary `.env` if missing (minimal keys only).
 - `qsync account clear`: clear persisted active account preference.
 - `qsync account adopt <name>`: migrate allowlisted unscoped artifacts into that account's scoped surfaces.
   - Use `--dry-run` first.
