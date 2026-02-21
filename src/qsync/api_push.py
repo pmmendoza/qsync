@@ -403,6 +403,7 @@ def send_api_request(
     method = method.upper()
     url = _build_url(base_url, path)
     attempts = 0
+    request_started = time.perf_counter()
 
     if survey_id and not allow_locked:
         ensure_unlocked(survey_id)
@@ -450,6 +451,7 @@ def send_api_request(
                 status=None,
                 error=error_context,
                 meta=log_meta,
+                duration_ms=(time.perf_counter() - request_started) * 1000.0,
             )
         raise
 
@@ -494,6 +496,7 @@ def send_api_request(
                 status=response.status_code,
                 error=error_context,
                 meta=log_meta,
+                duration_ms=(time.perf_counter() - request_started) * 1000.0,
             )
         raise requests.HTTPError(formatted_error, response=response)
 
@@ -522,6 +525,7 @@ def send_api_request(
             survey_id=survey_id,
             status=response.status_code,
             meta=final_meta,
+            duration_ms=(time.perf_counter() - request_started) * 1000.0,
         )
     return response
 

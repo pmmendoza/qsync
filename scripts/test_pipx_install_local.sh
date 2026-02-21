@@ -37,12 +37,49 @@ qsync --help >/dev/null
   qsync onboard --non-interactive --skip-gitignore >/dev/null
 )
 
-for dir in surveys excel survey_js contents logs export responses; do
-  if [[ ! -d "$WORKSPACE_DIR/$dir" ]]; then
-    echo "Missing workspace dir: $dir" >&2
-    exit 1
-  fi
-done
+DOCTOR_JSON=$(qsync --root "$WORKSPACE_DIR" doctor --json || true)
+python - "$WORKSPACE_DIR" "$DOCTOR_JSON" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+payload = json.loads(sys.argv[2])
+
+layout = payload.get("workspace_layout")
+if layout == "account_root_v1":
+    required = [
+        root / "accounts" / "default" / "surveys",
+        root / "accounts" / "default" / "surveys" / "pending",
+        root / "accounts" / "default" / "excel",
+        root / "accounts" / "default" / "survey_js" / "core",
+        root / "accounts" / "default" / "contents" / "qualtrics_library_messages",
+        root / "accounts" / "default" / "contents" / "qualtrics_survey_translations",
+        root / "accounts" / "default" / "export",
+        root / "accounts" / "default" / "responses",
+        root / "accounts" / "default" / "tmp",
+        root / "logs",
+    ]
+elif layout == "legacy":
+    required = [
+        root / "surveys",
+        root / "surveys" / "pending",
+        root / "excel",
+        root / "survey_js" / "core",
+        root / "contents" / "qualtrics_library_messages",
+        root / "contents" / "qualtrics_survey_translations",
+        root / "export",
+        root / "responses",
+        root / "tmp",
+        root / "logs",
+    ]
+else:
+    raise SystemExit(f"Unexpected workspace layout: {layout!r}")
+
+missing = [str(path) for path in required if not path.exists()]
+if missing:
+    raise SystemExit("Missing workspace dirs:\n" + "\n".join(missing))
+PY
 
 if [[ -n "${QSYNC_PIPX_GIT_REF:-}" ]]; then
   QSYNC_PIPX_GIT_URL=${QSYNC_PIPX_GIT_URL:-"https://github.com/pmmendoza/qsync.git"}

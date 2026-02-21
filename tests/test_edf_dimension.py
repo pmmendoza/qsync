@@ -309,6 +309,46 @@ def test_repair_workbook_preserves_translation_cells(
     )
 
 
+def test_repair_workbook_preserves_items_and_translation_cells_together(
+    tmp_path: Path, monkeypatch
+) -> None:
+    payload = _payload_with_embedded()
+    payload["result"]["SurveyOptions"] = {
+        "SurveyLanguage": "EN",
+        "AvailableLanguages": {"EN": True, "FR": True},
+    }
+    payload["result"]["Questions"]["QID1"]["Language"] = {
+        "FR": {"QuestionText": "Texte de base"}
+    }
+    survey_id = "SV_REPAIR_COMBINED"
+    _write_cached_survey(tmp_path, survey_id, payload)
+
+    xlsx_path = WorkbookResolver(root=tmp_path).resolve(survey_id)
+    excel_io.init_workbook_from_survey(survey_id, payload, xlsx_path, languages=["FR"])
+    _remove_embedded_row(xlsx_path, "DEBUG")
+    _update_question_text(xlsx_path, "QID1", "Keep local item wording")
+    _update_question_translation_text(
+        xlsx_path, "QID1", "FR", "Conserver la traduction locale"
+    )
+
+    monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
+    with patch("qsync.qualtrics_client._workspace_root", return_value=tmp_path):
+        report = edf_dimension.repair_workbook(
+            survey_id,
+            xlsx_path=xlsx_path,
+            dry_run=False,
+            refresh_cache=False,
+            retain_backups=3,
+        )
+
+    assert report.changed is True
+    assert _read_question_text(xlsx_path, "QID1") == "Keep local item wording"
+    assert (
+        _read_question_translation_text(xlsx_path, "QID1", "FR")
+        == "Conserver la traduction locale"
+    )
+
+
 def test_repair_workbook_dry_run_is_stable_across_repeated_runs(
     tmp_path: Path, monkeypatch
 ) -> None:

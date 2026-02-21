@@ -1,5 +1,6 @@
 """Tests for log_reader module."""
 
+import gzip
 import json
 from pathlib import Path
 
@@ -251,3 +252,110 @@ def test_count_total_entries(tmp_path: Path) -> None:
         assert count == 100
     finally:
         log_reader.get_log_file_path = original_fn
+
+
+def test_read_logs_include_archives_reads_gzip_entries(tmp_path: Path) -> None:
+    log_path = tmp_path / "logs" / "qualtrics_push.log"
+    create_test_log(
+        log_path,
+        [
+            {"timestamp": "2026-01-10T12:02:00+00:00", "action": "current", "status": 200}
+        ],
+    )
+
+    archive_dir = log_path.parent / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_dir / "qualtrics_push.log.2026-01.gz"
+    with gzip.open(archive_path, "wt", encoding="utf-8") as f:
+        f.write(
+            json.dumps(
+                {
+                    "timestamp": "2026-01-10T12:01:00+00:00",
+                    "action": "archived",
+                    "status": 200,
+                }
+            )
+            + "\n"
+        )
+
+    entries_without = log_reader.read_logs(
+        log_file=log_path,
+        reverse=False,
+        include_archives=False,
+    )
+    entries_with = log_reader.read_logs(
+        log_file=log_path,
+        reverse=False,
+        include_archives=True,
+    )
+
+    assert [entry["action"] for entry in entries_without] == ["current"]
+    assert [entry["action"] for entry in entries_with] == ["archived", "current"]
+    assert entries_with[0]["_log_source"].endswith(".gz")
+
+
+def test_count_total_entries_include_archives(tmp_path: Path) -> None:
+    log_path = tmp_path / "logs" / "qualtrics_push.log"
+    create_test_log(log_path, [{"action": "current", "status": 200}])
+
+    archive_dir = log_path.parent / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_dir / "qualtrics_push.log.2026-01.gz"
+    with gzip.open(archive_path, "wt", encoding="utf-8") as f:
+        f.write(json.dumps({"action": "archived", "status": 200}) + "\n")
+
+    original_fn = log_reader.get_log_file_path
+    log_reader.get_log_file_path = lambda: log_path
+    try:
+        assert log_reader.count_total_entries(include_archives=False) == 1
+        assert log_reader.count_total_entries(include_archives=True) == 2
+    finally:
+        log_reader.get_log_file_path = original_fn
+
+def test_filter_by_session(tmp_path: Path) -> None:
+    log_path = tmp_path / "test.log"
+    test_entries = [
+        {"action": "a", "session_id": "S1", "status": 200},
+        {"action": "b", "session_id": "S2", "status": 200},
+        {"action": "c", "session_id": "S1", "status": 500},
+    ]
+    create_test_log(log_path, test_entries)
+
+    filter_fn = log_reader.filter_by_session("S1")
+    entries = log_reader.read_logs(log_file=log_path, filter_fn=filter_fn, reverse=False)
+    assert len(entries) == 2
+    assert all(e["session_id"] == "S1" for e in entries)
+
+
+def test_filter_by_level_threshold(tmp_path: Path) -> None:
+    log_path = tmp_path / "test.log"
+    test_entries = [
+        {"action": "a", "level": "DEBUG", "status": 200},
+        {"action": "b", "level": "INFO", "status": 200},
+        {"action": "c", "level": "ERROR", "status": 500},
+    ]
+    create_test_log(log_path, test_entries)
+
+    filter_fn = log_reader.filter_by_level("WARNING")
+    entries = log_reader.read_logs(log_file=log_path, filter_fn=filter_fn, reverse=False)
+    assert len(entries) == 1
+    assert entries[0]["action"] == "c"
+
+
+def test_compute_stats_includes_duration_metrics(tmp_path: Path) -> None:
+    log_path = tmp_path / "test.log"
+    test_entries = [
+        {"action": "x", "status": 200, "duration_ms": 100, "level": "INFO"},
+        {"action": "x", "status": 200, "duration_ms": 200, "level": "INFO"},
+        {"action": "y", "status": 500, "duration_ms": 400, "level": "ERROR"},
+    ]
+    create_test_log(log_path, test_entries)
+
+    entries = log_reader.read_logs(log_file=log_path, reverse=False)
+    stats = log_reader.compute_stats(entries)
+
+    assert stats["durations"]["count"] == 3
+    assert stats["durations"]["avg_ms"] == 700 / 3
+    assert stats["duration_by_action"]["x"]["count"] == 2
+    assert stats["by_level"]["INFO"] == 2
+    assert stats["by_level"]["ERROR"] == 1

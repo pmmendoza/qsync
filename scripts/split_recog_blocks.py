@@ -95,11 +95,27 @@ def get_profile_config(profile_name: str) -> dict:
     }
 
 
-def get_api_config(account: str) -> tuple[str, dict]:
+def get_api_config(account: str | None = None) -> tuple[str, dict]:
     """Load API config using qsync's own config resolution."""
-    from qsync.config import load_account_env, build_headers
+    from qsync.config import (
+        build_headers,
+        load_account_env,
+        load_env,
+        resolve_env_path,
+    )
+    from qsync.errors import QsyncConfigError
 
-    env = load_account_env(account, root=QSYNC_ROOT)
+    if account:
+        try:
+            env = load_account_env(account, root=QSYNC_ROOT)
+        except QsyncConfigError as exc:
+            raise SystemExit(
+                f"ERROR: Could not load account '{account}' via .env.{account}. "
+                "Either create that file or omit --account to use the active/default .env context.\n"
+                f"Details: {exc}"
+            ) from exc
+    else:
+        env = load_env(path=resolve_env_path(root=QSYNC_ROOT))
     base_url = env.get("QUALTRICS_BASE_URL", "")
     headers = build_headers(env)
     return base_url, headers
@@ -217,7 +233,11 @@ def update_flow(
 def main():
     parser = argparse.ArgumentParser(description="Split recog pairs into randomized blocks")
     parser.add_argument("--survey-id", required=True, help="Target survey ID")
-    parser.add_argument("--account", default="damian", help="qsync account name")
+    parser.add_argument(
+        "--account",
+        default=None,
+        help="qsync account name (uses active/default .env context when omitted)",
+    )
     parser.add_argument("--profile", choices=["pre", "post"], default="pre",
                         help="Survey profile: 'pre' (QID83-110) or 'post' (QID90-117)")
     parser.add_argument("--dry-run", action="store_true", help="Show plan without making changes")

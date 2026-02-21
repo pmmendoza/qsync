@@ -116,6 +116,14 @@ def _infer_issue_type(dimension: str, detail: str) -> str:
     if dimension == "translations" and "workbook not found" in text:
         return "TRANSLATIONS_WORKBOOK_MISSING"
     if dimension == "edf":
+        if "ambiguous fields" in text:
+            return "EDF_FIELDS_AMBIGUOUS"
+        if "duplicate fields" in text:
+            return "EDF_FIELDS_DUPLICATE"
+        if "extra fields" in text:
+            return "EDF_FIELDS_EXTRA"
+        if "missing fields" in text:
+            return "EDF_FIELDS_MISSING"
         if "embedded_data worksheet is inconsistent" in text:
             return "EDF_WORKBOOK_INCONSISTENT"
         if "embedded_data" in text:
@@ -166,10 +174,10 @@ def _collect_fixable_issues(
         detail = _fixable_detail(info)
         if not detail:
             continue
-        cmd = _autofix_command(dim, sid)
+        issue_type = _infer_issue_type(dim, detail)
+        cmd = _autofix_command(dim, sid, issue_type=issue_type)
         if not cmd:
             continue
-        issue_type = _infer_issue_type(dim, detail)
         key = (sid, dim, issue_type)
         if key in seen:
             continue
@@ -259,7 +267,7 @@ def _execute_repair_actions(
 
     unique: dict[tuple[str, str], FixableIssue] = {}
     for action in actions:
-        unique[(action.survey_id, action.dimension)] = action
+        unique[(action.survey_id, action.command)] = action
     ordered = sorted(
         unique.values(),
         key=lambda issue: (
@@ -297,7 +305,11 @@ def _execute_repair_actions(
             f"for {survey_ref} ({issue.dimension}, {issue.issue_type})..."
         )
         try:
-            result = _run_autofix(issue.dimension, issue.survey_id)
+            result = _run_autofix(
+                issue.dimension,
+                issue.survey_id,
+                issue_type=issue.issue_type,
+            )
             successes += 1
             print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
         except Exception as exc:
@@ -461,7 +473,23 @@ def _collect_embedded_refs_from_changes(changes: list) -> set[str]:
     return {ref for ref in refs if ref}
 
 
-def _autofix_command(dimension: str, survey_id: str) -> Optional[str]:
+def _autofix_command(
+    dimension: str,
+    survey_id: str,
+    *,
+    issue_type: Optional[str] = None,
+) -> Optional[str]:
+    if issue_type in {
+        "ITEMS_EMBEDDED_ROWS_MISSING",
+        "ITEMS_EMBEDDED_FIELDS_MISSING",
+        "EDF_FIELDS_MISSING",
+        "EDF_FIELDS_EXTRA",
+        "EDF_FIELDS_DUPLICATE",
+        "EDF_FIELDS_AMBIGUOUS",
+        "EDF_WORKBOOK_INCONSISTENT",
+        "EDF_WORKBOOK_UNHEALTHY",
+    }:
+        return f"qsync items repair-edf --survey-id {survey_id}"
     if dimension == "items":
         return f"qsync items pull --survey-id {survey_id} --prune-orphans"
     if dimension == "edf":
@@ -518,10 +546,11 @@ def _print_survey_issue_details(
     for dim, severity, detail in issues:
         print(f"  • {Colors.BOLD}{dim}{Colors.RESET} ({severity}): {detail}")
         info = unstaged.get(dim)
-        can_autofix = bool(info and _fixable_detail(info) and _autofix_command(dim, survey_id))
+        issue_type = _infer_issue_type(dim, detail)
+        cmd = _autofix_command(dim, survey_id, issue_type=issue_type)
+        can_autofix = bool(info and _fixable_detail(info) and cmd)
         if can_autofix and dim not in shown_fix_cmd_for_dim:
             shown_fix_cmd_for_dim.add(dim)
-            cmd = _autofix_command(dim, survey_id)
             if cmd:
                 print(
                     f"    {Colors.DIM}safe autofix:{Colors.RESET} "
@@ -538,7 +567,36 @@ def _print_survey_issue_details(
         )
 
 
-def _run_autofix(dimension: str, survey_id: str) -> str:
+def _run_autofix(
+    dimension: str,
+    survey_id: str,
+    *,
+    issue_type: Optional[str] = None,
+) -> str:
+    if issue_type in {
+        "ITEMS_EMBEDDED_ROWS_MISSING",
+        "ITEMS_EMBEDDED_FIELDS_MISSING",
+        "EDF_FIELDS_MISSING",
+        "EDF_FIELDS_EXTRA",
+        "EDF_FIELDS_DUPLICATE",
+        "EDF_FIELDS_AMBIGUOUS",
+        "EDF_WORKBOOK_INCONSISTENT",
+        "EDF_WORKBOOK_UNHEALTHY",
+    }:
+        from .workbook_resolver import WorkbookResolver
+
+        resolver = WorkbookResolver()
+        xlsx_path = resolver.resolve(survey_id)
+        report = edf_dimension.repair_workbook(
+            survey_id,
+            xlsx_path=xlsx_path,
+            dry_run=False,
+            refresh_cache=False,
+        )
+        if not report.changed:
+            return f"Embedded_Data already aligned at {xlsx_path}"
+        return f"Repaired Embedded_Data in {xlsx_path}"
+
     if dimension == "items":
         from .sync_core import init_survey_to_excel
         from .workbook_resolver import WorkbookResolver
@@ -2008,7 +2066,11 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
         if fixable_issues:
             items.append(MenuItem.separator("─" * 60))
             for dim in fixable_issues:
-                cmd = _autofix_command(dim, changes.survey_id)
+                info = changes.dimensions.get(dim)
+                detail = _fixable_detail(info) if info else ""
+                detail = detail or ""
+                issue_type = _infer_issue_type(dim, detail)
+                cmd = _autofix_command(dim, changes.survey_id, issue_type=issue_type)
                 label = f"🔧 Fix {dim} issue"
                 if cmd:
                     label = f"{label} (run {cmd})"
@@ -2057,7 +2119,16 @@ def prompt_dimension_selection(changes: SurveyChanges, interactive: bool) -> Lis
 
             info("[sync]", f"Auto-fixing {dim_name} error for {changes.survey_id}...")
             try:
-                result = _run_autofix(dim_name, changes.survey_id)
+                detail = ""
+                dim_info = changes.dimensions.get(dim_name)
+                if dim_info:
+                    detail = _fixable_detail(dim_info) or ""
+                issue_type = _infer_issue_type(dim_name, detail)
+                result = _run_autofix(
+                    dim_name,
+                    changes.survey_id,
+                    issue_type=issue_type,
+                )
                 print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
                 print(f"{Colors.DIM}Re-run 'qsync sync' to detect changes{Colors.RESET}")
             except Exception as e:
@@ -5699,25 +5770,37 @@ def sync_focal_surveys(
                             ordered.index(entry[0]) if entry[0] in ordered else 99
                         )
                     )
-                    fix_cmds = [
-                        (dim, _autofix_command(dim, survey_id))
-                        for dim, _ in fixable_errors
-                    ]
-                    fix_cmds = [(dim, cmd) for dim, cmd in fix_cmds if cmd]
+                    fix_cmds: list[tuple[str, str, str]] = []
+                    for dim, info in fixable_errors:
+                        detail = _fixable_detail(info) or ""
+                        issue_type = _infer_issue_type(dim, detail)
+                        cmd = _autofix_command(
+                            dim,
+                            survey_id,
+                            issue_type=issue_type,
+                        )
+                        if cmd:
+                            fix_cmds.append((dim, issue_type, cmd))
 
                     print(
                         f"\n{Colors.DIM}These issues can be fixed automatically by running:{Colors.RESET}"
                     )
-                    for dim, cmd in fix_cmds:
-                        print(f"  • {dim}: {Colors.CYAN}{cmd}{Colors.RESET}")
+                    for dim, issue_type, cmd in fix_cmds:
+                        print(
+                            f"  • {dim} [{issue_type}]: {Colors.CYAN}{cmd}{Colors.RESET}"
+                        )
 
                     should_fix = confirm(message="Fix these issues now?", default=True)
 
                     if should_fix:
                         try:
-                            for dim, cmd in fix_cmds:
+                            for dim, issue_type, cmd in fix_cmds:
                                 print(f"\n[sync:fix] Running {cmd} for {survey_ref}...")
-                                result = _run_autofix(dim, survey_id)
+                                result = _run_autofix(
+                                    dim,
+                                    survey_id,
+                                    issue_type=issue_type,
+                                )
                                 print(f"{Colors.GREEN}✓{Colors.RESET} {result}")
                         except Exception as e:
                             print(

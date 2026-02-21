@@ -79,7 +79,11 @@ def test_single_survey_repair_menu_reachable_when_only_issues() -> None:
         )
 
     assert result is None
-    mock_run_autofix.assert_called_once_with("flow", "SV_TEST")
+    mock_run_autofix.assert_called_once_with(
+        "flow",
+        "SV_TEST",
+        issue_type="FLOW_NOT_INITIALIZED",
+    )
 
 
 def test_single_survey_view_issue_details_reachable_for_non_fixable_issues() -> None:
@@ -172,6 +176,35 @@ def test_display_survey_overview_lists_fixable_and_manual_issue_actions() -> Non
     assert "Review issue details for manual resolution: js" in text
 
 
+def test_collect_fixable_issues_auto_selects_repair_edf_for_items_embedded_issue() -> None:
+    import qsync.sync_orchestrator as orchestrator
+
+    changes = orchestrator.SurveyChanges(
+        survey_id="SV_TEST",
+        survey_name="Survey One",
+        dimensions={
+            **_empty_dimensions(),
+            "items": DimensionChanges(
+                "items",
+                False,
+                "No changes",
+                set(),
+                error_detail=(
+                    "Excel workbook missing embedded data fields. "
+                    "Can auto-fix (no unstaged changes detected)."
+                ),
+                safe_to_autofix=True,
+                status_kind="error",
+            ),
+        },
+    )
+
+    issues = orchestrator._collect_fixable_issues(changes)
+    assert len(issues) == 1
+    assert issues[0].issue_type == "ITEMS_EMBEDDED_FIELDS_MISSING"
+    assert issues[0].command == "qsync items repair-edf --survey-id SV_TEST"
+
+
 def test_focal_noninteractive_fix_type_repairs_only_matching_type() -> None:
     import qsync.sync_orchestrator as orchestrator
 
@@ -231,4 +264,8 @@ def test_focal_noninteractive_fix_type_repairs_only_matching_type() -> None:
         )
 
     assert result is True
-    mock_run_autofix.assert_called_once_with("flow", "SV_FLOW")
+    mock_run_autofix.assert_called_once_with(
+        "flow",
+        "SV_FLOW",
+        issue_type="FLOW_NOT_INITIALIZED",
+    )

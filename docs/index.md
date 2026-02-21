@@ -37,6 +37,8 @@ Most files here were migrated from this monorepo’s `appendices/` directory so 
 - Push safeguards: `reference/push-safeguards.md`
 - Logging: `reference/logging.md`
 - Logging conventions: `reference/logging-conventions.md`
+- Release and tagging process: `reference/release-tagging.md`
+- Script run contracts: `reference/scripts.md`
 - Survey Master field reference: `reference/survey-master-fields.md`
 - Survey Master mapping schema: `reference/survey-master-mapping-schema.md`
 - Survey Master JSON output schema: `reference/survey-master-json-output.md`

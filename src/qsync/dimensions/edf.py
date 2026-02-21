@@ -81,7 +81,7 @@ def _format_edf_guidance(health, survey_id: str, has_local_edits: bool) -> str:
         actions.append(f"Run: qsync items repair-edf --survey-id {survey_id}")
     if health.extra_fields:
         issues.append(f"extra fields: {_format_field_list(health.extra_fields)}")
-        actions.append("Remove extra rows or re-run pull")
+        actions.append(f"Run: qsync items repair-edf --survey-id {survey_id}")
     if health.duplicate_fields:
         issues.append(
             f"duplicate fields: {_format_field_list(health.duplicate_fields)}"

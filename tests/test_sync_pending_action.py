@@ -434,7 +434,11 @@ class TestSyncPendingAction(unittest.TestCase):
 
         self.assertFalse(resolved)
         self.assertGreaterEqual(mock_detect.call_count, 1)
-        mock_run.assert_called_once_with("flow", "SV_TEST")
+        mock_run.assert_called_once_with(
+            "flow",
+            "SV_TEST",
+            issue_type="FLOW_NOT_INITIALIZED",
+        )
 
     def test_sync_dimensions_once_blocks_noninteractive_items_without_allow_skip_embedded(
         self,

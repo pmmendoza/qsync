@@ -22,6 +22,9 @@ _Migrated from `appendices/logging_guide.md` (monorepo) so the standalone `qsync
 |----------|--------|--------|
 | `QSYNC_LOG_DISABLED` | `1`, `true`, `yes` | Disable all logging |
 | `QSYNC_LOG_DIR` | `/path/to/dir` | Override log directory (default: `logs/`) |
+| `QSYNC_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` | Minimum log level persisted to disk (default: `INFO`) |
+| `QSYNC_LOG_ROTATION_SIZE` | integer bytes | Rotate current log when file size reaches threshold (default: `10485760`) |
+| `QSYNC_LOG_RETENTION_MONTHS` | integer months | Delete archives older than retention window during rotation (default: `12`) |
 | `NO_COLOR` | `1`, `true`, `yes` | Disable terminal colors in output |
 
 ### Examples
@@ -33,6 +36,13 @@ QSYNC_LOG_DISABLED=1 qsync survey delete SV_xxx
 # Use custom log directory
 export QSYNC_LOG_DIR=~/my-logs
 qsync survey copy --source SV_xxx --name "My Copy"
+
+# Rotate sooner during troubleshooting sessions (1 MB)
+export QSYNC_LOG_ROTATION_SIZE=1048576
+qsync logs rotate --force
+
+# Persist debug-level read operations too
+export QSYNC_LOG_LEVEL=DEBUG
 ```
 
 ## Log Analysis Commands
@@ -50,6 +60,9 @@ qsync logs recent --limit 5
 
 # Show last 20 operations
 qsync logs recent --limit 20
+
+# Include compressed archive logs
+qsync logs recent --include-archives
 ```
 
 **Example Output:**
@@ -70,6 +83,9 @@ qsync logs errors
 
 # Show last 5 errors
 qsync logs errors --limit 5
+
+# Include archived errors
+qsync logs errors --limit 20 --include-archives
 ```
 
 **Example Output:**
@@ -87,6 +103,12 @@ qsync logs errors --limit 5
 
 ```bash
 qsync logs stats
+
+# Aggregate stats from current + archive logs
+qsync logs stats --include-archives
+
+# Restrict to warning/error entries
+qsync logs stats --level WARNING
 ```
 
 **Example Output:**
@@ -136,6 +158,38 @@ qsync logs action qsync.master
 qsync logs action qsync.survey.delete --limit 5
 ```
 
+### Filter by Session
+
+Each `qsync` command invocation is tagged with a `session_id`.
+
+```bash
+# Inspect all log entries produced by one command run
+qsync logs session 550e8400-e29b-41d4-a716-446655440000
+```
+
+### Inspect Slow Operations
+
+```bash
+# Show top 10 slowest operations by duration_ms
+qsync logs slow
+
+# Include archived logs and restrict to 25 entries
+qsync logs slow --limit 25 --include-archives
+```
+
+### Generate Structured Error Reports
+
+```bash
+# Human-readable daily report
+qsync logs report
+
+# Weekly JSON report for automation
+qsync logs report --weekly --json
+
+# Write report JSON artifact
+qsync logs report --weekly --report-path logs/error_report_weekly.json
+```
+
 ### Filter by Timestamp
 
 ```bash
@@ -144,6 +198,25 @@ qsync logs since "2026-01-10T12:00:00"
 
 # ISO 8601 format supported
 qsync logs since "2026-01-10T12:00:00+00:00"
+```
+
+### Rotate and Inspect Archives
+
+```bash
+# Rotate current log immediately
+qsync logs rotate --force
+
+# Rotate only when thresholds are met
+qsync logs rotate
+
+# Override rotation thresholds for a one-off call
+qsync logs rotate --max-bytes 500000 --retention-months 6
+
+# List archived log files
+qsync logs archives
+
+# Show only the 5 newest archives
+qsync logs archives --limit 5
 ```
 
 ## Log Entry Structure
@@ -157,11 +230,15 @@ Each log entry is a JSON object with the following fields:
   "user": "pm",
   "git_commit": "abc123def456",
   "script": "qsync",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "parent_action": "qsync.sync",
+  "level": "INFO",
   "action": "qsync.survey.copy",
   "method": "POST",
   "path": "https://vuamsterdam.eu.qualtrics.com/API/v3/surveys",
   "survey_id": "SV_5AsKyAO5QqswBcq",
   "status": 200,
+  "duration_ms": 842,
   "meta": {
     "source_id": "SV_001",
     "new_name": "My Survey Copy"
@@ -178,11 +255,15 @@ Each log entry is a JSON object with the following fields:
 | `user` | string | OS username |
 | `git_commit` | string\|null | Current git HEAD commit hash (if in git repo) |
 | `script` | string | Script or command name (`qsync`, script name, etc.) |
+| `session_id` | string | Correlates all entries from one CLI invocation |
+| `parent_action` | string\|null | High-level operation grouping (e.g. `qsync.sync`) |
+| `level` | string | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `action` | string | Hierarchical action identifier (e.g., `qsync.survey.copy`) |
 | `method` | string | HTTP method (`GET`, `POST`, `PUT`, `DELETE`) or `LOCAL` |
 | `path` | string | Full API URL or local path |
 | `survey_id` | string\|null | Target survey ID (if applicable) |
 | `status` | int\|null | HTTP status code (200, 404, etc.) or null for errors |
+| `duration_ms` | int\|null | Operation duration in milliseconds |
 | `error` | object\|null | Error details (type, message, detail, reason, retry_count, recoverable, suggestion, docs_url) |
 | `meta` | object | Operation-specific metadata |
 

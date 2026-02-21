@@ -4,7 +4,11 @@
 
 **Context:** This plan contains discrete, independently implementable UX improvements. Unlike linear implementation plans, each element can be tackled separately and provides standalone value.
 
-## Implementation status (updated 2026-02-18)
+## Implementation status (updated 2026-02-21)
+
+Closure note:
+- `QSYNC-UX-001` is closure-verified for the approved roadmap scope (`dev/audits/2026-02-21_stage2_improvements_validation.md`).
+- Remaining unchecked items in this document are extension/backlog candidates, not blockers for the current shipped UX baseline.
 
 Implemented on `origin/main` (commit `72ccfeb`):
 - Rich panels/columns helpers (`terminal_output.py`) with JSON/TTY gating.

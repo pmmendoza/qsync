@@ -64,6 +64,7 @@ Global flags:
 ```text
 qsync sync [--survey-id ...] [--all-focal] [--dimensions ...] [--scope ...]
            [--tui[=on|auto] | --no-tui]
+           [--refresh-inventory | --no-refresh-inventory]
            [--pending-action push|discard|abort]
            [--force-live] [--force-preview] [--skip-publish]
            [--refresh-workbooks] [--allow-drift] [--json] [--fix ...]
@@ -74,6 +75,10 @@ Notes:
 - Valid dimensions: `items, edf, js, translations, eos, blocks, flow, master`
 - `--yes` is global (put before or after subcommands)
 - `--fix` supports `safe|all|all-safe|type:<ISSUE_TYPE>`
+- Inventory preflight refresh:
+  - default: auto-refreshes inventory when local data is missing/stale (>30 minutes)
+  - `--refresh-inventory`: force refresh before sync
+  - `--no-refresh-inventory`: skip preflight refresh
 - Non-interactive sync that would mutate now requires explicit `--yes`.
 - TUI mode:
   - `--tui` forces Textual sync wizard.
@@ -188,6 +193,28 @@ Side-by-side export:
 ```text
 qsync survey export-side-by-side --source-id SV_A --target-id SV_B
 ```
+
+## Logs
+
+Group:
+
+```text
+qsync logs {recent,errors,session,since,survey,action,stats,slow,report,archives,rotate}
+```
+
+Examples:
+
+```text
+qsync logs recent --limit 20 --level INFO
+qsync logs session <SESSION_ID>
+qsync logs slow --limit 10
+qsync logs report --weekly --report-path logs/error_report_weekly.json
+```
+
+Notes:
+
+- Most query commands accept `--include-archives` and `--level`.
+- `qsync logs report --json` prints machine-readable structured error analysis.
 
 ## Prolific and Settings
 

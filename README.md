@@ -15,11 +15,29 @@ qsync doctor
 
 # Sync a survey (orchestrates all dimensions)
 qsync sync --survey-id SV_xxx
+
+# Force pre-sync inventory refresh (or skip it explicitly)
+qsync sync --survey-id SV_xxx --refresh-inventory
+qsync sync --survey-id SV_xxx --no-refresh-inventory
 ```
 
 > [!TIP]
 > `qsync sync` is designed to be the only command most users need day-to-day. It orchestrates items, JS, EOS, blocks, flow, and translations workflows automatically.
 > In non-interactive runs (CI/pipes), use `--yes` for mutating sync operations.
+
+## Make Compatibility (`fullsync`)
+
+For teams still using `make fullsync`, this repo now ships a compatibility `Makefile` target that delegates to canonical `qsync sync`.
+
+```bash
+# Full focal sync (delegates to qsync sync --all-focal)
+make fullsync YES=1
+
+# Targeted subset
+make fullsync SURVEYS="SV_A SV_B" DIMENSIONS=items,translations YES=1 LIVE=1
+```
+
+Supported compatibility flags include: `SURVEY`, `SURVEYS`, `DIMENSIONS`, `YES`, `LIVE`, `PREVIEW_ITEMS`, `PER_DIMENSION`, `SKIP_PUBLISH`, `REFRESH_INVENTORY`, `NO_REFRESH_INVENTORY`.
 
 ## When to use qsync
 
@@ -478,12 +496,14 @@ Audit logs are written as JSONL under the workspace root:
 - Default: `logs/qualtrics_push.log`
 - Disable: `QSYNC_LOG_DISABLED=1` (legacy: `NEWSFLOWS_LOG_DISABLED=1`)
 - Redirect: `QSYNC_LOG_DIR=/path/to/logs` (legacy: `NEWSFLOWS_LOG_DIR=/path/to/logs`)
+- Verbosity threshold: `QSYNC_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR` (default `INFO`)
 
 ## Documentation
 
 - [Docs index](docs/index.md)
+- [Script run contracts](docs/reference/scripts.md)
 - Workflows: [Items](docs/workflows/items.md), [JavaScript](docs/workflows/js.md), [EOS](docs/workflows/eos.md), [Flow](docs/workflows/flow.md), [Blocks](docs/workflows/blocks.md), [Translations](docs/workflows/translations.md), [Translation consistency](docs/workflows/translation-consistency.md), [Survey Master](docs/workflows/survey-master.md)
-- References: [Survey definition anatomy](docs/reference/survey-definition-anatomy.md), [Workspace path ownership](docs/reference/workspace-path-ownership.md), [Excel format](docs/reference/excel-format.md), [Push safeguards](docs/reference/push-safeguards.md), [Publishing mechanics](docs/reference/publishing-mechanics.md)
+- References: [Survey definition anatomy](docs/reference/survey-definition-anatomy.md), [Workspace path ownership](docs/reference/workspace-path-ownership.md), [Excel format](docs/reference/excel-format.md), [Push safeguards](docs/reference/push-safeguards.md), [Publishing mechanics](docs/reference/publishing-mechanics.md), [Logging guide](docs/reference/logging.md), [Release & tagging process](docs/reference/release-tagging.md)
 - [Translation export](docs/features/translation-export.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
