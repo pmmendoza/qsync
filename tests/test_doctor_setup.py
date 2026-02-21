@@ -108,6 +108,48 @@ def test_build_setup_moves_routes_legacy_survey_cache_into_state_cache(
     assert move_map["surveys/backups"] == "accounts/default/state/cache/backups"
 
 
+def test_build_setup_moves_does_not_treat_archive_like_dirs_as_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.doctor_setup import build_setup_moves
+
+    _touch_env_for_restore(monkeypatch)
+    ensure_qsync_workspace(tmp_path)
+
+    (tmp_path / "surveys" / "slices").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "surveys" / "slices" / "Slice__SV_SLICE.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    (tmp_path / "surveys" / "archive").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "surveys" / "archive" / "Archive__SV_ARC.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    (tmp_path / "surveys" / "_archive_duplicates_2026_02_21").mkdir(
+        parents=True, exist_ok=True
+    )
+    (
+        tmp_path
+        / "surveys"
+        / "_archive_duplicates_2026_02_21"
+        / "Duplicate__SV_DUP.json"
+    ).write_text("{}", encoding="utf-8")
+
+    plan = build_setup_moves(tmp_path, target_account="default")
+    move_map = {
+        str(m.src.relative_to(tmp_path)): str(m.dst.relative_to(tmp_path))
+        for m in plan
+    }
+
+    assert move_map["surveys/slices"] == "accounts/default/slices"
+    assert move_map["surveys/archive"] == "accounts/default/archive"
+    assert (
+        move_map["surveys/_archive_duplicates_2026_02_21"]
+        == "accounts/default/_archive_duplicates_2026_02_21"
+    )
+
+
 def test_doctor_setup_dry_run_apply_and_undo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

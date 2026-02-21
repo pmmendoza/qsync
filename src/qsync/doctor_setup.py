@@ -13,6 +13,7 @@ from .config import (
     WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1,
     WORKSPACE_LAYOUT_LEGACY,
     resolve_root,
+    resolve_survey_cache_subdir,
     validate_account_name,
 )
 from .workspace_prefs import load_prefs, save_prefs
@@ -148,10 +149,7 @@ def _dir_looks_like_cache_container(path: Path) -> bool:
         return False
     if path.name in {"cache", "caches"}:
         return True
-    try:
-        return any(p.is_file() for p in path.glob("*__SV_*.json"))
-    except OSError:
-        return False
+    return False
 
 
 def _destination_for(
@@ -163,6 +161,7 @@ def _destination_for(
 ) -> Path | None:
     account_root = _account_root(root, account)
     name = child.name
+    configured_cache_name = resolve_survey_cache_subdir(root=root)
 
     if surface == "surveys":
         if account == "default" and _is_legacy_account_dot_dir(child):
@@ -176,7 +175,9 @@ def _destination_for(
             return cache_root / name
         if child.is_dir() and name == "backups":
             return cache_root / "backups"
-        if _dir_looks_like_cache_container(child):
+        if _dir_looks_like_cache_container(child) or (
+            child.is_dir() and name == configured_cache_name
+        ):
             return cache_root
         return account_root / name
 
