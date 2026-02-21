@@ -1028,14 +1028,8 @@ def export_survey_to_word(
     export_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = Path(output_path) if output_path else None
-    # Use inventory slug (not Qualtrics SurveyName) for consistent filename format
-    from .survey_inventory import load_inventory_record
-
-    try:
-        inventory_record = load_inventory_record(survey_id)
-        survey_name = str(inventory_record.get("name") or "").strip()
-    except Exception:
-        survey_name = ""
+    result = _survey_result(cache.payload or {})
+    survey_name = str(result.get("SurveyName") or "").strip()
     base_language = get_base_language(cache.payload) or _DEFAULT_BASE_LANGUAGE
     output_path = _resolve_output_docx_path(
         survey_id=survey_id,
@@ -1126,14 +1120,8 @@ def export_survey_to_pdf(
     export_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = Path(output_path) if output_path else None
-    # Use inventory slug (not Qualtrics SurveyName) for consistent filename format
-    from .survey_inventory import load_inventory_record
-
-    try:
-        inventory_record = load_inventory_record(survey_id)
-        survey_name = str(inventory_record.get("name") or "").strip()
-    except Exception:
-        survey_name = ""
+    result = _survey_result(cache.payload or {})
+    survey_name = str(result.get("SurveyName") or "").strip()
     base_language = get_base_language(cache.payload) or _DEFAULT_BASE_LANGUAGE
     output_path = _resolve_output_docx_path(
         survey_id=survey_id,
