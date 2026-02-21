@@ -151,6 +151,15 @@ source .venv/bin/activate
 pip install "qsync @ git+https://github.com/pmmendoza/qsync.git@<git-ref>"
 ```
 
+### Dependency locking (`uv.lock`)
+
+`qsync` tracks `uv.lock` in Git for reproducible dependency resolution across local dev and CI.
+
+- If you change dependency declarations in `pyproject.toml`, run `uv lock` and commit the updated `uv.lock`.
+- To verify lock consistency without rewriting, run `uv lock --check`.
+- In CI/dev environments using `uv`, prefer locked installs (`uv sync --locked`).
+- `pipx` installs do not use `uv.lock` by default; they resolve from package metadata (`pyproject.toml`).
+
 ### Optional extras (pipx or pip)
 
 | Extra | What it enables | Notes |
