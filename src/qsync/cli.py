@@ -4205,7 +4205,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
     from .terminal_colors import set_color_mode
     from .terminal_output import operation_timer, reset_timing_emitted
-    from .push_logger import push_log_scope, set_session_id
+
+    # Backward compatibility: older installations may not expose these helpers.
+    try:
+        from . import push_logger as _push_logger
+    except Exception:  # pragma: no cover - extreme import failure fallback
+        _push_logger = None
 
     if os.environ.get("NO_COLOR") is not None:
         set_color_mode("never")
@@ -4216,10 +4221,24 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     if getattr(args, "json", False):
         os.environ["QSYNC_JSON_MODE"] = "1"
 
-    args._log_session_id = set_session_id()
+    try:
+        args._log_session_id = (
+            _push_logger.set_session_id()  # type: ignore[union-attr]
+            if _push_logger and hasattr(_push_logger, "set_session_id")
+            else None
+        )
+    except Exception:
+        args._log_session_id = None
     command_name = str(getattr(args, "command", "") or "").strip().replace("-", ".")
     parent_action = f"qsync.{command_name}" if command_name else None
-    _log_scope_cm = push_log_scope(parent_action)
+    try:
+        _log_scope_cm = (
+            _push_logger.push_log_scope(parent_action)  # type: ignore[union-attr]
+            if _push_logger and hasattr(_push_logger, "push_log_scope")
+            else contextlib.nullcontext()
+        )
+    except Exception:
+        _log_scope_cm = contextlib.nullcontext()
     _log_scope_cm.__enter__()
     _timer_cm = operation_timer(f"[qsync:{args.command}]")
     _timer_cm.__enter__()

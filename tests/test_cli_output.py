@@ -1,7 +1,9 @@
 import io
 import json
 import os
+import sys
 import tempfile
+import types
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -204,6 +206,31 @@ class QsyncCliOutputTests(unittest.TestCase):
             "qsync[langcheck,pdf] @ git+https://github.com/pmmendoza/qsync.git@main",
             output,
         )
+
+    def test_self_update_dry_run_tolerates_legacy_push_logger(self) -> None:
+        from qsync.cli import main
+
+        legacy_push_logger = types.ModuleType("qsync.push_logger")
+        legacy_push_logger.log_push_event = lambda **_kwargs: None
+
+        buf = io.StringIO()
+        with patch.dict(sys.modules, {"qsync.push_logger": legacy_push_logger}):
+            with redirect_stdout(buf):
+                main(
+                    [
+                        "self-update",
+                        "--dry-run",
+                        "--yes",
+                        "--pip",
+                        "--repo",
+                        "https://github.com/pmmendoza/qsync.git",
+                        "--ref",
+                        "main",
+                    ]
+                )
+        output = buf.getvalue()
+        self.assertIn("Dry run", output)
+        self.assertIn("pip install --upgrade", output)
 
     @patch("qsync.cli._pipx_has_qsync", return_value=True)
     @patch("qsync.cli._looks_like_pipx_env", return_value=False)
