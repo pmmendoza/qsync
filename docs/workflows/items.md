@@ -84,8 +84,8 @@ qsync survey export-translation --survey-id SV_xxx --language FR --compare-to-ba
 # Scenario export: prune provably-irrelevant branches using explicit EDF values
 qsync survey export-translation --survey-id SV_xxx --edf S_VERSION=PROLIFIC --edf DEBUG=F
 
-# Disable Mermaid rendering (keeps .mmd, skips rendering/embed)
-QSYNC_MERMAID_RENDER=0 qsync survey export-translation --survey-id SV_xxx
+# Enable Mermaid rendering/artifacts (opt-in)
+qsync survey export-translation --survey-id SV_xxx --render-mermaid
 
 # Refresh cached survey definition from Qualtrics before exporting (network)
 qsync survey export-translation --survey-id SV_xxx --language FR --refresh
@@ -93,8 +93,8 @@ qsync survey export-translation --survey-id SV_xxx --language FR --refresh
 
 Artifacts are written under `export/` by default:
 - `.docx` translation export
-- `.flow.mmd` Mermaid source
-- `.flow.png` rendered Mermaid image (when enabled)
+- `.flow.mmd` Mermaid source (only with `--render-mermaid`)
+- `.flow.png` rendered Mermaid image (only with `--render-mermaid`)
 
 For a detailed “how to read” guide (question metadata format, logic highlighting, scenario semantics, WebService/EOS rendering, and limitations), see `../features/translation-export.md`.
 

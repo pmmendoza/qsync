@@ -52,8 +52,8 @@ qsync survey export-translation --survey-id SV_xxx --list-edf-presets
 # Print flow traversal traces (what was dropped and why)
 qsync survey export-translation --survey-id SV_xxx --edf DEBUG=F --flow-trace
 
-# Disable Mermaid rendering (keeps .flow.mmd, skips .flow.png rendering/embed)
-QSYNC_MERMAID_RENDER=0 qsync survey export-translation --survey-id SV_xxx
+# Enable Mermaid rendering/artifacts (opt-in; requires network for .flow.png)
+qsync survey export-translation --survey-id SV_xxx --render-mermaid
 
 # Omit sanitized HTML source blocks when a parsed rendering exists
 qsync survey export-translation --survey-id SV_xxx --no-html
@@ -68,20 +68,20 @@ Account scoping: export artifacts are account-scoped. In account-root layout the
 Artifacts (default account surface):
 
 - `.../export/<SurveyName>__<SurveyID>__<BASE>.docx`
-- `.../export/<SurveyName>__<SurveyID>__<BASE>.flow.mmd`
-- `.../export/<SurveyName>__<SurveyID>__<BASE>.flow.png` (only when Mermaid rendering is enabled; can require network access)
+- `.../export/<SurveyName>__<SurveyID>__<BASE>.flow.mmd` (only with `--render-mermaid`)
+- `.../export/<SurveyName>__<SurveyID>__<BASE>.flow.png` (only with `--render-mermaid`; can require network access)
 
 Artifacts (with `--language FR`):
 
 - `.../export/<SurveyName>__<SurveyID>__FR.docx`
-- `.../export/<SurveyName>__<SurveyID>__FR.flow.mmd`
-- `.../export/<SurveyName>__<SurveyID>__FR.flow.png` (only when Mermaid rendering is enabled)
+- `.../export/<SurveyName>__<SurveyID>__FR.flow.mmd` (only with `--render-mermaid`)
+- `.../export/<SurveyName>__<SurveyID>__FR.flow.png` (only with `--render-mermaid`)
 
 Artifacts (with `--language FR --compare-to-base`):
 
 - `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.docx`
-- `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.flow.mmd`
-- `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.flow.png` (only when Mermaid rendering is enabled)
+- `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.flow.mmd` (only with `--render-mermaid`)
+- `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.flow.png` (only with `--render-mermaid`)
 
 ## 3) Document structure
 
@@ -91,7 +91,7 @@ The `.docx` is structured as:
 2. `LANGUAGE RENDERING SUMMARY` (only when `--language/--languages` is set; coverage + sample missing keys)
 3. `COVERAGE SUMMARY` (total questions, active exported, excluded)
 4. `QUESTION TYPE LEGEND` (only the abbreviations actually used in this export)
-5. Mermaid flow diagram section (+ `.flow.mmd` and optional `.flow.png`)
+5. Mermaid flow diagram section (only with `--render-mermaid`; includes `.flow.mmd` + `.flow.png`)
 6. `SURVEY CONTENT` (SurveyFlow traversal, in order)
 7. `EXTERNAL TRANSLATION SURFACES` (QuestionJS mapping + EndSurvey message references)
 

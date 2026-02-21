@@ -207,6 +207,7 @@ def build_translation_pack(
     refresh: bool = False,
     workbook_path: Path | None = None,
     keep_staging: bool = False,
+    render_mermaid: bool = False,
 ) -> TranslationPackResult:
     root = resolve_root(required=False) or Path.cwd()
     export_dir = resolve_scoped_dir(EXPORT_DIRNAME, root=root) / PACK_SUBDIR
@@ -247,6 +248,7 @@ def build_translation_pack(
         edf_overrides=dict(edf_overrides) if edf_overrides else None,
         smart_name=False,
         include_html_source=True,
+        render_mermaid=render_mermaid,
         refresh=False,
         interactive=interactive,
         skip_preflight=True,

@@ -3927,6 +3927,12 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         action="store_true",
         help="Keep staging directory for inspection (default: remove after zip)",
     )
+    p_trans_pack.add_argument(
+        "--render-mermaid",
+        action="store_true",
+        dest="render_mermaid",
+        help="Render Mermaid flow chart artifacts (.flow.mmd/.flow.png) in the packaged DOCX (default: disabled)",
+    )
 
     # translations push
     p_trans_push = translations_subparsers.add_parser(

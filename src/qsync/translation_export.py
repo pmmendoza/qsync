@@ -803,6 +803,11 @@ def _apply_active_qid_filters(
     return {qid for qid in active_qids if qid in allowed}
 
 
+def _is_mermaid_render_enabled(*, render_mermaid: bool) -> bool:
+    """Return True when Mermaid rendering is explicitly enabled for this run."""
+    return bool(render_mermaid) and not _env_flag_disabled("QSYNC_MERMAID_RENDER")
+
+
 def _prepare_export_content(
     survey_id: str,
     survey_payload: dict,
@@ -810,6 +815,7 @@ def _prepare_export_content(
     *,
     mermaid_path: Path | None = None,
     mermaid_image_path: Path | None = None,
+    render_mermaid: bool = False,
     edf_overrides: dict[str, str] | None = None,
     mapping_path: Path | None = None,
     include_html_source: bool = True,
@@ -841,6 +847,7 @@ def _prepare_export_content(
         output_path: Target output file path
         mermaid_path: Optional path for Mermaid flow diagram (.mmd)
         mermaid_image_path: Optional path for rendered Mermaid image (.png)
+        render_mermaid: Whether Mermaid artifacts should be generated for this export
         edf_overrides: Optional embedded data field overrides for scenario filtering
         mapping_path: Optional path to QID→JS mapping CSV
         include_html_source: Whether to include raw HTML source blocks
@@ -954,8 +961,12 @@ def _prepare_export_content(
     )
 
     # Generate Mermaid diagram code
+    should_render_mermaid = _is_mermaid_render_enabled(render_mermaid=render_mermaid)
+    if not should_render_mermaid:
+        mermaid_path = None
+        mermaid_image_path = None
     mermaid_code: str | None = None
-    if mermaid_path is not None:
+    if mermaid_path is not None and should_render_mermaid:
         mermaid_code = build_mermaid_flow(
             survey_id=survey_id, flow=result.get("SurveyFlow") or {}
         )
@@ -1005,6 +1016,7 @@ def export_survey_to_word(
     smart_name: bool = False,
     include_html_source: bool = True,
     layout_heuristics: bool = False,
+    render_mermaid: bool = False,
     render_language: str | None = None,
     compare_to_base: bool = False,
     include_qids: set[str] | None = None,
@@ -1054,7 +1066,7 @@ def export_survey_to_word(
         output_path,
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_png_path,
-        render_mermaid=True,
+        render_mermaid=render_mermaid,
         edf_overrides=edf_overrides,
         mapping_path=(
             resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
@@ -1079,6 +1091,7 @@ def export_survey_to_pdf(
     smart_name: bool = False,
     include_html_source: bool = True,
     layout_heuristics: bool = False,
+    render_mermaid: bool = False,
     render_language: str | None = None,
     compare_to_base: bool = False,
     include_qids: set[str] | None = None,
@@ -1146,6 +1159,7 @@ def export_survey_to_pdf(
         output_path,
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_png_path,
+        render_mermaid=render_mermaid,
         edf_overrides=edf_overrides,
         mapping_path=(
             resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
@@ -1169,6 +1183,7 @@ def export_survey_payload_to_pdf(
     *,
     mermaid_path: Path | None = None,
     mermaid_image_path: Path | None = None,
+    render_mermaid: bool = False,
     edf_overrides: dict[str, str] | None = None,
     mapping_path: Path | None = None,
     include_html_source: bool = True,
@@ -1195,6 +1210,7 @@ def export_survey_payload_to_pdf(
         output_path: Output PDF file path
         mermaid_path: Optional path to save Mermaid source
         mermaid_image_path: Optional path to Mermaid PNG image
+        render_mermaid: Whether to render Mermaid chart artifacts
         edf_overrides: EDF scenario filter overrides
         mapping_path: Path to QID-to-JS mapping CSV
         include_html_source: Ignored for PDF (HTML is natively rendered, not shown as source)
@@ -1215,6 +1231,7 @@ def export_survey_payload_to_pdf(
         output_path=output_path,
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_image_path,
+        render_mermaid=render_mermaid,
         edf_overrides=edf_overrides,
         mapping_path=mapping_path,
         include_html_source=False,  # PDF renders HTML natively, no source needed
@@ -1227,6 +1244,10 @@ def export_survey_payload_to_pdf(
         include_js_strings=include_js_strings,
         flow_trace=flow_trace,
     )
+
+    if content.mermaid_code and content.mermaid_image_path:
+        content.mermaid_image_path.parent.mkdir(parents=True, exist_ok=True)
+        _render_mermaid_to_png(content.mermaid_code, content.mermaid_image_path)
 
     # Render to PDF
     return _render_to_pdf(content)
@@ -1364,6 +1385,7 @@ def export_survey_payload_to_word(
         output_path=output_path,
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_image_path,
+        render_mermaid=render_mermaid,
         edf_overrides=edf_overrides,
         mapping_path=mapping_path,
         include_html_source=include_html_source,
@@ -1813,31 +1835,28 @@ def _add_mermaid_section_and_file(
     render_mermaid: bool,
 ) -> None:
     doc.add_heading("FLOW DIAGRAM (Mermaid)", level=1)
+    should_render = _is_mermaid_render_enabled(render_mermaid=render_mermaid)
+    if not should_render:
+        doc.add_paragraph(
+            "(Mermaid rendering disabled for this run; no .flow.mmd/.flow.png artifacts were generated.)"
+        )
+        return
+
     code = build_mermaid_flow(survey_id=survey_id, flow=result.get("SurveyFlow") or {})
-    should_create_mmd = not _env_flag_disabled("QSYNC_MERMAID_RENDER")
-    if mermaid_path is not None and should_create_mmd:
-        mermaid_path = Path(mermaid_path)
-        mermaid_path.parent.mkdir(parents=True, exist_ok=True)
-        mermaid_path.write_text(code + "\n", encoding="utf-8")
+    if mermaid_path is not None:
         doc.add_paragraph(f"Mermaid source file: {mermaid_path}")
 
-    should_render = render_mermaid and not _env_flag_disabled("QSYNC_MERMAID_RENDER")
-    if should_render:
-        if mermaid_image_path is None:
-            mermaid_image_path = Path("mermaid.flow.png")
-        mermaid_image_path = Path(mermaid_image_path)
-        mermaid_image_path.parent.mkdir(parents=True, exist_ok=True)
-        _render_mermaid_to_png(code, mermaid_image_path)
-        try:
-            from docx.shared import Inches
+    if mermaid_image_path is None:
+        mermaid_image_path = Path("mermaid.flow.png")
+    mermaid_image_path = Path(mermaid_image_path)
+    mermaid_image_path.parent.mkdir(parents=True, exist_ok=True)
+    _render_mermaid_to_png(code, mermaid_image_path)
+    try:
+        from docx.shared import Inches
 
-            doc.add_picture(str(mermaid_image_path), width=Inches(6.5))
-        except Exception:
-            doc.add_paragraph(f"(Rendered Mermaid image: {mermaid_image_path})")
-    else:
-        doc.add_paragraph(
-            "(Mermaid rendering disabled/unavailable for this run; see the .flow.mmd file.)"
-        )
+        doc.add_picture(str(mermaid_image_path), width=Inches(6.5))
+    except Exception:
+        doc.add_paragraph(f"(Rendered Mermaid image: {mermaid_image_path})")
     # Intentionally do not embed Mermaid source code in the Word document.
 
 

@@ -12137,6 +12137,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
     include_blocks = set(_normalize_filter_values(getattr(args, "block", None)))
     refresh = bool(getattr(args, "refresh", False))
     layout_heuristics = bool(getattr(args, "layout_heuristics", False))
+    render_mermaid = bool(getattr(args, "render_mermaid", False))
     format = getattr(args, "format", "docx")
     skip_js_strings = bool(getattr(args, "skip_js_strings", False))
     flow_trace = bool(getattr(args, "flow_trace", False))
@@ -12331,6 +12332,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 smart_name=smart_name,
                                 include_html_source=not no_html,
                                 layout_heuristics=layout_heuristics,
+                                render_mermaid=render_mermaid,
                                 render_language=lang,
                                 compare_to_base=compare_to_base,
                                 include_qids=include_qids or None,
@@ -12351,6 +12353,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 smart_name=smart_name,
                                 include_html_source=not no_html,
                                 layout_heuristics=layout_heuristics,
+                                render_mermaid=render_mermaid,
                                 render_language=lang,
                                 compare_to_base=compare_to_base,
                                 include_qids=include_qids or None,
@@ -12376,6 +12379,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                     smart_name=smart_name,
                                     include_html_source=not no_html,
                                     layout_heuristics=layout_heuristics,
+                                    render_mermaid=render_mermaid,
                                     render_language=None,
                                     compare_to_base=False,
                                     include_qids=include_qids or None,
@@ -12396,6 +12400,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                     smart_name=smart_name,
                                     include_html_source=not no_html,
                                     layout_heuristics=layout_heuristics,
+                                    render_mermaid=render_mermaid,
                                     render_language=None,
                                     compare_to_base=False,
                                     include_qids=include_qids or None,
@@ -12530,6 +12535,12 @@ def _add_export_translation_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         dest="layout_heuristics",
         help="Enable layout heuristics (e.g., certain lists render as tables). Default is UI-faithful rendering.",
+    )
+    parser.add_argument(
+        "--render-mermaid",
+        action="store_true",
+        dest="render_mermaid",
+        help="Render Mermaid flow chart artifacts (.flow.mmd/.flow.png). Default: disabled.",
     )
     parser.add_argument(
         "--smart-name",
@@ -13112,6 +13123,7 @@ def handle_translations_pack(args: argparse.Namespace) -> None:
     include_base = bool(getattr(args, "include_base", False))
     refresh = bool(getattr(args, "refresh", False))
     keep_staging = bool(getattr(args, "keep_staging", False))
+    render_mermaid = bool(getattr(args, "render_mermaid", False))
     workbook = getattr(args, "workbook", None)
 
     languages = _collect_languages_from_args(args)
@@ -13125,6 +13137,7 @@ def handle_translations_pack(args: argparse.Namespace) -> None:
         refresh=refresh,
         workbook_path=Path(workbook) if workbook else None,
         keep_staging=keep_staging,
+        render_mermaid=render_mermaid,
     )
 
     success("[qsync:translations]", f"Pack created: {result.pack_path}")

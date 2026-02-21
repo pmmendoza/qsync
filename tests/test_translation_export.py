@@ -182,11 +182,14 @@ def test_translation_export_mvp(tmp_path: Path) -> None:
 
     out_docx = tmp_path / "out.docx"
     out_mmd = tmp_path / "out.flow.mmd"
+    out_png = tmp_path / "out.flow.png"
     export_survey_payload_to_word(
         "SV_TEST",
         payload,
         out_docx,
         mermaid_path=out_mmd,
+        mermaid_image_path=out_png,
+        render_mermaid=True,
         mapping_path=mapping_csv,
     )
 
@@ -254,6 +257,48 @@ def test_translation_export_mvp(tmp_path: Path) -> None:
     assert q2_tables
     assert len(q2_tables[0].rows) == 4
     assert "[QID2][MC] topic_tag" in q2_tables[0].rows[0].cells[0].text
+
+
+def test_translation_export_mermaid_env_disable_skips_artifacts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync.translation_export import export_survey_payload_to_word
+
+    monkeypatch.setenv("QSYNC_MERMAID_RENDER", "0")
+
+    payload = {
+        "result": {
+            "SurveyFlow": {"Flow": [{"Type": "Standard", "ID": "BL_1"}]},
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Default",
+                    "Description": "Main",
+                    "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+                }
+            },
+            "Questions": {
+                "QID1": {
+                    "QuestionType": "TE",
+                    "Selector": "SL",
+                    "QuestionText": "Hello",
+                    "DataExportTag": "hello_tag",
+                }
+            },
+        }
+    }
+
+    out_docx = tmp_path / "out.docx"
+    out_mmd = tmp_path / "out.flow.mmd"
+    export_survey_payload_to_word(
+        "SV_TEST",
+        payload,
+        out_docx,
+        mermaid_path=out_mmd,
+        render_mermaid=True,
+    )
+
+    assert out_docx.exists()
+    assert not out_mmd.exists()
 
 
 def test_translation_export_edf_branch_filtering(tmp_path: Path) -> None:
@@ -1447,6 +1492,7 @@ def test_pdf_export_mvp(tmp_path: Path) -> None:
     assert out_pdf.exists()
     assert out_pdf.suffix == ".pdf"
     assert out_pdf.stat().st_size > 1000  # PDF should be at least 1KB
+    assert not out_mmd.exists()
 
 
 def test_pdf_export_with_translation_language(
