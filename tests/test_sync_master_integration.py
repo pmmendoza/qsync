@@ -222,6 +222,50 @@ class SyncMasterIntegrationTests(unittest.TestCase):
         self.assertGreater(len(warnings), 0)
         self.assertTrue(any("translations" in w for w in warnings))
 
+    def test_detect_blocks_overlap_warnings(self) -> None:
+        """Blocks overlap warnings should explain blocks+items and blocks+flow risk."""
+        from qsync.sync_orchestrator import (
+            SurveyChanges,
+            detect_blocks_overlap_warnings,
+        )
+        from qsync.dimensions.types import DimensionChanges
+
+        changes = SurveyChanges(
+            survey_id="SV_TEST",
+            survey_name="Test",
+            dimensions={
+                "blocks": DimensionChanges(
+                    dimension="blocks",
+                    has_changes=True,
+                    change_summary="⚡ Unstaged: 1 block(s)",
+                    affected_qids=set(),
+                    status_kind="unstaged",
+                    edit_count=1,
+                ),
+                "items": DimensionChanges(
+                    dimension="items",
+                    has_changes=True,
+                    change_summary="⚡ Unstaged: 2 change(s)",
+                    affected_qids={"QID1"},
+                    status_kind="unstaged",
+                    edit_count=2,
+                ),
+                "flow": DimensionChanges(
+                    dimension="flow",
+                    has_changes=True,
+                    change_summary="⚡ Unstaged: 1 branch",
+                    affected_qids=set(),
+                    status_kind="unstaged",
+                    edit_count=1,
+                ),
+            },
+        )
+
+        warnings = detect_blocks_overlap_warnings(changes)
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(any("Blocks and items" in w for w in warnings))
+        self.assertTrue(any("Blocks and flow" in w for w in warnings))
+
     def test_detect_dimension_changes_master(self) -> None:
         """Test that sync orchestrator can detect master changes."""
         from qsync.sync_orchestrator import detect_dimension_changes

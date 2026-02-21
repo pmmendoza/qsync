@@ -31,6 +31,7 @@ accounts/default/surveys/flow/<survey-slug>-<survey-id>/
 - `qsync blocks add-page-break --survey-id SV_xxx --target-block-id BL_xxx --insert-index 3`
 - `qsync blocks remove-page-break --survey-id SV_xxx --target-block-id BL_xxx --element-index 4`
 - `qsync blocks remove-qid --survey-id SV_xxx --question-id QID80`
+- Interactive stage-first route: `qsync survey menu` -> `Edit Questions & Content` -> `Blocks: stage-first block-internal edits (...)`
 
 3. Preview
 - `qsync blocks preview --survey-id SV_xxx --detailed`

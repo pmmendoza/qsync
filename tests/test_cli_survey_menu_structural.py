@@ -37,6 +37,10 @@ def test_embedded_options_menu_includes_structural_entry(
         for menu_choices in seen_edit_choices
     )
     assert any(
+        "Blocks: stage-first block-internal edits (move/remove/page-break)" in menu_choices
+        for menu_choices in seen_edit_choices
+    )
+    assert any(
         "Add question(s) (clone template, insert in flow)" in menu_choices
         for menu_choices in seen_edit_choices
     )
@@ -141,6 +145,129 @@ def test_edit_menu_add_question_routes_to_handler(
     assert ns.after_qid is None
     assert ns.page_break_mode == "none"
     assert ns.dry_run is True
+
+
+def test_edit_menu_blocks_staged_move_uses_local_blocks_dimension(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(interactive_menu, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.list_surveys",
+        lambda base, headers: [{"id": "SV_1", "name": "Survey One"}],
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey._pick_survey_id_from_records",
+        lambda **kwargs: "SV_1",
+    )
+
+    definition_payload = {
+        "Questions": {"QID1": {"QuestionText": "Only question"}},
+        "Blocks": {
+            "BL_1": {
+                "Type": "Standard",
+                "Description": "Main",
+                "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+            }
+        },
+        "SurveyFlow": {"Flow": [{"Type": "Block", "ID": "BL_1"}]},
+    }
+    monkeypatch.setattr(
+        "qsync.cli_survey.fetch_survey_definition",
+        lambda base, headers, survey_id: definition_payload,
+    )
+
+    local_surface_path = tmp_path / "surveys" / "flow" / "survey-one-SV_1" / "blocks.yaml"
+    local_surface_path.parent.mkdir(parents=True, exist_ok=True)
+    local_surface_path.write_text("blocks: {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "qsync.cli_survey.blocks_dimension.ensure_local_surface",
+        lambda survey_id: local_surface_path,
+    )
+    monkeypatch.setattr(
+        "qsync.cli_survey.blocks_dimension._load_blocks_surface",
+        lambda survey_id: (
+            {"survey_id": survey_id},
+            {
+                "BL_1": {
+                    "Type": "Standard",
+                    "Description": "Main",
+                    "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+                }
+            },
+        ),
+    )
+
+    moved: dict[str, object] = {}
+
+    def _move_qid(
+        survey_id: str,
+        *,
+        qids,
+        target_block_id=None,
+        after_qid=None,
+        before_qid=None,
+        position="append",
+        insert_index=None,
+    ):
+        moved["survey_id"] = survey_id
+        moved["qids"] = list(qids)
+        moved["target_block_id"] = target_block_id
+        moved["insert_index"] = insert_index
+        return {
+            "qids": list(qids),
+            "block_id": target_block_id,
+            "insert_index": insert_index,
+        }
+
+    monkeypatch.setattr("qsync.cli_survey.blocks_dimension.move_qid", _move_qid)
+
+    monkeypatch.setattr(
+        interactive_menu,
+        "multi_select_from_list",
+        lambda *args, **kwargs: ["QID1 (tag=) - Only question"],
+    )
+
+    state = {"top_visits": 0, "blocks_visits": 0}
+
+    def _select_from_list(message: str, choices, instruction=None, default=None):
+        if message.startswith("qsync survey menu"):
+            state["top_visits"] += 1
+            return (
+                "Edit Questions & Content — structural item edits"
+                if state["top_visits"] == 1
+                else "Exit"
+            )
+        if message == "Edit Questions & Content":
+            return "Blocks: stage-first block-internal edits (move/remove/page-break)"
+        if message == "Blocks (stage-first workflow)":
+            state["blocks_visits"] += 1
+            if state["blocks_visits"] == 1:
+                return "Move question(s) in local blocks.yaml"
+            return "↩ Back"
+        if message == "Choose target block:":
+            return str(choices[0])
+        if message == "Choose where to move selected question(s) in the target block:":
+            return "slot:0"
+        return "↩ Back"
+
+    monkeypatch.setattr(interactive_menu, "select_from_list", _select_from_list)
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert moved["survey_id"] == "SV_1"
+    assert moved["qids"] == ["QID1"]
+    assert moved["target_block_id"] == "BL_1"
+    assert moved["insert_index"] == 0
 
 
 def test_edit_menu_replace_question_routes_to_handler(

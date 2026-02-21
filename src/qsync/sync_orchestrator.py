@@ -980,6 +980,37 @@ def detect_master_conflicts(changes: SurveyChanges) -> List[str]:
     return warnings
 
 
+def detect_blocks_overlap_warnings(changes: SurveyChanges) -> List[str]:
+    """Detect likely overlap risks between blocks and related dimensions.
+
+    Blocks conflicts are not always representable as same-QID edits because
+    `flow` changes are block-routing level and `items` changes can alter
+    question payload while block order changes happen separately.
+    """
+    warnings: List[str] = []
+    blocks_changes = changes.dimensions.get("blocks")
+    if not blocks_changes or not blocks_changes.has_changes:
+        return warnings
+
+    items_changes = changes.dimensions.get("items")
+    if items_changes and items_changes.has_changes:
+        warnings.append(
+            "⚠ Blocks and items both have changes. "
+            "Items edits question payload/content while blocks edits question/page-break order inside blocks. "
+            "Preview both and verify final in-block QID order before push."
+        )
+
+    flow_changes = changes.dimensions.get("flow")
+    if flow_changes and flow_changes.has_changes:
+        warnings.append(
+            "⚠ Blocks and flow both have changes. "
+            "Blocks edits in-block order; flow edits routing between blocks. "
+            "Review both previews to avoid unintended structural combinations."
+        )
+
+    return warnings
+
+
 def resolve_conflict_interactive(conflict: Conflict) -> List[str]:
     """Prompt user to resolve a conflict interactively.
 
@@ -4132,6 +4163,11 @@ def _sync_dimensions_once(
         if master_warnings:
             print()
             for warning in master_warnings:
+                print(f"[sync:conflict] {warning}")
+        blocks_warnings = detect_blocks_overlap_warnings(changes)
+        if blocks_warnings:
+            print()
+            for warning in blocks_warnings:
                 print(f"[sync:conflict] {warning}")
 
     # Sort dimensions in safe merge order

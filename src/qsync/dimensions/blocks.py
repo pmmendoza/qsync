@@ -287,11 +287,21 @@ def _elements_signature(block: dict[str, Any]) -> list[str]:
     return tokens
 
 
-def _sequence_preview(tokens: list[str], *, limit: int = 24) -> str:
-    if len(tokens) <= limit:
+def _sequence_preview_compact(
+    tokens: list[str], *, head_limit: int = 8, tail_limit: int = 4
+) -> str:
+    if len(tokens) <= head_limit + tail_limit:
         return " | ".join(tokens)
-    head = " | ".join(tokens[:limit])
-    return f"{head} | ... (+{len(tokens) - limit} more)"
+    head = " | ".join(tokens[:head_limit])
+    tail = " | ".join(tokens[-tail_limit:])
+    return f"{head} | ... | {tail} (n={len(tokens)})"
+
+
+def _sequence_stats(tokens: list[str]) -> str:
+    questions = sum(1 for token in tokens if token not in {"|PAGE_BREAK|"} and not token.startswith("|"))
+    page_breaks = sum(1 for token in tokens if token == "|PAGE_BREAK|")
+    others = max(0, len(tokens) - questions - page_breaks)
+    return f"q={questions}, pb={page_breaks}, other={others}, total={len(tokens)}"
 
 
 def _render_sequence_lines(tokens: list[str]) -> list[str]:
@@ -599,12 +609,22 @@ def preview(
         for change in changes:
             desc = f" ({change['description']})" if change.get("description") else ""
             print(f"  ~ {change['block_id']}{desc}")
-            print(f"    - before: {_sequence_preview(change['before'])}")
-            print(f"    + after : {_sequence_preview(change['after'])}")
+            print(
+                "    - before:"
+                f" {_sequence_preview_compact(change['before'])}"
+                f" [{_sequence_stats(change['before'])}]"
+            )
+            print(
+                "    + after :"
+                f" {_sequence_preview_compact(change['after'])}"
+                f" [{_sequence_stats(change['after'])}]"
+            )
             if verbose:
                 diff_lines = list(change.get("diff_lines") or [])
                 for line in colorize_unified_diff_lines(diff_lines):
                     print(f"    {line}")
+            else:
+                print("    ℹ detailed diff: run `qsync blocks preview --survey-id ... --detailed`")
         return changes
 
     except Exception as exc:

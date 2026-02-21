@@ -466,20 +466,25 @@ def resolve_survey_cache_dir(
     - Legacy layout: base path is account-scoped `surveys/`.
     - Account-root layout: base path is `<account>/state/`.
     - If `<base>/<cache_subdir>/` exists, return that directory.
+    - Legacy-only fallback: if `<base>/caches/` exists, return it.
     - Otherwise, return the base fallback directory.
     """
 
     base_dir = resolve_survey_cache_base_dir(root=root, account=account)
     root_path = root or resolve_root(required=False) or Path.cwd()
+    layout = resolve_workspace_layout(root=root_path)
     cache_subdir = resolve_survey_cache_subdir(root=root_path)
     candidate = (base_dir / cache_subdir).resolve()
     if candidate.exists() and candidate.is_dir():
         return candidate
 
-    # Backward-compatible fallback: legacy default subdir name.
-    legacy_candidate = (base_dir / _DEFAULT_SURVEY_CACHE_SUBDIR_LEGACY).resolve()
-    if legacy_candidate.exists() and legacy_candidate.is_dir():
-        return legacy_candidate
+    # Backward-compatible fallback only for legacy layout workspaces.
+    # Account-root mode is intentionally strict so migration mistakes don't
+    # silently route cache reads/writes into stale folders.
+    if layout == WORKSPACE_LAYOUT_LEGACY:
+        legacy_candidate = (base_dir / _DEFAULT_SURVEY_CACHE_SUBDIR_LEGACY).resolve()
+        if legacy_candidate.exists() and legacy_candidate.is_dir():
+            return legacy_candidate
 
     return base_dir.resolve()
 

@@ -3591,6 +3591,350 @@ def handle_menu(args: argparse.Namespace) -> None:
             ),
         )
 
+    def _menu_blocks_staged(*, preselected_survey_id: str | None = None) -> None:
+        survey_id = (preselected_survey_id or "").strip() or _pick_survey_id(
+            message="Pick a survey for blocks edits (stage-first):"
+        )
+        if not survey_id:
+            return
+
+        try:
+            yaml_path = blocks_dimension.ensure_local_surface(survey_id)
+            print(f"[survey-menu] Blocks surface: {yaml_path}")
+        except Exception as exc:
+            print(
+                "[survey-menu] ERROR: unable to initialize blocks surface. "
+                f"Run `qsync blocks pull --survey-id {survey_id}` and retry. ({exc})"
+            )
+            return
+
+        def _definition_with_local_blocks() -> dict[str, Any] | None:
+            definition = _fetch_definition_for_menu(survey_id)
+            if not definition:
+                return None
+            try:
+                _surface_payload, local_blocks = blocks_dimension._load_blocks_surface(survey_id)  # type: ignore[attr-defined]
+                if isinstance(local_blocks, dict) and local_blocks:
+                    merged = dict(definition)
+                    merged["Blocks"] = copy.deepcopy(local_blocks)
+                    return merged
+            except Exception:
+                pass
+            return definition
+
+        def _pick_qids(message: str) -> list[str] | None:
+            while True:
+                definition = _definition_with_local_blocks()
+                if not definition:
+                    return None
+                qids = _pick_question_ids_from_definition(definition, message=message)
+                if qids is None:
+                    return None
+                if qids:
+                    return qids
+                retry = select_from_list(
+                    "No questions selected.",
+                    ["Choose question(s) again", "↩ Back"],
+                    instruction="Select at least one question to continue.",
+                )
+                if not retry or retry.endswith("Back"):
+                    return None
+
+        while True:
+            action = select_from_list(
+                "Blocks (stage-first workflow)",
+                [
+                    "Move question(s) in local blocks.yaml",
+                    "Remove question(s) from local blocks.yaml",
+                    "Add page break in local blocks.yaml",
+                    "Remove page break(s) from local blocks.yaml",
+                    "Preview local blocks diff",
+                    "Stage local blocks changes",
+                    "Push staged blocks changes",
+                    "Refresh local blocks from API (overwrite local blocks.yaml)",
+                    "↩ Back",
+                ],
+                instruction=(
+                    "Blocks controls in-block question/page-break order. "
+                    "Flow controls routing between blocks."
+                ),
+            )
+            if not action or action.endswith("Back"):
+                return
+
+            if action.startswith("Move question"):
+                definition = _definition_with_local_blocks()
+                if not definition:
+                    continue
+                qids = _pick_qids("Choose question(s) to move:")
+                if not qids:
+                    continue
+                placement = _prompt_block_slot_placement(
+                    definition,
+                    title="Choose where to move selected question(s) in the target block:",
+                    marked_qids=set(qids),
+                )
+                if not placement:
+                    continue
+                target_block_id, insert_index = placement
+                try:
+                    result = blocks_dimension.move_qid(
+                        survey_id,
+                        qids=qids,
+                        target_block_id=target_block_id,
+                        insert_index=insert_index,
+                        position="append",
+                    )
+                    print(
+                        "[survey-menu] Updated local blocks.yaml: moved "
+                        f"{len(result.get('qids') or [])} QID(s) to {result.get('block_id')} "
+                        f"at index {result.get('insert_index')}."
+                    )
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: {exc}")
+                continue
+
+            if action.startswith("Remove question"):
+                qids = _pick_qids("Choose question(s) to remove:")
+                if not qids:
+                    continue
+                mode = select_from_list(
+                    "Remove mode:",
+                    [
+                        "Move removed QIDs to Trash (default)",
+                        "Detach only (do not move to Trash)",
+                        "↩ Back",
+                    ],
+                )
+                if not mode or mode.endswith("Back"):
+                    continue
+                move_to_trash = mode.startswith("Move removed")
+                try:
+                    result = blocks_dimension.remove_qid(
+                        survey_id,
+                        qids=qids,
+                        move_to_trash=move_to_trash,
+                    )
+                    if result.get("moved_to_trash"):
+                        print(
+                            "[survey-menu] Updated local blocks.yaml: removed "
+                            f"{len(result.get('qids') or [])} QID(s) and moved to Trash "
+                            f"({result.get('trash_block_id')})."
+                        )
+                    else:
+                        print(
+                            "[survey-menu] Updated local blocks.yaml: detached "
+                            f"{len(result.get('qids') or [])} QID(s) from active blocks."
+                        )
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: {exc}")
+                continue
+
+            if action.startswith("Add page break"):
+                definition = _definition_with_local_blocks()
+                if not definition:
+                    continue
+                placement = _prompt_block_slot_placement(
+                    definition,
+                    title="Choose where to insert page break in the selected block:",
+                )
+                if not placement:
+                    continue
+                target_block_id, insert_index = placement
+                try:
+                    result = blocks_dimension.add_page_break(
+                        survey_id,
+                        target_block_id=target_block_id,
+                        insert_index=insert_index,
+                        position="append",
+                    )
+                    print(
+                        "[survey-menu] Updated local blocks.yaml: inserted page break in "
+                        f"{result.get('block_id')} at index {result.get('insert_index')}."
+                    )
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: {exc}")
+                continue
+
+            if action.startswith("Remove page break"):
+                definition = _definition_with_local_blocks()
+                if not definition:
+                    continue
+                block_id = _pick_block_id_from_definition(
+                    definition,
+                    message="Choose block containing page break(s):",
+                )
+                if not block_id:
+                    continue
+                page_break_choices = _page_break_choices_for_block(
+                    definition, block_id=block_id
+                )
+                if not page_break_choices:
+                    print("[survey-menu] No page breaks found in selected block.")
+                    continue
+
+                label_to_index = {label: idx for label, idx in page_break_choices}
+                labels = [label for label, _ in page_break_choices]
+                remove_mode = select_from_list(
+                    "How do you want to select page break(s) to remove?",
+                    [
+                        "Pick one page break",
+                        "Pick multiple page breaks",
+                        "Remove all page breaks in block",
+                        "↩ Back",
+                    ],
+                    instruction="Element indices are shown in square brackets.",
+                )
+                if not remove_mode or remove_mode.endswith("Back"):
+                    continue
+
+                element_indices: list[int]
+                if remove_mode.startswith("Pick one"):
+                    picked = select_from_list(
+                        "Select page break to remove:",
+                        [*labels, "↩ Back"],
+                    )
+                    if not picked or picked.endswith("Back"):
+                        continue
+                    idx = label_to_index.get(str(picked))
+                    if idx is None:
+                        continue
+                    element_indices = [idx]
+                elif remove_mode.startswith("Pick multiple"):
+                    from .interactive_menu import multi_select_from_list
+
+                    picked_labels = multi_select_from_list(
+                        "Select page break(s) to remove:",
+                        labels,
+                        instruction="Space to toggle, Enter to confirm.",
+                    )
+                    if picked_labels is None:
+                        continue
+                    picked_unique = [
+                        label
+                        for label in dict.fromkeys(picked_labels)
+                        if label in label_to_index
+                    ]
+                    if not picked_unique:
+                        print("[survey-menu] No page breaks selected.")
+                        continue
+                    element_indices = [label_to_index[label] for label in picked_unique]
+                else:
+                    element_indices = [idx for _label, idx in page_break_choices]
+
+                try:
+                    result = blocks_dimension.remove_page_break(
+                        survey_id,
+                        target_block_id=block_id,
+                        element_indices=element_indices,
+                    )
+                    print(
+                        "[survey-menu] Updated local blocks.yaml: removed "
+                        f"{result.get('removed')} page break(s) from {result.get('block_id')}."
+                    )
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: {exc}")
+                continue
+
+            if action.startswith("Preview local blocks"):
+                detailed = (
+                    select_from_list(
+                        "Preview mode:",
+                        ["Summary", "Detailed unified diff"],
+                    )
+                    == "Detailed unified diff"
+                )
+                try:
+                    blocks_dimension.preview(survey_id, verbose=bool(detailed))
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: {exc}")
+                continue
+
+            if action.startswith("Stage local blocks"):
+                allow_drift = (
+                    select_from_list(
+                        "Allow stage on drift (baseline != live API)?",
+                        ["No", "Yes"],
+                    )
+                    == "Yes"
+                )
+                try:
+                    ok = blocks_dimension.stage(
+                        survey_id,
+                        allow_drift=bool(allow_drift),
+                        interactive=True,
+                    )
+                    if ok:
+                        print("[survey-menu] Blocks staged successfully.")
+                    else:
+                        print("[survey-menu] Blocks stage failed.")
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: {exc}")
+                continue
+
+            if action.startswith("Push staged blocks"):
+                force_live = (
+                    select_from_list(
+                        "Allow push if finished responses exist?",
+                        ["No", "Yes"],
+                    )
+                    == "Yes"
+                )
+                force_preview = (
+                    select_from_list(
+                        "Force preview database push even with responses?",
+                        ["No", "Yes"],
+                    )
+                    == "Yes"
+                )
+                allow_drift = (
+                    select_from_list(
+                        "Allow push on drift (staged baseline != live API)?",
+                        ["No", "Yes"],
+                    )
+                    == "Yes"
+                )
+                publish = (
+                    select_from_list(
+                        "Publish after push?",
+                        ["Yes", "No"],
+                    )
+                    == "Yes"
+                )
+                try:
+                    ok = blocks_dimension.push(
+                        survey_id,
+                        interactive=True,
+                        force_live=bool(force_live),
+                        force_preview=bool(force_preview),
+                        auto_yes=False,
+                        allow_drift=bool(allow_drift),
+                        skip_publish=not bool(publish),
+                    )
+                    if ok:
+                        print("[survey-menu] Blocks push complete.")
+                    else:
+                        print("[survey-menu] Blocks push failed.")
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: {exc}")
+                continue
+
+            if action.startswith("Refresh local blocks"):
+                if (
+                    select_from_list(
+                        "Overwrite local blocks.yaml from live API?",
+                        ["No", "Yes"],
+                    )
+                    != "Yes"
+                ):
+                    continue
+                try:
+                    refreshed = blocks_dimension.pull(survey_id, force=True)
+                    print(f"[survey-menu] Refreshed blocks surface: {refreshed}")
+                except Exception as exc:
+                    print(f"[survey-menu] ERROR: {exc}")
+                continue
+
     def _menu_add_question(*, preselected_survey_id: str | None = None) -> None:
         survey_id = (preselected_survey_id or "").strip() or _pick_survey_id(
             message="Pick a survey to add question(s):"
@@ -4281,6 +4625,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             "setup-pull": _menu_pull,
             # Edit
             "edit-structural": _menu_items_structural_edits,
+            "edit-blocks-staged": _menu_blocks_staged,
             "edit-add-question": _menu_add_question,
             "edit-move-question": _menu_move_question,
             "edit-remove-question": _menu_remove_question,
@@ -4409,12 +4754,13 @@ def handle_menu(args: argparse.Namespace) -> None:
             _menu_context(
                 "Survey Menu > Edit Questions & Content",
                 "Question-level content edits (safe staged workflow).",
-                "Items structural edits, add/move/remove/replace/page-break edits, inspect/push utilities, QID-scoped staging",
+                "Items + blocks staged edits, add/move/remove/replace/page-break edits, inspect/push utilities, QID-scoped staging",
             )
             choice = select_from_list(
                 "Edit Questions & Content",
                 [
                     "Items: structural edits (stage → preview → push)",
+                    "Blocks: stage-first block-internal edits (move/remove/page-break)",
                     "Add question(s) (clone template, insert in flow)",
                     "Move question(s) (reorder / move across blocks)",
                     "Remove question(s) (move selected QIDs to Trash)",
@@ -4431,6 +4777,8 @@ def handle_menu(args: argparse.Namespace) -> None:
                 continue
             if choice.startswith("Items:"):
                 _menu_items_structural_edits()
+            elif choice.startswith("Blocks:"):
+                _menu_blocks_staged()
             elif choice.startswith("Add question"):
                 _menu_add_question()
             elif choice.startswith("Move question"):

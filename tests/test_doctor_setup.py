@@ -71,6 +71,43 @@ def test_resolve_survey_cache_dir_account_root_layout(
     assert resolve_survey_cache_dir(root=tmp_path) == cache_dir.resolve()
 
 
+def test_resolve_survey_cache_dir_account_root_ignores_legacy_caches_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.config import resolve_survey_cache_dir
+
+    _touch_env_for_restore(monkeypatch)
+    _write_layout_pref(tmp_path, "account_root_v1")
+
+    state_root = tmp_path / "accounts" / "default" / "state"
+    state_root.mkdir(parents=True, exist_ok=True)
+    (state_root / "caches").mkdir(parents=True, exist_ok=True)
+
+    # Account-root mode must not silently fallback to legacy `state/caches`.
+    assert resolve_survey_cache_dir(root=tmp_path) == state_root.resolve()
+
+
+def test_resolve_survey_cache_dir_account_root_respects_explicit_cache_subdir_pref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.config import resolve_survey_cache_dir
+
+    _touch_env_for_restore(monkeypatch)
+    state_dir = tmp_path / ".qsync"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "preferences.json").write_text(
+        json.dumps(
+            {"workspace_layout": "account_root_v1", "survey_cache_subdir": "caches"},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    cache_dir = tmp_path / "accounts" / "default" / "state" / "caches"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    assert resolve_survey_cache_dir(root=tmp_path) == cache_dir.resolve()
+
+
 def test_build_setup_moves_routes_legacy_survey_cache_into_state_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
