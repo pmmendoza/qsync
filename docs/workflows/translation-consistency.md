@@ -2,7 +2,7 @@
 
 This guide explains practical workflows for keeping **copy** (wording), **logic**, and **translations** consistent across languages in Qualtrics when using `qsync`.
 
-Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes most workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). The paths below assume the default account.
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes account data under `accounts/<account>/...` in account-root layout (legacy `.<name>` compatibility paths still work; see `../reference/accounts.md`). The paths below assume the default account.
 
 It covers two common operating modes:
 
@@ -142,7 +142,7 @@ Option 2: Survey Master (recommended for bulk operations across many surveys)
 - `qsync survey master pull`
 - Edit `Header` in `surveys/qualtrics_master.csv` (and/or other operational fields you need).
 - `qsync survey master preview --detail`
-- `qsync survey master apply`
+- `qsync survey master stage`
 - `qsync survey master push`
 
 ### Keeping split surveys consistent over time

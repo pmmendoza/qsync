@@ -63,25 +63,25 @@ Note: the exported document includes a clickable **survey link**.
 - If `--edf` is set, those key/value pairs are appended to the URL query string so reviewers can open the same scenario.
 - If `--language/--languages` is set, the link includes `Q_Language=<LANG>` so reviewers open the same language.
 
-Account scoping: when an account is active (via `--account <name>` or `qsync account use <name>`), artifacts are written under `export/.<name>/` by default. See `../reference/accounts.md`.
+Account scoping: export artifacts are account-scoped. In account-root layout they are written under `accounts/<account>/export/` (legacy compatibility: `export/.<account>/`). See `../reference/accounts.md`.
 
-Artifacts (default):
+Artifacts (default account surface):
 
-- `export/<SurveyName>__<SurveyID>__<BASE>.docx`
-- `export/<SurveyName>__<SurveyID>__<BASE>.flow.mmd`
-- `export/<SurveyName>__<SurveyID>__<BASE>.flow.png` (only when Mermaid rendering is enabled; can require network access)
+- `.../export/<SurveyName>__<SurveyID>__<BASE>.docx`
+- `.../export/<SurveyName>__<SurveyID>__<BASE>.flow.mmd`
+- `.../export/<SurveyName>__<SurveyID>__<BASE>.flow.png` (only when Mermaid rendering is enabled; can require network access)
 
 Artifacts (with `--language FR`):
 
-- `export/<SurveyName>__<SurveyID>__FR.docx`
-- `export/<SurveyName>__<SurveyID>__FR.flow.mmd`
-- `export/<SurveyName>__<SurveyID>__FR.flow.png` (only when Mermaid rendering is enabled)
+- `.../export/<SurveyName>__<SurveyID>__FR.docx`
+- `.../export/<SurveyName>__<SurveyID>__FR.flow.mmd`
+- `.../export/<SurveyName>__<SurveyID>__FR.flow.png` (only when Mermaid rendering is enabled)
 
 Artifacts (with `--language FR --compare-to-base`):
 
-- `export/<SurveyName>__<SurveyID>__<BASE>-FR.docx`
-- `export/<SurveyName>__<SurveyID>__<BASE>-FR.flow.mmd`
-- `export/<SurveyName>__<SurveyID>__<BASE>-FR.flow.png` (only when Mermaid rendering is enabled)
+- `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.docx`
+- `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.flow.mmd`
+- `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.flow.png` (only when Mermaid rendering is enabled)
 
 ## 3) Document structure
 

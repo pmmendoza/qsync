@@ -4,11 +4,11 @@ _Migrated from `appendices/js_sync_workflow.md` (monorepo) so the standalone `qs
 
 This document explains how we keep the QuestionJS embedded in Qualtrics aligned with the ground-truth files under `survey_js/core/`. All commands assume a virtualenv is activated.
 
-Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). The paths below assume the default account.
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes account data under `accounts/<account>/...` in account-root layout (legacy `.<name>` compatibility paths still work; see `../reference/accounts.md`). The paths below assume the default account.
 
 ## 1. Mapping CSV recap
 
-- File: `survey_js/survey_qid_js_map.csv` (or `survey_js/.<account>/survey_qid_js_map.csv` when an account is active).
+- File: `survey_js/survey_qid_js_map.csv` (legacy default) or `accounts/<account>/survey_js/survey_qid_js_map.csv` in account-root layout.
 - Columns: `js_file`, then one column per survey using the pattern `SV_<ID>-<label>` (e.g. `SV_5AsKyAO5QqswBcq-NEWSFLOWS_pre_pilot_api`).
 - Rows: every JS file in `survey_js/core/` plus “hint rows” for inline JS without a matching file. Hint rows have `js_file` in quotes (`"Qualtrics.SurveyEngi"`) and are ignored by preview/stage/push tooling.
 - Regeneration: `qsync js pull` rebuilds the CSV from the cached survey JSONs (internally calls `src/qsync/js_mapping.py`).
@@ -20,7 +20,7 @@ In a standalone workspace/repo, use the CLI directly:
 | Step | Command | Description |
 | --- | --- | --- |
 | Pull (cache) | `qsync survey pull --survey-id SV_xxx` | Refreshes the cached survey definition (recommended before diffing/pushing). |
-| Pull (account-scoped) | `qsync survey pull --survey-id SV_xxx --account damian` | Pulls definition for account `damian` into `surveys/.damian/` by default. |
+| Pull (account-scoped) | `qsync survey pull --survey-id SV_xxx --account <account>` | Pulls definition for the selected account into its scoped surveys cache path. |
 | Pull (JS) | `qsync js pull --survey-id SV_xxx` | Rebuilds the mapping CSV and verifies the survey column exists. |
 | Preview | `qsync js preview --survey-id SV_xxx` | Prints a summary table and (optionally) unified diffs. |
 | Stage | `qsync js stage --survey-id SV_xxx` | Writes pending JS entries only (no cache mutation). |
@@ -82,6 +82,6 @@ The tool warns when a mapped QID ends up in Trash/unplaced regions so you can cl
 6. `qsync js push --survey-id SV_… --force-live --yes`
 7. `qsync js preview --survey-id SV_…` again to confirm everything now reads `match`.
 
-For multi-account runs, set `--account` on the cache refresh step above; when omitted, it defaults to `surveys/`, and when set, it defaults to `surveys/.<account>/` unless `--dest` is passed.
+For multi-account runs, set `--account` on the cache refresh step above. Cache output goes to the selected account-scoped surveys surface (account-root or legacy layout, depending on workspace mode).
 
 Keep `survey_js/core/` committed so Git tracks JS changes alongside the updated survey JSON/mapping rows.

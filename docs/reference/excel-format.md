@@ -2,7 +2,9 @@
 
 This document summarises the workbook structure and formatting rules applied by `qsync` for per-survey Excel workbooks.
 
-Workbooks are written to `excel/<slug>-<SurveyID>.xlsx` (account-scoped workbooks live under `excel/.<account>/`).
+Workbooks are written to account-scoped paths based on workspace layout:
+- account-root layout: `accounts/<account>/excel/<slug>-<SurveyID>.xlsx`
+- legacy compatibility layout: `excel/<slug>-<SurveyID>.xlsx` (default) or `excel/.<account>/...` (named account)
 
 Implementation reference: `src/qsync/excel_io.py`.
 
@@ -50,7 +52,7 @@ Formatting:
 
 Behaviour:
 
-- These columns are refreshed from cache/API on each workbook refresh (`qsync items pull` / legacy `qsync init`).
+- These columns are refreshed from cache/API on each workbook refresh (`qsync items pull`).
 
 ### 2.2 User-editable columns
 

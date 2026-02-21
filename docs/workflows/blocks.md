@@ -6,12 +6,14 @@ Ownership boundary:
 - `blocks` owns question/page-break ordering **inside** blocks.
 - `flow` owns routing/branching and block traversal graph.
 
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, blocks surfaces are account-scoped under `accounts/<account>/surveys/flow/...` in account-root layout (legacy compatibility paths still work; see `../reference/accounts.md`).
+
 ## Local surfaces
 
 After pull, qsync writes:
 
 ```
-surveys/flow/<survey-slug>-<survey-id>/
+accounts/default/surveys/flow/<survey-slug>-<survey-id>/
   blocks.yaml
   blocks_baseline.json
 ```

@@ -2,7 +2,7 @@
 
 This document explains how to version-control and synchronize survey branching logic, block ordering, and flow structure between local YAML files and the Qualtrics API.
 
-Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). For flow, that means `surveys/.<name>/flow/<survey-slug>-{survey_id}/...`. The paths below assume the default account.
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes account data under `accounts/<account>/...` in account-root layout (legacy `.<name>` compatibility paths still work; see `../reference/accounts.md`). For flow, that means `accounts/<account>/surveys/flow/<survey-slug>-{survey_id}/...` in account-root layout. The paths below assume the default account.
 
 ## 1. Overview
 

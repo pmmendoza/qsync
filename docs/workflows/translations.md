@@ -7,12 +7,12 @@ This document describes the canonical workflow for Qualtrics survey translations
 For **split/sliced survey families** (one SurveyID per language/country), see:
 `translation-consistency.md` (explains how translations become base-language “items” after slicing).
 
-Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). The paths below assume the default account.
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes account data under `accounts/<account>/...` in account-root layout (legacy `.<name>` compatibility paths still work; see `../reference/accounts.md`). The paths below assume the default account.
 
 ## Migration notes
 
-- **2026-01-23:** Stage 1 introduces the workbook → cached survey definition → question push flow for
-  `qsync translations preview/apply/push`. `qsync translations ...` is now the canonical namespace.
+- **2026-01-23:** Stage 1 introduces the workbook → cached survey definition → stage/push flow for
+  `qsync translations preview/stage/push`. `qsync translations ...` is now the canonical namespace.
   The workbook `Subitems.Field` column disambiguates `Answer` vs `Label` rows (slider/scale endpoints).
 - **2026-01-23:** Stage 2 switches translation export/pack to read from the cached survey definition
   (Language blocks + `MetaDataTranslations`) and adds a cache freshness preflight. `--refresh` now
@@ -39,11 +39,10 @@ Account scoping: if you run with `--account <name>` or set a workspace default v
 - Workbook (canonical editing surface):  
   `excel/<SurveyName>-<SurveyID>.xlsx` (translation columns + `Survey_Metadata`)
 - Cached survey definition:  
-  `surveys/*__<SurveyID>.json`
-  - For `--account NAME`, pulls and related refreshes default to  
-    `surveys/.NAME/*__<SurveyID>.json` unless `--dest` is explicitly set.
+  `surveys/*__<SurveyID>.json` (default account in legacy layout) or `accounts/default/surveys/*__<SurveyID>.json` (account-root layout)
+  - For `--account NAME`, pulls and related refreshes write to that account's scoped cache path per workspace layout.
 - Pending translations (staged list):  
-  `surveys/pending/translations/<SurveyID>.json` (or `surveys/.<account>/pending/translations/<SurveyID>.json` when an account is active)
+  `surveys/pending/translations/<SurveyID>.json` (legacy default) or `accounts/default/surveys/pending/translations/<SurveyID>.json` (account-root default)
 - Legacy (archived reference):  
   See `docs/translation_legacy_maps.md` (translation map files removed from workflow).
 
@@ -70,15 +69,15 @@ qsync translations pull --survey-id SV_xxx
 To refresh from a non-default account, run:
 
 ```
-qsync translations pull --survey-id SV_xxx --account damian
+qsync translations pull --survey-id SV_xxx --account <account>
 ```
 
-This writes to `surveys/.damian/` by default (or a custom location with `--dest`).
+This writes to the selected account's scoped cache path (account-root or legacy layout, depending on workspace mode).
 
 If you run multiple commands against the same account, you can persist the selection for the current workspace:
 
 ```
-qsync account use damian
+qsync account use <account>
 ```
 
 Preview diffs:
@@ -184,4 +183,5 @@ Avoid testing on active production surveys. Use surveys with "smoke" in the name
 - `NEWSFLOWS_pre_main_debug_smoketest_20260110__SV_5zrBxvTWvWBMIzs`
 - `ZZZ_qsync_smoketest_20251213_160439_edited_api__SV_5BeVXRVDCgJCsPI`
 
-Default to `qsync translations push --validate` during testing; only use `push --yes` on smoke surveys.
+Default to `qsync translations push --validate` during testing; only use `push --yes` on smoke surveys named per policy:
+`[smoke_test]_[YYMMDD_HHMM]_[feature/purpose]`.

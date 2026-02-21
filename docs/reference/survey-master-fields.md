@@ -3,7 +3,7 @@
 This file is auto-generated from the Survey Master mapping CSV (`surveys/qualtrics_api_key_mapping.csv`).
 In the standalone repo, treat it as a snapshot; if you override the mapping, update this reference accordingly.
 
-Account scoping: Survey Master artifacts (CSV, snapshots, pending, rollback) live under `surveys/` for the default account, or under `surveys/.<account>/` when an account is active (see `accounts.md`). The mapping file `surveys/qualtrics_api_key_mapping.csv` remains unscoped/shared across accounts.
+Account scoping: Survey Master artifacts (CSV, snapshots, pending, rollback) are account-scoped. In account-root layout they live under `accounts/<account>/surveys/...` (legacy compatibility: `surveys/` for default and `surveys/.<account>/...` for named accounts). The mapping file `surveys/qualtrics_api_key_mapping.csv` remains unscoped/shared across accounts.
 
 **Auto-generated:** 2026-01-10
 **Status:** MVP complete with 66+ writable fields
@@ -148,9 +148,9 @@ qsync survey master pull
 ```
 
 ### 2. Edit workbook or CSV
-Preferred: edit `surveys/qualtrics_master.xlsx` (or `surveys/.<account>/qualtrics_master.xlsx` when an account is active).
+Preferred: edit `qualtrics_master.xlsx` in your account-scoped surveys surface.
 
-Alternative: edit `surveys/qualtrics_master.csv` (or `surveys/.<account>/qualtrics_master.csv` when an account is active).
+Alternative: edit `qualtrics_master.csv` in your account-scoped surveys surface.
 
 In the workbook surface, non-editable fields are shaded light gray.
 
@@ -159,9 +159,10 @@ In the workbook surface, non-editable fields are shaded light gray.
 qsync survey master preview --detail
 ```
 
-### 4. Apply Changes
+### 4. Stage and Push Changes
 ```bash
-qsync survey master apply [--allow-dangerous] [--force]
+qsync survey master stage
+qsync survey master push [--allow-dangerous]
 ```
 
 ---

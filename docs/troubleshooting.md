@@ -11,11 +11,11 @@ qsync doctor
 ```
 
 Key checks:
-- `root` points to the directory that contains `surveys/`, `excel/`, `survey_js/`, etc.
+- `root` points to the workspace root (account-root layout: `accounts/default/...`; legacy layout: `surveys/`, `excel/`, `survey_js/`, etc.).
 - `QUALTRICS_BASE_URL` is host-only (e.g. `iad1.qualtrics.com`, not `https://...`).
 - API token is present via `X-API-TOKEN` (preferred) or `QUALTRICS_API_KEY`.
 
-If `qsync doctor` reports missing files under `surveys/.<account>/...` but you only have unscoped files under `surveys/`, you likely have an active account selection. Run:
+If `qsync doctor` reports missing account-scoped files, you likely have an active account selection that does not match where your artifacts currently live. Run:
 
 ```bash
 qsync account status

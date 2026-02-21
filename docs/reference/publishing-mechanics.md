@@ -26,7 +26,7 @@ Validated via direct API calls made on **December 18, 2025** against:
 ### Endpoint (validated)
 
 - `POST /API/v3/survey-definitions/{surveyId}/versions`  
-  [Implemented in qsync: `qsync survey publish` and auto-publish after `qsync push` / `qsync js push` / `qsync survey push-question` (use `--no-publish` to skip).]
+  [Implemented in qsync: `qsync survey publish` and auto-publish after `qsync items push` / `qsync js push` / `qsync survey push-question` (use `--no-publish` to skip).]
 
 ### Request body (validated)
 
@@ -131,7 +131,7 @@ Because qsync’s current write surface is primarily **question payloads**, we v
 1) Fetch a historical version definition: `GET /survey-definitions/{surveyId}/versions/{versionId}`
 2) Extract a question payload: `definition["Questions"][questionId]`
 3) Restore it to current: `PUT /survey-definitions/{surveyId}/questions/{questionId}`  
-   [Implemented in qsync (as a write primitive): `qsync push`, `qsync js push`, and `qsync survey push-question` all ultimately update question definitions.]
+   [Implemented in qsync (as a write primitive): `qsync items push`, `qsync js push`, and `qsync survey push-question` all ultimately update question definitions.]
 4) Publish: `POST /survey-definitions/{surveyId}/versions` with `Published=true`
 
 We successfully rolled `QID7` “back” to an older version’s QuestionText and then “forward” again by repeating the process with a newer version.

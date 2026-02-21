@@ -9,7 +9,7 @@ These messages are a separate editing surface from:
 
 If you want multilingual parity, EOS messages must be managed explicitly via `qsync eos`.
 
-Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). The paths below assume the default account.
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes account data under `accounts/<account>/...` in account-root layout (legacy `.<name>` compatibility paths still work; see `../reference/accounts.md`). The paths below assume the default account.
 
 ## What `qsync eos` manages
 
@@ -95,7 +95,7 @@ For cross-account copies where target SurveyFlow still references source EOS IDs
 
 ```bash
 qsync eos repair --survey-id SV_TARGET \
-  --account damian \
+  --account <target-account> \
   --source-account default \
   --source-survey-id SV_SOURCE \
   --yes
@@ -105,7 +105,7 @@ Preview only (no writes):
 
 ```bash
 qsync eos repair --survey-id SV_TARGET \
-  --account damian \
+  --account <target-account> \
   --source-account default \
   --source-survey-id SV_SOURCE \
   --dry-run
@@ -115,7 +115,7 @@ Fully automatic source lookup across accounts (no source survey needed):
 
 ```bash
 qsync eos repair --survey-id SV_TARGET \
-  --account damian \
+  --account <target-account> \
   --auto-source \
   --dry-run
 ```
@@ -124,7 +124,7 @@ Apply:
 
 ```bash
 qsync eos repair --survey-id SV_TARGET \
-  --account damian \
+  --account <target-account> \
   --auto-source \
   --yes
 ```
@@ -133,7 +133,7 @@ Batch mode (single target account):
 
 ```bash
 # default batch scope: focal surveys from inventory.csv
-qsync eos repair --account damian --batch --auto-source --dry-run
+qsync eos repair --account <target-account> --batch --auto-source --dry-run
 ```
 
 Target account resolution for batch is the standard qsync behavior:
@@ -144,14 +144,14 @@ Target account resolution for batch is the standard qsync behavior:
 To include all surveys in the target account:
 
 ```bash
-qsync eos repair --account damian --batch --all-surveys --auto-source --dry-run
+qsync eos repair --account <target-account> --batch --all-surveys --auto-source --dry-run
 ```
 
 Optional: constrain auto-source to one account:
 
 ```bash
 qsync eos repair --survey-id SV_TARGET \
-  --account damian \
+  --account <target-account> \
   --auto-source \
   --source-account default \
   --dry-run

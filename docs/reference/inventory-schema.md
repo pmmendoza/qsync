@@ -4,7 +4,7 @@ _Migrated from `appendices/qualtrics_surveys_schema.md` (monorepo) so the standa
 
 This document covers the schema and intended usage of `surveys/inventory.csv`.
 
-Account scoping: when an account is active (via `--account <name>` or `qsync account use <name>`), the inventory lives under `surveys/.<account>/inventory.csv`. See `accounts.md`.
+Account scoping: inventory is account-scoped. In account-root layout it lives under `accounts/<account>/surveys/inventory.csv` (legacy compatibility: `surveys/.<account>/inventory.csv`). See `accounts.md`.
 
 This file is the local “survey inventory” cache used by `qsync` for:
 - selecting focal surveys,
@@ -64,7 +64,8 @@ Survey Master supports repeatable filters:
 
 ```bash
 qsync survey master preview --tag component=pre --tag stage=pilot
-qsync survey master apply --tag cntry=US
+qsync survey master stage --tag cntry=US
+qsync survey master push --tag cntry=US
 ```
 
 Implementation notes:

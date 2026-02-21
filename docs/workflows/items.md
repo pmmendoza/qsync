@@ -4,7 +4,7 @@ _Migrated from `appendices/qsync_workflow.md` (monorepo) so the standalone `qsyn
 
 This document explains how to edit Qualtrics wording via Excel. It assumes you run commands from your workspace root with a virtualenv activated.
 
-Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes the workflow surfaces under `.<name>/` subdirectories (see `../reference/accounts.md`). The paths below assume the default account.
+Account scoping: if you run with `--account <name>` or set a workspace default via `qsync account use <name>`, `qsync` reads/writes account data under `accounts/<account>/...` in account-root layout (legacy `.<name>` compatibility paths still work; see `../reference/accounts.md`). The paths below assume the default account.
 ## 0. File locations reference
 
 The table below shows the file locations for each qsync dimension:
@@ -20,7 +20,7 @@ The table below shows the file locations for each qsync dimension:
 - **Staged Files**: Where pending changes are recorded after `qsync <dimension> stage`
 - **Cache Files**: Read-only local copies of Qualtrics survey definitions, refreshed by `qsync <dimension> pull`
 
-**Important**: `qsync init` regenerates Excel files from cached survey JSON but does **not** modify staged files or cache files. It preserves existing Excel content where questions/options still exist in the survey.
+**Important**: `qsync items pull` regenerates/refreshes workbook content from cached survey JSON and does **not** modify staged files. It preserves existing Excel content where questions/options still exist in the survey.
 ## 1. Key files & concepts
 
 - **Inventory (`surveys/inventory.csv`)** – built via `qsync survey inventory`. Each row stores `id`, `name`, `focal`, `locked`, `preview_count`, `response_count`, etc. (Legacy filename: `surveys/qualtrics_surveys.csv`.)
@@ -59,8 +59,7 @@ qsync items push --survey-id SV_5AsKyAO5QqswBcq --force-live --yes
 - `items preview` compares Excel vs cached JSON. Non-HTML cells are compared via Markdown; HTML-only cells compare normalized HTML directly.
 - `items stage` writes pending change records (no Qualtrics API calls; no cache mutation) and records the staged QIDs.
 - `items push` reads staged QIDs from disk, enforces safeguards, uploads the questions via the Qualtrics API, and refreshes the cache after push.
-- Use `--filter-column/--filter-value` when you only want to preview/apply/push a subset of the workbook (e.g. `InPre == TRUE`).
-- **Legacy commands:** `qsync init`, `qsync preview`, `qsync apply`, `qsync push` still work as aliases but are deprecated.
+- Use `--filter-column/--filter-value` when you only want to preview/stage/push a subset of the workbook (e.g. `InPre == TRUE`).
 
 ### Translation validation export (Word) (optional)
 
@@ -101,21 +100,21 @@ For a detailed “how to read” guide (question metadata format, logic highligh
 
 ## 4. Excel schema refresher
 
-Each workbook ships with an `Instructions` sheet regenerated at every `qsync items pull` (or legacy `qsync init`). Highlights:
+Each workbook ships with an `Instructions` sheet regenerated at every `qsync items pull`. Highlights:
 
 - **Questions sheet** – 1 row per question; edit `text_{base}` (e.g. `text_en` for English‑base surveys), toggle `ishtml_{base}`, and (when needed) edit response settings via `ForceResponseMode`, `ValidationType`, `ValidationSettingsJSON`, `RandomizationType`, `RandomizationSettingsJSON`. `RequiredResponse` is derived/read-only. `QuestionConfigJSON` is a read-only canonical mirror.
 - **Options sheet** – 1 row per choice/scale point; edit `Label_{base}_MD` (Markdown) or mark `Label_{base}_IsHTML`. `MetaComment` conveys ownership (e.g. "Externally managed by recognition script").
 - **Subitems sheet** – 1 row per matrix row/sub-statement; same Markdown/HTML toggles as Options.
 - **SBS_Columns sheet** – for SBSMatrix (side-by-side) items only: 1 row per SBS column (the side-by-side “panels”); edit `Label_{base}_MD` (Markdown) or mark `Label_{base}_IsHTML`.
 - **SBS_ColumnAnswers sheet** – for SBSMatrix items only: 1 row per SBS column answer/scale label; edit `Label_{base}_MD` (Markdown) or mark `Label_{base}_IsHTML`.
-- **Embedded_Data sheet** – 1 row per embedded field; edit `Value` for defaults. Fields without defaults show `---` and require `qsync items stage --allow-dangerous` (or legacy `qsync apply --allow-dangerous`) to stage. `WrittenByQIDs` lists JS writers (map via `survey_js/survey_qid_js_map.csv`).
+- **Embedded_Data sheet** – 1 row per embedded field; edit `Value` for defaults. Fields without defaults show `---` and require `qsync items stage --allow-dangerous` to stage. `WrittenByQIDs` lists JS writers (map via `survey_js/survey_qid_js_map.csv`).
 - **Embedded field renames** – use CLI staging for field-name changes:
   `qsync survey rename-embedded-field --survey-id SV_xxx --from OLD_FIELD --to NEW_FIELD`
 - **System sheet** – read-only (timing, display logic metadata). Provided for context.
 
 Across workbook tables, non-editable/system columns are shaded light gray so it is visually clear which cells are intended editing surfaces.
 
-`qsync items preview` (and legacy `qsync preview`) only report differences when Markdown (for non-HTML cells) or normalized HTML actually changes, so formatting tweaks that don’t alter rendered output remain silent.
+`qsync items preview` only reports differences when Markdown (for non-HTML cells) or normalized HTML actually changes, so formatting tweaks that don’t alter rendered output remain silent.
 
 ### SBSMatrix notes (Qualtrics `QuestionType="SBS"`, `Selector="SBSMatrix"`)
 
@@ -156,4 +155,4 @@ See `../reference/push-safeguards.md` for the full decision matrix and CLI flags
 - Use `qsync sync --survey-id SV_xxx` to get a holistic view across items/EDF/JS/translations/EOS in one go.
 - If Qualtrics introduces a new QID (e.g. question created in the UI), re-run `qsync items pull` so the workbook includes the new row before editing.
 - When collaborating, commit both the Excel workbook and the corresponding pending/cached artifacts. Reviewers can re-run `qsync items preview` (and/or `qsync sync`) to validate there are no hidden diffs before approving.
-- If `qsync preview` reports duplicate placeholder embedded fields (e.g. “Create New Field or Choose From Dropdown...”), run `qsync survey cleanup-embedded-data --survey-id SV_xxx --apply --publish` to remove the duplicates from SurveyFlow.
+- If `qsync items preview` reports duplicate placeholder embedded fields (e.g. “Create New Field or Choose From Dropdown...”), run `qsync survey cleanup-embedded-data --survey-id SV_xxx --apply --publish` to remove the duplicates from SurveyFlow.

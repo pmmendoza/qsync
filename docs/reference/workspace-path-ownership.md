@@ -1,23 +1,24 @@
 # Workspace Path Ownership
 
-This document defines which filesystem surfaces are account-scoped versus shared.
+This document defines filesystem ownership boundaries and account scoping behavior.
 
-## Account-scoped surfaces
+## Account-Scoped Surfaces
 
-These resolve via `resolve_scoped_dir(...)` and should be treated as account data.
+These resolve through scoped path helpers and are account data:
 
-- `surveys` (cache files, inventory, pending state, flow surfaces)
+- `surveys` (cache files, inventory, pending state, flow/blocks/master artifacts)
 - `excel` (workbooks)
 - `survey_js` / `js` (JS core files + `survey_qid_js_map.csv`)
-- `contents` (translation and content exports)
+- `contents` (EOS/library message + translation/support artifacts)
 - `export`
 - `responses`
 - `tmp`
 
-In `account_root_v1`, these live under `accounts/<account>/...`.
-In `legacy`, they live under `<root>/<surface>/` (or `<root>/<surface>/.<account>/`).
+Layout variants:
+- account-root layout: `accounts/<account>/<surface>/...`
+- legacy compatibility layout: `<root>/<surface>/...` (default account) and `<root>/<surface>/.<account>/...` (named accounts)
 
-## Shared workspace paths
+## Shared Workspace Paths
 
 These are intentionally not account-scoped:
 
@@ -25,27 +26,27 @@ These are intentionally not account-scoped:
 - `<root>/.qsync/*` (preferences, migrations, locks)
 - `<root>/logs/*`
 
-## Compatibility paths
+## Compatibility Paths
 
-These are supported for backward compatibility, but should not be the primary target for new writes:
+These are backward-compatible read/write fallbacks and should not be primary targets for new writes:
 
 - `<root>/surveys/qualtrics_api_key_mapping.csv`
 - `<root>/appendices/qualtrics_api_key_mapping.csv`
 - `<root>/surveys/edf_presets.json`
 
-Read order for compatibility files is implemented with fallback candidates.
+## Flow vs Blocks Ownership (Implemented)
 
-## Blocks + Flow (planned ownership)
+Blocks surfaces are colocated with flow surfaces but remain a distinct dimension.
 
-Blocks editing surfaces are colocated with flow surfaces but remain a separate dimension.
-
-- Flow surface:
+- Flow editing surface:
   - `.../flow/<survey-slug>-<survey-id>/flow.yaml`
-- Blocks surface:
+- Blocks editing surface:
   - `.../flow/<survey-slug>-<survey-id>/blocks.yaml`
   - `.../flow/<survey-slug>-<survey-id>/blocks_baseline.json`
 - Pending state:
   - `.../pending/flow/<survey-id>.json`
   - `.../pending/blocks/<survey-id>.json`
 
-This keeps routing ownership (`flow`) separate from in-block element ordering (`blocks`).
+Ownership split:
+- `flow` owns routing/traversal structure.
+- `blocks` owns in-block `BlockElements` order (question/page-break structure).

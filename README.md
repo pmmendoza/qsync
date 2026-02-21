@@ -18,7 +18,7 @@ qsync sync --survey-id SV_xxx
 ```
 
 > [!TIP]
-> `qsync sync` is designed to be the only command most users need day-to-day. It orchestrates items, JS, EOS, and translations workflows automatically.
+> `qsync sync` is designed to be the only command most users need day-to-day. It orchestrates items, JS, EOS, blocks, flow, and translations workflows automatically.
 
 ## When to use qsync
 
@@ -41,9 +41,9 @@ qsync sync --survey-id SV_xxx
 
 ```mermaid
 flowchart LR
-  R[Remote<br/>Qualtrics API] -->|pull| C[Cached<br/>surveys/SV_xxx.json]
-  C <-->|diff| S[Source<br/>excel/ + survey_js/ + contents/]
-  S -->|stage| P[Pending<br/>surveys/pending/]
+  R[Remote<br/>Qualtrics API] -->|pull| C[Cached<br/>accounts/default/surveys/*.json]
+  C <-->|diff| S[Source<br/>accounts/default/{excel,survey_js,contents}/]
+  S -->|stage| P[Pending<br/>accounts/default/surveys/pending/]
   P -->|push| R
   R -->|refresh cache| C
 ```
@@ -51,9 +51,9 @@ flowchart LR
 | State | Description | Location |
 |---|---|---|
 | **Remote** | Live survey in Qualtrics | API |
-| **Cached** | Local JSON snapshot | `surveys/SV_*.json` |
-| **Source** | Files you edit | `excel/`, `survey_js/`, `contents/` |
-| **Pending** | Staged diffs waiting to be pushed | `surveys/pending/` |
+| **Cached** | Local JSON snapshot | `accounts/default/surveys/*.json` (legacy: `surveys/*.json`) |
+| **Source** | Files you edit | `accounts/default/excel/`, `accounts/default/survey_js/`, `accounts/default/contents/` |
+| **Pending** | Staged diffs waiting to be pushed | `accounts/default/surveys/pending/` (legacy: `surveys/pending/`) |
 
 > [!IMPORTANT]
 > Since 2026-01-24, staging writes to `surveys/pending/` and does not mutate cached survey JSON. Cache refresh happens after successful pushes.
@@ -219,9 +219,9 @@ Account selection options:
 - Workspace default: `qsync account use <account>` (persists in `.qsync/preferences.json`)
 - Clear workspace default: `qsync account clear`
 
-When an account is active, qsync scopes workspace artifacts under `.<account>/`
-subdirectories inside each base folder:
-`surveys/.<account>/`, `excel/.<account>/`, `survey_js/.<account>/`, etc.
+Workspace layout mode:
+- Account-root layout (current default): `accounts/<account>/...` (for example `accounts/default/surveys/`, `accounts/<name>/excel/`).
+- Legacy compatibility layout: `surveys/.<account>/`, `excel/.<account>/`, `survey_js/.<account>/`, etc.
 
 Adopt an existing workspace into an account (move unscoped artifacts into the
 scoped layout; keeps shared files like `surveys/qualtrics_api_key_mapping.csv`
@@ -293,16 +293,24 @@ Disable keyring lookups (e.g., CI/headless):
 
 ```text
 <workspace>
-├── surveys/        # cached JSON, pending staging, inventory artifacts
-├── excel/          # workbooks
-├── survey_js/      # canonical JS + mapping CSV
-├── contents/       # library message HTML + translation artifacts
+├── accounts/
+│   ├── default/
+│   │   ├── surveys/    # cached JSON, pending staging, inventory artifacts
+│   │   ├── excel/      # workbooks
+│   │   ├── survey_js/  # canonical JS + mapping CSV
+│   │   ├── contents/   # library message HTML + translation artifacts
+│   │   ├── export/     # generated exports
+│   │   ├── responses/  # generated outputs
+│   │   └── tmp/        # scratch artifacts
+│   └── <account>/...   # same structure for named accounts
 ├── logs/           # audit logs (JSONL)
-├── export/         # generated exports
-└── responses/      # generated outputs
+├── .qsync/         # workspace preferences/migration state
+└── .env*           # credential files (.env, .env.<account>)
 ```
 
 If you run `qsync` outside the workspace, pass `--root` (or set `QSYNC_ROOT`).
+
+Legacy layout compatibility is still supported (`surveys/`, `excel/`, `survey_js/`, ... and `.<account>` subfolders).
 
 ## Common workflows
 
@@ -389,7 +397,7 @@ qsync items push --survey-id SV_xxx --force-live
 # Optional: rename an embedded field directly in SurveyFlow (stage-only)
 qsync survey rename-embedded-field --survey-id SV_xxx --from OLD_FIELD --to NEW_FIELD
 # then push staged flow updates
-qsync push --survey-id SV_xxx --yes
+qsync flow push --survey-id SV_xxx --yes
 ```
 
 ### Bulk survey metadata/status (Survey Master)
@@ -400,9 +408,10 @@ qsync survey master pull
 
 # 2. Edit surveys/qualtrics_master.csv
 
-# 3. Preview and apply changes
+# 3. Preview, stage, and push changes
 qsync survey master preview
-qsync survey master apply
+qsync survey master stage
+qsync survey master push
 ```
 
 ## Feature highlight: Translation export
