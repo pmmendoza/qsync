@@ -144,12 +144,44 @@ Before applying/pushing, `qsync` loads the target row from `surveys/inventory.cs
 
 See `../reference/push-safeguards.md` for the full decision matrix and CLI flags.
 
-## 6. Survey management pointers
+## 6. EDF health during `qsync sync` (graceful degradation)
+
+When `Embedded_Data` rows are unhealthy (missing/duplicate/ambiguous), `qsync sync` can still push non-embedded item wording and translations with explicit opt-in.
+
+Interactive flow:
+
+1. Run `qsync sync --survey-id SV_xxx`
+2. If warned that embedded defaults will be skipped, confirm intentionally.
+3. Push wording/translations first, then repair workbook EDF rows.
+
+Non-interactive flow:
+
+```bash
+qsync sync --survey-id SV_xxx --yes --allow-skip-embedded
+```
+
+Repair runbook (targeted to Embedded_Data sheet only):
+
+```bash
+# Preview repair (no file writes)
+qsync items repair-edf --survey-id SV_xxx --dry-run
+
+# Apply repair after review
+qsync items repair-edf --survey-id SV_xxx --yes
+```
+
+Repair semantics:
+
+- Only `Embedded_Data` sheet rows are repaired.
+- Non-empty wording/translation cells are preserved.
+- A backup workbook is written on apply.
+
+## 7. Survey management pointers
 
 - **Survey Master (bulk metadata/options/status edits):** See `survey-master.md` and `../reference/survey-master-fields.md`.
 - **Publish/version/rollback:** See `../reference/cli.md` for the full `qsync survey ...` command surface.
 
-## 7. Tips & troubleshooting
+## 8. Tips & troubleshooting
 
 - Always run `qsync survey inventory` (and `qsync items pull`) before editing. This avoids working on stale caches and ensures push safeguards see fresh counts.
 - Use `qsync sync --survey-id SV_xxx` to get a holistic view across items/EDF/JS/translations/EOS in one go.

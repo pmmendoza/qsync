@@ -482,3 +482,63 @@ def test_cli_items_repair_edf_passes_flags(tmp_path: Path, monkeypatch) -> None:
     assert kwargs["refresh_cache"] is False
     assert kwargs["retain_backups"] == 7
     assert kwargs["xlsx_path"] == workbook
+
+
+def test_cli_items_repair_edf_dry_run_output_is_checkable(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import qsync.cli as cli
+
+    workbook = tmp_path / "SV_TEST.xlsx"
+    workbook.touch()
+
+    before_health = SimpleNamespace(
+        missing_fields=["DEBUG"],
+        extra_fields=["LEGACY"],
+        duplicate_fields=[],
+        ambiguous_fields=[],
+    )
+    after_health = SimpleNamespace(
+        missing_fields=[],
+        extra_fields=[],
+        duplicate_fields=[],
+        ambiguous_fields=[],
+    )
+    fake_report = edf_dimension.EdfRepairReport(
+        survey_id="SV_TEST",
+        workbook_path=workbook,
+        dry_run=True,
+        changed=True,
+        rows_before=4,
+        rows_after=5,
+        rows_added=1,
+        rows_removed=0,
+        duplicate_rows_removed=0,
+        unchanged_rows=4,
+        extra_rows_preserved=0,
+        backup_path=None,
+        before_health=before_health,
+        after_health=after_health,
+    )
+
+    monkeypatch.setenv("QSYNC_ROOT", str(tmp_path))
+    with (
+        patch.object(cli.os, "chdir", lambda *_args, **_kwargs: None),
+        patch("qsync.dimensions.edf.repair_workbook", return_value=fake_report),
+    ):
+        cli._main_impl(
+            [
+                "items",
+                "repair-edf",
+                "--survey-id",
+                "SV_TEST",
+                "--xlsx",
+                str(workbook),
+                "--dry-run",
+            ]
+        )
+
+    out = capsys.readouterr().out
+    assert "Rows: 4 -> 5 (+1/-0, duplicates removed=0, unchanged=4)" in out
+    assert "Issues: 2 -> 0 (extra rows preserved=0)" in out
+    assert "Dry run complete; no workbook changes written." in out

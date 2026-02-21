@@ -5086,7 +5086,7 @@ def sync_survey(
                     f"{Colors.DIM}Refreshing rebuilds workbook structure from the survey definition/cache.{Colors.RESET}"
                 )
                 print(
-                    f"{Colors.DIM}Non-empty translation cells are preserved, but unstaged local edits in non-translation fields may be replaced.{Colors.RESET}"
+                    f"{Colors.DIM}Non-empty wording/translation cells (and Embedded_Data values) are preserved, but system columns and workflow flags are refreshed from cache.{Colors.RESET}"
                 )
                 print(f"{Colors.DIM}Target workbook: {xlsx_path}{Colors.RESET}\n")
 
