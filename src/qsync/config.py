@@ -469,10 +469,8 @@ def resolve_survey_cache_dir(
     - Otherwise, return the base fallback directory.
     """
 
+    base_dir = resolve_survey_cache_base_dir(root=root, account=account)
     root_path = root or resolve_root(required=False) or Path.cwd()
-    surveys_dir = resolve_scoped_dir("surveys", root=root_path, account=account)
-    layout = resolve_workspace_layout(root=root_path)
-    base_dir = surveys_dir if layout == WORKSPACE_LAYOUT_LEGACY else surveys_dir / "state"
     cache_subdir = resolve_survey_cache_subdir(root=root_path)
     candidate = (base_dir / cache_subdir).resolve()
     if candidate.exists() and candidate.is_dir():
@@ -483,6 +481,24 @@ def resolve_survey_cache_dir(
     if legacy_candidate.exists() and legacy_candidate.is_dir():
         return legacy_candidate
 
+    return base_dir.resolve()
+
+
+def resolve_survey_cache_base_dir(
+    *,
+    root: Path | None = None,
+    account: str | None = None,
+) -> Path:
+    """Resolve the layout-aware base directory for survey-definition caches.
+
+    - Legacy layout: `<surveys-scoped>/`
+    - Account-root layout: `<surveys-scoped>/state/`
+    """
+
+    root_path = root or resolve_root(required=False) or Path.cwd()
+    surveys_dir = resolve_scoped_dir("surveys", root=root_path, account=account)
+    layout = resolve_workspace_layout(root=root_path)
+    base_dir = surveys_dir if layout == WORKSPACE_LAYOUT_LEGACY else surveys_dir / "state"
     return base_dir.resolve()
 
 

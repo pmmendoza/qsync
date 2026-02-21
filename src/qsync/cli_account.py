@@ -30,6 +30,7 @@ from .config import (
     resolve_env_path,
     resolve_root,
     resolve_scoped_dir,
+    resolve_survey_cache_base_dir,
     resolve_survey_cache_dir,
     resolve_survey_cache_subdir,
     validate_survey_cache_subdir,
@@ -313,7 +314,8 @@ def handle_account_cache_dir(args) -> None:
     resolved_subdir = resolve_survey_cache_subdir(root=root)
     active = get_active_account()
     surveys_dir = resolve_scoped_dir("surveys", root=root, account=active)
-    preferred_dir = (surveys_dir / resolved_subdir).resolve()
+    cache_base_dir = resolve_survey_cache_base_dir(root=root, account=active)
+    preferred_dir = (cache_base_dir / resolved_subdir).resolve()
     effective_dir = resolve_survey_cache_dir(root=root, account=active)
     source = "subdir" if effective_dir == preferred_dir else "surveys_root_fallback"
 

@@ -71,6 +71,43 @@ def test_resolve_survey_cache_dir_account_root_layout(
     assert resolve_survey_cache_dir(root=tmp_path) == cache_dir.resolve()
 
 
+def test_build_setup_moves_routes_legacy_survey_cache_into_state_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.doctor_setup import build_setup_moves
+
+    _touch_env_for_restore(monkeypatch)
+    ensure_qsync_workspace(tmp_path)
+
+    (tmp_path / "surveys" / "caches").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "surveys" / "caches" / "Cached__SV_CACHED.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    (tmp_path / "surveys" / "Root__SV_ROOT.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    (tmp_path / "surveys" / "backups").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "surveys" / "backups" / "Backup__SV_BKP.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+
+    plan = build_setup_moves(tmp_path, target_account="default")
+    move_map = {
+        str(m.src.relative_to(tmp_path)): str(m.dst.relative_to(tmp_path))
+        for m in plan
+    }
+
+    assert move_map["surveys/caches"] == "accounts/default/state/cache"
+    assert (
+        move_map["surveys/Root__SV_ROOT.json"]
+        == "accounts/default/state/cache/Root__SV_ROOT.json"
+    )
+    assert move_map["surveys/backups"] == "accounts/default/state/cache/backups"
+
+
 def test_doctor_setup_dry_run_apply_and_undo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

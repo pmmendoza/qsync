@@ -350,6 +350,39 @@ def test_account_cache_dir_show_set_and_clear(
     assert payload["survey_cache_subdir_pref"] is None
 
 
+def test_account_cache_dir_account_root_prefers_state_cache_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from qsync.cli import main
+
+    _touch_env_for_restore(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    (tmp_path / ".qsync").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".qsync" / "preferences.json").write_text(
+        json.dumps({"workspace_layout": "account_root_v1"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "accounts" / "default" / "state").mkdir(parents=True, exist_ok=True)
+
+    main(["--root", str(tmp_path), "account", "cache-dir", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["survey_cache_subdir_resolved"] == "cache"
+    assert payload["preferred_cache_dir"].endswith("/accounts/default/state/cache")
+    assert payload["effective_cache_dir"].endswith("/accounts/default/state")
+    assert payload["effective_source"] == "surveys_root_fallback"
+
+    (tmp_path / "accounts" / "default" / "state" / "cache").mkdir(
+        parents=True, exist_ok=True
+    )
+    main(["--root", str(tmp_path), "account", "cache-dir", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["effective_cache_dir"].endswith("/accounts/default/state/cache")
+    assert payload["effective_source"] == "subdir"
+
+
 def test_workspace_active_account_applies_to_survey_pull_when_no_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

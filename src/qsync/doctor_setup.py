@@ -138,6 +138,22 @@ def _account_root(root: Path, account: str) -> Path:
     return (root / "accounts" / account).resolve()
 
 
+def _looks_like_cached_survey_json(path: Path) -> bool:
+    name = path.name
+    return path.is_file() and name.endswith(".json") and "__SV_" in name
+
+
+def _dir_looks_like_cache_container(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    if path.name in {"cache", "caches"}:
+        return True
+    try:
+        return any(p.is_file() for p in path.glob("*__SV_*.json"))
+    except OSError:
+        return False
+
+
 def _destination_for(
     *,
     root: Path,
@@ -154,6 +170,14 @@ def _destination_for(
         # Keep shared Survey Master mapping at workspace root.
         if account == "default" and name == "qualtrics_api_key_mapping.csv":
             return None
+        # Cache artifacts belong under account state cache storage in account-root layout.
+        cache_root = account_root / "state" / "cache"
+        if _looks_like_cached_survey_json(child):
+            return cache_root / name
+        if child.is_dir() and name == "backups":
+            return cache_root / "backups"
+        if _dir_looks_like_cache_container(child):
+            return cache_root
         return account_root / name
 
     if surface == "excel":

@@ -24,6 +24,7 @@ from .config import (
     load_env,
     resolve_root,
     resolve_scoped_dir,
+    resolve_survey_cache_base_dir,
     resolve_survey_cache_dir,
     resolve_survey_cache_subdir,
     validate_survey_cache_subdir,
@@ -1538,9 +1539,12 @@ def handle_menu(args: argparse.Namespace) -> None:
         while True:
             account_scope = _resolve_menu_account()
             surveys_dir = resolve_scoped_dir("surveys", root=root, account=account_scope)
+            cache_base_dir = resolve_survey_cache_base_dir(
+                root=root, account=account_scope
+            )
             pref = get_workspace_survey_cache_subdir(root)
             resolved_subdir = resolve_survey_cache_subdir(root=root)
-            preferred_dir = (surveys_dir / resolved_subdir).resolve()
+            preferred_dir = (cache_base_dir / resolved_subdir).resolve()
             effective_dir = resolve_survey_cache_dir(root=root, account=account_scope)
             source = "subdir" if effective_dir == preferred_dir else "surveys root fallback"
 
