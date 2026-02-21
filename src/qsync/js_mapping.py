@@ -10,7 +10,7 @@ from typing import Dict, Iterable, List, Tuple
 
 from .argparse_support import QsyncArgumentParser
 from .config import resolve_root, resolve_scoped_dir, resolve_survey_cache_dir
-from .survey_inventory import _read_csv_rows
+from .survey_inventory import _read_csv_rows, get_focal_survey_ids
 from .workspace_paths import survey_js_core_dir
 
 ROOT = resolve_root(required=False) or Path.cwd()
@@ -47,7 +47,7 @@ def _parse_survey_filename(path: Path) -> Tuple[str, str] | None:
     return None
 
 
-def _collect_surveys() -> List[Tuple[str, str, Path]]:
+def _collect_surveys(*, survey_ids: set[str] | None = None) -> List[Tuple[str, str, Path]]:
     root = resolve_root(required=False) or Path.cwd()
     surveys_dir = resolve_survey_cache_dir(root=root)
     latest: Dict[str, Tuple[str, Path, float]] = {}
@@ -56,6 +56,8 @@ def _collect_surveys() -> List[Tuple[str, str, Path]]:
         if not parsed:
             continue
         survey_id, label = parsed
+        if survey_ids is not None and survey_id not in survey_ids:
+            continue
         mtime = path.stat().st_mtime
         current = latest.get(survey_id)
         if not current or mtime > current[2]:
@@ -124,18 +126,35 @@ def _make_hint(js_text: str, length: int = 20) -> str:
     return snippet
 
 
-def rebuild_mapping(mapping_path: Path, *, dry_run: bool = False) -> None:
+def rebuild_mapping(
+    mapping_path: Path, *, dry_run: bool = False, focal_only: bool = True
+) -> None:
     """Rebuild the JS↔QID mapping CSV based on cached survey JSON under `surveys/`."""
 
-    surveys = _collect_surveys()
+    root = resolve_root(required=False) or Path.cwd()
+    target_survey_ids: set[str] | None = None
+    if focal_only:
+        target_survey_ids = set(get_focal_survey_ids(root=root))
+        if not target_survey_ids:
+            raise RuntimeError(
+                "No focal surveys found in inventory.csv. Mark focal surveys first, "
+                "or re-run with --all-surveys."
+            )
+
+    surveys = _collect_surveys(survey_ids=target_survey_ids)
     if not surveys:
+        if focal_only:
+            raise RuntimeError(
+                "No cached survey JSONs found for focal surveys. Pull focal survey "
+                "definitions first, or re-run with --all-surveys."
+            )
         raise RuntimeError(
             "No cached surveys found under surveys/. Run qsync init first."
         )
     core_dir = _core_dir()
 
     # Get survey inventory for lastModified sorting
-    inventory = {entry.get("id"): entry for entry in _read_csv_rows()}
+    inventory = {entry.get("id"): entry for entry in _read_csv_rows(root=root)}
 
     # Sort surveys by lastModified (newest first)
     surveys_sorted = sorted(
@@ -184,8 +203,9 @@ def rebuild_mapping(mapping_path: Path, *, dry_run: bool = False) -> None:
     fieldnames = ["js_file"] + columns
 
     if dry_run:
+        scope = "focal surveys" if focal_only else "surveys"
         print(
-            f"[rebuild] Would write {len(ordered_rows)} rows covering {len(columns)} surveys."
+            f"[rebuild] Would write {len(ordered_rows)} rows covering {len(columns)} {scope}."
         )
         return
 
@@ -219,9 +239,18 @@ def main(argv: Iterable[str] | None = None) -> None:
         action="store_true",
         help="Show a summary instead of writing the CSV.",
     )
+    parser.add_argument(
+        "--all-surveys",
+        action="store_true",
+        help="Include non-focal surveys (default: focal-only).",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    rebuild_mapping(args.mapping, dry_run=bool(args.dry_run))
+    rebuild_mapping(
+        args.mapping,
+        dry_run=bool(args.dry_run),
+        focal_only=not bool(args.all_surveys),
+    )
 
 
 if __name__ == "__main__":

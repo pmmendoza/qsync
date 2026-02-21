@@ -11,7 +11,7 @@ Account scoping: if you run with `--account <name>` or set a workspace default v
 - File: `survey_js/survey_qid_js_map.csv` (legacy default) or `accounts/<account>/survey_js/survey_qid_js_map.csv` in account-root layout.
 - Columns: `js_file`, then one column per survey using the pattern `SV_<ID>-<label>` (e.g. `SV_5AsKyAO5QqswBcq-NEWSFLOWS_pre_pilot_api`).
 - Rows: every JS file in `survey_js/core/` plus “hint rows” for inline JS without a matching file. Hint rows have `js_file` in quotes (`"Qualtrics.SurveyEngi"`) and are ignored by preview/stage/push tooling.
-- Regeneration: `qsync js pull` rebuilds the CSV from the cached survey JSONs (internally calls `src/qsync/js_mapping.py`).
+- Regeneration: `qsync js pull` rebuilds the CSV from cached survey JSONs for focal surveys by default (use `--all-surveys` to include non-focal surveys).
 
 ## 2. Quick runbook (standalone)
 
@@ -21,7 +21,7 @@ In a standalone workspace/repo, use the CLI directly:
 | --- | --- | --- |
 | Pull (cache) | `qsync survey pull --survey-id SV_xxx` | Refreshes the cached survey definition (recommended before diffing/pushing). |
 | Pull (account-scoped) | `qsync survey pull --survey-id SV_xxx --account <account>` | Pulls definition for the selected account into its scoped surveys cache path. |
-| Pull (JS) | `qsync js pull --survey-id SV_xxx` | Rebuilds the mapping CSV and verifies the survey column exists. |
+| Pull (JS) | `qsync js pull --survey-id SV_xxx` | Rebuilds focal-only mapping CSV and verifies the survey column exists. |
 | Preview | `qsync js preview --survey-id SV_xxx` | Prints a summary table and (optionally) unified diffs. |
 | Stage | `qsync js stage --survey-id SV_xxx` | Writes pending JS entries only (no cache mutation). |
 | Push | `qsync js push --survey-id SV_xxx --force-live --yes` | Pushes QuestionJS and refreshes the cache after push. |
@@ -39,7 +39,7 @@ qsync js stage   --survey-id SV_5AsKyAO5QqswBcq --create-missing
 qsync js push    --survey-id SV_5AsKyAO5QqswBcq --force-live --yes
 ```
 
-- `js pull` rebuilds the mapping and verifies that the requested survey column exists.
+- `js pull` rebuilds the mapping for focal surveys by default and verifies that the requested survey column exists. Use `--all-surveys` to include non-focal surveys.
 - `js preview` classifies every `(js_file, QID)` pair as `match`, `comments-only`, `diff`, `missing`, `trash`, or `unused`. The summary table now includes a `Δ(+/-)` column counting the diff lines and reports how many active JS blocks are unmatched.
 - `js stage` writes pending JS entries only (no cache mutation). By default it stages only changed QIDs (`diff`, `comments-only`, and `missing` when `--create-missing` is set). Use `--include-match` for a full mapped push surface, and `--allow-diff` to include substantive code diffs.
 - `js push` enforces the same safeguards as wording pushes: locked surveys are blocked, live responses require `--force-live`, preview responses trigger warnings/confirmations, and stale inventory triggers a quick live re-check.

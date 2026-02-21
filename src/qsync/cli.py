@@ -2997,6 +2997,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         action="store_true",
         help="Show a summary without writing the CSV",
     )
+    p_js_pull.add_argument(
+        "--all-surveys",
+        action="store_true",
+        help="Include non-focal surveys in the mapping CSV (default: focal-only).",
+    )
 
     # js preview
     p_js_preview = js_subparsers.add_parser(
@@ -5808,9 +5813,13 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 if not args.dry_run:
                     survey_ids = _prompt_for_survey_ids_if_needed(
                         getattr(args, "survey_id", None),
-                        allow_all_surveys=True,
+                        allow_all_surveys=bool(getattr(args, "all_surveys", False)),
                     )
-                rebuild_js_mapping(args.mapping, dry_run=bool(args.dry_run))
+                rebuild_js_mapping(
+                    args.mapping,
+                    dry_run=bool(args.dry_run),
+                    focal_only=not bool(getattr(args, "all_surveys", False)),
+                )
                 if not args.dry_run:
                     for survey_id in survey_ids:
                         _ensure_mapping_column(args.mapping, survey_id)
