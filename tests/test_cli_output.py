@@ -15,6 +15,22 @@ def _touch_env(root: Path) -> None:
     (root / ".env").write_text("", encoding="utf-8")
 
 
+def _prepare_account_root_workspace(root: Path) -> None:
+    """Create a minimal account-root-v1 workspace without legacy root surfaces."""
+    (root / ".qsync").mkdir(parents=True, exist_ok=True)
+    (root / ".qsync" / "preferences.json").write_text(
+        json.dumps(
+            {"workspace_layout": "account_root_v1", "survey_cache_subdir": "cache"},
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (root / "accounts" / "default").mkdir(parents=True, exist_ok=True)
+    (root / "accounts" / "default" / "excel").mkdir(parents=True, exist_ok=True)
+    (root / "accounts" / "default" / "js").mkdir(parents=True, exist_ok=True)
+
+
 class QsyncCliOutputTests(unittest.TestCase):
     def test_doctor_json_is_parseable(self) -> None:
         from qsync.cli import main
@@ -59,6 +75,69 @@ class QsyncCliOutputTests(unittest.TestCase):
             with redirect_stdout(buf):
                 main(["--root", str(root), "survey", "focal"])
             self.assertEqual(buf.getvalue().strip(), "SV_A SV_C")
+
+    def test_account_root_workspace_does_not_prompt_onboard_hint(self) -> None:
+        from qsync.cli import main
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _prepare_account_root_workspace(root)
+            (root / ".env").write_text(
+                "QUALTRICS_BASE_URL=example.qualtrics.com\nX-API-TOKEN=dummy-token\n",
+                encoding="utf-8",
+            )
+            (root / "accounts" / "default" / "inventory.csv").write_text(
+                "id,name,focal\nSV_TEST,Account Root Survey,TRUE\n",
+                encoding="utf-8",
+            )
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                main(
+                    [
+                        "--root",
+                        str(root),
+                        "survey",
+                        "label",
+                        "--survey-id",
+                        "SV_TEST",
+                    ]
+                )
+
+            out = buf.getvalue()
+            self.assertNotIn("No workspace found", out)
+            self.assertEqual(out.strip(), "SV_TEST - Account Root Survey")
+
+    def test_doctor_json_account_root_workspace_without_legacy_surface_dirs(self) -> None:
+        from qsync.cli import main
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _prepare_account_root_workspace(root)
+            (root / ".env").write_text(
+                "QUALTRICS_BASE_URL=example.qualtrics.com\nX-API-TOKEN=dummy-token\n",
+                encoding="utf-8",
+            )
+            (root / "accounts" / "default" / "inventory.csv").write_text(
+                "id,name,focal\nSV_TEST,Account Root Survey,TRUE\n",
+                encoding="utf-8",
+            )
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                main(["--root", str(root), "doctor", "--json"])
+
+            payload = json.loads(buf.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["workspace_layout"], "account_root_v1")
+            self.assertEqual(
+                Path(payload["surveys_dir_default"]).resolve(),
+                (root / "accounts" / "default").resolve(),
+            )
+            joined_warnings = "\n".join(payload.get("warnings", []))
+            self.assertNotIn("Workspace surveys directory not found", joined_warnings)
+            self.assertNotIn("Workspace excel directory not found", joined_warnings)
+            self.assertNotIn("Workspace survey_js directory not found", joined_warnings)
 
     def test_survey_inspect_question_prints_question_payload(self) -> None:
         from qsync.cli import main
@@ -312,8 +391,12 @@ class QsyncCliOutputTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("ERROR: Invalid regex pattern", buf.getvalue())
 
+    @patch(
+        "qsync.cli_survey.get_client_config",
+        return_value=("example.qualtrics.com", {}),
+    )
     @patch("qsync.cli_survey.publish_survey_definition")
-    def test_survey_publish_dry_run_skips_api(self, mock_publish) -> None:
+    def test_survey_publish_dry_run_skips_api(self, mock_publish, _mock_cfg) -> None:
         from qsync.cli import main
 
         buf = io.StringIO()
@@ -332,8 +415,14 @@ class QsyncCliOutputTests(unittest.TestCase):
         mock_publish.assert_not_called()
         self.assertIn("DRY-RUN", buf.getvalue())
 
+    @patch(
+        "qsync.cli_survey.get_client_config",
+        return_value=("example.qualtrics.com", {}),
+    )
     @patch("qsync.cli_survey.publish_survey_definition")
-    def test_survey_publish_accepts_retry_attempts_arg(self, mock_publish) -> None:
+    def test_survey_publish_accepts_retry_attempts_arg(
+        self, mock_publish, _mock_cfg
+    ) -> None:
         from qsync.cli import main
 
         buf = io.StringIO()

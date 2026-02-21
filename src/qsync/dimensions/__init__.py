@@ -1,7 +1,7 @@
 """Canonical dimension entrypoints for qsync."""
 
 from .types import DimensionChanges
-from . import items, js, translations, eos, flow
+from . import items, js, translations, eos, flow, blocks
 
 try:
     from . import edf
@@ -100,5 +100,6 @@ __all__ = [
     "js",
     "translations",
     "eos",
+    "blocks",
     "flow",
 ]

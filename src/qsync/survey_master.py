@@ -35,6 +35,7 @@ from .rich_support import progress_context, should_use_rich
 from .survey_naming import resolve_survey_path
 from .survey_inventory import load_focal_snapshot, load_existing_metadata
 from .survey_master_validation import validate_all_changes, format_validation_errors
+from .workspace_paths import mapping_csv_candidates
 
 
 def _workspace_root() -> Path:
@@ -96,13 +97,12 @@ def _mapping_csv_path() -> Path:
     if override:
         return Path(override).expanduser().resolve()
 
-    # Shared across accounts: never scope this into surveys/.<account>/.
-    surveys_mapping = _workspace_root() / "surveys" / "qualtrics_api_key_mapping.csv"
-    if surveys_mapping.exists():
-        return surveys_mapping
+    for candidate in mapping_csv_candidates(root=_workspace_root()):
+        if candidate.exists():
+            return candidate
 
-    # Backwards-compat for legacy workspaces (monorepo layout).
-    return _workspace_root() / "appendices" / "qualtrics_api_key_mapping.csv"
+    # Preserve legacy fallback path for warning messages.
+    return mapping_csv_candidates(root=_workspace_root())[0]
 
 
 def _load_mapping_csv_text() -> tuple[str, str]:
@@ -172,9 +172,10 @@ def _parse_mapping_csv() -> Dict[str, Dict[str, Any]]:
 
     Resolution order:
     1. QSYNC_MAPPING_CSV env var (CSV)
-    2. surveys/qualtrics_api_key_mapping.csv (CSV)
-    3. appendices/qualtrics_api_key_mapping.csv (CSV, legacy)
-    4. Packaged field_mapping.json (JSON, shipped with qsync)
+    2. surveys/qualtrics_api_key_mapping.csv (CSV, legacy shared path)
+    3. accounts/default/qualtrics_api_key_mapping.csv (CSV, account-root fallback)
+    4. appendices/qualtrics_api_key_mapping.csv (CSV, legacy)
+    5. Packaged field_mapping.json (JSON, shipped with qsync)
 
     Returns a dict mapping field_name -> field_info.
     """
@@ -510,6 +511,8 @@ def _scalar_to_string(value: Any) -> str:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return str(value)
 
 
@@ -962,13 +965,7 @@ def generate_master_csv_from_snapshots(survey_ids: List[str]) -> List[List[str]]
             else:
                 value = None
 
-            # Convert to string
-            if value is None:
-                row_data[field_name] = ""
-            elif isinstance(value, bool):
-                row_data[field_name] = "true" if value else "false"
-            else:
-                row_data[field_name] = str(value)
+            row_data[field_name] = _scalar_to_string(value)
 
         row_values = [row_data.get(col, "") for col in columns]
         rows.append(row_values)
@@ -1214,6 +1211,8 @@ def _master_stringify_cell(value: Any) -> str:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     if isinstance(value, datetime):
         return value.isoformat()
     if isinstance(value, float) and value.is_integer():
@@ -1637,12 +1636,7 @@ def compute_diff(survey_id: str, csv_row: Dict[str, str]) -> Dict[str, Any]:
         baseline_value = _extract_value_from_snapshot(snapshot, field_info)
 
         # Normalize baseline for comparison
-        if baseline_value is None:
-            baseline_str = ""
-        elif isinstance(baseline_value, bool):
-            baseline_str = "true" if baseline_value else "false"
-        else:
-            baseline_str = str(baseline_value)
+        baseline_str = _scalar_to_string(baseline_value)
 
         # Compare
         if csv_value != baseline_str:
@@ -2515,7 +2509,24 @@ def _write_options(
                 current[part] = {}
             current = current[part]
         final_key = parts[-1]
-        if isinstance(csv_value, str) and csv_value.lower() in ("true", "false"):
+        data_type = str(field_info.get("data_type") or "").strip().lower()
+        if data_type == "object":
+            raw_json = csv_value.strip() if isinstance(csv_value, str) else str(csv_value).strip()
+            if not raw_json:
+                current[final_key] = {}
+                continue
+            try:
+                decoded = json.loads(raw_json)
+            except Exception as exc:
+                raise ValueError(
+                    f"{field_name}: invalid JSON object text ({exc})"
+                ) from exc
+            if not isinstance(decoded, dict):
+                raise ValueError(
+                    f"{field_name}: expected JSON object (decoded type={type(decoded).__name__})"
+                )
+            current[final_key] = decoded
+        elif isinstance(csv_value, str) and csv_value.lower() in ("true", "false"):
             current[final_key] = csv_value.lower() == "true"
         else:
             current[final_key] = csv_value
@@ -2538,7 +2549,8 @@ def _write_options(
             timeout=30,
         )
         return resp.status_code in (200, 204)
-    except Exception:
+    except Exception as exc:
+        print(f"[qsync:master-write] options payload error: {exc}")
         return False
 
 

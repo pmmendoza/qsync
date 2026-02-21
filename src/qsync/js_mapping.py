@@ -11,9 +11,9 @@ from typing import Dict, Iterable, List, Tuple
 from .argparse_support import QsyncArgumentParser
 from .config import resolve_root, resolve_scoped_dir, resolve_survey_cache_dir
 from .survey_inventory import _read_csv_rows
+from .workspace_paths import survey_js_core_dir
 
 ROOT = resolve_root(required=False) or Path.cwd()
-CORE_DIR = ROOT / "survey_js" / "core"
 DEFAULT_MAPPING_PATH = resolve_scoped_dir("survey_js", root=ROOT) / "survey_qid_js_map.csv"
 
 COMMENT_RE = re.compile(r"//\s*([^\s]+)")
@@ -26,6 +26,11 @@ def _qid_sort_key(qid: str) -> Tuple[str, int]:
         prefix, num = match.groups()
         return prefix, int(num)
     return ("", 0)
+
+
+def _core_dir() -> Path:
+    root = resolve_root(required=False) or Path.cwd()
+    return survey_js_core_dir(root=root)
 
 
 def _parse_survey_filename(path: Path) -> Tuple[str, str] | None:
@@ -43,7 +48,8 @@ def _parse_survey_filename(path: Path) -> Tuple[str, str] | None:
 
 
 def _collect_surveys() -> List[Tuple[str, str, Path]]:
-    surveys_dir = resolve_survey_cache_dir(root=ROOT)
+    root = resolve_root(required=False) or Path.cwd()
+    surveys_dir = resolve_survey_cache_dir(root=root)
     latest: Dict[str, Tuple[str, Path, float]] = {}
     for path in surveys_dir.glob("*SV*.json"):
         parsed = _parse_survey_filename(path)
@@ -126,6 +132,7 @@ def rebuild_mapping(mapping_path: Path, *, dry_run: bool = False) -> None:
         raise RuntimeError(
             "No cached surveys found under surveys/. Run qsync init first."
         )
+    core_dir = _core_dir()
 
     # Get survey inventory for lastModified sorting
     inventory = {entry.get("id"): entry for entry in _read_csv_rows()}
@@ -145,8 +152,8 @@ def rebuild_mapping(mapping_path: Path, *, dry_run: bool = False) -> None:
         column_map[survey_id] = header
 
     core_files = sorted(
-        p.relative_to(CORE_DIR).as_posix()
-        for p in CORE_DIR.rglob("*.js")
+        p.relative_to(core_dir).as_posix()
+        for p in core_dir.rglob("*.js")
         if p.is_file()
     )
     rows: Dict[str, Dict[str, List[str]]] = {

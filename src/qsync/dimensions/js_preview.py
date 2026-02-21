@@ -25,14 +25,9 @@ from ..argparse_support import QsyncArgumentParser
 from ..config import resolve_root, resolve_scoped_dir, resolve_survey_cache_dir
 from ..drift_check import check_drift as run_drift_check
 from ..scope_filter import ScopeFilter
+from ..workspace_paths import survey_js_core_dir
 
 ROOT = resolve_root(required=False) or Path.cwd()
-SURVEY_JS_CORE = ROOT / "survey_js" / "core"
-CORE_JS_FILES = {
-    p.relative_to(SURVEY_JS_CORE).as_posix()
-    for p in SURVEY_JS_CORE.rglob("*.js")
-    if p.is_file()
-}
 DEFAULT_SURVEY_ID = "SV_5AsKyAO5QqswBcq"
 DEFAULT_MAPPING_CSV = resolve_scoped_dir("survey_js", root=ROOT) / "survey_qid_js_map.csv"
 
@@ -49,10 +44,24 @@ class JsDiffResult:
     data_export_tag: str | None = None
 
 
+def _core_dir() -> Path:
+    root = resolve_root(required=False) or Path.cwd()
+    return survey_js_core_dir(root=root)
+
+
+def _core_js_files(core_dir: Path) -> set[str]:
+    return {
+        p.relative_to(core_dir).as_posix()
+        for p in core_dir.rglob("*.js")
+        if p.is_file()
+    }
+
+
 def load_survey_json(survey_id: str) -> Tuple[Dict, Path]:
     """Load the most recent cached survey JSON for a given survey_id."""
 
-    surveys_dir = resolve_survey_cache_dir(root=ROOT)
+    root = resolve_root(required=False) or Path.cwd()
+    surveys_dir = resolve_survey_cache_dir(root=root)
     matches = sorted(
         surveys_dir.glob(f"*{survey_id}.json"),
         key=lambda p: p.stat().st_mtime,
@@ -278,6 +287,8 @@ def preview_differences(
     payload, path = load_survey_json(survey_id)
     questions = payload.get("Questions") or {}
     qid_scope = _build_qid_scope(payload)
+    core_dir = _core_dir()
+    core_js_files = _core_js_files(core_dir)
 
     mapping = load_mapping(mapping_csv, survey_id)
     if include_js:
@@ -311,7 +322,7 @@ def preview_differences(
     unbacked = [
         (qid, js_name)
         for qid, js_name in assignments
-        if not js_name or js_name not in CORE_JS_FILES
+        if not js_name or js_name not in core_js_files
     ]
     results: List[JsDiffResult] = []
 
@@ -323,7 +334,7 @@ def preview_differences(
         info("[js-preview]", f"Using mapping: {mapping_csv}")
 
     for js_file, qids in sorted(mapping.items()):
-        core_path = SURVEY_JS_CORE / js_file
+        core_path = core_dir / js_file
         if not core_path.exists():
             results.append(
                 JsDiffResult(
@@ -477,7 +488,7 @@ def preview_differences(
             if r.detail:
                 print(f"  {r.detail}")
             if r.diff_lines:
-                local_path = SURVEY_JS_CORE / r.js_file if r.js_file else SURVEY_JS_CORE
+                local_path = core_dir / r.js_file if r.js_file else core_dir
                 print(f"  context: local={local_path}, cache={path}")
                 for line in colorize_unified_diff_lines(r.diff_lines):
                     print("  " + line)

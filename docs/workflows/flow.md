@@ -6,13 +6,17 @@ Account scoping: if you run with `--account <name>` or set a workspace default v
 
 ## 1. Overview
 
-Survey flow defines the execution path through a survey: which blocks appear, in what order, with what branching conditions, randomization, and embedded data. The flow dimension lets you:
+Survey flow defines the execution path through a survey: which blocks appear, in what order in the traversal graph, with what branching conditions, randomization, and embedded data. The flow dimension lets you:
 
 - **Pull** the current flow structure from Qualtrics as human-readable YAML
 - **Edit** branching logic, block order, and flow structure locally
 - **Preview** changes before pushing (semantic diff)
 - **Stage** changes for coordinated deployment
 - **Push** changes back to Qualtrics
+
+Ownership note:
+- Flow edits routing/branching and block traversal order.
+- Block-internal question/page-break order is handled by `qsync blocks` (`blocks.yaml`).
 
 ## 2. File structure
 

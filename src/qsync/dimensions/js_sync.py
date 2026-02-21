@@ -20,18 +20,24 @@ from typing import Dict, Iterable, List, Tuple
 
 from ..argparse_support import QsyncArgumentParser
 from ..config import resolve_root, resolve_scoped_dir, resolve_survey_cache_dir
+from ..workspace_paths import survey_js_core_dir
 
 ROOT = resolve_root(required=False) or Path.cwd()
-SURVEY_JS_CORE = ROOT / "survey_js" / "core"
 
 DEFAULT_SURVEY_ID = "SV_5AsKyAO5QqswBcq"
 DEFAULT_MAPPING_CSV = resolve_scoped_dir("survey_js", root=ROOT) / "survey_qid_js_map.csv"
 
 
+def _core_dir() -> Path:
+    root = resolve_root(required=False) or Path.cwd()
+    return survey_js_core_dir(root=root)
+
+
 def _find_survey_file(survey_id: str) -> Path:
     """Return the newest cached survey JSON for the given survey ID."""
 
-    surveys_dir = resolve_survey_cache_dir(root=ROOT)
+    root = resolve_root(required=False) or Path.cwd()
+    surveys_dir = resolve_survey_cache_dir(root=root)
     matches = sorted(
         surveys_dir.glob(f"*{survey_id}.json"),
         key=lambda p: p.stat().st_mtime,
@@ -149,9 +155,10 @@ def sync_js_with_cached(
     info("[js-sync]", f"Using mapping: {mapping_csv}")
 
     updates: List[Tuple[str, str, str]] = []
+    core_dir = _core_dir()
 
     for js_file, qids in sorted(mapping.items()):
-        core_path = SURVEY_JS_CORE / js_file
+        core_path = core_dir / js_file
         if not core_path.exists():
             warn("[js-sync]", f"Local JS file not found: {core_path}")
             continue

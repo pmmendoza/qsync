@@ -98,6 +98,31 @@ class SurveyMasterValidationTests(unittest.TestCase):
         self.assertEqual(rows[0]["BackButton"], "false")
         self.assertEqual(rows[0]["SaveAndContinue"], "true")
 
+    def test_validate_csv_rejects_invalid_object_json(self) -> None:
+        """Object-typed master fields must be valid JSON objects."""
+        from qsync.survey_master import validate_master_csv
+
+        headers = ["SurveyID", "MetaDataTranslationsJSON"]
+        rows = [
+            {"SurveyID": "SV_001", "MetaDataTranslationsJSON": "{invalid"},
+        ]
+
+        mapping = {
+            "SurveyID": {"field_name": "SurveyID"},
+            "MetaDataTranslationsJSON": {
+                "field_name": "MetaDataTranslationsJSON",
+                "survey_master": "write",
+                "data_type": "object",
+            },
+        }
+
+        with patch("qsync.survey_master._parse_mapping_csv", return_value=mapping):
+            errors = validate_master_csv(headers, rows)
+
+        self.assertTrue(errors)
+        self.assertIn("MetaDataTranslationsJSON", str(errors))
+        self.assertIn("JSON object", str(errors))
+
     def test_compute_diff_no_changes(self) -> None:
         """Identical CSV/snapshot → no changes."""
         from qsync.survey_master import compute_diff

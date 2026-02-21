@@ -15,6 +15,7 @@ Most files here were migrated from this monorepo’s `appendices/` directory so 
 - JavaScript (Question JS): `workflows/js.md`
 - EOS (End-of-Survey library messages): `workflows/eos.md`
 - Flow (Survey routing/branching): `workflows/flow.md`
+- Blocks (block-internal order): `workflows/blocks.md`
 - Translations (workbook-based): `workflows/translations.md`
 - Translation consistency (single vs split surveys): `workflows/translation-consistency.md`
 - Survey Master (bulk metadata/options/status): `workflows/survey-master.md`
@@ -27,6 +28,8 @@ Most files here were migrated from this monorepo’s `appendices/` directory so 
 ## Reference
 
 - CLI reference: `reference/cli.md`
+- Survey definition anatomy: `reference/survey-definition-anatomy.md`
+- Workspace path ownership: `reference/workspace-path-ownership.md`
 - Accounts and multi-account workspaces: `reference/accounts.md`
 - Editing surfaces overview: `reference/editing-surfaces.md`
 - Excel formatting principles: `reference/excel-format.md`

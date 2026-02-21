@@ -73,33 +73,114 @@ def _step_banner(step: int, total: int, title: str) -> None:
 
 
 def _detect_existing_workspace(root: Path) -> Dict[str, bool]:
+    surfaces = _workspace_surface_paths(root)
     return {
         "env (.env)": (root / ".env").exists(),
         "state (.qsync)": (root / ".qsync").exists(),
-        "surveys": (root / "surveys").exists(),
-        "excel": (root / "excel").exists(),
-        "survey_js": (root / "survey_js").exists(),
-        "contents": (root / "contents").exists(),
+        "surveys": surfaces["surveys"].exists(),
+        "excel": surfaces["excel"].exists(),
+        "survey_js": surfaces["survey_js"].exists(),
+        "contents": surfaces["contents"].exists(),
         "logs": (root / "logs").exists(),
-        "export": (root / "export").exists(),
-        "responses": (root / "responses").exists(),
-        "tmp": (root / "tmp").exists(),
+        "export": surfaces["export"].exists(),
+        "responses": surfaces["responses"].exists(),
+        "tmp": surfaces["tmp"].exists(),
     }
 
 
 def _workspace_artifact_paths(root: Path) -> Dict[str, Path]:
+    surfaces = _workspace_surface_paths(root)
     return {
         "env (.env)": root / ".env",
         "state (.qsync)": root / ".qsync",
+        "surveys": surfaces["surveys"],
+        "excel": surfaces["excel"],
+        "survey_js": surfaces["survey_js"],
+        "contents": surfaces["contents"],
+        "logs": root / "logs",
+        "export": surfaces["export"],
+        "responses": surfaces["responses"],
+        "tmp": surfaces["tmp"],
+    }
+
+
+def _workspace_surface_paths(root: Path) -> Dict[str, Path]:
+    """Return layout-aware base paths for workspace surfaces."""
+
+    try:
+        from .config import resolve_scoped_dir
+    except Exception:
+        resolve_scoped_dir = None  # type: ignore[assignment]
+
+    if resolve_scoped_dir:
+        try:
+            return {
+                "surveys": resolve_scoped_dir("surveys", root=root, account="default"),
+                "excel": resolve_scoped_dir("excel", root=root, account="default"),
+                "survey_js": resolve_scoped_dir(
+                    "survey_js", root=root, account="default"
+                ),
+                "contents": resolve_scoped_dir("contents", root=root, account="default"),
+                "export": resolve_scoped_dir("export", root=root, account="default"),
+                "responses": resolve_scoped_dir(
+                    "responses", root=root, account="default"
+                ),
+                "tmp": resolve_scoped_dir("tmp", root=root, account="default"),
+            }
+        except Exception:
+            pass
+
+    # Fallback: legacy workspace layout.
+    return {
         "surveys": root / "surveys",
         "excel": root / "excel",
         "survey_js": root / "survey_js",
         "contents": root / "contents",
-        "logs": root / "logs",
         "export": root / "export",
         "responses": root / "responses",
         "tmp": root / "tmp",
     }
+
+
+def _workspace_required_dirs(root: Path) -> List[Path]:
+    """Return layout-aware directories expected in a prepared workspace."""
+
+    surfaces = _workspace_surface_paths(root)
+    return [
+        surfaces["surveys"],
+        surfaces["surveys"] / "pending",
+        surfaces["excel"],
+        surfaces["survey_js"] / "core",
+        surfaces["contents"] / "qualtrics_library_messages",
+        surfaces["contents"] / "qualtrics_survey_translations",
+        root / "logs",
+        surfaces["export"],
+        surfaces["responses"],
+        surfaces["tmp"],
+    ]
+
+
+def _workspace_gitignore_patterns(root: Path) -> List[str]:
+    patterns = [
+        ".env",
+        "logs/",
+    ]
+    surfaces = _workspace_surface_paths(root)
+    if str(surfaces["surveys"]).startswith(str((root / "accounts").resolve())):
+        patterns.append("accounts/")
+    else:
+        patterns.extend(
+            [
+                "surveys/",
+                "excel/",
+                "survey_js/",
+                "contents/",
+                "export/",
+                "responses/",
+                "tmp/",
+            ]
+        )
+    return patterns
 
 
 def _unique_destination(base: Path) -> Path:
@@ -154,7 +235,7 @@ def _pick_root(default_root: Path) -> Path:
     resp = text_input(
         "Workspace root",
         default=str(default_root),
-        instruction="Path that will contain surveys/, excel/, survey_js/, and .env",
+        instruction="Path containing .env and workspace surfaces (legacy: surveys/, excel/, survey_js/; account-root: accounts/)",
         validate_while_typing=False,
     )
     return Path(resp).expanduser() if resp else default_root
@@ -192,18 +273,7 @@ def _collect_credentials() -> Tuple[str | None, str | None]:
 
 
 def _ensure_dirs(root: Path) -> List[Path]:
-    dirs = [
-        root / "surveys",
-        root / "surveys" / "pending",
-        root / "excel",
-        root / "survey_js" / "core",
-        root / "contents" / "qualtrics_library_messages",
-        root / "contents" / "qualtrics_survey_translations",
-        root / "logs",
-        root / "export",
-        root / "responses",
-        root / "tmp",
-    ]
+    dirs = _workspace_required_dirs(root)
     created: List[Path] = []
     for d in dirs:
         if not d.exists():
@@ -736,18 +806,7 @@ def run_onboard(args) -> None:
                 state["folders"] = True
                 created_set = {str(p) for p in created}
                 print("Folder checklist:")
-                for d in [
-                    root / "surveys",
-                    root / "surveys" / "pending",
-                    root / "excel",
-                    root / "survey_js" / "core",
-                    root / "contents" / "qualtrics_library_messages",
-                    root / "contents" / "qualtrics_survey_translations",
-                    root / "logs",
-                    root / "export",
-                    root / "responses",
-                    root / "tmp",
-                ]:
+                for d in _workspace_required_dirs(root):
                     status = "created" if str(d) in created_set else "exists"
                     if dry_run and not d.exists():
                         status = "would create"
@@ -809,17 +868,7 @@ def run_onboard(args) -> None:
                     _save_state(root, state)
                     continue
                 gitignore = root / ".gitignore"
-                patterns = [
-                    ".env",
-                    "surveys/",
-                    "excel/",
-                    "survey_js/",
-                    "contents/",
-                    "logs/",
-                    "export/",
-                    "responses/",
-                    "tmp/",
-                ]
+                patterns = _workspace_gitignore_patterns(root)
                 result = _update_gitignore_maybe(gitignore, patterns, dry_run=dry_run)
                 state["gitignore"] = True
                 print(f".gitignore {result}.")
@@ -1019,17 +1068,7 @@ def _run_non_interactive(args) -> None:
     if not getattr(args, "skip_gitignore", False):
         _update_gitignore_maybe(
             root / ".gitignore",
-            [
-                ".env",
-                "surveys/",
-                "excel/",
-                "survey_js/",
-                "contents/",
-                "logs/",
-                "export/",
-                "responses/",
-                "tmp/",
-            ],
+            _workspace_gitignore_patterns(root),
             dry_run=dry_run,
         )
     _print_summary(

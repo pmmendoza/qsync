@@ -1,7 +1,7 @@
 """Sync orchestrator for multi-dimension coordination.
 
 This module provides the `qsync sync` command that orchestrates changes across
-multiple dimensions (items, edf, js, translations, eos, flow, master) for one or more surveys.
+multiple dimensions (items, edf, js, translations, eos, blocks, flow, master) for one or more surveys.
 
 Features:
 - Automatic change detection across all dimensions
@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
 from .pending_stage import clear_pending, list_pending, load_pending
+from .dimensions import blocks as blocks_dimension
 from .dimensions import edf as edf_dimension
 from .dimensions import eos as eos_dimension
 from .dimensions import flow as flow_dimension
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Performance optimization: Cache inventory records
 _inventory_cache: Optional[Dict[str, dict]] = None
 
-BASE_DIMENSION_ORDER = ["items", "edf", "js", "translations", "eos", "flow"]
+BASE_DIMENSION_ORDER = ["items", "edf", "js", "translations", "eos", "blocks", "flow"]
 MASTER_DIMENSION_ORDER = BASE_DIMENSION_ORDER + ["master"]
 ISSUE_DETAIL_MENU_THRESHOLD = 10
 
@@ -469,6 +470,8 @@ def _autofix_command(dimension: str, survey_id: str) -> Optional[str]:
         return f"qsync items pull --survey-id {survey_id}"
     if dimension == "eos":
         return f"qsync eos pull --survey-id {survey_id}"
+    if dimension == "blocks":
+        return f"qsync blocks pull --survey-id {survey_id}"
     if dimension == "flow":
         return f"qsync flow pull --survey-id {survey_id}"
     return None
@@ -736,7 +739,7 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
 
     Args:
         survey_id: Survey ID
-        dimension: Dimension name (items, js, translations, eos, flow)
+        dimension: Dimension name (items, js, translations, eos, blocks, flow)
 
     Returns:
         DimensionChanges with detection status and affected QIDs
@@ -752,6 +755,8 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
             return translations_dimension.detect_changes(survey_id)
         if dimension == "eos":
             return eos_dimension.detect_changes(survey_id)
+        if dimension == "blocks":
+            return blocks_dimension.detect_changes(survey_id)
         if dimension == "flow":
             return flow_dimension.detect_changes(survey_id)
         if dimension == "master":
@@ -808,7 +813,13 @@ def detect_dimension_changes(survey_id: str, dimension: str) -> DimensionChanges
                     "(warning: may overwrite unstaged changes)"
                 )
         elif "Mapping CSV missing a column" in error_msg:
-            detail = "Survey not in JS mapping file. Add column to survey_js/survey_qid_js_map.csv"
+            from .config import resolve_root, resolve_scoped_dir
+
+            root = resolve_root(required=False) or Path.cwd()
+            mapping_csv = (
+                resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
+            )
+            detail = f"Survey not in JS mapping file. Add column to {mapping_csv}"
             safe_to_fix = False  # Requires manual editing
         else:
             detail = error_msg[:100]  # Generic truncated error
@@ -952,9 +963,18 @@ def resolve_conflict_interactive(conflict: Conflict) -> List[str]:
     _print_details()
 
     safe_merge_label = (
-        "✓ Apply all (safe merge: items → edf → js → translations → eos → flow → master)"
+        "✓ Apply all (safe merge: items → edf → js → translations → eos → blocks → flow → master)"
     )
-    safe_merge_order = ["items", "edf", "js", "translations", "eos", "flow", "master"]
+    safe_merge_order = [
+        "items",
+        "edf",
+        "js",
+        "translations",
+        "eos",
+        "blocks",
+        "flow",
+        "master",
+    ]
     pair_value = "apply_pair:items+translations"
     pair_label = "Apply items + translations (recommended)"
     can_apply_items_translations_pair = (
@@ -1024,7 +1044,7 @@ def resolve_conflicts_interactive(conflicts: List[Conflict]) -> Dict[str, List[s
 def resolve_conflicts_auto(conflicts: List[Conflict]) -> Dict[str, List[str]]:
     """Resolve conflicts automatically using safe merge strategy.
 
-    Safe merge order: items → edf → js → translations → eos → flow → master
+    Safe merge order: items → edf → js → translations → eos → blocks → flow → master
 
     Args:
         conflicts: List of conflicts to resolve
@@ -1033,7 +1053,7 @@ def resolve_conflicts_auto(conflicts: List[Conflict]) -> Dict[str, List[str]]:
         Dict mapping QID to list of dimensions to apply (in order)
     """
     resolutions = {}
-    order = ["items", "js", "translations", "eos", "flow"]
+    order = ["items", "edf", "js", "translations", "eos", "blocks", "flow", "master"]
 
     for conflict in conflicts:
         # Apply all dimensions in safe merge order
@@ -1068,6 +1088,7 @@ def detect_survey_changes(survey_id: str) -> SurveyChanges:
         "js": detect_dimension_changes(survey_id, "js"),
         "translations": detect_dimension_changes(survey_id, "translations"),
         "eos": detect_dimension_changes(survey_id, "eos"),
+        "blocks": detect_dimension_changes(survey_id, "blocks"),
         "flow": detect_dimension_changes(survey_id, "flow"),
         "master": detect_dimension_changes(survey_id, "master"),
     }
@@ -1156,7 +1177,16 @@ def display_change_detection_table(
             )
             table.add_column("Survey ID", no_wrap=True)
             table.add_column("Name")
-            for col in ("Items", "EDF", "JS", "Trans", "EOS", "Flow", "Master"):
+            for col in (
+                "Items",
+                "EDF",
+                "JS",
+                "Trans",
+                "EOS",
+                "Blocks",
+                "Flow",
+                "Master",
+            ):
                 table.add_column(col)
 
             def _status_text(dim_changes: DimensionChanges) -> Text:
@@ -1183,6 +1213,17 @@ def display_change_detection_table(
                 if len(name) > 60:
                     name = name[:57] + "..."
 
+                blocks_dim = changes.dimensions.get(
+                    "blocks",
+                    DimensionChanges(
+                        dimension="blocks",
+                        has_changes=False,
+                        change_summary="No changes",
+                        affected_qids=set(),
+                        status_kind="none",
+                        edit_count=0,
+                    ),
+                )
                 table.add_row(
                     sid,
                     name,
@@ -1191,6 +1232,7 @@ def display_change_detection_table(
                     _status_text(changes.dimensions["js"]),
                     _status_text(changes.dimensions["translations"]),
                     _status_text(changes.dimensions["eos"]),
+                    _status_text(blocks_dim),
                     _status_text(changes.dimensions["flow"]),
                     _status_text(changes.dimensions["master"]),
                 )
@@ -1214,13 +1256,14 @@ def display_change_detection_table(
             f"{'JS':<{col_dim}} "
             f"{'Trans':<{col_dim}} "
             f"{'EOS':<{col_dim}} "
+            f"{'Blocks':<{col_dim}} "
             f"{'Flow':<{col_dim}} "
             f"{'Master':<{col_dim}}"
             f"{Colors.RESET}"
         )
         separator = (
             f"{Colors.DIM}"
-            f"{'─' * (col_survey_id + col_name + col_dim * 7 + 7)}"
+            f"{'─' * (col_survey_id + col_name + col_dim * 8 + 8)}"
             f"{Colors.RESET}"
         )
 
@@ -1251,6 +1294,19 @@ def display_change_detection_table(
             js_status = format_status(changes.dimensions["js"])
             trans_status = format_status(changes.dimensions["translations"])
             eos_status = format_status(changes.dimensions["eos"])
+            blocks_status = format_status(
+                changes.dimensions.get(
+                    "blocks",
+                    DimensionChanges(
+                        dimension="blocks",
+                        has_changes=False,
+                        change_summary="No changes",
+                        affected_qids=set(),
+                        status_kind="none",
+                        edit_count=0,
+                    ),
+                )
+            )
             flow_status = format_status(changes.dimensions["flow"])
             master_status = format_status(changes.dimensions["master"])
 
@@ -1276,6 +1332,7 @@ def display_change_detection_table(
                 f"{_pad_to_width(js_status, col_dim)} "
                 f"{_pad_to_width(trans_status, col_dim)} "
                 f"{_pad_to_width(eos_status, col_dim)} "
+                f"{_pad_to_width(blocks_status, col_dim)} "
                 f"{_pad_to_width(flow_status, col_dim)} "
                 f"{_pad_to_width(master_status, col_dim)}"
             )
@@ -1438,9 +1495,9 @@ def display_sync_summary_table(summaries: List[SurveySyncSummary]):
 
     print(f"\n{Colors.BLUE}═══ Sync Results ═══{Colors.RESET}")
     print(
-        f"{Colors.DIM}{'Survey ID':<22} {'Name':<30} {'Items':<12} {'EDF':<12} {'JS':<12} {'Trans':<12} {'EOS':<12} {'Flow':<12} {'Master':<12}{Colors.RESET}"
+        f"{Colors.DIM}{'Survey ID':<22} {'Name':<30} {'Items':<12} {'EDF':<12} {'JS':<12} {'Trans':<12} {'EOS':<12} {'Blocks':<12} {'Flow':<12} {'Master':<12}{Colors.RESET}"
     )
-    print(f"{Colors.DIM}{'─' * 142}{Colors.RESET}")
+    print(f"{Colors.DIM}{'─' * 158}{Colors.RESET}")
 
     for summary in summaries:
         # Get status for each dimension with colors
@@ -1459,6 +1516,7 @@ def display_sync_summary_table(summaries: List[SurveySyncSummary]):
         js_status = get_status("js")
         trans_status = get_status("translations")
         eos_status = get_status("eos")
+        blocks_status = get_status("blocks")
         flow_status = get_status("flow")
         master_status = get_status("master")
 
@@ -1470,7 +1528,7 @@ def display_sync_summary_table(summaries: List[SurveySyncSummary]):
         )
 
         print(
-            f"{summary.survey_id:<22} {name:<30} {items_status:<16} {edf_status:<16} {js_status:<16} {trans_status:<16} {eos_status:<16} {flow_status:<16} {master_status:<16}"
+            f"{summary.survey_id:<22} {name:<30} {items_status:<16} {edf_status:<16} {js_status:<16} {trans_status:<16} {eos_status:<16} {blocks_status:<16} {flow_status:<16} {master_status:<16}"
         )
 
     print(
@@ -2027,7 +2085,7 @@ def stage_dimension(
 
     Args:
         survey_id: Survey ID
-        dimension: Dimension name (items, edf, js, translations, eos, flow, master)
+        dimension: Dimension name (items, edf, js, translations, eos, blocks, flow, master)
         scope: Optional scope filter
 
     Returns:
@@ -2075,6 +2133,13 @@ def stage_dimension(
                 interactive=interactive,
                 allow_shared=allow_eos_shared_edit,
                 allow_destructive=allow_eos_destructive,
+            )
+
+        if dimension == "blocks":
+            return blocks_dimension.stage(
+                survey_id,
+                allow_drift=allow_drift,
+                interactive=interactive,
             )
 
         if dimension == "flow":
@@ -2127,7 +2192,7 @@ def sync_dimension(
 
     Args:
         survey_id: Survey ID
-        dimension: Dimension name (items, edf, js, translations, eos, flow, master)
+        dimension: Dimension name (items, edf, js, translations, eos, blocks, flow, master)
         interactive: Whether to prompt interactively
         force_live: Force push despite live responses
         force_preview: Suppress preview-only response warnings
@@ -2151,6 +2216,7 @@ def sync_dimension(
             JsPendingPayload,
             TranslationsPendingPayload,
             EosPendingPayload,
+            BlocksPendingPayload,
             FlowPendingPayload,
             load_pending,
         )
@@ -2175,6 +2241,8 @@ def sync_dimension(
             return bool(list(payload.qids or []) or list(payload.metadata_keys or []))
         if dimension == "eos" and isinstance(payload, EosPendingPayload):
             return bool(list(payload.operations or []))
+        if dimension == "blocks" and isinstance(payload, BlocksPendingPayload):
+            return bool(list(payload.block_ids or []) or list(payload.changes or []))
         if dimension == "flow" and isinstance(payload, FlowPendingPayload):
             return bool(list(payload.changes or []))
 
@@ -2224,6 +2292,13 @@ def sync_dimension(
         try:
             has_changes_to_apply = bool(
                 detect_dimension_changes(survey_id, "master").has_changes
+            )
+        except Exception:
+            has_changes_to_apply = False
+    if not has_changes_to_apply and dimension == "blocks":
+        try:
+            has_changes_to_apply = bool(
+                blocks_dimension.detect_changes(survey_id).has_changes
             )
         except Exception:
             has_changes_to_apply = False
@@ -2293,6 +2368,17 @@ def sync_dimension(
                 skip_publish=skip_publish,
                 allow_shared=allow_eos_shared_edit,
                 allow_destructive=allow_eos_destructive,
+            )
+
+        elif dimension == "blocks":
+            ok = blocks_dimension.push(
+                survey_id,
+                interactive=interactive,
+                force_live=force_live,
+                force_preview=force_preview,
+                auto_yes=auto_yes,
+                allow_drift=allow_drift,
+                skip_publish=skip_publish,
             )
 
         elif dimension == "flow":
@@ -2496,6 +2582,10 @@ def _summarize_pending_record(dimension: str, pending) -> str:
     if dimension == "eos":
         count = len(payload.operations) if getattr(payload, "operations", None) else 0
         return f"staged: {count} operation(s)"
+
+    if dimension == "blocks":
+        count = len(payload.block_ids) if getattr(payload, "block_ids", None) else 0
+        return f"staged: {count} block(s)"
 
     if dimension == "flow":
         count = len(payload.changes) if getattr(payload, "changes", None) else 0
@@ -2768,6 +2858,10 @@ def _detect_unstaged_eos(survey_id: str) -> DimensionChanges:
     return eos_dimension.detect_unstaged_changes(survey_id)
 
 
+def _detect_unstaged_blocks(survey_id: str) -> DimensionChanges:
+    return blocks_dimension.detect_changes(survey_id)
+
+
 def _detect_unstaged_flow(survey_id: str) -> DimensionChanges:
     return flow_dimension.detect_changes(survey_id)
 
@@ -2793,6 +2887,7 @@ def _detect_unstaged_changes(
         "js": _detect_unstaged_js(survey_id, scope=scope),
         "translations": _detect_unstaged_translations(survey_id, scope=scope),
         "eos": _detect_unstaged_eos(survey_id),
+        "blocks": _detect_unstaged_blocks(survey_id),
         "flow": _detect_unstaged_flow(survey_id),
         "master": master_info,
     }
@@ -2840,17 +2935,19 @@ def _display_survey_overview(
         f"{'JS':<{col_dim}} "
         f"{'Trans':<{col_dim}} "
         f"{'EOS':<{col_dim}} "
+        f"{'Blocks':<{col_dim}} "
         f"{'Flow':<{col_dim}} "
         f"{'Master':<{col_dim}}"
         f"{Colors.RESET}"
     )
-    separator = f"{Colors.DIM}{'─' * (col_dim * 7 + 6)}{Colors.RESET}"
+    separator = f"{Colors.DIM}{'─' * (col_dim * 8 + 7)}{Colors.RESET}"
     row = (
         f"{_pad_to_width(_format_status(unstaged['items']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['edf']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['js']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['translations']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['eos']), col_dim)} "
+        f"{_pad_to_width(_format_status(unstaged.get('blocks', DimensionChanges(dimension='blocks', has_changes=False, change_summary='No changes', affected_qids=set(), status_kind='none', edit_count=0))), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['flow']), col_dim)} "
         f"{_pad_to_width(_format_status(unstaged['master']), col_dim)}"
     )
@@ -3092,13 +3189,14 @@ def _preview_staged_changes(
             from .config import resolve_root
             from .dimensions.js_preview import compare_js_pair
             from .qualtrics_client import find_cached_survey_file
+            from .workspace_paths import survey_js_core_dir
 
             if not isinstance(getattr(record, "payload", None), JsPendingPayload):
                 print(f"{Colors.DIM}No staged JS changes to preview.{Colors.RESET}")
                 continue
 
-            core_dir = (
-                (resolve_root(required=False) or Path.cwd()) / "survey_js" / "core"
+            core_dir = survey_js_core_dir(
+                root=resolve_root(required=False) or Path.cwd()
             ).resolve()
             cache_path = find_cached_survey_file(survey_id, in_backups=False)
             if not cache_path or not cache_path.exists():
@@ -3148,7 +3246,7 @@ def _preview_staged_changes(
                             "qid": qid,
                             "js_file": js_file,
                             "status": "missing",
-                            "detail": "Unsafe js_file path (outside survey_js/core).",
+                            "detail": f"Unsafe js_file path (outside {core_dir}).",
                             "diff_lines": [],
                         }
                     )
@@ -3915,7 +4013,7 @@ def _sync_dimensions_once(
                 resolve_conflicts_auto(relevant_conflicts)
 
             print(
-                "[sync:conflict] Using safe merge order: items → edf → js → translations → eos → flow → master"
+                "[sync:conflict] Using safe merge order: items → edf → js → translations → eos → blocks → flow → master"
             )
 
         # Detect master-specific conflicts and warnings
@@ -5140,7 +5238,16 @@ def sync_focal_surveys(
                 if "Embedded_Data sheet is missing rows" in error_msg:
                     detail = f"Excel workbook missing embedded data fields. Run: qsync items pull --survey-id {sid}"
                 elif "Mapping CSV missing a column" in error_msg:
-                    detail = "Survey not in JS mapping file. Add column to survey_js/survey_qid_js_map.csv"
+                    from .config import resolve_root, resolve_scoped_dir
+
+                    root = resolve_root(required=False) or Path.cwd()
+                    mapping_csv = (
+                        resolve_scoped_dir("survey_js", root=root)
+                        / "survey_qid_js_map.csv"
+                    )
+                    detail = (
+                        f"Survey not in JS mapping file. Add column to {mapping_csv}"
+                    )
                 else:
                     detail = error_msg[:100]
 
@@ -5729,7 +5836,7 @@ def display_dimension_preview(
 
     Args:
         survey_id: Survey ID
-        dimension: Dimension name (items, edf, js, translations, eos, flow, master)
+        dimension: Dimension name (items, edf, js, translations, eos, blocks, flow, master)
         detailed: Show detailed diffs (default True)
         scope: Optional scope filter for items dimension
 
@@ -6098,6 +6205,17 @@ def display_dimension_preview(
                 print()
 
             return True
+
+        elif dimension == "blocks":
+            try:
+                changes = blocks_dimension.preview(survey_id, verbose=detailed)
+                if not changes:
+                    print(f"{Colors.DIM}No block differences detected.{Colors.RESET}")
+                    return True
+                return True
+            except Exception as e:
+                print(f"{Colors.RED}✗ Error previewing blocks:{Colors.RESET} {e}")
+                return False
 
         elif dimension == "flow":
             # Reuse existing flow preview

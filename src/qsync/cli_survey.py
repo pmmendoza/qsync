@@ -39,10 +39,12 @@ from .qualtrics_client import (
     fetch_survey_version,
     SURVEY_VERSION_DESCRIPTION_MAX_CHARS,
 )
+from .dimensions import blocks as blocks_dimension
 from .publish_description import make_publish_description
 from .push_policy import load_push_context
 from .survey_lock import SurveyLockedError, ensure_unlocked
 from .scope_filter import ScopeFilter
+from .workspace_paths import edf_presets_candidates, resolve_edf_presets_path
 
 
 def _workspace_root() -> Path:
@@ -10393,24 +10395,24 @@ def handle_move_question(args: argparse.Namespace) -> None:
             f"[move-question] ERROR: Unknown question ID(s): {', '.join(missing)}"
         )
 
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise SystemExit("[move-question] ERROR: Survey definition has no Blocks map.")
     try:
-        block_id = _resolve_target_block_id(
-            definition,
+        plan_result = blocks_dimension.apply_move_qids(
+            copy.deepcopy(blocks),
+            qids=qids,
             target_block_id=target_block_id,
             after_qid=after_qid,
             before_qid=before_qid,
-            fallback_qid=qids[0],
-        )
-        insert_index = _resolve_insert_index_with_override(
-            definition,
-            block_id=block_id,
-            after_qid=after_qid,
-            before_qid=before_qid,
             position=position,
-            insert_index_override=insert_index_override,
+            insert_index=insert_index_override,
+            allow_trash_target=False,
         )
     except ValueError as exc:
         raise SystemExit(f"[move-question] ERROR: {exc}") from exc
+    block_id = str(plan_result.get("block_id") or "").strip()
+    insert_index = int(plan_result.get("insert_index") or 0)
 
     print(
         f"[move-question] Plan: move {len(qids)} question(s) into block {block_id} at index {insert_index}."
@@ -10424,51 +10426,24 @@ def handle_move_question(args: argparse.Namespace) -> None:
         prompt=f"Move {len(qids)} question(s) in {survey_id}?",
     )
 
-    adjusted_insert_index: int | None = None
-    if insert_index_override is not None:
-        adjusted_insert_index = _adjust_insert_index_after_qid_removal(
-            definition,
-            block_id=block_id,
-            insert_index=insert_index_override,
-            qids_to_remove=qids,
-        )
-
-    touched_blocks = _remove_qids_from_all_blocks(definition, qids)
-    if insert_index_override is None:
-        insert_index = _resolve_insert_index_with_override(
-            definition,
-            block_id=block_id,
+    try:
+        apply_result = blocks_dimension.apply_move_qids(
+            blocks,
+            qids=qids,
+            target_block_id=target_block_id,
             after_qid=after_qid,
             before_qid=before_qid,
             position=position,
-            insert_index_override=None,
+            insert_index=insert_index_override,
+            allow_trash_target=False,
         )
-    else:
-        block_map = definition.get("Blocks")
-        if not isinstance(block_map, dict):
-            raise SystemExit("[move-question] ERROR: Survey definition has no Blocks map.")
-        block_payload = block_map.get(block_id)
-        if not isinstance(block_payload, dict):
-            raise SystemExit(f"[move-question] ERROR: Block {block_id} was not found.")
-        elements = (
-            block_payload.get("BlockElements")
-            if isinstance(block_payload.get("BlockElements"), list)
-            else block_payload.get("Elements")
-        )
-        if not isinstance(elements, list):
-            elements = []
-        insert_index = max(0, min(int(adjusted_insert_index or 0), len(elements)))
-    _insert_question_elements(
-        definition,
-        block_id=block_id,
-        insert_index=insert_index,
-        qids=qids,
-    )
-    touched_blocks.add(block_id)
-
-    blocks = definition.get("Blocks")
-    if not isinstance(blocks, dict):
-        raise SystemExit("[move-question] ERROR: Survey definition has no Blocks map.")
+    except ValueError as exc:
+        raise SystemExit(f"[move-question] ERROR: {exc}") from exc
+    touched_blocks = {
+        str(block).strip()
+        for block in apply_result.get("touched_blocks", [])
+        if str(block).strip()
+    }
     ordered_blocks = [block_id] + sorted(
         [bid for bid in touched_blocks if bid != block_id]
     )
@@ -10569,33 +10544,23 @@ def handle_remove_question(args: argparse.Namespace) -> None:
         raise SystemExit(
             "[remove-question] ERROR: Survey definition has no Blocks map."
         )
-
-    trash_block_ids = [
-        str(block_id).strip()
-        for block_id, block_payload in blocks.items()
-        if isinstance(block_payload, dict)
-        and _is_trash_block(block_payload)
-        and str(block_id).strip()
-    ]
-    trash_block_id = sorted(trash_block_ids)[0] if trash_block_ids else None
-
-    touched_blocks = _remove_qids_from_all_blocks(definition, qids)
-    moved_to_trash = False
-    if trash_block_id:
-        trash_payload = blocks.get(trash_block_id)
-        if not isinstance(trash_payload, dict):
-            raise SystemExit(
-                f"[remove-question] ERROR: Trash block {trash_block_id} is not accessible."
-            )
-        trash_elements, _ = _block_elements_ref(trash_payload)
-        _insert_question_elements(
-            definition,
-            block_id=trash_block_id,
-            insert_index=len(trash_elements),
+    try:
+        plan_result = blocks_dimension.apply_remove_qids(
+            copy.deepcopy(blocks),
             qids=qids,
+            move_to_trash=True,
         )
-        touched_blocks.add(trash_block_id)
-        moved_to_trash = True
+    except ValueError as exc:
+        raise SystemExit(f"[remove-question] ERROR: {exc}") from exc
+    touched_blocks = {
+        str(block).strip()
+        for block in plan_result.get("touched_blocks", [])
+        if str(block).strip()
+    }
+    trash_block_id = (
+        str(plan_result.get("trash_block_id") or "").strip() or None
+    )
+    moved_to_trash = bool(plan_result.get("moved_to_trash"))
     action_label = "move to Trash" if moved_to_trash else "remove from active blocks"
     print(f"[remove-question] Plan: {action_label} for {len(qids)} question(s) in {survey_id}.")
     print(
@@ -10621,6 +10586,24 @@ def handle_remove_question(args: argparse.Namespace) -> None:
         yes=yes,
         prompt=f"Delete {len(qids)} question(s) in {survey_id}?",
     )
+
+    try:
+        apply_result = blocks_dimension.apply_remove_qids(
+            blocks,
+            qids=qids,
+            move_to_trash=True,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[remove-question] ERROR: {exc}") from exc
+    touched_blocks = {
+        str(block).strip()
+        for block in apply_result.get("touched_blocks", [])
+        if str(block).strip()
+    }
+    trash_block_id = (
+        str(apply_result.get("trash_block_id") or "").strip() or None
+    )
+    moved_to_trash = bool(apply_result.get("moved_to_trash"))
 
     for block_id in sorted(touched_blocks):
         block_payload = blocks.get(block_id)
@@ -10726,23 +10709,23 @@ def handle_add_page_break(args: argparse.Namespace) -> None:
     )
 
     definition = fetch_survey_definition(base_url, headers, survey_id)
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise SystemExit("[add-page-break] ERROR: Survey definition has no Blocks map.")
     try:
-        block_id = _resolve_target_block_id(
-            definition,
+        plan_result = blocks_dimension.apply_add_page_break(
+            copy.deepcopy(blocks),
             target_block_id=target_block_id,
             after_qid=after_qid,
             before_qid=before_qid,
-        )
-        insert_index = _resolve_insert_index_with_override(
-            definition,
-            block_id=block_id,
-            after_qid=after_qid,
-            before_qid=before_qid,
             position=position,
-            insert_index_override=insert_index_override,
+            insert_index=insert_index_override,
+            allow_trash_target=False,
         )
     except ValueError as exc:
         raise SystemExit(f"[add-page-break] ERROR: {exc}") from exc
+    block_id = str(plan_result.get("block_id") or "").strip()
+    insert_index = int(plan_result.get("insert_index") or 0)
 
     print(
         f"[add-page-break] Plan: insert page break in block {block_id} at index {insert_index}."
@@ -10756,15 +10739,20 @@ def handle_add_page_break(args: argparse.Namespace) -> None:
         prompt=f"Insert page break in {survey_id}?",
     )
 
-    _insert_block_elements(
-        definition,
-        block_id=block_id,
-        insert_index=insert_index,
-        elements_to_insert=[{"Type": "Page Break"}],
-    )
-    blocks = definition.get("Blocks")
-    if not isinstance(blocks, dict):
-        raise SystemExit("[add-page-break] ERROR: Survey definition has no Blocks map.")
+    try:
+        apply_result = blocks_dimension.apply_add_page_break(
+            blocks,
+            target_block_id=target_block_id,
+            after_qid=after_qid,
+            before_qid=before_qid,
+            position=position,
+            insert_index=insert_index_override,
+            allow_trash_target=False,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[add-page-break] ERROR: {exc}") from exc
+    block_id = str(apply_result.get("block_id") or "").strip() or block_id
+    insert_index = int(apply_result.get("insert_index") or insert_index)
     block_payload = blocks.get(block_id)
     if not isinstance(block_payload, dict):
         raise SystemExit(f"[add-page-break] ERROR: Block {block_id} was not found.")
@@ -10841,19 +10829,21 @@ def handle_remove_page_break(args: argparse.Namespace) -> None:
     )
 
     definition = fetch_survey_definition(base_url, headers, survey_id)
+    blocks = definition.get("Blocks")
+    if not isinstance(blocks, dict):
+        raise SystemExit(
+            "[remove-page-break] ERROR: Survey definition has no Blocks map."
+        )
     try:
-        block_id = _resolve_target_block_id(
-            definition,
+        plan_result = blocks_dimension.apply_remove_page_break(
+            copy.deepcopy(blocks),
             target_block_id=target_block_id,
-            after_qid=None,
-            before_qid=None,
+            element_indices=element_indices,
+            allow_trash_target=False,
         )
     except ValueError as exc:
         raise SystemExit(f"[remove-page-break] ERROR: {exc}") from exc
-    if block_id != target_block_id:
-        raise SystemExit(
-            f"[remove-page-break] ERROR: resolved block {block_id} does not match requested {target_block_id}."
-        )
+    block_id = str(plan_result.get("block_id") or "").strip() or target_block_id
 
     print(
         "[remove-page-break] Plan: remove page break element(s) at "
@@ -10869,19 +10859,16 @@ def handle_remove_page_break(args: argparse.Namespace) -> None:
     )
 
     try:
-        removed = _remove_page_breaks_from_block(
-            definition,
-            block_id=block_id,
+        apply_result = blocks_dimension.apply_remove_page_break(
+            blocks,
+            target_block_id=target_block_id,
             element_indices=element_indices,
+            allow_trash_target=False,
         )
     except ValueError as exc:
         raise SystemExit(f"[remove-page-break] ERROR: {exc}") from exc
-
-    blocks = definition.get("Blocks")
-    if not isinstance(blocks, dict):
-        raise SystemExit(
-            "[remove-page-break] ERROR: Survey definition has no Blocks map."
-        )
+    removed = int(apply_result.get("removed") or 0)
+    block_id = str(apply_result.get("block_id") or "").strip() or block_id
     block_payload = blocks.get(block_id)
     if not isinstance(block_payload, dict):
         raise SystemExit(f"[remove-page-break] ERROR: Block {block_id} was not found.")
@@ -11292,7 +11279,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
         survey_id: str,
     ) -> dict[str, dict[str, str]]:
         root = resolve_root(required=False) or Path.cwd()
-        preset_path = root / "surveys" / "edf_presets.json"
+        preset_path = resolve_edf_presets_path(root=root)
         if not preset_path.exists():
             return {}
         try:
@@ -11328,9 +11315,13 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                 info("[qsync:export-translation]", f"Survey {survey_id}:")
             presets = _load_edf_presets_for_survey(str(survey_id))
             if not presets:
+                root = resolve_root(required=False) or Path.cwd()
+                candidates = ", ".join(
+                    str(path) for path in edf_presets_candidates(root=root)
+                )
                 info(
                     "[qsync:export-translation]",
-                    "No EDF presets found. Add surveys/edf_presets.json to define them.",
+                    f"No EDF presets found. Add one of: {candidates}",
                 )
             else:
                 info("[qsync:export-translation]", "Available EDF presets:")
@@ -11501,7 +11492,11 @@ def handle_export_translation(args: argparse.Namespace) -> None:
         if edf_preset_names:
             presets = _load_edf_presets_for_survey(str(survey_id))
             if not presets:
-                msg = "No EDF presets found. Add surveys/edf_presets.json to define them."
+                root = resolve_root(required=False) or Path.cwd()
+                candidates = ", ".join(
+                    str(path) for path in edf_presets_candidates(root=root)
+                )
+                msg = f"No EDF presets found. Add one of: {candidates}"
                 error("[qsync:export-translation]", f"{survey_id}: {msg}")
                 failures.append((survey_id, msg))
                 continue
@@ -11684,7 +11679,7 @@ def _add_export_translation_args(parser: argparse.ArgumentParser) -> None:
         "--edf-preset",
         action="append",
         dest="edf_preset",
-        help="Named EDF preset from surveys/edf_presets.json (repeatable).",
+        help="Named EDF preset from workspace EDF preset file (repeatable).",
     )
     parser.add_argument(
         "--list-edf-presets",

@@ -580,6 +580,33 @@ def _workspace_dirs_for_onboard_hint(args: argparse.Namespace) -> list[str]:
     return ["surveys", "excel", "survey_js"]
 
 
+def _workspace_paths_for_onboard_hint(args: argparse.Namespace, *, root: Path) -> list[Path]:
+    """Resolve required workspace paths for hint checks in a layout-aware way."""
+
+    required = _workspace_dirs_for_onboard_hint(args)
+    if not required:
+        return []
+
+    known_surfaces = {"surveys", "excel", "survey_js", "contents", "export", "responses", "tmp"}
+    try:
+        from .config import resolve_scoped_dir
+    except Exception:
+        resolve_scoped_dir = None  # type: ignore[assignment]
+
+    paths: list[Path] = []
+    for dirname in required:
+        if resolve_scoped_dir and dirname in known_surfaces:
+            try:
+                # Workspace existence checks should be stable regardless of
+                # the currently selected account.
+                paths.append(resolve_scoped_dir(dirname, root=root, account="default"))
+                continue
+            except Exception:
+                pass
+        paths.append((root / dirname).resolve())
+    return paths
+
+
 def _parse_extras_args(raw_extras: list[str] | None) -> list[str]:
     extras: list[str] = []
     if not raw_extras:
@@ -1142,9 +1169,11 @@ _HELP_TOPICS: dict[str, tuple[str, str]] = {
                 "- qsync items preview|stage|push --survey-id SV_...",
                 "- qsync js    preview|stage|push --survey-id SV_...",
                 "- qsync translations preview|stage|push --survey-id SV_...",
+                "- qsync blocks preview|stage|push --survey-id SV_...",
+                "- qsync flow   preview|stage|push --survey-id SV_...",
                 "",
                 "Notes:",
-                "- Use --dimensions items,js,translations to narrow sync work.",
+                "- Use --dimensions items,js,translations,blocks,flow to narrow sync work.",
                 "- Non-interactive runs (--yes / CI) apply extra safety gates.",
                 "- If you see drift warnings, run the suggested pull/repair command before pushing.",
                 "- For partner accounts: use --account <name> (or `qsync account use <name>`).",
@@ -1856,7 +1885,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
     parser.add_argument(
         "--root",
         type=Path,
-        help="Workspace root directory (contains surveys/, excel/, survey_js/, etc.)",
+        help="Workspace root directory (legacy: surveys/, excel/, survey_js/; account-root: accounts/<name>/...)",
     )
     parser.add_argument(
         "--env-path",
@@ -2546,7 +2575,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--dimensions",
         help=(
             "Comma-separated dimensions to sync "
-            "(default: auto-detect; valid: items, edf, js, translations, eos, flow, master)"
+            "(default: auto-detect; valid: items, edf, js, translations, eos, blocks, flow, master)"
         ),
     )
     p_sync.add_argument(
@@ -3200,6 +3229,208 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         help="Skip publishing the survey after pushing flow updates",
     )
 
+    # blocks command group
+    p_blocks = subparsers.add_parser(
+        "blocks",
+        help="Manage survey block internals (question/page-break order inside blocks)",
+    )
+    blocks_subparsers = p_blocks.add_subparsers(dest="blocks_command", required=True)
+
+    def _add_blocks_common_args(
+        parser: argparse.ArgumentParser,
+        *,
+        survey_id_action: str | None = None,
+        survey_id_help: str | None = None,
+    ) -> None:
+        survey_kwargs: dict[str, object] = {}
+        if survey_id_action:
+            survey_kwargs["action"] = survey_id_action
+        parser.add_argument(
+            "--survey-id",
+            dest="survey_id",
+            help=survey_id_help
+            or "Target survey ID (omit to select interactively)",
+            **survey_kwargs,
+        )
+        parser.add_argument(
+            "--yes",
+            action="store_true",
+            help="Skip interactive confirmations.",
+        )
+
+    p_blocks_pull = blocks_subparsers.add_parser(
+        "pull",
+        help="Pull survey blocks from Qualtrics and save as blocks.yaml",
+    )
+    _add_blocks_common_args(
+        p_blocks_pull,
+        survey_id_action="append",
+        survey_id_help=(
+            "Target survey ID(s) (repeatable/comma-separated; omit to select interactively)"
+        ),
+    )
+    p_blocks_pull.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing blocks.yaml even if it has local changes",
+    )
+    p_blocks_pull.add_argument(
+        "--all-focal",
+        action="store_true",
+        help="Pull all focal surveys without prompts.",
+    )
+
+    p_blocks_preview = blocks_subparsers.add_parser(
+        "preview",
+        help="Preview differences between local blocks.yaml and baseline",
+    )
+    _add_blocks_common_args(p_blocks_preview)
+    p_blocks_preview.add_argument(
+        "--detailed",
+        "--verbose",
+        action="store_true",
+        dest="verbose",
+        help="Include detailed per-block before/after element order",
+    )
+
+    p_blocks_stage = blocks_subparsers.add_parser(
+        "stage",
+        help="Stage block changes into pending cache (no API writes)",
+    )
+    _add_blocks_common_args(p_blocks_stage)
+    p_blocks_stage.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="Allow staging even if baseline differs from live API",
+    )
+
+    p_blocks_push = blocks_subparsers.add_parser(
+        "push",
+        help="Push staged block changes to Qualtrics",
+    )
+    _add_blocks_common_args(p_blocks_push)
+    p_blocks_push.add_argument(
+        "--force-live",
+        action="store_true",
+        help="Allow pushes even if finished responses exist",
+    )
+    p_blocks_push.add_argument(
+        "--force-preview",
+        action="store_true",
+        help="Force push to preview database even with responses",
+    )
+    p_blocks_push.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="Proceed even if baseline differs from the live API",
+    )
+    p_blocks_push.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Skip publishing the survey after pushing block updates",
+    )
+
+    p_blocks_move_qid = blocks_subparsers.add_parser(
+        "move-qid",
+        help="Move one or more QIDs within/across blocks in local blocks.yaml",
+    )
+    _add_blocks_common_args(p_blocks_move_qid)
+    p_blocks_move_qid.add_argument(
+        "--question-id",
+        action="append",
+        dest="question_id",
+        required=True,
+        help="Question ID(s) to move (repeatable/comma-separated)",
+    )
+    p_blocks_move_qid.add_argument(
+        "--target-block-id",
+        help="Target block ID. If omitted, inferred from anchors/fallback.",
+    )
+    p_blocks_move_qid.add_argument(
+        "--after-qid",
+        help="Insert after this QID (cannot be combined with --before-qid/--insert-index)",
+    )
+    p_blocks_move_qid.add_argument(
+        "--before-qid",
+        help="Insert before this QID (cannot be combined with --after-qid/--insert-index)",
+    )
+    p_blocks_move_qid.add_argument(
+        "--insert-index",
+        type=int,
+        help="0-based insertion index inside target block",
+    )
+    p_blocks_move_qid.add_argument(
+        "--position",
+        choices=["append", "prepend"],
+        default="append",
+        help="Fallback position when no anchor/index is provided (default: append)",
+    )
+
+    p_blocks_add_break = blocks_subparsers.add_parser(
+        "add-page-break",
+        help="Insert a page break in local blocks.yaml",
+    )
+    _add_blocks_common_args(p_blocks_add_break)
+    p_blocks_add_break.add_argument(
+        "--target-block-id",
+        help="Target block ID. If omitted, inferred from anchors/fallback.",
+    )
+    p_blocks_add_break.add_argument(
+        "--after-qid",
+        help="Insert after this QID (cannot be combined with --before-qid/--insert-index)",
+    )
+    p_blocks_add_break.add_argument(
+        "--before-qid",
+        help="Insert before this QID (cannot be combined with --after-qid/--insert-index)",
+    )
+    p_blocks_add_break.add_argument(
+        "--insert-index",
+        type=int,
+        help="0-based insertion index inside target block",
+    )
+    p_blocks_add_break.add_argument(
+        "--position",
+        choices=["append", "prepend"],
+        default="append",
+        help="Fallback position when no anchor/index is provided (default: append)",
+    )
+
+    p_blocks_remove_break = blocks_subparsers.add_parser(
+        "remove-page-break",
+        help="Remove one or more page breaks from local blocks.yaml",
+    )
+    _add_blocks_common_args(p_blocks_remove_break)
+    p_blocks_remove_break.add_argument(
+        "--target-block-id",
+        required=True,
+        help="Target block ID containing the page break element(s)",
+    )
+    p_blocks_remove_break.add_argument(
+        "--element-index",
+        action="append",
+        dest="element_index",
+        required=True,
+        help="Block element index to remove (repeatable)",
+    )
+
+    p_blocks_remove_qid = blocks_subparsers.add_parser(
+        "remove-qid",
+        help="Remove QID(s) from active blocks (and move to Trash by default) in local blocks.yaml",
+    )
+    _add_blocks_common_args(p_blocks_remove_qid)
+    p_blocks_remove_qid.add_argument(
+        "--question-id",
+        action="append",
+        dest="question_id",
+        required=True,
+        help="Question ID(s) to remove (repeatable/comma-separated)",
+    )
+    p_blocks_remove_qid.add_argument(
+        "--detach-only",
+        action="store_true",
+        help="Do not move removed QIDs to Trash; only detach from active blocks",
+    )
+
     # translations command group
     p_translations = subparsers.add_parser(
         "translations",
@@ -3645,6 +3876,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "items",
             "translations",
             "flow",
+            "blocks",
             "js",
             "eos",
             # Utilities
@@ -3669,6 +3901,19 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             "edit",
             "inspect",
             "repair-edf",
+        ],
+    )
+    reorder_subparser_choices(
+        blocks_subparsers,
+        [
+            "pull",
+            "preview",
+            "stage",
+            "push",
+            "move-qid",
+            "add-page-break",
+            "remove-page-break",
+            "remove-qid",
         ],
     )
     reorder_subparser_choices(
@@ -3775,10 +4020,10 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
 
             if _should_offer_workspace_onboard_hint(args):
                 root_hint = resolve_root(required=False) or Path.cwd()
-                required_dirs = _workspace_dirs_for_onboard_hint(args)
-                missing_workspace = any(
-                    not (root_hint / name).exists() for name in required_dirs
+                required_paths = _workspace_paths_for_onboard_hint(
+                    args, root=root_hint
                 )
+                missing_workspace = any(not path.exists() for path in required_paths)
                 if missing_workspace:
                     from .interactive_menu import confirm, is_interactive
 
@@ -3825,9 +4070,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 resolve_env_path,
                 resolve_root,
                 resolve_scoped_dir,
+                resolve_workspace_layout,
             )
             from .api_push import send_api_request
             from .interactive_menu import QUESTIONARY_AVAILABLE, should_use_questionary
+            from .workspace_paths import mapping_csv_candidates
 
             root = resolve_root(required=False) or ROOT
             account = (getattr(args, "account", None) or "").strip() or None
@@ -3839,13 +4086,20 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 env_path = resolve_env_path(root=root) or ENV_PATH
             warnings: list[str] = []
             ok = True
-            surveys_dir_base = root / "surveys"
-            excel_dir_base = root / "excel"
-            survey_js_dir_base = root / "survey_js"
+            workspace_layout = resolve_workspace_layout(root=root)
 
             surveys_dir = resolve_scoped_dir("surveys", root=root, account=account)
             excel_dir = resolve_scoped_dir("excel", root=root, account=account)
             survey_js_dir = resolve_scoped_dir("survey_js", root=root, account=account)
+            surveys_dir_default = resolve_scoped_dir(
+                "surveys", root=root, account="default"
+            )
+            excel_dir_default = resolve_scoped_dir(
+                "excel", root=root, account="default"
+            )
+            survey_js_dir_default = resolve_scoped_dir(
+                "survey_js", root=root, account="default"
+            )
 
             inventory_csv = surveys_dir / "inventory.csv"
             legacy_inventory_csv = surveys_dir / "qualtrics_surveys.csv"
@@ -3859,15 +4113,21 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 )
             )
 
-            if not surveys_dir_base.exists():
+            if not surveys_dir_default.exists():
                 ok = False
-                warnings.append("surveys/ directory not found under root")
-            if not excel_dir_base.exists():
+                warnings.append(
+                    f"Workspace surveys directory not found: {surveys_dir_default}"
+                )
+            if not excel_dir_default.exists():
                 ok = False
-                warnings.append("excel/ directory not found under root")
-            if not survey_js_dir_base.exists():
+                warnings.append(
+                    f"Workspace excel directory not found: {excel_dir_default}"
+                )
+            if not survey_js_dir_default.exists():
                 ok = False
-                warnings.append("survey_js/ directory not found under root")
+                warnings.append(
+                    f"Workspace survey_js directory not found: {survey_js_dir_default}"
+                )
             if not inventory_resolved.exists():
                 ok = False
                 warnings.append(
@@ -3882,18 +4142,20 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 )
 
             mapping_override = os.environ.get("QSYNC_MAPPING_CSV")
-            mapping_workspace_surveys = (
-                root / "surveys" / "qualtrics_api_key_mapping.csv"
-            )
-            mapping_workspace_appendices = (
-                root / "appendices" / "qualtrics_api_key_mapping.csv"
-            )
+            mapping_candidates = mapping_csv_candidates(root=root)
+            mapping_workspace_surveys = mapping_candidates[0]
+            mapping_workspace_account_default = mapping_candidates[1]
+            mapping_workspace_appendices = mapping_candidates[2]
             if mapping_override:
                 warnings.append(
                     f"Survey Master mapping override: QSYNC_MAPPING_CSV={mapping_override}"
                 )
             elif mapping_workspace_surveys.exists():
                 pass
+            elif mapping_workspace_account_default.exists():
+                warnings.append(
+                    "Survey Master mapping file found under accounts/default (preferred legacy-shared path remains surveys/qualtrics_api_key_mapping.csv)"
+                )
             elif mapping_workspace_appendices.exists():
                 warnings.append(
                     "Survey Master mapping file found under appendices/ (preferred: surveys/qualtrics_api_key_mapping.csv)"
@@ -3999,12 +4261,16 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     "ok": ok,
                     "cwd": str(cwd) if cwd else None,
                     "root": str(root),
+                    "workspace_layout": workspace_layout,
                     "account": account,
                     "env_path": str(env_path) if env_path else None,
                     "env_exists": bool(env_path and env_path.exists()),
                     "surveys_dir": str(surveys_dir),
                     "excel_dir": str(excel_dir),
                     "survey_js_dir": str(survey_js_dir),
+                    "surveys_dir_default": str(surveys_dir_default),
+                    "excel_dir_default": str(excel_dir_default),
+                    "survey_js_dir_default": str(survey_js_dir_default),
                     "inventory_csv": str(inventory_resolved),
                     "inventory_csv_canonical": str(inventory_csv),
                     "inventory_csv_legacy": str(legacy_inventory_csv),
@@ -4040,6 +4306,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 print("[qsync:doctor]")
                 print(f"  cwd:      {cwd if cwd else '(not available)'}")
                 print(f"  root:     {root}")
+                print(f"  layout:   {workspace_layout}")
                 if account:
                     print(f"  account:  {account}")
                 print(f"  env_path: {env_path if env_path else '(not resolved)'}")
@@ -4048,6 +4315,9 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                 print(f"  surveys_dir: {surveys_dir}")
                 print(f"  excel_dir:   {excel_dir}")
                 print(f"  survey_js:   {survey_js_dir}")
+                print(f"  workspace_surveys(default):   {surveys_dir_default}")
+                print(f"  workspace_excel(default):     {excel_dir_default}")
+                print(f"  workspace_survey_js(default): {survey_js_dir_default}")
                 print(f"  inventory:   {inventory_resolved}")
                 print(
                     f"  tty:         stdin={sys.stdin.isatty()} stdout={sys.stdout.isatty()}"
@@ -4811,6 +5081,235 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
             error("[qsync:eos]", f"Unknown eos command: {args.eos_command}")
             raise SystemExit(2)
 
+        # blocks command dispatcher
+        if args.command == "blocks":
+            from .terminal_output import error, header, info, is_interactive, success, warn
+            from .dimensions import blocks as blocks_dimension
+            from .survey_inventory import get_focal_survey_ids
+
+            def _normalize_qids(raw_values) -> list[str]:
+                if not raw_values:
+                    return []
+                out: list[str] = []
+                for raw in raw_values:
+                    for part in str(raw).replace(",", " ").split():
+                        qid = part.strip()
+                        if qid:
+                            out.append(qid)
+                # stable de-dupe
+                return list(dict.fromkeys(out))
+
+            def _normalize_ints(raw_values) -> list[int]:
+                if not raw_values:
+                    return []
+                out: list[int] = []
+                for raw in raw_values:
+                    for part in str(raw).replace(",", " ").split():
+                        token = part.strip()
+                        if not token:
+                            continue
+                        try:
+                            out.append(int(token))
+                        except ValueError as exc:
+                            raise SystemExit(
+                                f"[qsync:blocks] Invalid integer value: {token}"
+                            ) from exc
+                return list(dict.fromkeys(out))
+
+            yes = bool(getattr(args, "yes", False))
+            interactive = is_interactive(args)
+
+            if args.blocks_command == "pull":
+                use_all_focal = bool(getattr(args, "all_focal", False))
+                if args.survey_id and use_all_focal:
+                    raise SystemExit(
+                        "[qsync:blocks] ERROR: --all-focal cannot be used with --survey-id"
+                    )
+                survey_ids = get_focal_survey_ids() if use_all_focal else []
+                if use_all_focal and not survey_ids:
+                    raise SystemExit("[qsync:blocks] No focal surveys found in inventory.")
+                if not survey_ids:
+                    survey_ids = _prompt_for_survey_ids_if_needed(
+                        getattr(args, "survey_id", None),
+                        allow_all_surveys=True,
+                    )
+                header("[qsync:blocks]", "Pulling survey blocks...")
+                failures = 0
+                exit_code = 1
+                for survey_id in survey_ids:
+                    try:
+                        yaml_path = blocks_dimension.pull(
+                            survey_id,
+                            force=bool(getattr(args, "force", False)),
+                        )
+                        success(
+                            "[qsync:blocks]",
+                            f"{survey_id}: pulled blocks to {yaml_path}",
+                        )
+                    except FileExistsError as e:
+                        failures += 1
+                        warn("[qsync:blocks]", f"{survey_id}: {e}")
+                    except Exception as e:
+                        failures += 1
+                        exit_code = 2
+                        error("[qsync:blocks]", f"{survey_id}: ERROR: {e}")
+                if failures:
+                    raise SystemExit(exit_code)
+                return
+
+            survey_id = _prompt_for_survey_id_if_needed(
+                getattr(args, "survey_id", None),
+                allow_all_surveys=False,
+            )
+
+            if args.blocks_command == "preview":
+                header("[qsync:blocks]", "Previewing block changes...")
+                try:
+                    changes = blocks_dimension.preview(
+                        survey_id,
+                        verbose=bool(getattr(args, "verbose", False)),
+                    )
+                    if not changes:
+                        info("[qsync:blocks]", "No changes to preview")
+                except Exception as e:
+                    error("[qsync:blocks]", f"ERROR: {e}")
+                    raise SystemExit(2)
+                return
+
+            if args.blocks_command == "stage":
+                header("[qsync:blocks]", "Staging block changes...")
+                try:
+                    staged = blocks_dimension.stage(
+                        survey_id,
+                        allow_drift=bool(getattr(args, "allow_drift", False)),
+                        interactive=interactive,
+                    )
+                    if staged:
+                        success("[qsync:blocks]", "Block changes staged successfully")
+                    else:
+                        warn("[qsync:blocks]", "Staging failed or no changes to stage")
+                        raise SystemExit(1)
+                except SystemExit:
+                    raise
+                except Exception as e:
+                    error("[qsync:blocks]", f"ERROR: {e}")
+                    raise SystemExit(2)
+                return
+
+            if args.blocks_command == "push":
+                header("[qsync:blocks]", "Pushing staged block changes...")
+                try:
+                    pushed = blocks_dimension.push(
+                        survey_id,
+                        interactive=interactive,
+                        force_live=bool(getattr(args, "force_live", False)),
+                        force_preview=bool(getattr(args, "force_preview", False)),
+                        auto_yes=yes,
+                        allow_drift=bool(getattr(args, "allow_drift", False)),
+                        skip_publish=bool(getattr(args, "no_publish", False)),
+                    )
+                    if pushed:
+                        success("[qsync:blocks]", "Blocks pushed successfully")
+                    else:
+                        warn("[qsync:blocks]", "Push failed")
+                        raise SystemExit(1)
+                except SystemExit:
+                    raise
+                except Exception as e:
+                    error("[qsync:blocks]", f"ERROR: {e}")
+                    raise SystemExit(2)
+                return
+
+            if args.blocks_command == "move-qid":
+                qids = _normalize_qids(getattr(args, "question_id", None))
+                if not qids:
+                    raise SystemExit("[qsync:blocks] ERROR: --question-id is required.")
+                try:
+                    result = blocks_dimension.move_qid(
+                        survey_id,
+                        qids=qids,
+                        target_block_id=(getattr(args, "target_block_id", None) or "").strip() or None,
+                        after_qid=(getattr(args, "after_qid", None) or "").strip() or None,
+                        before_qid=(getattr(args, "before_qid", None) or "").strip() or None,
+                        position=(getattr(args, "position", None) or "append").strip().lower(),
+                        insert_index=getattr(args, "insert_index", None),
+                    )
+                except Exception as e:
+                    error("[qsync:blocks]", f"ERROR: {e}")
+                    raise SystemExit(2)
+                success(
+                    "[qsync:blocks]",
+                    f"Updated local blocks.yaml: moved {len(result['qids'])} QID(s) to {result['block_id']} at index {result['insert_index']}",
+                )
+                return
+
+            if args.blocks_command == "add-page-break":
+                try:
+                    result = blocks_dimension.add_page_break(
+                        survey_id,
+                        target_block_id=(getattr(args, "target_block_id", None) or "").strip() or None,
+                        after_qid=(getattr(args, "after_qid", None) or "").strip() or None,
+                        before_qid=(getattr(args, "before_qid", None) or "").strip() or None,
+                        position=(getattr(args, "position", None) or "append").strip().lower(),
+                        insert_index=getattr(args, "insert_index", None),
+                    )
+                except Exception as e:
+                    error("[qsync:blocks]", f"ERROR: {e}")
+                    raise SystemExit(2)
+                success(
+                    "[qsync:blocks]",
+                    f"Updated local blocks.yaml: inserted page break in {result['block_id']} at index {result['insert_index']}",
+                )
+                return
+
+            if args.blocks_command == "remove-page-break":
+                indices = _normalize_ints(getattr(args, "element_index", None))
+                if not indices:
+                    raise SystemExit(
+                        "[qsync:blocks] ERROR: --element-index is required."
+                    )
+                try:
+                    result = blocks_dimension.remove_page_break(
+                        survey_id,
+                        target_block_id=(getattr(args, "target_block_id", None) or "").strip(),
+                        element_indices=indices,
+                    )
+                except Exception as e:
+                    error("[qsync:blocks]", f"ERROR: {e}")
+                    raise SystemExit(2)
+                success(
+                    "[qsync:blocks]",
+                    f"Updated local blocks.yaml: removed {result['removed']} page break(s) from {result['block_id']}",
+                )
+                return
+
+            if args.blocks_command == "remove-qid":
+                qids = _normalize_qids(getattr(args, "question_id", None))
+                if not qids:
+                    raise SystemExit("[qsync:blocks] ERROR: --question-id is required.")
+                try:
+                    result = blocks_dimension.remove_qid(
+                        survey_id,
+                        qids=qids,
+                        move_to_trash=not bool(getattr(args, "detach_only", False)),
+                    )
+                except Exception as e:
+                    error("[qsync:blocks]", f"ERROR: {e}")
+                    raise SystemExit(2)
+                trash_note = (
+                    f", moved to Trash ({result['trash_block_id']})"
+                    if result.get("moved_to_trash")
+                    else ""
+                )
+                success(
+                    "[qsync:blocks]",
+                    f"Updated local blocks.yaml: removed {len(result['qids'])} QID(s){trash_note}",
+                )
+                return
+
+            error("[qsync:blocks]", f"Unknown blocks command: {args.blocks_command}")
+            raise SystemExit(2)
+
         # flow command dispatcher
         if args.command == "flow":
             from .terminal_output import error, header, info, is_interactive, success, warn
@@ -5454,6 +5953,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
                     "js",
                     "translations",
                     "eos",
+                    "blocks",
                     "flow",
                     "master",
                 }

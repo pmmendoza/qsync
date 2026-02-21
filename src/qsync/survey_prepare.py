@@ -20,6 +20,7 @@ from .survey_inventory import (
     load_cached_inventory_records,
     refresh_inventory,
 )
+from .workspace_paths import survey_js_core_dir
 from .workbook_resolver import WorkbookResolver
 
 
@@ -44,17 +45,17 @@ class PrepareSurveyResult:
 
 
 def ensure_workspace_dirs(root: Path) -> None:
-    for rel in (
-        "surveys",
-        "excel",
-        "survey_js",
-        "survey_js/core",
-        "contents",
-        "logs",
-        "export",
-        "responses",
+    for path in (
+        resolve_scoped_dir("surveys", root=root),
+        resolve_scoped_dir("excel", root=root),
+        resolve_scoped_dir("survey_js", root=root),
+        survey_js_core_dir(root=root),
+        resolve_scoped_dir("contents", root=root),
+        root / "logs",
+        resolve_scoped_dir("export", root=root),
+        resolve_scoped_dir("responses", root=root),
     ):
-        (root / rel).mkdir(parents=True, exist_ok=True)
+        path.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_inventory_exists(
@@ -291,7 +292,7 @@ def hydrate_js_surfaces(
 
     mapping_updates: dict[str, list[str]] = {}
 
-    core_dir = root / "survey_js" / "core"
+    core_dir = survey_js_core_dir(root=root)
     per_survey_dir = resolve_survey_path(
         core_dir,
         survey_id,

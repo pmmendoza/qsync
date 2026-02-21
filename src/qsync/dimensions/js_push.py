@@ -25,6 +25,7 @@ from ..drift_check import enforce_no_drift
 from ..config import resolve_root, resolve_scoped_dir
 from ..push_safeguards import enforce_push_safeguards, SafeguardConfig
 from ..auto_publish import auto_publish_after_push
+from ..workspace_paths import survey_js_core_dir
 
 ROOT = resolve_root(required=False) or Path.cwd()
 DEFAULT_SURVEY_ID = "SV_5AsKyAO5QqswBcq"
@@ -120,6 +121,8 @@ def _apply_local_js_entries(
 ) -> set[str]:
     from ..terminal_output import warn
 
+    root = resolve_root(required=False) or Path.cwd()
+    core_dir = survey_js_core_dir(root=root)
     updated: set[str] = set()
     js_cache: dict[str, str] = {}
     for entry in entries:
@@ -127,7 +130,7 @@ def _apply_local_js_entries(
         qid = (entry.get("qid") or "").strip()
         if not js_file or not qid:
             continue
-        core_path = ROOT / "survey_js" / "core" / js_file
+        core_path = core_dir / js_file
         if not core_path.exists():
             warn("[push-js]", f"Local JS file not found: {core_path}")
             continue

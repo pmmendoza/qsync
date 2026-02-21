@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import difflib
 import json
 import os
 from pathlib import Path
@@ -11,6 +10,7 @@ import re
 from typing import Dict, List, Set, Tuple
 
 from .. import excel_io
+from ..diff_utils import contextual_diff_lines
 from ..markdown_codec import (
     normalize_markdown_for_compare,
     normalize_text,
@@ -361,20 +361,12 @@ def _diff_lines(old_html: str, new_html: str, context: str | None = None) -> Lis
     Returns:
         List of unified diff lines
     """
-    fromfile = "cached"
-    tofile = "excel"
-    if context:
-        fromfile = f"cached ({context})"
-        tofile = f"excel ({context})"
-
-    return list(
-        difflib.unified_diff(
-            (old_html or "").splitlines(),
-            (new_html or "").splitlines(),
-            fromfile=fromfile,
-            tofile=tofile,
-            lineterm="",
-        )
+    return contextual_diff_lines(
+        old_html,
+        new_html,
+        context=context,
+        fromfile_base="cached",
+        tofile_base="excel",
     )
 
 

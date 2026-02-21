@@ -671,6 +671,17 @@
     "format_notes": ""
   },
   {
+    "field_name": "MetaDataTranslationsJSON",
+    "domain": "survey_options",
+    "object_path": "result.MetaDataTranslations",
+    "description": "Survey-level metadata translations JSON object",
+    "survey_master": "write",
+    "order": "",
+    "data_type": "object",
+    "allowed_values": "",
+    "format_notes": "JSON object (e.g. {\"SurveyTitle\":{\"FR\":\"...\"}})"
+  },
+  {
     "field_name": "SurveyExpiration",
     "domain": "survey_options",
     "object_path": "result.SurveyExpiration",

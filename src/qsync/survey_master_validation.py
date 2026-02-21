@@ -8,6 +8,7 @@ Provides extensible validation for field values based on mapping CSV schema:
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
@@ -119,9 +120,19 @@ def _validate_url(value: str, field_info: dict) -> Tuple[bool, Optional[str]]:
 def _validate_object(value: str, field_info: dict) -> Tuple[bool, Optional[str]]:
     """Validate object value (JSON or complex object).
 
-    For now, we allow any non-empty value for objects since they're often
-    serialized JSON or complex structures that are hard to validate.
+    Objects must be valid JSON and should decode to an object/map.
     """
+    if not value:
+        return (True, None)  # Empty is OK (nullable)
+
+    try:
+        decoded = json.loads(value)
+    except Exception:
+        return (False, "Expected valid JSON object text")
+
+    if not isinstance(decoded, dict):
+        return (False, "Expected a JSON object (e.g., {\"key\": \"value\"})")
+
     return (True, None)
 
 

@@ -6,7 +6,7 @@ pending_eos.py) into a single, dimension-aware schema with automatic migration.
 
 Storage: surveys/pending/{dimension}/{survey-id}.json
 
-Where dimension is one of: items, edf, js, translations, eos, flow, master
+Where dimension is one of: items, edf, js, translations, eos, blocks, flow, master
 """
 
 from __future__ import annotations
@@ -23,7 +23,16 @@ from .survey_naming import resolve_survey_path, survey_named_candidate_paths
 
 # NOTE: These values are serialized on disk under surveys/pending/<dimension>/.
 # Keep in sync with call sites and migration logic.
-DimensionType = Literal["items", "edf", "js", "translations", "eos", "flow", "master"]
+DimensionType = Literal[
+    "items",
+    "edf",
+    "js",
+    "translations",
+    "eos",
+    "blocks",
+    "flow",
+    "master",
+]
 
 
 def _now_iso() -> str:
@@ -196,6 +205,33 @@ class FlowPendingPayload:
 
 
 @dataclass
+class BlocksPendingPayload:
+    """Payload for pending block-structure changes."""
+
+    blocks_yaml_path: str
+    baseline_hash: str
+    block_ids: list[str] = field(default_factory=list)
+    changes: list[dict[str, Any]] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BlocksPendingPayload":
+        return cls(
+            blocks_yaml_path=str(data.get("blocks_yaml_path") or ""),
+            baseline_hash=str(data.get("baseline_hash") or ""),
+            block_ids=list(data.get("block_ids") or []),
+            changes=list(data.get("changes") or []),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "blocks_yaml_path": self.blocks_yaml_path,
+            "baseline_hash": self.baseline_hash,
+            "block_ids": list(self.block_ids),
+            "changes": list(self.changes),
+        }
+
+
+@dataclass
 class MasterPendingPayload:
     """Payload for pending Survey Master changes.
 
@@ -233,6 +269,7 @@ class PendingStagedChanges:
         | JsPendingPayload
         | TranslationsPendingPayload
         | EosPendingPayload
+        | BlocksPendingPayload
         | FlowPendingPayload
         | MasterPendingPayload
     )
@@ -257,6 +294,8 @@ class PendingStagedChanges:
             payload = TranslationsPendingPayload.from_dict(payload_data)
         elif dimension == "eos":
             payload = EosPendingPayload.from_dict(payload_data)
+        elif dimension == "blocks":
+            payload = BlocksPendingPayload.from_dict(payload_data)
         elif dimension == "flow":
             payload = FlowPendingPayload.from_dict(payload_data)
         elif dimension == "master":
@@ -321,6 +360,8 @@ def _legacy_pending_paths(survey_id: str, dimension: DimensionType) -> list[Path
         return [surveys_dir / "pending" / "translations" / f"{safe_id}.json"]
     elif dimension == "eos":
         return [surveys_dir / "pending" / "eos" / f"{safe_id}.json"]
+    elif dimension == "blocks":
+        return []
     elif dimension == "flow":
         return []
     elif dimension == "master":
@@ -360,6 +401,9 @@ def _migrate_legacy_pending(
         elif dimension == "eos":
             # Legacy: PendingEosRecord
             payload = EosPendingPayload.from_dict(data)
+        elif dimension == "blocks":
+            # No legacy blocks pending format.
+            continue
         elif dimension == "flow":
             # No legacy flow pending format.
             continue
@@ -493,7 +537,16 @@ def list_pending(survey_id: str) -> dict[DimensionType, PendingStagedChanges]:
     """
     result: dict[DimensionType, PendingStagedChanges] = {}
 
-    for dimension in ["items", "edf", "js", "translations", "eos", "flow", "master"]:
+    for dimension in [
+        "items",
+        "edf",
+        "js",
+        "translations",
+        "eos",
+        "blocks",
+        "flow",
+        "master",
+    ]:
         record = load_pending(survey_id, dimension)  # type: ignore
         if record:
             result[dimension] = record  # type: ignore
