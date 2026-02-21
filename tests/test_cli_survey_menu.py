@@ -163,6 +163,135 @@ def test_survey_menu_workspace_can_set_cache_subfolder(
     assert prefs.get("survey_cache_subdir") == "defs"
 
 
+def test_survey_menu_prepare_uses_selected_named_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    _touch_env_for_restore(monkeypatch)
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("QSYNC_ACCOUNT", "damian")
+
+    (tmp_path / ".env.damian").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=example.qualtrics.com",
+                "X-API-TOKEN=damian-token",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr("qsync.cli_survey.list_surveys", lambda *_args, **_kwargs: [])
+
+    called: dict[str, argparse.Namespace] = {}
+
+    def _capture_prepare(ns: argparse.Namespace) -> None:
+        called["ns"] = ns
+
+    monkeypatch.setattr("qsync.cli_survey.handle_prepare", _capture_prepare)
+
+    steps = iter(
+        [
+            "Workspace & Account — account, API, inventory, prepare",
+            "Prepare surfaces",
+            "Exit",
+        ]
+    )
+
+    monkeypatch.setattr(
+        interactive_menu,
+        "select_from_list",
+        lambda message, choices, instruction=None, default=None: next(steps),
+    )
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert "ns" in called
+    assert getattr(called["ns"], "account", None) == "damian"
+
+
+def test_survey_menu_prepare_after_switch_to_default_passes_default_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync import interactive_menu
+    from qsync.cli_survey import handle_menu
+
+    _touch_env_for_restore(monkeypatch)
+    ensure_qsync_workspace(tmp_path)
+    write_inventory_csv(tmp_path, "id,name,locked\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("QSYNC_ACCOUNT", "damian")
+
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=example.qualtrics.com",
+                "X-API-TOKEN=default-token",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env.damian").write_text(
+        "\n".join(
+            [
+                "QUALTRICS_BASE_URL=example.qualtrics.com",
+                "X-API-TOKEN=damian-token",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("qsync.cli_survey._workspace_root", lambda: tmp_path.resolve())
+    monkeypatch.setattr(interactive_menu, "is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "qsync.cli_survey.get_client_config",
+        lambda env=None: ("example.qualtrics.com", {"X-API-TOKEN": "token"}),
+    )
+    monkeypatch.setattr("qsync.cli_survey.list_surveys", lambda *_args, **_kwargs: [])
+
+    called: dict[str, argparse.Namespace] = {}
+
+    def _capture_prepare(ns: argparse.Namespace) -> None:
+        called["ns"] = ns
+
+    monkeypatch.setattr("qsync.cli_survey.handle_prepare", _capture_prepare)
+
+    steps = iter(
+        [
+            "Workspace & Account — account, API, inventory, prepare",
+            "Switch account",
+            "default",
+            "Workspace & Account — account, API, inventory, prepare",
+            "Prepare surfaces",
+            "Exit",
+        ]
+    )
+
+    monkeypatch.setattr(
+        interactive_menu,
+        "select_from_list",
+        lambda message, choices, instruction=None, default=None: next(steps),
+    )
+
+    handle_menu(argparse.Namespace(tui=False))
+
+    assert "ns" in called
+    assert getattr(called["ns"], "account", None) == "default"
+
+
 def test_survey_menu_copy_cross_account_uses_explicit_default_source_listing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

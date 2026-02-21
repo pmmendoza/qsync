@@ -5,6 +5,7 @@ Survey management CLI commands for qsync.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import csv
 import json
@@ -2069,8 +2070,6 @@ def handle_menu(args: argparse.Namespace) -> None:
             print("[survey-menu] Cleared workspace externally managed override tokens.")
 
     def _menu_prepare() -> None:
-        if not _require_default_account(action="survey prepare"):
-            return
         _run_action(
             handle_prepare,
             argparse.Namespace(
@@ -2083,6 +2082,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                 languages=None,
                 overwrite_js=False,
                 shared_js=False,
+                account=_resolve_menu_account(),
             ),
         )
 
@@ -5004,6 +5004,32 @@ def handle_prepare(args: argparse.Namespace) -> None:
     from .survey_prepare import prepare_workspace, resolve_target_surveys
     from .terminal_output import header, info, success, warn, error
 
+    root = _workspace_root()
+    raw_account = str(getattr(args, "account", "") or "").strip()
+    explicit_default = raw_account.lower() == "default"
+    resolved_account = _resolve_account_from_args(args)
+    account_scope = "default" if explicit_default else resolved_account
+    selected_env = None
+    if explicit_default:
+        selected_env = load_account_env("default", root=root)
+    elif resolved_account:
+        selected_env = load_account_env(resolved_account, root=root)
+
+    @contextlib.contextmanager
+    def _temporary_account_scope(scope: str | None):
+        previous = os.environ.get("QSYNC_ACCOUNT")
+        try:
+            if scope and scope.strip().lower() != "default":
+                os.environ["QSYNC_ACCOUNT"] = scope.strip()
+            else:
+                os.environ.pop("QSYNC_ACCOUNT", None)
+            yield
+        finally:
+            if previous is None:
+                os.environ.pop("QSYNC_ACCOUNT", None)
+            else:
+                os.environ["QSYNC_ACCOUNT"] = previous
+
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     surfaces_raw = (getattr(args, "surfaces", None) or "").strip()
     surfaces = None
@@ -5013,26 +5039,34 @@ def handle_prepare(args: argparse.Namespace) -> None:
 
     languages = _collect_languages_from_args(args)
     try:
-        survey_ids = resolve_target_surveys(
-            survey_id=getattr(args, "survey_id", None),
-            focal=bool(getattr(args, "focal", False)),
-            all_surveys=bool(getattr(args, "all_surveys", False)),
-            interactive=interactive,
-            yes=bool(getattr(args, "yes", False)),
-        )
+        with _temporary_account_scope(account_scope):
+            survey_ids = resolve_target_surveys(
+                survey_id=getattr(args, "survey_id", None),
+                focal=bool(getattr(args, "focal", False)),
+                all_surveys=bool(getattr(args, "all_surveys", False)),
+                interactive=interactive,
+                yes=bool(getattr(args, "yes", False)),
+                root=root,
+                account=account_scope,
+                env=selected_env,
+            )
     except Exception as exc:
         raise SystemExit(f"[qsync:survey-prepare] ERROR: {exc}") from exc
 
     header("[qsync:survey-prepare]", f"Preparing {len(survey_ids)} survey(s)...")
-    results = prepare_workspace(
-        survey_ids=survey_ids,
-        yes=bool(getattr(args, "yes", False)),
-        interactive=interactive and not bool(getattr(args, "yes", False)),
-        overwrite_js=bool(getattr(args, "overwrite_js", False)),
-        shared_js=bool(getattr(args, "shared_js", False)),
-        surfaces=surfaces,
-        languages=languages,
-    )
+    with _temporary_account_scope(account_scope):
+        results = prepare_workspace(
+            survey_ids=survey_ids,
+            yes=bool(getattr(args, "yes", False)),
+            interactive=interactive and not bool(getattr(args, "yes", False)),
+            overwrite_js=bool(getattr(args, "overwrite_js", False)),
+            shared_js=bool(getattr(args, "shared_js", False)),
+            surfaces=surfaces,
+            languages=languages,
+            root=root,
+            account=account_scope,
+            env=selected_env,
+        )
 
     for r in results:
         info(None, f"\nSurvey {r.survey_id}:")

@@ -9,17 +9,17 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .api_push import send_api_request
-from .config import get_client_config, resolve_root, resolve_scoped_dir
+from .config import (
+    get_client_config,
+    resolve_root,
+    resolve_scoped_dir,
+    resolve_survey_cache_dir,
+)
 from .qualtrics_client import load_cached_survey
 from .qualtrics_client import find_cached_survey_file
 from .survey_naming import resolve_survey_path
-from .survey_inventory import (
-    INVENTORY_CSV,
-    LEGACY_SURVEY_CACHE,
-    get_focal_survey_ids,
-    load_cached_inventory_records,
-    refresh_inventory,
-)
+from .survey_inventory import get_focal_survey_ids, load_cached_inventory_records
+from .survey_inventory import refresh_inventory, resolve_inventory_csv_path
 from .workspace_paths import survey_js_core_dir
 from .workbook_resolver import WorkbookResolver
 
@@ -44,16 +44,16 @@ class PrepareSurveyResult:
     js_mapping: PrepareSurfaceResult = field(default_factory=PrepareSurfaceResult)
 
 
-def ensure_workspace_dirs(root: Path) -> None:
+def ensure_workspace_dirs(root: Path, *, account: str | None = None) -> None:
     for path in (
-        resolve_scoped_dir("surveys", root=root),
-        resolve_scoped_dir("excel", root=root),
-        resolve_scoped_dir("survey_js", root=root),
-        survey_js_core_dir(root=root),
-        resolve_scoped_dir("contents", root=root),
+        resolve_scoped_dir("surveys", root=root, account=account),
+        resolve_scoped_dir("excel", root=root, account=account),
+        resolve_scoped_dir("survey_js", root=root, account=account),
+        survey_js_core_dir(root=root, account=account),
+        resolve_scoped_dir("contents", root=root, account=account),
         root / "logs",
-        resolve_scoped_dir("export", root=root),
-        resolve_scoped_dir("responses", root=root),
+        resolve_scoped_dir("export", root=root, account=account),
+        resolve_scoped_dir("responses", root=root, account=account),
     ):
         path.mkdir(parents=True, exist_ok=True)
 
@@ -62,11 +62,14 @@ def ensure_inventory_exists(
     *,
     yes: bool,
     interactive: bool,
+    root: Path,
+    account: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[bool, Path | None]:
     """Ensure surveys/inventory.csv exists (legacy accepted for reads)."""
 
-    if INVENTORY_CSV.exists() or LEGACY_SURVEY_CACHE.exists():
-        resolved = INVENTORY_CSV if INVENTORY_CSV.exists() else LEGACY_SURVEY_CACHE
+    resolved = resolve_inventory_csv_path(required=False, root=root, account=account)
+    if resolved.exists():
         return True, resolved
 
     if not interactive and not yes:
@@ -84,15 +87,18 @@ def ensure_inventory_exists(
         except Exception:
             return False, None
 
-    base_url, headers = get_client_config()
+    base_url, headers = get_client_config(dict(env) if env is not None else None)
     refresh_inventory(
         base_url,
         headers,
         survey_filter=None,
         dry_run=False,
         counts_scope=None,
+        root=root,
+        account=account,
     )
-    return True, INVENTORY_CSV
+    resolved = resolve_inventory_csv_path(required=False, root=root, account=account)
+    return True, resolved
 
 
 def resolve_target_surveys(
@@ -102,7 +108,12 @@ def resolve_target_surveys(
     all_surveys: bool,
     interactive: bool,
     yes: bool,
+    root: Path | None = None,
+    account: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> list[str]:
+    root_path = root or resolve_root(required=False) or Path.cwd()
+
     def _normalize_survey_ids(value: object | None) -> list[str]:
         if value is None:
             return []
@@ -122,7 +133,13 @@ def resolve_target_surveys(
         return explicit_ids
 
     if focal or all_surveys or interactive:
-        ok, _ = ensure_inventory_exists(yes=yes, interactive=interactive)
+        ok, _ = ensure_inventory_exists(
+            yes=yes,
+            interactive=interactive,
+            root=root_path,
+            account=account,
+            env=env,
+        )
         if not ok:
             raise RuntimeError(
                 "Inventory file missing. Run `qsync survey inventory`, pass --survey-id, "
@@ -130,13 +147,13 @@ def resolve_target_surveys(
             )
 
     if focal:
-        ids = get_focal_survey_ids()
+        ids = get_focal_survey_ids(root=root_path, account=account)
         if not ids:
             raise RuntimeError("No focal surveys found in inventory.")
         return ids
 
     if all_surveys:
-        records = load_cached_inventory_records()
+        records = load_cached_inventory_records(root=root_path, account=account)
         ids = sorted(records.keys())
         if not ids:
             raise RuntimeError("No surveys found in inventory.")
@@ -149,7 +166,12 @@ def resolve_target_surveys(
 
     from .survey_inventory import prompt_for_survey_ids
 
-    selected = prompt_for_survey_ids(allow_all_surveys=True, interactive=True)
+    selected = prompt_for_survey_ids(
+        allow_all_surveys=True,
+        interactive=True,
+        root=root_path,
+        account=account,
+    )
     if not selected:
         raise RuntimeError("No surveys selected.")
     return selected
@@ -268,12 +290,19 @@ def hydrate_js_surfaces(
     survey_id: str,
     overwrite_js: bool,
     shared_js: bool,
+    account: str | None = None,
+    surveys_dir: Path | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[PrepareSurfaceResult, dict[str, list[str]]]:
     """Create local JS files and return mapping updates: js_file -> [qid,...]."""
 
     result = PrepareSurfaceResult()
 
-    cache = load_cached_survey(survey_id)
+    cache = load_cached_survey(
+        survey_id,
+        surveys_dir=surveys_dir,
+        env=dict(env) if env is not None else None,
+    )
     payload = cache.payload.get("result") if isinstance(cache.payload, dict) else None
     payload = payload if isinstance(payload, dict) else cache.payload
     survey_name = str(payload.get("SurveyName") or "").strip() or None
@@ -292,7 +321,7 @@ def hydrate_js_surfaces(
 
     mapping_updates: dict[str, list[str]] = {}
 
-    core_dir = survey_js_core_dir(root=root)
+    core_dir = survey_js_core_dir(root=root, account=account)
     per_survey_dir = resolve_survey_path(
         core_dir,
         survey_id,
@@ -412,16 +441,20 @@ def update_js_mapping_csv(
     *,
     root: Path,
     per_survey_updates: dict[str, dict[str, list[str]]],
+    account: str | None = None,
 ) -> PrepareSurfaceResult:
     """Merge JS mapping updates into survey_js/survey_qid_js_map.csv."""
 
     result = PrepareSurfaceResult()
-    mapping_path = resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
+    mapping_path = (
+        resolve_scoped_dir("survey_js", root=root, account=account)
+        / "survey_qid_js_map.csv"
+    )
     mapping_path.parent.mkdir(parents=True, exist_ok=True)
     is_new_file = not mapping_path.exists()
 
     # Resolve per-survey column header hints (use cached inventory name if available).
-    inv = load_cached_inventory_records()
+    inv = load_cached_inventory_records(root=root, account=account)
     header_hints: dict[str, str] = {}
     for survey_id in per_survey_updates.keys():
         label = ""
@@ -501,9 +534,14 @@ def prepare_workspace(
     shared_js: bool,
     surfaces: set[str] | None,
     languages: list[str] | None,
+    root: Path | None = None,
+    account: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> list[PrepareSurveyResult]:
-    root = resolve_root(required=True) or Path.cwd()
-    ensure_workspace_dirs(root)
+    root_path = root or resolve_root(required=True) or Path.cwd()
+    env_dict = dict(env) if env is not None else None
+    ensure_workspace_dirs(root_path, account=account)
+    surveys_dir = resolve_survey_cache_dir(root=root_path, account=account)
 
     # NOTE: "workbook" is intentionally separate from "items". "items" hydration
     # includes cache + workbook, while "workbook" is a lightweight "ensure the
@@ -522,7 +560,13 @@ def prepare_workspace(
     # Inventory is optional when user provides --survey-id and doesn't request it,
     # but required for many workflows and for a "complete" workspace by default.
     if "inventory" in selected:
-        ok, _ = ensure_inventory_exists(yes=yes, interactive=interactive)
+        ok, _ = ensure_inventory_exists(
+            yes=yes,
+            interactive=interactive,
+            root=root_path,
+            account=account,
+            env=env_dict,
+        )
         if not ok:
             raise RuntimeError(
                 "Inventory file missing. Next: run `qsync survey inventory` or re-run with --yes."
@@ -538,9 +582,14 @@ def prepare_workspace(
         if {"items", "eos", "js"} & selected:
             try:
                 existed = (
-                    find_cached_survey_file(survey_id, in_backups=False) is not None
+                    find_cached_survey_file(
+                        survey_id,
+                        in_backups=False,
+                        base_dir=surveys_dir,
+                    )
+                    is not None
                 )
-                load_cached_survey(survey_id)
+                load_cached_survey(survey_id, surveys_dir=surveys_dir, env=env_dict)
                 if existed:
                     r.cache.skipped += 1
                 else:
@@ -557,7 +606,7 @@ def prepare_workspace(
                 if languages:
                     langs = list(languages)
                 else:
-                    base_url, headers = get_client_config()
+                    base_url, headers = get_client_config(env_dict)
                     resp = send_api_request(
                         action="qsync.translations.prepare.languages.list",
                         method="GET",
@@ -602,7 +651,7 @@ def prepare_workspace(
         # Excel workbook (create if missing; do not overwrite).
         if "items" in selected or "translations" in selected or "workbook" in selected:
             try:
-                resolver = WorkbookResolver(root=root)
+                resolver = WorkbookResolver(root=root_path, account=account, env=env_dict)
                 xlsx_path = resolver.default_path(survey_id)
                 if xlsx_path.exists():
                     r.workbook.skipped += 1
@@ -617,6 +666,8 @@ def prepare_workspace(
                         # Skip the extra "cache vs live" drift check to avoid an
                         # additional full survey-definition fetch per survey.
                         check_drift=False,
+                        surveys_dir=surveys_dir,
+                        env=env_dict,
                     )
                     r.workbook.created += 1
             except Exception as exc:
@@ -630,11 +681,19 @@ def prepare_workspace(
                 from .eos_messages import find_message_contexts
                 from .eos_messages import message_dir
 
-                cache = load_cached_survey(survey_id)
+                cache = load_cached_survey(
+                    survey_id,
+                    surveys_dir=surveys_dir,
+                    env=env_dict,
+                )
                 refs = extract_eos_message_refs(survey_id, cache.payload)
                 missing_refs = []
                 for ref in refs:
-                    base = message_dir(ref.library_id, ref.message_id)
+                    base = message_dir(
+                        ref.library_id,
+                        ref.message_id,
+                        account=account,
+                    )
                     meta_path = base / "meta.json"
                     keys_path = base / "messages" / "_keys.json"
                     if meta_path.exists() and keys_path.exists():
@@ -643,10 +702,11 @@ def prepare_workspace(
                         missing_refs.append(ref)
 
                 if missing_refs:
-                    base_url, headers = get_client_config()
+                    base_url, headers = get_client_config(env_dict)
                     contexts = find_message_contexts(
                         refs={(r.library_id, r.message_id) for r in missing_refs},
                         include_backups=False,
+                        account=account,
                     )
                     for ref in missing_refs:
                         resp = send_api_request(
@@ -665,6 +725,7 @@ def prepare_workspace(
                             api_payload=resp.json(),
                             contexts=contexts.get((ref.library_id, ref.message_id))
                             or [ref.to_context_dict()],
+                            account=account,
                         )
                         r.eos.created += 1
             except Exception as exc:
@@ -674,10 +735,13 @@ def prepare_workspace(
         if "js" in selected:
             try:
                 js_surface, updates = hydrate_js_surfaces(
-                    root=root,
+                    root=root_path,
                     survey_id=survey_id,
                     overwrite_js=overwrite_js,
                     shared_js=shared_js,
+                    account=account,
+                    surveys_dir=surveys_dir,
+                    env=env_dict,
                 )
                 r.js = js_surface
                 if updates:
@@ -689,7 +753,11 @@ def prepare_workspace(
 
     # Update mapping once per run (after all surveys).
     if js_updates and "js" in selected:
-        mapping_result = update_js_mapping_csv(root=root, per_survey_updates=js_updates)
+        mapping_result = update_js_mapping_csv(
+            root=root_path,
+            per_survey_updates=js_updates,
+            account=account,
+        )
         for r in results:
             r.js_mapping = mapping_result
 

@@ -904,6 +904,8 @@ def init_survey_to_excel(
     languages: set[str] | list[str] | None = None,
     check_drift: bool = True,
     prune_orphans: bool = False,
+    surveys_dir: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> None:
     """Initialize or refresh a survey workbook from the latest Qualtrics cache.
 
@@ -920,6 +922,8 @@ def init_survey_to_excel(
                     and prints a warning + diff when drift is detected. Set False
                     for batch hydration workflows where the cache will be refreshed
                     immediately anyway.
+        surveys_dir: Optional explicit survey cache directory override.
+        env: Optional explicit environment mapping for API/cache refresh.
 
     Raises:
         requests.HTTPError: If the Qualtrics API call fails while refreshing.
@@ -938,7 +942,11 @@ def init_survey_to_excel(
             drift_report.display(interactive=True)
 
     # Refresh cache from Qualtrics and detect drift.
-    survey, changed = refresh_survey_cache(survey_id)
+    survey, changed = refresh_survey_cache(
+        survey_id,
+        surveys_dir=surveys_dir,
+        env=env,
+    )
     if changed:
         from ..survey_ref import format_survey_ref
 

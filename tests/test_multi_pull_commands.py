@@ -6,6 +6,8 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+from tests.workspace_helpers import ensure_qsync_workspace
+
 
 def _zip_payload(filename: str, content: str) -> bytes:
     buf = io.BytesIO()
@@ -136,3 +138,28 @@ def test_prepare_resolve_target_surveys_accepts_multiple_ids() -> None:
     )
     assert ids == ["SV_ONE", "SV_TWO"]
 
+
+def test_prepare_resolve_target_surveys_uses_explicit_account_inventory(
+    tmp_path: Path,
+) -> None:
+    from qsync.config import resolve_scoped_dir
+    from qsync.survey_prepare import resolve_target_surveys
+
+    ensure_qsync_workspace(tmp_path)
+    scoped_surveys_dir = resolve_scoped_dir("surveys", root=tmp_path, account="damian")
+    scoped_surveys_dir.mkdir(parents=True, exist_ok=True)
+    (scoped_surveys_dir / "inventory.csv").write_text(
+        "id,name,focal,locked\nSV_DAMIAN,Survey Damian,TRUE,FALSE\n",
+        encoding="utf-8",
+    )
+
+    ids = resolve_target_surveys(
+        survey_id=None,
+        focal=True,
+        all_surveys=False,
+        interactive=False,
+        yes=False,
+        root=tmp_path,
+        account="damian",
+    )
+    assert ids == ["SV_DAMIAN"]

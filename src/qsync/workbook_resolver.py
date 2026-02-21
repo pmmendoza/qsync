@@ -22,14 +22,24 @@ def _slugify(value: str) -> str:
 class WorkbookResolver:
     """Resolve workbook paths for surveys with consistent slug derivation."""
 
-    def __init__(self, root: Optional[Path] = None):
+    def __init__(
+        self,
+        root: Optional[Path] = None,
+        *,
+        account: str | None = None,
+        env: dict[str, str] | None = None,
+    ):
         """
         Initialize workbook resolver.
 
         Args:
             root: Workspace root directory. If None, resolves from config.
+            account: Optional explicit account scope for workspace surfaces.
+            env: Optional explicit environment mapping for API lookups.
         """
         self.root = root or resolve_root(required=False) or Path.cwd()
+        self.account = account
+        self.env = dict(env) if env is not None else None
         self._live_survey_names_by_id: dict[str, str] | None = None
 
     def resolve(
@@ -77,7 +87,7 @@ class WorkbookResolver:
         """
         slug = self._derive_slug(survey_id)
 
-        excel_dir = resolve_scoped_dir("excel", root=self.root)
+        excel_dir = resolve_scoped_dir("excel", root=self.root, account=self.account)
 
         # New format (preferred)
         new_format_path = excel_dir / f"{slug}-{survey_id}.xlsx"
@@ -127,7 +137,7 @@ class WorkbookResolver:
             Slugified string for use in filename
         """
         # 1) Try inventory CSV 'name' column
-        surveys_dir = resolve_scoped_dir("surveys", root=self.root)
+        surveys_dir = resolve_scoped_dir("surveys", root=self.root, account=self.account)
         csv_path = surveys_dir / "inventory.csv"
         if not csv_path.exists():
             csv_path = surveys_dir / "qualtrics_surveys.csv"
@@ -160,7 +170,7 @@ class WorkbookResolver:
             try:
                 from qsync.survey_selection import list_surveys_via_api
 
-                base_url, headers = get_client_config()
+                base_url, headers = get_client_config(self.env)
                 surveys = list_surveys_via_api(
                     base_url=base_url,
                     headers=headers,
@@ -182,4 +192,4 @@ class WorkbookResolver:
 
     def __repr__(self) -> str:
         """String representation."""
-        return f"WorkbookResolver(root={self.root!r})"
+        return f"WorkbookResolver(root={self.root!r}, account={self.account!r})"

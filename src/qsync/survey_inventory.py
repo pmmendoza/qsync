@@ -19,16 +19,52 @@ from .config import resolve_root, resolve_scoped_dir, resolve_survey_cache_dir
 from .api_push import send_api_request
 
 ROOT = resolve_root(required=False) or Path.cwd()
-SURVEYS_DIR = resolve_scoped_dir("surveys", root=ROOT)
-INVENTORY_CSV = SURVEYS_DIR / "inventory.csv"
-LEGACY_SURVEY_CACHE = SURVEYS_DIR / "qualtrics_surveys.csv"
-# Backward-compat alias: many modules still refer to SURVEY_CACHE.
-# Canonical path for writes is now surveys/inventory.csv.
+
+
+def _resolve_surveys_dir(*, root: Path | None = None, account: str | None = None) -> Path:
+    root_path = root or resolve_root(required=False) or Path.cwd()
+    return resolve_scoped_dir("surveys", root=root_path, account=account)
+
+
+def _resolve_excel_dir(*, root: Path | None = None, account: str | None = None) -> Path:
+    root_path = root or resolve_root(required=False) or Path.cwd()
+    return resolve_scoped_dir("excel", root=root_path, account=account)
+
+
+def _resolve_inventory_paths(
+    *, root: Path | None = None, account: str | None = None
+) -> tuple[Path, Path]:
+    surveys_dir = _resolve_surveys_dir(root=root, account=account)
+    return (surveys_dir / "inventory.csv", surveys_dir / "qualtrics_surveys.csv")
+
+
+def _resolve_focal_snapshot_path(
+    *, root: Path | None = None, account: str | None = None
+) -> Path:
+    return _resolve_surveys_dir(root=root, account=account) / ".focal_snapshot.json"
+
+
+def _resolve_excel_archive_dir(
+    *, root: Path | None = None, account: str | None = None
+) -> Path:
+    return _resolve_excel_dir(root=root, account=account) / "archive"
+
+
+def _resolve_survey_archive_dir(
+    *, root: Path | None = None, account: str | None = None
+) -> Path:
+    return _resolve_surveys_dir(root=root, account=account) / "archive"
+
+
+# Backward-compat constants (legacy callers may import these).
+SURVEYS_DIR = _resolve_surveys_dir(root=ROOT)
+INVENTORY_CSV, LEGACY_SURVEY_CACHE = _resolve_inventory_paths(root=ROOT)
+# Canonical write path alias for callers that still print/import SURVEY_CACHE.
 SURVEY_CACHE = INVENTORY_CSV
-FOCAL_SNAPSHOT = SURVEYS_DIR / ".focal_snapshot.json"
-EXCEL_DIR = resolve_scoped_dir("excel", root=ROOT)
-EXCEL_ARCHIVE = EXCEL_DIR / "archive"
-SURVEY_ARCHIVE_DIR = SURVEYS_DIR / "archive"
+FOCAL_SNAPSHOT = _resolve_focal_snapshot_path(root=ROOT)
+EXCEL_DIR = _resolve_excel_dir(root=ROOT)
+EXCEL_ARCHIVE = _resolve_excel_archive_dir(root=ROOT)
+SURVEY_ARCHIVE_DIR = _resolve_survey_archive_dir(root=ROOT)
 
 TRUE_TOKENS = {"true", "1", "yes", "y", "t"}
 
@@ -51,27 +87,36 @@ INVENTORY_FIELDNAMES = [
 ]
 
 
-def resolve_inventory_csv_path(*, required: bool = False) -> Path:
+def resolve_inventory_csv_path(
+    *,
+    required: bool = False,
+    root: Path | None = None,
+    account: str | None = None,
+) -> Path:
     """Return the inventory CSV path, preferring the canonical filename.
 
     Canonical: surveys/inventory.csv
     Legacy (read-only compatibility): surveys/qualtrics_surveys.csv
     """
 
-    if INVENTORY_CSV.exists():
-        return INVENTORY_CSV
-    if LEGACY_SURVEY_CACHE.exists():
-        return LEGACY_SURVEY_CACHE
+    inventory_csv, legacy_csv = _resolve_inventory_paths(root=root, account=account)
+    if inventory_csv.exists():
+        return inventory_csv
+    if legacy_csv.exists():
+        return legacy_csv
     if required:
         raise FileNotFoundError(
             "Missing survey inventory file. Expected surveys/inventory.csv "
             "(or legacy surveys/qualtrics_surveys.csv). Run `qsync survey inventory` first."
         )
-    return INVENTORY_CSV
+    return inventory_csv
 
 
-def _survey_definition_cache_dir() -> Path:
-    return resolve_survey_cache_dir(root=ROOT)
+def _survey_definition_cache_dir(
+    *, root: Path | None = None, account: str | None = None
+) -> Path:
+    root_path = root or resolve_root(required=False) or Path.cwd()
+    return resolve_survey_cache_dir(root=root_path, account=account)
 
 
 def _as_bool(value: Any) -> bool:
@@ -138,9 +183,9 @@ def _extract_embedded_field_value(
     return walk(flow_list if isinstance(flow_list, list) else [])
 
 
-def _read_csv_rows() -> Iterable[dict]:
+def _read_csv_rows(*, root: Path | None = None, account: str | None = None) -> Iterable[dict]:
     """Read existing CSV inventory, filtering out comment lines."""
-    path = resolve_inventory_csv_path(required=False)
+    path = resolve_inventory_csv_path(required=False, root=root, account=account)
     if not path.exists():
         return []
     with path.open(newline="", encoding="utf-8") as fh:
@@ -262,9 +307,11 @@ def fetch_current_user(base_url: str, headers: Dict[str, str]) -> Dict[str, Any]
     return response.json().get("result", {})
 
 
-def load_existing_metadata() -> Dict[str, dict]:
+def load_existing_metadata(
+    *, root: Path | None = None, account: str | None = None
+) -> Dict[str, dict]:
     """Load preserved metadata (focal, locked, component, etc.) from existing CSV."""
-    rows = _read_csv_rows()
+    rows = _read_csv_rows(root=root, account=account)
     meta: Dict[str, dict] = {}
     for entry in rows:
         sid = (entry.get("id") or "").strip()
@@ -284,10 +331,12 @@ def load_existing_metadata() -> Dict[str, dict]:
     return meta
 
 
-def load_cached_inventory_records() -> Dict[str, dict]:
+def load_cached_inventory_records(
+    *, root: Path | None = None, account: str | None = None
+) -> Dict[str, dict]:
     """Load full inventory records from existing CSV."""
     records: Dict[str, dict] = {}
-    for entry in _read_csv_rows():
+    for entry in _read_csv_rows(root=root, account=account):
         sid = (entry.get("id") or "").strip()
         if not sid:
             continue
@@ -311,7 +360,12 @@ def load_cached_inventory_records() -> Dict[str, dict]:
     return records
 
 
-def load_inventory_record(survey_id: str) -> dict | None:
+def load_inventory_record(
+    survey_id: str,
+    *,
+    root: Path | None = None,
+    account: str | None = None,
+) -> dict | None:
     """Load a single inventory record by survey ID.
 
     Args:
@@ -320,18 +374,20 @@ def load_inventory_record(survey_id: str) -> dict | None:
     Returns:
         Inventory record dict or None if not found
     """
-    records = load_cached_inventory_records()
+    records = load_cached_inventory_records(root=root, account=account)
     return records.get(survey_id)
 
 
-def get_focal_survey_ids() -> List[str]:
+def get_focal_survey_ids(
+    *, root: Path | None = None, account: str | None = None
+) -> List[str]:
     """Get list of survey IDs marked as focal in inventory.
 
     Returns:
         List of focal survey IDs
     """
     focal_ids: List[str] = []
-    for entry in _read_csv_rows():
+    for entry in _read_csv_rows(root=root, account=account):
         sid = (entry.get("id") or "").strip()
         if not sid:
             continue
@@ -511,9 +567,17 @@ def _format_inventory_warning_examples(
     return label
 
 
-def persist_surveys(surveys: Iterable[dict], *, current_user_id: str | None) -> Path:
+def persist_surveys(
+    surveys: Iterable[dict],
+    *,
+    current_user_id: str | None,
+    root: Path | None = None,
+    account: str | None = None,
+) -> Path:
     """Persist survey metadata to the CSV cache file."""
-    SURVEYS_DIR.mkdir(parents=True, exist_ok=True)
+    surveys_dir = _resolve_surveys_dir(root=root, account=account)
+    inventory_csv, _legacy_csv = _resolve_inventory_paths(root=root, account=account)
+    surveys_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     surveys_list = list(surveys)
 
@@ -556,7 +620,7 @@ def persist_surveys(surveys: Iterable[dict], *, current_user_id: str | None) -> 
     sorted_surveys = sorted(sorted_by_modified, key=sort_key)
 
     # Always write the canonical filename.
-    with INVENTORY_CSV.open("w", newline="", encoding="utf-8") as fh:
+    with inventory_csv.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for record in sorted_surveys:
@@ -579,10 +643,12 @@ def persist_surveys(surveys: Iterable[dict], *, current_user_id: str | None) -> 
             }
             writer.writerow(row)
 
-    return INVENTORY_CSV
+    return inventory_csv
 
 
-def load_focal_snapshot() -> Dict[str, bool]:
+def load_focal_snapshot(
+    *, root: Path | None = None, account: str | None = None
+) -> Dict[str, bool]:
     """Load focal survey snapshot.
 
     Source of truth is surveys/inventory.csv (or legacy surveys/qualtrics_surveys.csv).
@@ -590,11 +656,14 @@ def load_focal_snapshot() -> Dict[str, bool]:
     when the inventory file changes (e.g. manual focal edits).
     """
 
-    inventory_path = resolve_inventory_csv_path(required=False)
+    inventory_path = resolve_inventory_csv_path(
+        required=False, root=root, account=account
+    )
+    focal_snapshot = _resolve_focal_snapshot_path(root=root, account=account)
 
     def snapshot_from_inventory() -> Dict[str, bool]:
         snapshot: Dict[str, bool] = {}
-        for entry in _read_csv_rows():
+        for entry in _read_csv_rows(root=root, account=account):
             sid = (entry.get("id") or "").strip()
             if not sid:
                 continue
@@ -605,7 +674,7 @@ def load_focal_snapshot() -> Dict[str, bool]:
         try:
             inventory_mtime = inventory_path.stat().st_mtime
             snapshot_mtime = (
-                FOCAL_SNAPSHOT.stat().st_mtime if FOCAL_SNAPSHOT.exists() else 0
+                focal_snapshot.stat().st_mtime if focal_snapshot.exists() else 0
             )
         except OSError:
             inventory_mtime = 0
@@ -613,55 +682,68 @@ def load_focal_snapshot() -> Dict[str, bool]:
 
         # If the inventory has changed since the snapshot was written (or the
         # snapshot doesn't exist), rebuild from inventory and persist.
-        if not FOCAL_SNAPSHOT.exists() or inventory_mtime > snapshot_mtime:
+        if not focal_snapshot.exists() or inventory_mtime > snapshot_mtime:
             rebuilt = snapshot_from_inventory()
             if rebuilt:
                 try:
-                    save_focal_snapshot(rebuilt)
+                    save_focal_snapshot(rebuilt, root=root, account=account)
                 except OSError:
                     pass
                 return rebuilt
 
-    if not FOCAL_SNAPSHOT.exists():
+    if not focal_snapshot.exists():
         return {}
 
     try:
-        data = json.loads(FOCAL_SNAPSHOT.read_text(encoding="utf-8"))
+        data = json.loads(focal_snapshot.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
     return {str(k): bool(v) for k, v in data.items()}
 
 
-def save_focal_snapshot(snapshot: Dict[str, bool]) -> None:
+def save_focal_snapshot(
+    snapshot: Dict[str, bool], *, root: Path | None = None, account: str | None = None
+) -> None:
     """Save focal survey snapshot to disk."""
-    FOCAL_SNAPSHOT.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+    focal_snapshot = _resolve_focal_snapshot_path(root=root, account=account)
+    focal_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    focal_snapshot.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
 
 
 def archive_survey_assets(
-    survey_id: str, *, timestamp: str, quiet: bool = False
+    survey_id: str,
+    *,
+    timestamp: str,
+    quiet: bool = False,
+    root: Path | None = None,
+    account: str | None = None,
 ) -> None:
     """Archive Excel and survey JSON files for a survey losing focal status."""
     files_moved = 0
-    if EXCEL_DIR.exists():
-        EXCEL_ARCHIVE.mkdir(parents=True, exist_ok=True)
+    excel_dir = _resolve_excel_dir(root=root, account=account)
+    excel_archive = _resolve_excel_archive_dir(root=root, account=account)
+    survey_archive_dir = _resolve_survey_archive_dir(root=root, account=account)
+    inventory_csv, legacy_csv = _resolve_inventory_paths(root=root, account=account)
+    if excel_dir.exists():
+        excel_archive.mkdir(parents=True, exist_ok=True)
         seen_excel: set[Path] = set()
         for pattern in (f"{survey_id}-*.xlsx", f"*-{survey_id}.xlsx"):
-            for path in EXCEL_DIR.glob(pattern):
+            for path in excel_dir.glob(pattern):
                 if path in seen_excel:
                     continue
                 seen_excel.add(path)
                 if path.name.startswith("~$"):
                     continue
-                dest = EXCEL_ARCHIVE / f"{timestamp}__{path.name}"
+                dest = excel_archive / f"{timestamp}__{path.name}"
                 path.rename(dest)
                 files_moved += 1
-    survey_cache_dir = _survey_definition_cache_dir()
+    survey_cache_dir = _survey_definition_cache_dir(root=root, account=account)
     if survey_cache_dir.exists():
-        SURVEY_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        survey_archive_dir.mkdir(parents=True, exist_ok=True)
         for path in survey_cache_dir.glob(f"*{survey_id}.json"):
-            if path in {INVENTORY_CSV, LEGACY_SURVEY_CACHE} or path.is_dir():
+            if path in {inventory_csv, legacy_csv} or path.is_dir():
                 continue
-            dest = SURVEY_ARCHIVE_DIR / f"{timestamp}__{path.name}"
+            dest = survey_archive_dir / f"{timestamp}__{path.name}"
             path.rename(dest)
             files_moved += 1
     if files_moved and not quiet:
@@ -679,6 +761,8 @@ def refresh_inventory(
     counts_scope: str | None = None,
     progress: bool = False,
     quiet: bool = False,
+    root: Path | None = None,
+    account: str | None = None,
 ) -> Tuple[List[dict], List[dict]]:
     """
     Refresh the survey inventory from Qualtrics API.
@@ -712,9 +796,9 @@ def refresh_inventory(
         current_user = fetch_current_user(base_url, headers)
     current_user_id = current_user.get("userId")
 
-    existing_locks = load_existing_metadata()
-    previous_focal = load_focal_snapshot()
-    previous_records = load_cached_inventory_records()
+    existing_locks = load_existing_metadata(root=root, account=account)
+    previous_focal = load_focal_snapshot(root=root, account=account)
+    previous_records = load_cached_inventory_records(root=root, account=account)
 
     inventory_map: Dict[str, dict]
 
@@ -883,16 +967,27 @@ def refresh_inventory(
             prev = previous_focal.get(sid, False)
             now = bool(record.get("focal"))
             if prev and not now:
-                archive_survey_assets(sid, timestamp=timestamp, quiet=quiet)
+                archive_survey_assets(
+                    sid,
+                    timestamp=timestamp,
+                    quiet=quiet,
+                    root=root,
+                    account=account,
+                )
 
         # Persist to CSV and update focal snapshot
-        persist_surveys(inventory, current_user_id=current_user_id)
+        persist_surveys(
+            inventory,
+            current_user_id=current_user_id,
+            root=root,
+            account=account,
+        )
         snapshot_payload = {
             record.get("id"): bool(record.get("focal"))
             for record in inventory
             if record.get("id")
         }
-        save_focal_snapshot(snapshot_payload)
+        save_focal_snapshot(snapshot_payload, root=root, account=account)
 
     if warnings and quiet:
         print(
@@ -902,13 +997,15 @@ def refresh_inventory(
     return inventory, changed_records
 
 
-def _load_focal_survey_records() -> List[Dict[str, str]]:
+def _load_focal_survey_records(
+    *, root: Path | None = None, account: str | None = None
+) -> List[Dict[str, str]]:
     """Load focal survey records with ID, name, and lastModified.
 
     Returns records sorted by lastModified (newest first).
     """
     records = []
-    for entry in _read_csv_rows():
+    for entry in _read_csv_rows(root=root, account=account):
         sid = (entry.get("id") or "").strip()
         if not sid:
             continue
@@ -926,13 +1023,15 @@ def _load_focal_survey_records() -> List[Dict[str, str]]:
     return records
 
 
-def _load_all_survey_records() -> List[Dict[str, str]]:
+def _load_all_survey_records(
+    *, root: Path | None = None, account: str | None = None
+) -> List[Dict[str, str]]:
     """Load all survey records with ID, name, lastModified, and focal status.
 
     Returns records sorted by lastModified (newest first).
     """
     records = []
-    for entry in _read_csv_rows():
+    for entry in _read_csv_rows(root=root, account=account):
         sid = (entry.get("id") or "").strip()
         if not sid:
             continue
@@ -950,7 +1049,9 @@ def _load_all_survey_records() -> List[Dict[str, str]]:
     return records
 
 
-def _refresh_inventory_for_prompt() -> bool:
+def _refresh_inventory_for_prompt(
+    *, root: Path | None = None, account: str | None = None
+) -> bool:
     """Best-effort inventory refresh used by interactive survey selection."""
 
     from .terminal_output import info
@@ -965,6 +1066,8 @@ def _refresh_inventory_for_prompt() -> bool:
             survey_filter=None,
             dry_run=False,
             counts_scope=None,
+            root=root,
+            account=account,
         )
         return True
     except Exception as exc:
@@ -1066,12 +1169,15 @@ def prompt_for_survey_ids(
     *,
     allow_all_surveys: bool = False,
     interactive: bool = True,
+    root: Path | None = None,
+    account: str | None = None,
 ) -> List[str] | None:
     """Prompt user to select one or more surveys from inventory records."""
     if not interactive:
         return None
 
-    has_inventory = INVENTORY_CSV.exists() or LEGACY_SURVEY_CACHE.exists()
+    inventory_csv, legacy_csv = _resolve_inventory_paths(root=root, account=account)
+    has_inventory = inventory_csv.exists() or legacy_csv.exists()
     if not has_inventory:
         from .interactive_menu import select_from_list
 
@@ -1088,15 +1194,15 @@ def prompt_for_survey_ids(
                 "or pass --survey-id."
             )
             return None
-        if not _refresh_inventory_for_prompt():
+        if not _refresh_inventory_for_prompt(root=root, account=account):
             print(
                 "[qsync] Could not refresh inventory. Next: verify credentials (run `qsync doctor --check-api`) "
                 "and retry, or pass --survey-id."
             )
             return None
 
-    focal_records = _load_focal_survey_records()
-    all_records = _load_all_survey_records()
+    focal_records = _load_focal_survey_records(root=root, account=account)
+    all_records = _load_all_survey_records(root=root, account=account)
     if not all_records:
         print("[qsync] No surveys found in inventory.")
         return None
@@ -1146,6 +1252,8 @@ def prompt_for_survey_id(
     *,
     allow_all_surveys: bool = False,
     interactive: bool = True,
+    root: Path | None = None,
+    account: str | None = None,
 ) -> str | None:
     """Prompt user to select a survey from focal surveys.
 
@@ -1160,7 +1268,8 @@ def prompt_for_survey_id(
     if not interactive:
         return None
 
-    has_inventory = INVENTORY_CSV.exists() or LEGACY_SURVEY_CACHE.exists()
+    inventory_csv, legacy_csv = _resolve_inventory_paths(root=root, account=account)
+    has_inventory = inventory_csv.exists() or legacy_csv.exists()
     if not has_inventory:
         from .interactive_menu import select_from_list
 
@@ -1177,7 +1286,7 @@ def prompt_for_survey_id(
                 "or pass --survey-id."
             )
             return None
-        if not _refresh_inventory_for_prompt():
+        if not _refresh_inventory_for_prompt(root=root, account=account):
             print(
                 "[qsync] Could not refresh inventory. Next: verify credentials (run `qsync doctor --check-api`) "
                 "and retry, or pass --survey-id."
@@ -1185,8 +1294,8 @@ def prompt_for_survey_id(
             return None
 
     # Load focal + all surveys from the local inventory (canonical or legacy).
-    focal_records = _load_focal_survey_records()
-    all_records = _load_all_survey_records()
+    focal_records = _load_focal_survey_records(root=root, account=account)
+    all_records = _load_all_survey_records(root=root, account=account)
 
     if not all_records:
         print("[qsync] No surveys found in inventory.")

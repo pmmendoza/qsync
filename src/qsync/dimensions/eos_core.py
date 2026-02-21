@@ -162,18 +162,20 @@ def extract_eos_message_refs(
     return deduped
 
 
-def message_dir(library_id: str, message_id: str) -> Path:
+def message_dir(
+    library_id: str, message_id: str, *, account: str | None = None
+) -> Path:
     root = resolve_root(required=False) or Path.cwd()
     layout = resolve_workspace_layout(root=root)
     if layout == WORKSPACE_LAYOUT_ACCOUNT_ROOT_V1:
-        surveys_dir = resolve_scoped_dir("surveys", root=root)
+        surveys_dir = resolve_scoped_dir("surveys", root=root, account=account)
         return (
             surveys_dir
             / LIB_MESSAGE_DIRNAME_CANONICAL
             / library_id
             / message_id
         )
-    contents_dir = resolve_scoped_dir("contents", root=root)
+    contents_dir = resolve_scoped_dir("contents", root=root, account=account)
     return contents_dir / LIB_MESSAGE_DIRNAME_LEGACY / library_id / message_id
 
 
@@ -1780,10 +1782,11 @@ def write_library_message_to_disk(
     message_id: str,
     api_payload: dict,
     contexts: list[dict[str, Any]] | None = None,
+    account: str | None = None,
 ) -> Path:
     """Write a library message payload to disk and return its folder path."""
 
-    base = message_dir(library_id, message_id)
+    base = message_dir(library_id, message_id, account=account)
     base.mkdir(parents=True, exist_ok=True)
     (base / "messages").mkdir(parents=True, exist_ok=True)
     (base / "backups").mkdir(parents=True, exist_ok=True)
@@ -2034,6 +2037,7 @@ def find_message_contexts(
     *,
     refs: set[tuple[str, str]] | None,
     include_backups: bool,
+    account: str | None = None,
 ) -> dict[tuple[str, str], list[dict[str, Any]]]:
     """Return local usage contexts for message refs by scanning cached surveys.
 
@@ -2041,7 +2045,7 @@ def find_message_contexts(
     """
 
     root = resolve_root(required=False) or Path.cwd()
-    surveys_dir = resolve_survey_cache_dir(root=root)
+    surveys_dir = resolve_survey_cache_dir(root=root, account=account)
     candidates: list[Path] = []
     if surveys_dir.exists():
         candidates.extend(sorted(surveys_dir.glob("*.json")))
