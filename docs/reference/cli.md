@@ -188,6 +188,19 @@ Export alias surface:
 qsync export survey --survey-id SV_xxx [--format docx|pdf|both]
 ```
 
+Response export:
+
+```text
+qsync survey export-responses --survey-id SV_xxx [--format csv|tsv|spss|json|ndjson|xml]
+```
+
+Notes:
+
+- Default format is `csv`.
+- Output is written under `responses/` (account-scoped when `--account` is used).
+- `json` and `ndjson` use the API-only response export modes; qsync automatically
+  omits the tabular export flags that Qualtrics rejects for those formats.
+
 Side-by-side export:
 
 ```text

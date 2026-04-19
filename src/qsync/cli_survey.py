@@ -11904,7 +11904,15 @@ def handle_replace_question(args: argparse.Namespace) -> None:
 
 
 def handle_export_responses(args: argparse.Namespace) -> None:
-    """Export survey responses (supports one or more surveys)."""
+    """Export responses for one or more surveys in a Qualtrics-supported format.
+
+    Supported formats are defined in ``qsync.response_exports`` and currently map
+    to the response export API formats that qsync can request directly:
+    `csv`, `tsv`, `spss`, `json`, `ndjson`, and `xml`.
+
+    For `json` and `ndjson`, qsync intentionally omits the tabular-export
+    options that Qualtrics rejects for those formats.
+    """
     root = _workspace_root()
     account = _resolve_account_from_args(args)
     env = load_account_env(account, root=root) if account else None

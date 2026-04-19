@@ -442,6 +442,27 @@ qsync survey master stage
 qsync survey master push
 ```
 
+### Export response data
+
+```bash
+# Default CSV export
+qsync survey export-responses --survey-id SV_xxx
+
+# TSV / SPSS / XML exports
+qsync survey export-responses --survey-id SV_xxx --format tsv
+qsync survey export-responses --survey-id SV_xxx --format spss
+qsync survey export-responses --survey-id SV_xxx --format xml
+
+# API-only JSON exports
+qsync survey export-responses --survey-id SV_xxx --format json
+qsync survey export-responses --survey-id SV_xxx --format ndjson
+```
+
+Exports are written under `responses/` (or `responses/.<account>/` with
+`--account`). qsync keeps the historical label/timezone defaults for tabular
+formats and automatically drops those flags for `json` / `ndjson`, because the
+Qualtrics API rejects them for those formats.
+
 ## Feature highlight: Translation export
 
 Generate detailed documentation for translators or compliance reviews. Outputs include flow diagrams, logic branches, question text, and JavaScript string extraction.
