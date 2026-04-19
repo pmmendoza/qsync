@@ -44,6 +44,12 @@ from .qualtrics_client import (
 from .dimensions import blocks as blocks_dimension
 from .publish_description import make_publish_description
 from .push_policy import load_push_context
+from .response_exports import (
+    DEFAULT_RESPONSE_EXPORT_FORMAT,
+    SUPPORTED_RESPONSE_EXPORT_FORMATS,
+    build_response_export_payload,
+    normalize_response_export_format,
+)
 from .survey_lock import SurveyLockedError, ensure_unlocked
 from .scope_filter import ScopeFilter
 from .workspace_paths import edf_presets_candidates, resolve_edf_presets_path
@@ -1116,13 +1122,26 @@ def handle_menu(args: argparse.Namespace) -> None:
         default_out = (
             f"responses/.{selected_account}/" if selected_account else "responses/"
         )
+        format_hint = "/".join(SUPPORTED_RESPONSE_EXPORT_FORMATS)
+        response_format = (
+            input(
+                "Export format "
+                f"({format_hint}; default: {DEFAULT_RESPONSE_EXPORT_FORMAT}): "
+            ).strip()
+            or DEFAULT_RESPONSE_EXPORT_FORMAT
+        )
         out = (
             input(f"Output directory (optional; default: {default_out}): ").strip()
             or None
         )
         _run_action(
             handle_export_responses,
-            argparse.Namespace(survey_id=survey_id, output=out, account=selected_account),
+            argparse.Namespace(
+                survey_id=survey_id,
+                output=out,
+                account=selected_account,
+                export_format=response_format,
+            ),
         )
 
     def _menu_export_translation() -> None:
@@ -11885,10 +11904,16 @@ def handle_replace_question(args: argparse.Namespace) -> None:
 
 
 def handle_export_responses(args: argparse.Namespace) -> None:
-    """Export survey responses to CSV (supports one or more surveys)."""
+    """Export survey responses (supports one or more surveys)."""
     root = _workspace_root()
     account = _resolve_account_from_args(args)
     env = load_account_env(account, root=root) if account else None
+    try:
+        export_format = normalize_response_export_format(
+            getattr(args, "export_format", None)
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[export-responses] ERROR: {exc}") from exc
 
     survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
     if not survey_ids:
@@ -11920,14 +11945,10 @@ def handle_export_responses(args: argparse.Namespace) -> None:
     for survey_id in survey_ids:
         try:
             print(
-                f"[export-responses] Starting export for {format_survey_ref(survey_id)}..."
+                "[export-responses] Starting "
+                f"{export_format.upper()} export for {format_survey_ref(survey_id)}..."
             )
-            payload = {
-                "format": "csv",
-                "useLabels": True,
-                "seenUnansweredRecode": 999,
-                "timeZone": "UTC",
-            }
+            payload = build_response_export_payload(export_format=export_format)
 
             response = send_api_request(
                 action="qsync.survey.export.responses.start",
@@ -11986,7 +12007,7 @@ def handle_export_responses(args: argparse.Namespace) -> None:
             safe_name = "".join(
                 c if c.isalnum() or c in " -_" else "_" for c in survey_name
             ).strip()
-            zip_path = output_dir / f"{safe_name}_{survey_id}.zip"
+            zip_path = output_dir / f"{safe_name}_{survey_id}_{export_format}.zip"
 
             with open(zip_path, "wb") as f:
                 for chunk in download_response.iter_content(chunk_size=8192):
@@ -15638,13 +15659,23 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
     # export-responses
     p_export = survey_subs.add_parser(
         "export-responses",
-        help="Export survey responses to CSV",
+        help="Export survey responses",
     )
     p_export.add_argument(
         "--survey-id",
         action="append",
         dest="survey_id",
         help="Qualtrics survey ID(s) to export responses from (repeatable/comma-separated; omit to select interactively)",
+    )
+    p_export.add_argument(
+        "--format",
+        dest="export_format",
+        choices=SUPPORTED_RESPONSE_EXPORT_FORMATS,
+        default=DEFAULT_RESPONSE_EXPORT_FORMAT,
+        help=(
+            "Response export format "
+            f"(default: {DEFAULT_RESPONSE_EXPORT_FORMAT})"
+        ),
     )
     p_export.add_argument(
         "--output",
