@@ -12138,6 +12138,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
     refresh = bool(getattr(args, "refresh", False))
     layout_heuristics = bool(getattr(args, "layout_heuristics", False))
     render_mermaid = bool(getattr(args, "render_mermaid", False))
+    include_mermaid = bool(getattr(args, "include_mermaid", False))
     format = getattr(args, "format", "docx")
     skip_js_strings = bool(getattr(args, "skip_js_strings", False))
     flow_trace = bool(getattr(args, "flow_trace", False))
@@ -12163,6 +12164,13 @@ def handle_export_translation(args: argparse.Namespace) -> None:
         error(
             "[qsync:export-translation]",
             "--compare-to-base requires --language/--languages.",
+        )
+        sys.exit(1)
+
+    if include_mermaid and not render_mermaid:
+        error(
+            "[qsync:export-translation]",
+            "--include-mermaid requires --render-mermaid.",
         )
         sys.exit(1)
 
@@ -12333,6 +12341,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 include_html_source=not no_html,
                                 layout_heuristics=layout_heuristics,
                                 render_mermaid=render_mermaid,
+                                include_mermaid=include_mermaid,
                                 render_language=lang,
                                 compare_to_base=compare_to_base,
                                 include_qids=include_qids or None,
@@ -12354,6 +12363,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                 include_html_source=not no_html,
                                 layout_heuristics=layout_heuristics,
                                 render_mermaid=render_mermaid,
+                                include_mermaid=include_mermaid,
                                 render_language=lang,
                                 compare_to_base=compare_to_base,
                                 include_qids=include_qids or None,
@@ -12380,6 +12390,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                     include_html_source=not no_html,
                                     layout_heuristics=layout_heuristics,
                                     render_mermaid=render_mermaid,
+                                    include_mermaid=include_mermaid,
                                     render_language=None,
                                     compare_to_base=False,
                                     include_qids=include_qids or None,
@@ -12401,6 +12412,7 @@ def handle_export_translation(args: argparse.Namespace) -> None:
                                     include_html_source=not no_html,
                                     layout_heuristics=layout_heuristics,
                                     render_mermaid=render_mermaid,
+                                    include_mermaid=include_mermaid,
                                     render_language=None,
                                     compare_to_base=False,
                                     include_qids=include_qids or None,
@@ -12540,7 +12552,13 @@ def _add_export_translation_args(parser: argparse.ArgumentParser) -> None:
         "--render-mermaid",
         action="store_true",
         dest="render_mermaid",
-        help="Render Mermaid flow chart artifacts (.flow.mmd/.flow.png). Default: disabled.",
+        help="Generate Mermaid flow chart artifacts (.flow.mmd/.flow.png). Default: disabled.",
+    )
+    parser.add_argument(
+        "--include-mermaid",
+        action="store_true",
+        dest="include_mermaid",
+        help="Embed the generated Mermaid diagram into the DOCX/PDF export. Requires --render-mermaid.",
     )
     parser.add_argument(
         "--smart-name",

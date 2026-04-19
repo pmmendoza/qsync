@@ -249,6 +249,7 @@ def build_translation_pack(
         smart_name=False,
         include_html_source=True,
         render_mermaid=render_mermaid,
+        include_mermaid=render_mermaid,
         refresh=False,
         interactive=interactive,
         skip_preflight=True,

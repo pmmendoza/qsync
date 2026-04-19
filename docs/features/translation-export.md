@@ -52,8 +52,11 @@ qsync survey export-translation --survey-id SV_xxx --list-edf-presets
 # Print flow traversal traces (what was dropped and why)
 qsync survey export-translation --survey-id SV_xxx --edf DEBUG=F --flow-trace
 
-# Enable Mermaid rendering/artifacts (opt-in; requires network for .flow.png)
+# Generate Mermaid artifacts only (opt-in; requires network for .flow.png)
 qsync survey export-translation --survey-id SV_xxx --render-mermaid
+
+# Generate Mermaid artifacts and embed the diagram into the export document
+qsync survey export-translation --survey-id SV_xxx --render-mermaid --include-mermaid
 
 # Omit sanitized HTML source blocks when a parsed rendering exists
 qsync survey export-translation --survey-id SV_xxx --no-html
@@ -91,7 +94,7 @@ The `.docx` is structured as:
 2. `LANGUAGE RENDERING SUMMARY` (only when `--language/--languages` is set; coverage + sample missing keys)
 3. `COVERAGE SUMMARY` (total questions, active exported, excluded)
 4. `QUESTION TYPE LEGEND` (only the abbreviations actually used in this export)
-5. Mermaid flow diagram section (only with `--render-mermaid`; includes `.flow.mmd` + `.flow.png`)
+5. Mermaid flow diagram section (only with `--render-mermaid --include-mermaid`)
 6. `SURVEY CONTENT` (SurveyFlow traversal, in order)
 7. `EXTERNAL TRANSLATION SURFACES` (QuestionJS mapping + EndSurvey message references)
 
@@ -234,6 +237,8 @@ If the message content is not present on disk, the export includes an explicit n
 ## 5) Scenario exports (`--edf`) semantics
 
 `--edf KEY=VALUE` creates a **scenario-specific** export. The exporter attempts to prune provably-irrelevant branches and questions based on the supplied Embedded Data Field values.
+
+When `--render-mermaid` is also enabled, the Mermaid flow diagram follows the same scenario pruning so the chart reflects the participant path implied by the supplied EDF values.
 
 Important principles:
 

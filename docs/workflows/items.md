@@ -84,8 +84,11 @@ qsync survey export-translation --survey-id SV_xxx --language FR --compare-to-ba
 # Scenario export: prune provably-irrelevant branches using explicit EDF values
 qsync survey export-translation --survey-id SV_xxx --edf S_VERSION=PROLIFIC --edf DEBUG=F
 
-# Enable Mermaid rendering/artifacts (opt-in)
+# Generate Mermaid artifacts only (opt-in)
 qsync survey export-translation --survey-id SV_xxx --render-mermaid
+
+# Generate Mermaid artifacts and embed the diagram into the export document
+qsync survey export-translation --survey-id SV_xxx --render-mermaid --include-mermaid
 
 # Refresh cached survey definition from Qualtrics before exporting (network)
 qsync survey export-translation --survey-id SV_xxx --language FR --refresh

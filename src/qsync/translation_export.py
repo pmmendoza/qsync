@@ -581,6 +581,7 @@ class ExportContent:
     mermaid_code: str | None
     mermaid_path: Path | None
     mermaid_image_path: Path | None
+    include_mermaid: bool
     edf_overrides: dict[str, str] | None
     include_html_source: bool
     layout_heuristics: bool
@@ -816,6 +817,7 @@ def _prepare_export_content(
     mermaid_path: Path | None = None,
     mermaid_image_path: Path | None = None,
     render_mermaid: bool = False,
+    include_mermaid: bool = False,
     edf_overrides: dict[str, str] | None = None,
     mapping_path: Path | None = None,
     include_html_source: bool = True,
@@ -848,6 +850,7 @@ def _prepare_export_content(
         mermaid_path: Optional path for Mermaid flow diagram (.mmd)
         mermaid_image_path: Optional path for rendered Mermaid image (.png)
         render_mermaid: Whether Mermaid artifacts should be generated for this export
+        include_mermaid: Whether Mermaid should be embedded into the document output
         edf_overrides: Optional embedded data field overrides for scenario filtering
         mapping_path: Optional path to QID→JS mapping CSV
         include_html_source: Whether to include raw HTML source blocks
@@ -968,11 +971,19 @@ def _prepare_export_content(
     mermaid_code: str | None = None
     if mermaid_path is not None and should_render_mermaid:
         mermaid_code = build_mermaid_flow(
-            survey_id=survey_id, flow=result.get("SurveyFlow") or {}
+            survey_id=survey_id,
+            flow=result.get("SurveyFlow") or {},
+            blocks=result.get("Blocks") or {},
+            questions=questions,
+            active_qids=active_qids,
+            edf_overrides=edf_overrides,
         )
         if mermaid_code:
             mermaid_path.parent.mkdir(parents=True, exist_ok=True)
             mermaid_path.write_text(mermaid_code, encoding="utf-8")
+            if mermaid_image_path is not None:
+                mermaid_image_path.parent.mkdir(parents=True, exist_ok=True)
+                _render_mermaid_to_png(mermaid_code, mermaid_image_path)
 
     return ExportContent(
         survey_id=survey_id,
@@ -991,6 +1002,7 @@ def _prepare_export_content(
         mermaid_code=mermaid_code,
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_image_path,
+        include_mermaid=bool(include_mermaid),
         edf_overrides=edf_overrides,
         include_html_source=include_html_source,
         layout_heuristics=layout_heuristics,
@@ -1017,6 +1029,7 @@ def export_survey_to_word(
     include_html_source: bool = True,
     layout_heuristics: bool = False,
     render_mermaid: bool = False,
+    include_mermaid: bool = False,
     render_language: str | None = None,
     compare_to_base: bool = False,
     include_qids: set[str] | None = None,
@@ -1067,6 +1080,7 @@ def export_survey_to_word(
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_png_path,
         render_mermaid=render_mermaid,
+        include_mermaid=include_mermaid,
         edf_overrides=edf_overrides,
         mapping_path=(
             resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
@@ -1092,6 +1106,7 @@ def export_survey_to_pdf(
     include_html_source: bool = True,
     layout_heuristics: bool = False,
     render_mermaid: bool = False,
+    include_mermaid: bool = False,
     render_language: str | None = None,
     compare_to_base: bool = False,
     include_qids: set[str] | None = None,
@@ -1160,6 +1175,7 @@ def export_survey_to_pdf(
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_png_path,
         render_mermaid=render_mermaid,
+        include_mermaid=include_mermaid,
         edf_overrides=edf_overrides,
         mapping_path=(
             resolve_scoped_dir("survey_js", root=root) / "survey_qid_js_map.csv"
@@ -1184,6 +1200,7 @@ def export_survey_payload_to_pdf(
     mermaid_path: Path | None = None,
     mermaid_image_path: Path | None = None,
     render_mermaid: bool = False,
+    include_mermaid: bool = False,
     edf_overrides: dict[str, str] | None = None,
     mapping_path: Path | None = None,
     include_html_source: bool = True,
@@ -1211,6 +1228,7 @@ def export_survey_payload_to_pdf(
         mermaid_path: Optional path to save Mermaid source
         mermaid_image_path: Optional path to Mermaid PNG image
         render_mermaid: Whether to render Mermaid chart artifacts
+        include_mermaid: Whether to include Mermaid in the exported document
         edf_overrides: EDF scenario filter overrides
         mapping_path: Path to QID-to-JS mapping CSV
         include_html_source: Ignored for PDF (HTML is natively rendered, not shown as source)
@@ -1232,6 +1250,7 @@ def export_survey_payload_to_pdf(
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_image_path,
         render_mermaid=render_mermaid,
+        include_mermaid=include_mermaid,
         edf_overrides=edf_overrides,
         mapping_path=mapping_path,
         include_html_source=False,  # PDF renders HTML natively, no source needed
@@ -1245,20 +1264,22 @@ def export_survey_payload_to_pdf(
         flow_trace=flow_trace,
     )
 
-    if content.mermaid_code and content.mermaid_image_path:
-        content.mermaid_image_path.parent.mkdir(parents=True, exist_ok=True)
-        _render_mermaid_to_png(content.mermaid_code, content.mermaid_image_path)
-
     # Render to PDF
     return _render_to_pdf(content)
 
 
-def _render_to_docx(content: ExportContent, *, render_mermaid: bool = False) -> Path:
+def _render_to_docx(
+    content: ExportContent,
+    *,
+    render_mermaid: bool = False,
+    include_mermaid: bool = False,
+) -> Path:
     """Render prepared export content to a DOCX file.
 
     Args:
         content: Prepared export content
-        render_mermaid: Whether to render Mermaid diagram to PNG
+        render_mermaid: Whether Mermaid artifacts were requested
+        include_mermaid: Whether Mermaid should be embedded in the document
 
     Returns:
         Path to the saved DOCX file
@@ -1316,11 +1337,10 @@ def _render_to_docx(content: ExportContent, *, render_mermaid: bool = False) -> 
 
     _add_mermaid_section_and_file(
         doc,
-        survey_id=content.survey_id,
-        result=result,
         mermaid_path=content.mermaid_path,
         mermaid_image_path=content.mermaid_image_path,
         render_mermaid=render_mermaid,
+        include_mermaid=include_mermaid,
     )
     _add_survey_content_section(
         doc,
@@ -1360,6 +1380,7 @@ def export_survey_payload_to_word(
     mermaid_path: Path | None = None,
     mermaid_image_path: Path | None = None,
     render_mermaid: bool = False,
+    include_mermaid: bool = False,
     edf_overrides: dict[str, str] | None = None,
     mapping_path: Path | None = None,
     include_html_source: bool = True,
@@ -1386,6 +1407,7 @@ def export_survey_payload_to_word(
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_image_path,
         render_mermaid=render_mermaid,
+        include_mermaid=include_mermaid,
         edf_overrides=edf_overrides,
         mapping_path=mapping_path,
         include_html_source=include_html_source,
@@ -1400,7 +1422,11 @@ def export_survey_payload_to_word(
     )
 
     # Render to DOCX
-    return _render_to_docx(content, render_mermaid=render_mermaid)
+    return _render_to_docx(
+        content,
+        render_mermaid=render_mermaid,
+        include_mermaid=include_mermaid,
+    )
 
 
 def export_surveys_side_by_side_docx(
@@ -1828,12 +1854,14 @@ def _add_question_type_legend(doc, *, questions: dict, active_qids: set[str]) ->
 def _add_mermaid_section_and_file(
     doc,
     *,
-    survey_id: str,
-    result: dict,
     mermaid_path: Path | None,
     mermaid_image_path: Path | None,
     render_mermaid: bool,
+    include_mermaid: bool,
 ) -> None:
+    if not include_mermaid:
+        return
+
     doc.add_heading("FLOW DIAGRAM (Mermaid)", level=1)
     should_render = _is_mermaid_render_enabled(render_mermaid=render_mermaid)
     if not should_render:
@@ -1842,15 +1870,18 @@ def _add_mermaid_section_and_file(
         )
         return
 
-    code = build_mermaid_flow(survey_id=survey_id, flow=result.get("SurveyFlow") or {})
     if mermaid_path is not None:
         doc.add_paragraph(f"Mermaid source file: {mermaid_path}")
 
     if mermaid_image_path is None:
-        mermaid_image_path = Path("mermaid.flow.png")
+        doc.add_paragraph("(Rendered Mermaid image unavailable.)")
+        return
+
     mermaid_image_path = Path(mermaid_image_path)
-    mermaid_image_path.parent.mkdir(parents=True, exist_ok=True)
-    _render_mermaid_to_png(code, mermaid_image_path)
+    if not mermaid_image_path.exists():
+        doc.add_paragraph(f"(Rendered Mermaid image: {mermaid_image_path})")
+        return
+
     try:
         from docx.shared import Inches
 
@@ -5030,10 +5061,195 @@ def expected_translation_keys_for_qids(
 # ----------------------------
 
 
-def build_mermaid_flow(*, survey_id: str, flow: dict) -> str:
+def _block_render_qids_for_mermaid(
+    *,
+    block_id: str,
+    blocks: Mapping[str, Any],
+    questions: Mapping[str, Any],
+    active_qids: set[str],
+    edf_overrides: dict[str, str] | None,
+    asked_qids: set[str] | None,
+) -> list[str]:
+    block = blocks.get(block_id) or {}
+    if not isinstance(block, Mapping):
+        return []
+    if str(block.get("Type") or "").strip() == "Trash":
+        return []
+
+    elements = block.get("BlockElements") or []
+    if not isinstance(elements, list):
+        return []
+
+    block_qids_in_order: list[str] = []
+    for elem in elements:
+        if not isinstance(elem, Mapping):
+            continue
+        if str(elem.get("Type") or "") != "Question":
+            continue
+        qid = str(elem.get("QuestionID") or "").strip()
+        if qid and qid in active_qids and qid in questions:
+            block_qids_in_order.append(qid)
+
+    render_qids: list[str] = list(block_qids_in_order)
+    if edf_overrides and asked_qids is not None:
+        asked_sim = set(asked_qids)
+        render_qids = []
+        for qid in block_qids_in_order:
+            visible = _eval_question_display_logic_visibility(
+                dict(questions.get(qid) or {}),
+                questions=dict(questions),
+                edf_overrides=edf_overrides,
+                asked_qids=asked_sim,
+            )
+            if visible is False:
+                continue
+            render_qids.append(qid)
+            asked_sim.add(qid)
+        asked_qids.update(asked_sim)
+    elif asked_qids is not None:
+        asked_qids.update(render_qids)
+
+    return render_qids
+
+
+def _prune_flow_nodes_for_mermaid(
+    *,
+    flow_list: list,
+    blocks: Mapping[str, Any],
+    questions: Mapping[str, Any],
+    active_qids: set[str],
+    edf_overrides: dict[str, str] | None,
+    asked_qids: set[str] | None,
+) -> list[dict[str, Any]]:
+    pruned: list[dict[str, Any]] = []
+
+    for raw_node in flow_list:
+        if not isinstance(raw_node, dict):
+            continue
+        node = dict(raw_node)
+        node_type = str(node.get("Type") or "").strip()
+
+        if node_type in {"Block", "Standard"} and node.get("ID"):
+            block_id = str(node.get("ID") or "").strip()
+            render_qids = _block_render_qids_for_mermaid(
+                block_id=block_id,
+                blocks=blocks,
+                questions=questions,
+                active_qids=active_qids,
+                edf_overrides=edf_overrides,
+                asked_qids=asked_qids,
+            )
+            if not render_qids:
+                continue
+            node["__visible_qids"] = list(render_qids)
+            pruned.append(node)
+            continue
+
+        if node_type == "Branch":
+            then_flow = node.get("Flow")
+            else_flow = node.get("ElseFlow")
+            if isinstance(node.get("Then"), list):
+                then_flow = node.get("Then")
+            if isinstance(node.get("Else"), list):
+                else_flow = node.get("Else")
+            then_list = list(then_flow) if isinstance(then_flow, list) else []
+            else_list = list(else_flow) if isinstance(else_flow, list) else []
+
+            branch_eval = (
+                _eval_boolean_expression(node.get("BranchLogic"), edf_overrides)
+                if edf_overrides
+                else None
+            )
+            if edf_overrides and branch_eval is None and asked_qids is not None:
+                branch_eval = _eval_boolean_expression_with_unasked_selected_false(
+                    node.get("BranchLogic"),
+                    edf_overrides,
+                    asked_qids,
+                )
+
+            if edf_overrides and branch_eval is not None:
+                decision = "then" if bool(branch_eval) else "else"
+                chosen = then_list if decision == "then" else else_list
+                pruned_chosen = _prune_flow_nodes_for_mermaid(
+                    flow_list=chosen,
+                    blocks=blocks,
+                    questions=questions,
+                    active_qids=active_qids,
+                    edf_overrides=edf_overrides,
+                    asked_qids=asked_qids,
+                )
+                if decision == "then":
+                    node["Flow"] = pruned_chosen
+                    node["Then"] = pruned_chosen
+                    node["ElseFlow"] = []
+                    node["Else"] = []
+                else:
+                    node["Flow"] = []
+                    node["Then"] = []
+                    node["ElseFlow"] = pruned_chosen
+                    node["Else"] = pruned_chosen
+                node["__branch_decision"] = decision
+                pruned.append(node)
+                continue
+
+            asked_then = set(asked_qids) if asked_qids is not None else None
+            asked_else = set(asked_qids) if asked_qids is not None else None
+            pruned_then = _prune_flow_nodes_for_mermaid(
+                flow_list=then_list,
+                blocks=blocks,
+                questions=questions,
+                active_qids=active_qids,
+                edf_overrides=edf_overrides,
+                asked_qids=asked_then,
+            )
+            pruned_else = _prune_flow_nodes_for_mermaid(
+                flow_list=else_list,
+                blocks=blocks,
+                questions=questions,
+                active_qids=active_qids,
+                edf_overrides=edf_overrides,
+                asked_qids=asked_else,
+            )
+            if asked_qids is not None:
+                if asked_then is not None:
+                    asked_qids.update(asked_then)
+                if asked_else is not None:
+                    asked_qids.update(asked_else)
+            node["Flow"] = pruned_then
+            node["Then"] = pruned_then
+            node["ElseFlow"] = pruned_else
+            node["Else"] = pruned_else
+            pruned.append(node)
+            continue
+
+        subflow = node.get("Flow")
+        if isinstance(subflow, list):
+            node["Flow"] = _prune_flow_nodes_for_mermaid(
+                flow_list=list(subflow),
+                blocks=blocks,
+                questions=questions,
+                active_qids=active_qids,
+                edf_overrides=edf_overrides,
+                asked_qids=asked_qids,
+            )
+        pruned.append(node)
+
+    return pruned
+
+
+def build_mermaid_flow(
+    *,
+    survey_id: str,
+    flow: dict,
+    blocks: Mapping[str, Any] | None = None,
+    questions: Mapping[str, Any] | None = None,
+    active_qids: set[str] | None = None,
+    edf_overrides: dict[str, str] | None = None,
+) -> str:
     """Build a Mermaid flowchart representation of SurveyFlow.
 
-    MVP: include node types + block IDs + branch conditions (best-effort).
+    When scenario EDF overrides are provided, the diagram follows the same
+    pruning rules as the export traversal so it better reflects participant flow.
     """
 
     lines: List[str] = ["flowchart TD", f"%% SurveyID: {survey_id}"]
@@ -5042,6 +5258,20 @@ def build_mermaid_flow(*, survey_id: str, flow: dict) -> str:
     flow_list = flow.get("Flow")
     if not isinstance(flow_list, list):
         return "\n".join(lines + ["%% SurveyFlow.Flow missing or malformed"])
+
+    blocks = blocks or {}
+    questions = questions or {}
+    if active_qids is not None and isinstance(blocks, Mapping) and isinstance(
+        questions, Mapping
+    ):
+        flow_list = _prune_flow_nodes_for_mermaid(
+            flow_list=list(flow_list),
+            blocks=blocks,
+            questions=questions,
+            active_qids=active_qids,
+            edf_overrides=edf_overrides,
+            asked_qids=set() if edf_overrides else None,
+        )
 
     counter = 0
     node_lines: List[str] = []
@@ -5055,9 +5285,19 @@ def build_mermaid_flow(*, survey_id: str, flow: dict) -> str:
     def label_for(node: dict) -> str:
         t = str(node.get("Type") or "").strip() or "Node"
         if t in {"Block", "Standard"} and node.get("ID"):
-            return f"Block {node.get('ID')}"
+            block_id = str(node.get("ID") or "").strip()
+            block = blocks.get(block_id) or {}
+            desc = ""
+            if isinstance(block, Mapping):
+                desc = str(block.get("Description") or "").strip()
+            if desc:
+                return f"Block {desc} ({block_id})"
+            return f"Block {block_id}"
         if t == "Branch":
             cond = _strip_logic_markers(_format_logic_blob(node.get("BranchLogic")))
+            decision = str(node.get("__branch_decision") or "").strip().upper()
+            if decision:
+                return f"IF {cond} [{decision}]"
             return f"IF {cond}"
         if t == "BlockRandomizer":
             return "Randomizer"
@@ -5109,6 +5349,7 @@ def build_mermaid_flow(*, survey_id: str, flow: dict) -> str:
                     then_nodes = node.get("Then")
                 if isinstance(node.get("Else"), list):
                     else_nodes = node.get("Else")
+                branch_decision = str(node.get("__branch_decision") or "").strip()
 
                 then_first, then_last = walk_list(list(then_nodes))
                 else_first, else_last = walk_list(list(else_nodes))
@@ -5124,11 +5365,15 @@ def build_mermaid_flow(*, survey_id: str, flow: dict) -> str:
                 node_lines.append(f'{join_id}["Join"]')
                 if then_last:
                     edge_lines.append(f"{then_last} --> {join_id}")
-                else:
+                elif branch_decision == "then":
+                    edge_lines.append(f"{nid} --> {join_id}")
+                elif not branch_decision:
                     edge_lines.append(f"{nid} --> {join_id}")
                 if else_last:
                     edge_lines.append(f"{else_last} --> {join_id}")
-                else:
+                elif branch_decision == "else":
+                    edge_lines.append(f"{nid} --> {join_id}")
+                elif not branch_decision:
                     edge_lines.append(f"{nid} --> {join_id}")
                 # The join becomes the last node for sequential linking.
                 last = join_id
@@ -6762,7 +7007,11 @@ def _build_pdf_html_template(content: ExportContent) -> str:
 
     # Mermaid diagram (if exists)
     mermaid_html = ""
-    if content.mermaid_image_path and content.mermaid_image_path.exists():
+    if (
+        content.include_mermaid
+        and content.mermaid_image_path
+        and content.mermaid_image_path.exists()
+    ):
         mermaid_html = f"""
         <section class="flow-diagram">
             <h1>FLOW DIAGRAM</h1>
