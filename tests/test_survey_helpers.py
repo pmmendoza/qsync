@@ -98,6 +98,39 @@ class TestPrepareQsfForImport:
         assert result is qsf  # Same object
         assert qsf["SurveyEntry"]["SurveyName"] == "New"
 
+    def test_preserves_survey_elements_and_strips_entry_survey_id(self):
+        """Test import preparation preserves element payloads like the copy path."""
+        qsf = {
+            "SurveyEntry": {
+                "SurveyID": "SV_old123",
+                "SurveyName": "Old Name",
+                "SurveyLanguage": "FR",
+            },
+            "SurveyElements": [
+                {
+                    "SurveyID": "SV_old123",
+                    "Element": "SO",
+                    "Payload": {
+                        "SurveyTitle": "Old Name",
+                        "AvailableLanguages": {"FR": []},
+                    },
+                },
+                {
+                    "SurveyID": "SV_old123",
+                    "Element": "SQ",
+                    "Payload": {"QuestionID": "QID1"},
+                },
+            ],
+        }
+
+        result = prepare_qsf_for_import(qsf, "New", language="NL")
+
+        assert "SurveyID" not in result["SurveyEntry"]
+        assert all("SurveyID" in e for e in result["SurveyElements"])
+        options = result["SurveyElements"][0]["Payload"]
+        assert options["SurveyTitle"] == "Old Name"
+        assert "NL" not in options["AvailableLanguages"]
+
 
 class TestUploadQsfToAccount:
     """Tests for upload_qsf_to_account() helper."""

@@ -232,6 +232,31 @@ class QsyncCliOutputTests(unittest.TestCase):
         self.assertIn("Dry run", output)
         self.assertIn("pip install --upgrade", output)
 
+    def test_self_update_uv_tool_dry_run_prints_command(self) -> None:
+        from qsync.cli import main
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            main(
+                [
+                    "self-update",
+                    "--dry-run",
+                    "--yes",
+                    "--uv-tool",
+                    "--repo",
+                    "pmmendoza/qsync",
+                    "--ref",
+                    "main",
+                ]
+            )
+        output = buf.getvalue()
+        self.assertIn("Installer: uv-tool", output)
+        self.assertIn("uv tool install --force", output)
+        self.assertIn(
+            "qsync @ git+https://github.com/pmmendoza/qsync.git@main",
+            output,
+        )
+
     @patch("qsync.cli._pipx_has_qsync", return_value=True)
     @patch("qsync.cli._looks_like_pipx_env", return_value=False)
     def test_self_update_dry_run_uses_active_installer_not_other_install(

@@ -19,6 +19,7 @@ Most files here were migrated from this monorepo’s `appendices/` directory so 
 - Translations (workbook-based): `workflows/translations.md`
 - Translation consistency (single vs split surveys): `workflows/translation-consistency.md`
 - Survey Master (bulk metadata/options/status): `workflows/survey-master.md`
+- Survey create: `workflows/survey-create.md`
 - Cross-account copy: `workflows/copy-cross-account.md`
 
 ## Features

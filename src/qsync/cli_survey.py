@@ -53,6 +53,7 @@ from .response_exports import (
 from .survey_lock import SurveyLockedError, ensure_unlocked
 from .scope_filter import ScopeFilter
 from .workspace_paths import edf_presets_candidates, resolve_edf_presets_path
+from . import survey_create as survey_create_helpers
 
 
 def _workspace_root() -> Path:
@@ -464,6 +465,7 @@ def _emit_active_account_banner(
 
 _SURVEY_WRITE_PREFLIGHT_ACTIONS: dict[str, str] = {
     # Remote/account-scoped writes
+    "create": "create",
     "copy": "copy",
     "copy-cross-account": "copy-cross-account",
     "slice-language": "slice-language",
@@ -490,6 +492,9 @@ _SURVEY_MASTER_WRITE_PREFLIGHT_ACTIONS: dict[str, str] = {
 
 def maybe_emit_survey_write_preflight(args: argparse.Namespace) -> None:
     """Emit account/base preflight line for direct write-heavy survey commands."""
+
+    if bool(getattr(args, "json", False)):
+        return
 
     sub = str(getattr(args, "survey_command", "") or "").strip()
     if not sub:
@@ -708,6 +713,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                 "handle_deactivate": "deactivate",
                 "handle_publish": "publish",
                 "handle_rollback": "rollback",
+                "handle_create": "create",
                 "handle_copy": "copy",
                 "handle_copy_cross_account": "copy-cross-account",
                 "handle_delete": "delete",
@@ -978,6 +984,24 @@ def handle_menu(args: argparse.Namespace) -> None:
                 no_publish=False,
                 force_live=False,
                 yes=False,
+                account=selected_account,
+            ),
+        )
+
+    def _menu_create() -> None:
+        new_name = input("Enter name for new survey: ").strip()
+        if not new_name:
+            return
+        _run_action(
+            handle_create,
+            argparse.Namespace(
+                name=new_name,
+                from_qsf=None,
+                template_survey_id=None,
+                language=None,
+                project_category=None,
+                force_duplicate=False,
+                json=False,
                 account=selected_account,
             ),
         )
@@ -4668,6 +4692,7 @@ def handle_menu(args: argparse.Namespace) -> None:
             "publish-fetch-version": _menu_version_fetch,
             "publish-rollback": _menu_rollback,
             # Copy / slice / parity
+            "copy-create": _menu_create,
             "copy-copy": _menu_copy,
             "copy-slice-language": _menu_slice_language,
             "copy-slice-registry": _menu_slice_registry,
@@ -4712,7 +4737,7 @@ def handle_menu(args: argparse.Namespace) -> None:
         _menu_context(
             f"Survey Menu (account={_account_label()} base={base})",
             "Choose the task type first; each submenu is organized by user intent.",
-            "Setup/Selection, Edit, Flow/Integrations, Publish/Versions, Copy/Compare, Exports, Workspace/Account, Bulk/Master, Danger Zone",
+            "Setup/Selection, Edit, Flow/Integrations, Publish/Versions, Create/Copy/Compare, Exports, Workspace/Account, Bulk/Master, Danger Zone",
         )
         top = select_from_list(
             message=f"qsync survey menu  (account: {_account_label()}  base: {base})",
@@ -4721,7 +4746,7 @@ def handle_menu(args: argparse.Namespace) -> None:
                 "Edit Questions & Content — structural item edits",
                 "Flow, Embedded Data & Integrations — embedded fields + Prolific",
                 "Publish, Activation & Versions — go live and rollback",
-                "Copy, Slice & Compare — derive and verify surveys",
+                "Create, Copy, Slice & Compare — create, derive and verify surveys",
                 "Exports — responses and docs",
                 "Workspace & Account — account, API, inventory, prepare",
                 "Bulk & Master — focal bulk editing",
@@ -4886,15 +4911,16 @@ def handle_menu(args: argparse.Namespace) -> None:
                 _menu_rollback()
             continue
 
-        if top.startswith("Copy, Slice & Compare"):
+        if top.startswith("Create, Copy, Slice & Compare"):
             _menu_context(
-                "Survey Menu > Copy, Slice & Compare",
-                "Derive new surveys and compare parity across copies/accounts.",
-                "Copy, slice-language, slice-registry, parity-check, copy-cross-account",
+                "Survey Menu > Create, Copy, Slice & Compare",
+                "Create or derive new surveys and compare parity across copies/accounts.",
+                "Create, copy, slice-language, slice-registry, parity-check, copy-cross-account",
             )
             choice = select_from_list(
-                "Copy, Slice & Compare",
+                "Create, Copy, Slice & Compare",
                 [
+                    "Create survey",
                     "Copy survey",
                     "Slice language(s)",
                     "Slice registry (local)",
@@ -4906,7 +4932,9 @@ def handle_menu(args: argparse.Namespace) -> None:
             )
             if not choice or choice.endswith("Back"):
                 continue
-            if choice.startswith("Copy survey"):
+            if choice.startswith("Create survey"):
+                _menu_create()
+            elif choice.startswith("Copy survey"):
                 _menu_copy()
             elif choice.startswith("Slice language"):
                 _menu_slice_language()
@@ -5315,20 +5343,12 @@ def prepare_qsf_for_import(
     Returns:
         Modified QSF content (modifies in-place and returns for chaining)
     """
-    if "SurveyEntry" not in qsf_content:
-        return qsf_content
-
-    entry = qsf_content["SurveyEntry"]
-    entry["SurveyName"] = new_name
-    entry["SurveyStatus"] = status
-    entry.pop("SurveyID", None)  # Let Qualtrics assign new ID
-
-    if language:
-        entry["SurveyLanguage"] = language
-    elif "SurveyLanguage" not in entry:
-        entry["SurveyLanguage"] = "EN"
-
-    return qsf_content
+    return survey_create_helpers.prepare_qsf_for_import(
+        qsf_content,
+        new_name,
+        language=language,
+        status=status,
+    )
 
 
 def upload_qsf_to_account(
@@ -5480,6 +5500,143 @@ def handle_list(args: argparse.Namespace) -> None:
     _print_table("Unmatched surveys", unmatched)
 
 
+def _resolve_create_name(args: argparse.Namespace, qsf_content: dict[str, Any]) -> str:
+    new_name = str(getattr(args, "name", "") or "").strip()
+    if new_name:
+        return new_name
+
+    default_name = ""
+    entry = qsf_content.get("SurveyEntry")
+    if isinstance(entry, dict):
+        default_name = str(entry.get("SurveyName") or "").strip()
+
+    if sys.stdin.isatty():
+        if default_name:
+            new_name = input(f"Enter name for new survey [{default_name}]: ").strip()
+            return new_name or default_name
+        new_name = input("Enter name for new survey: ").strip()
+        if new_name:
+            return new_name
+
+    print("ERROR: Survey name is required.")
+    sys.exit(1)
+
+
+def handle_create(args: argparse.Namespace) -> None:
+    """Create a new survey from the bundled seed, a QSF file, or a template survey."""
+
+    base, headers = _get_client_config_for_args(args)
+    from_qsf = str(getattr(args, "from_qsf", "") or "").strip()
+    template_survey_id = str(getattr(args, "template_survey_id", "") or "").strip()
+    json_output = bool(getattr(args, "json", False))
+
+    if from_qsf and template_survey_id:
+        print("ERROR: Choose only one of --from-qsf or --template-survey-id.")
+        sys.exit(2)
+
+    source_kind = "minimal"
+    source_ref = "bundled-minimal-qsf"
+
+    try:
+        if from_qsf:
+            qsf_path = Path(from_qsf)
+            if not qsf_path.exists():
+                print(f"ERROR: QSF file not found: {qsf_path}")
+                sys.exit(1)
+            qsf_content = survey_create_helpers.load_qsf_file(qsf_path)
+            source_kind = "qsf"
+            source_ref = str(qsf_path)
+        elif template_survey_id:
+            if not json_output:
+                print(
+                    f"Fetching template definition (QSF) for {template_survey_id}..."
+                )
+            qsf_content = fetch_survey_definition(
+                base,
+                headers,
+                template_survey_id,
+                fmt="qsf",
+            )
+            source_kind = "template-survey"
+            source_ref = template_survey_id
+        else:
+            qsf_content = survey_create_helpers.load_minimal_qsf()
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: Failed to parse QSF JSON: {exc}")
+        sys.exit(1)
+    except Exception as exc:
+        print(f"ERROR: Failed to load survey source: {exc}")
+        sys.exit(1)
+
+    qsf_content = survey_create_helpers.clone_qsf(qsf_content)
+    new_name = _resolve_create_name(args, qsf_content)
+
+    if not _resolve_account_from_args(args):
+        ensure_unique_survey_name(
+            new_name,
+            allow_duplicate=bool(getattr(args, "force_duplicate", False)),
+        )
+
+    language = str(getattr(args, "language", "") or "").strip() or None
+    prepare_qsf_for_import(
+        qsf_content,
+        new_name,
+        language=language,
+        status="Inactive",
+    )
+
+    project_category = str(getattr(args, "project_category", "") or "").strip()
+    if project_category:
+        survey_create_helpers.apply_project_category(qsf_content, project_category)
+
+    if not json_output:
+        print(f"Creating survey '{new_name}'...")
+
+    try:
+        new_id = upload_qsf_to_account(
+            qsf_content,
+            new_name,
+            base,
+            headers,
+            action="qsync.survey.create",
+            log_meta={
+                "source_kind": source_kind,
+                "source_ref": source_ref,
+                "new_name": new_name,
+            },
+        )
+    except Exception as exc:
+        print(f"\nERROR: Failed to create survey: {exc}")
+        sys.exit(1)
+
+    edit_url = f"https://{base}/survey-builder/{new_id}/edit"
+
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "survey_id": new_id,
+                    "name": new_name,
+                    "account": _resolve_account_from_args(args) or "default",
+                    "base_url": base,
+                    "source_kind": source_kind,
+                    "source_ref": source_ref,
+                    "edit_url": edit_url,
+                },
+                sort_keys=True,
+            )
+        )
+        return
+
+    print(f"Successfully created {new_name} ({new_id})")
+    print(f"\nEdit Link: {edit_url}\n")
+
+    from .terminal_output import log_confirmation
+
+    log_confirmation("[create]")
+
+
 def handle_copy(args: argparse.Namespace) -> None:
     """Copy/import a survey (from Qualtrics or a local QSF) into a new survey."""
 
@@ -5548,11 +5705,8 @@ def handle_copy(args: argparse.Namespace) -> None:
     )
 
     # Handle project category if specified
-    if args.project_category and "SurveyElements" in qsf_content:
-        for elem in qsf_content["SurveyElements"]:
-            if elem.get("Element") == "PROJ":
-                elem["Payload"]["ProjectCategory"] = args.project_category
-                elem["PrimaryAttribute"] = args.project_category
+    if args.project_category:
+        survey_create_helpers.apply_project_category(qsf_content, args.project_category)
 
     # Generate QSF file only if requested
     if args.generate_qsf:
@@ -14210,7 +14364,7 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "Manage Qualtrics surveys.\n\n"
             "Groups:\n"
             "  Inventory/cache: list, label, focal, inventory, pull, prepare\n"
-            "  Copy/derive: copy, slice-language, copy-cross-account, slice-registry, parity-check\n"
+            "  Create/copy/derive: create, copy, slice-language, copy-cross-account, slice-registry, parity-check\n"
             "  Embedded/options: items structural edits, add-embedded-field, remove-embedded-field, rename-embedded-field, cleanup-embedded-data, prolific-auth\n"
             "  Prolific wiring: prolific-wiring (alias to qsync prolific)\n"
             "  Lifecycle/versions: publish, activate, deactivate, versions, version-fetch, rollback\n"
@@ -14324,6 +14478,39 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     p_list.set_defaults(func=handle_list)
+
+    # create
+    p_create = survey_subs.add_parser(
+        "create",
+        help="Create a new inactive survey",
+    )
+    p_create.add_argument("name", nargs="?", help="Name for the new survey")
+    create_source = p_create.add_mutually_exclusive_group()
+    create_source.add_argument(
+        "--from-qsf",
+        dest="from_qsf",
+        help="Import from local QSF file instead of the bundled minimal template",
+    )
+    create_source.add_argument(
+        "--template-survey-id",
+        dest="template_survey_id",
+        help="Existing Qualtrics survey ID to use as the creation template",
+    )
+    p_create.add_argument("--language", help="Base language for the new survey")
+    p_create.add_argument("--project-category", help="Optional project category")
+    p_create.add_argument(
+        "--force-duplicate", action="store_true", help="Allow duplicate names"
+    )
+    p_create.add_argument(
+        "--account",
+        help="Use credentials from `.env.<account>` under the workspace root.",
+    )
+    p_create.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a compact JSON result.",
+    )
+    p_create.set_defaults(func=handle_create)
 
     # copy
     p_copy = survey_subs.add_parser("copy", help="Copy a survey")
@@ -15997,7 +16184,8 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "inventory",
             "pull",
             "prepare",
-            # Copy/derive
+            # Create/copy/derive
+            "create",
             "copy",
             "slice-language",
             "copy-cross-account",

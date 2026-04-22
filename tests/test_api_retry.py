@@ -67,6 +67,34 @@ class SendApiRequestRetryTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(mock_request.call_count, 2)
 
+    def test_json_mode_suppresses_retry_warning_output(self) -> None:
+        from qsync.api_push import send_api_request
+
+        unavailable = _response(503, headers={"Content-Type": "application/json"})
+        ok = _response(200, headers={"Content-Type": "application/json"})
+
+        with (
+            patch.dict("os.environ", {"QSYNC_JSON_MODE": "1"}, clear=False),
+            patch("qsync.api_push._sleep", lambda _: None),
+            patch(
+                "qsync.api_push.requests.request",
+                side_effect=[unavailable, ok],
+            ),
+            patch("qsync.api_push.logger.warning") as mock_warning,
+        ):
+            resp = send_api_request(
+                action="test.503.json",
+                method="GET",
+                base_url="example.qualtrics.com",
+                headers={"X-API-TOKEN": "test"},
+                path="surveys",
+                log_event=False,
+                timeout=1,
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        mock_warning.assert_not_called()
+
     def test_honors_retry_after_for_429(self) -> None:
         from qsync.api_push import send_api_request
 

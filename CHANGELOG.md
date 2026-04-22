@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-04-22
+- Added `qsync survey create` for inactive survey creation from qsync's bundled QSF seed, a local QSF file, or an existing same-account survey template.
+- Added JSON output and duplicate-name handling for `survey create`.
+- Added `qsync self-update --uv-tool` for `uv tool install --force ...` based reinstalls.
+
 ## 2026-02-21
 - Breaking syntax cleanup:
   - Added global `--yes/-y` handling across CLI commands (accepted anywhere in argv).

@@ -221,8 +221,8 @@ Each element has this structure:
   2. **Programmatic** (complex): Transform JSON definition → QSF format (requires careful field mapping)
 
 ### Current Implementation (Template-Based)
-The `qsync survey copy` command uses the template/QSF-based approach:
-1. Fetch the source survey definition in **QSF format** from the API (or load a local QSF via `qsync survey copy --from-qsf ...`)
+The `qsync survey create` and `qsync survey copy` commands use the template/QSF-based approach:
+1. Fetch the source survey definition in **QSF format** from the API, load a local QSF via `--from-qsf`, or use the bundled minimal QSF seed for `survey create`
 2. Update the name/language fields and clear the `SurveyID`
 3. POST the QSF to `/API/v3/surveys` as a multipart upload (with `name` in form data)
 

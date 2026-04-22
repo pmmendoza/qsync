@@ -152,12 +152,34 @@ qsync survey COMMAND ...
 Key command families:
 
 - inventory/cache: `list`, `label`, `focal`, `inventory`, `pull`, `prepare`
-- copy/derive: `copy`, `slice-language`, `copy-cross-account`, `slice-registry`, `parity-check`
+- create/copy/derive: `create`, `copy`, `slice-language`, `copy-cross-account`, `slice-registry`, `parity-check`
 - edits/utilities: `add-question`, `move-question`, `remove-question`, `add-page-break`, `remove-page-break`, `inspect-question`, `push-question`, `replace-question`
 - lifecycle: `publish`, `activate`, `deactivate`, `versions`, `version-fetch`, `rollback`
 - exports: `export-responses`, `export-translation`, `export-side-by-side`
 - bulk: `master`
 - interactive: `menu`
+
+Create a new inactive, unpublished survey:
+
+```text
+qsync survey create "Survey Name" [--language EN]
+qsync survey create "Survey Name" --from-qsf path/to/template.qsf
+qsync survey create "Survey Name" --template-survey-id SV_xxx
+```
+
+`survey create` uploads QSF to the Qualtrics survey-import endpoint. With no source,
+qsync uses a bundled minimal QSF seed. With `--from-qsf`, it imports a local QSF
+after rewriting the survey name/language/status. With `--template-survey-id`, it
+fetches that survey as QSF from the selected account and imports a new copy under
+the requested name.
+
+Useful flags:
+
+- `--account <name>`: create in a named account.
+- `--json`: emit a compact object with `survey_id`, `edit_url`, account, and source metadata.
+- `--force-duplicate`: allow creating a survey with a name already present in the selected account.
+
+After creation, run `qsync survey pull --survey-id SV_NEW` before editing local qsync surfaces.
 
 ### Survey Master
 

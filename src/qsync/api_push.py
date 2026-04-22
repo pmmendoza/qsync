@@ -344,6 +344,9 @@ def _extract_error_detail(
 
 
 def _log_before_sleep(retry_state: RetryCallState) -> None:
+    if os.environ.get("QSYNC_JSON_MODE") == "1":
+        return
+
     attempt = retry_state.attempt_number
     next_action = retry_state.next_action
     wait_seconds = getattr(next_action, "sleep", None)

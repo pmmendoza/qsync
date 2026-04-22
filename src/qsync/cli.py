@@ -894,9 +894,16 @@ def _active_installer() -> str:
     return "pipx" if _looks_like_pipx_env() else "pip"
 
 
-def _resolve_installer(force_pip: bool, force_pipx: bool) -> str:
-    if force_pip and force_pipx:
-        raise SystemExit("Choose only one of --pip or --pipx.")
+def _resolve_installer(
+    force_pip: bool,
+    force_pipx: bool,
+    force_uv_tool: bool = False,
+) -> str:
+    forced = [force_pip, force_pipx, force_uv_tool]
+    if sum(1 for item in forced if item) > 1:
+        raise SystemExit("Choose only one of --pip, --pipx, or --uv-tool.")
+    if force_uv_tool:
+        return "uv-tool"
     if force_pipx:
         return "pipx"
     if force_pip:
@@ -1082,6 +1089,7 @@ def _handle_self_update(args: argparse.Namespace) -> None:
     installer = _resolve_installer(
         force_pip=bool(getattr(args, "pip", False)),
         force_pipx=bool(getattr(args, "pipx", False)),
+        force_uv_tool=bool(getattr(args, "uv_tool", False)),
     )
     available_extras = _get_available_extras()
     extras = _parse_extras_args(getattr(args, "extras", None))
@@ -1118,7 +1126,9 @@ def _handle_self_update(args: argparse.Namespace) -> None:
 
     spec = _build_self_update_spec(repo, ref, extras)
 
-    if installer == "pipx":
+    if installer == "uv-tool":
+        cmd = ["uv", "tool", "install", "--force", spec]
+    elif installer == "pipx":
         # pipx reinstall does not accept --spec; use install --force with VCS spec.
         cmd = ["pipx", "install", "--force", spec]
     else:
@@ -2462,6 +2472,11 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--pip",
         action="store_true",
         help="Force pip install (auto-detected by default)",
+    )
+    p_self_update.add_argument(
+        "--uv-tool",
+        action="store_true",
+        help="Force uv tool install --force from GitHub",
     )
     p_self_update.add_argument(
         "--dry-run",

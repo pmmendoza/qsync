@@ -202,6 +202,12 @@ Non-interactive (extras + pipx):
 qsync self-update --extras tui,langcheck --pipx --yes
 ```
 
+Non-interactive (uv tool):
+
+```bash
+qsync self-update --uv-tool --repo pmmendoza/qsync --ref main --yes
+```
+
 Dry-run (prints the command):
 
 ```bash
@@ -209,7 +215,7 @@ qsync self-update --dry-run --extras pdf,langcheck --pip
 ```
 
 Notes:
-- By default, `self-update` auto-detects whether you’re using pipx or pip/venv.
+- By default, `self-update` auto-detects whether you’re using pipx or pip/venv. Use `--uv-tool` to force `uv tool install --force`.
 - You can override the repo/ref with environment variables:
   - `QSYNC_UPDATE_REPO` (e.g., `https://github.com/pmmendoza/qsync.git`)
   - `QSYNC_UPDATE_REF` (e.g., `main`, `v0.2.3`, or a commit SHA)
@@ -341,6 +347,22 @@ If you run `qsync` outside the workspace, pass `--root` (or set `QSYNC_ROOT`).
 Legacy layout compatibility is still supported (`surveys/`, `excel/`, `survey_js/`, ... and `.<account>` subfolders).
 
 ## Common workflows
+
+### Create a survey
+
+```bash
+# Blank starter survey from qsync's bundled QSF seed
+qsync survey create "New Survey Name" --language EN
+
+# Create from a local QSF file
+qsync survey create "New Survey Name" --from-qsf path/to/template.qsf
+
+# Create from an existing survey template in the selected account
+qsync survey create "New Survey Name" --template-survey-id SV_xxx
+```
+
+`survey create` leaves the new survey inactive and unpublished. It prints the new
+`SurveyID` and edit URL; use `--json` for automation.
 
 ### Edit base-language copy (Excel)
 
@@ -532,7 +554,7 @@ Audit logs are written as JSONL under the workspace root:
 
 - [Docs index](docs/index.md)
 - [Script run contracts](docs/reference/scripts.md)
-- Workflows: [Items](docs/workflows/items.md), [JavaScript](docs/workflows/js.md), [EOS](docs/workflows/eos.md), [Flow](docs/workflows/flow.md), [Blocks](docs/workflows/blocks.md), [Translations](docs/workflows/translations.md), [Translation consistency](docs/workflows/translation-consistency.md), [Survey Master](docs/workflows/survey-master.md)
+- Workflows: [Items](docs/workflows/items.md), [JavaScript](docs/workflows/js.md), [EOS](docs/workflows/eos.md), [Flow](docs/workflows/flow.md), [Blocks](docs/workflows/blocks.md), [Translations](docs/workflows/translations.md), [Translation consistency](docs/workflows/translation-consistency.md), [Survey Master](docs/workflows/survey-master.md), [Survey create](docs/workflows/survey-create.md), [Cross-account copy](docs/workflows/copy-cross-account.md)
 - References: [Survey definition anatomy](docs/reference/survey-definition-anatomy.md), [Workspace path ownership](docs/reference/workspace-path-ownership.md), [Excel format](docs/reference/excel-format.md), [Push safeguards](docs/reference/push-safeguards.md), [Publishing mechanics](docs/reference/publishing-mechanics.md), [Logging guide](docs/reference/logging.md), [Release & tagging process](docs/reference/release-tagging.md)
 - [Translation export](docs/features/translation-export.md)
 - [Troubleshooting](docs/troubleshooting.md)

@@ -372,11 +372,11 @@ def test_survey_menu_copy_cross_account_uses_explicit_default_source_listing(
         if message.startswith("qsync survey menu"):
             state["top"] += 1
             return (
-                "Copy, Slice & Compare — derive and verify surveys"
+                "Create, Copy, Slice & Compare — create, derive and verify surveys"
                 if state["top"] == 1
                 else "Exit"
             )
-        if message == "Copy, Slice & Compare":
+        if message == "Create, Copy, Slice & Compare":
             return "Copy cross-account"
         if message == "Select source account:":
             return "default (.env)"
