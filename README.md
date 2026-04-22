@@ -478,12 +478,20 @@ qsync survey export-responses --survey-id SV_xxx --format xml
 # API-only JSON exports
 qsync survey export-responses --survey-id SV_xxx --format json
 qsync survey export-responses --survey-id SV_xxx --format ndjson
+
+# Include Qualtrics display-order columns in supported raw tabular exports
+qsync survey export-responses --survey-id SV_xxx --format csv --include-display-order
+
+# Enriched analysis bundle
+qsync survey export-responses --survey-id SV_xxx --analysis-bundle --analysis-formats csv,sav,rds,parquet
 ```
 
 Exports are written under `responses/` (or `responses/.<account>/` with
 `--account`). qsync keeps the historical label/timezone defaults for tabular
 formats and automatically drops those flags for `json` / `ndjson`, because the
-Qualtrics API rejects them for those formats.
+Qualtrics API rejects them for those formats. Enriched bundles preserve raw
+NDJSON, the survey definition, Qualtrics display-order columns, a codebook,
+and a manifest; add `--keep-json` when you also want raw `responses.json`.
 
 ## Feature highlight: Translation export
 

@@ -214,6 +214,8 @@ Response export:
 
 ```text
 qsync survey export-responses --survey-id SV_xxx [--format csv|tsv|spss|json|ndjson|xml]
+qsync survey export-responses --survey-id SV_xxx --format csv --include-display-order
+qsync survey export-responses --survey-id SV_xxx --analysis-bundle [--analysis-formats csv,sav,rds,parquet] [--keep-json]
 ```
 
 Notes:
@@ -222,6 +224,9 @@ Notes:
 - Output is written under `responses/` (account-scoped when `--account` is used).
 - `json` and `ndjson` use the API-only response export modes; qsync automatically
   omits the tabular export flags that Qualtrics rejects for those formats.
+- `--include-display-order` is valid only for non-JSON/NDJSON raw exports.
+- `--analysis-bundle` writes a compact enriched dataset plus `codebook.csv`,
+  `manifest.json`, and reproducibility files under `raw/`.
 
 Side-by-side export:
 

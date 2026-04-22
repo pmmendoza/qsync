@@ -13,7 +13,6 @@ import os
 import re
 import sys
 import time
-import zipfile
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
@@ -48,7 +47,15 @@ from .response_exports import (
     DEFAULT_RESPONSE_EXPORT_FORMAT,
     SUPPORTED_RESPONSE_EXPORT_FORMATS,
     build_response_export_payload,
+    download_response_export_file,
     normalize_response_export_format,
+    safe_response_export_name,
+)
+from .response_dataset import (
+    ResponseDatasetError,
+    build_enriched_response_bundle,
+    normalize_analysis_formats,
+    validate_analysis_format_dependencies,
 )
 from .survey_lock import SurveyLockedError, ensure_unlocked
 from .scope_filter import ScopeFilter
@@ -1154,6 +1161,31 @@ def handle_menu(args: argparse.Namespace) -> None:
             ).strip()
             or DEFAULT_RESPONSE_EXPORT_FORMAT
         )
+        analysis_bundle = (
+            input("Build enriched analysis bundle instead? [y/N]: ").strip().lower()
+            in {"y", "yes"}
+        )
+        analysis_formats = "csv"
+        keep_json = False
+        include_display_order = False
+        if analysis_bundle:
+            analysis_formats = (
+                input(
+                    "Analysis formats (csv,sav,rds,parquet; default: csv): "
+                ).strip()
+                or "csv"
+            )
+            keep_json = (
+                input("Keep raw responses.json as well? [y/N]: ").strip().lower()
+                in {"y", "yes"}
+            )
+        else:
+            include_display_order = (
+                input("Include display-order columns where supported? [y/N]: ")
+                .strip()
+                .lower()
+                in {"y", "yes"}
+            )
         out = (
             input(f"Output directory (optional; default: {default_out}): ").strip()
             or None
@@ -1165,6 +1197,10 @@ def handle_menu(args: argparse.Namespace) -> None:
                 output=out,
                 account=selected_account,
                 export_format=response_format,
+                include_display_order=include_display_order,
+                analysis_bundle=analysis_bundle,
+                analysis_formats=analysis_formats,
+                keep_json=keep_json,
             ),
         )
 
@@ -7074,7 +7110,7 @@ def handle_copy_cross_account(args: argparse.Namespace) -> None:
         result = resp.json().get("result") or {}
         lang = str(result.get("SurveyLanguage") or "").strip()
         if not lang:
-            raise RuntimeError(f"SurveyLanguage missing for {survey_id}")
+            raise ValueError(f"SurveyLanguage missing for {survey_id}")
         normalized = normalize_language_code(lang)
         if not normalized:
             raise ValueError(f"Invalid SurveyLanguage for {survey_id}: {lang!r}")
@@ -12074,7 +12110,22 @@ def handle_export_responses(args: argparse.Namespace) -> None:
         export_format = normalize_response_export_format(
             getattr(args, "export_format", None)
         )
+        include_display_order = bool(getattr(args, "include_display_order", False))
+        _ = build_response_export_payload(
+            export_format=export_format,
+            include_display_order=include_display_order,
+        )
     except ValueError as exc:
+        raise SystemExit(f"[export-responses] ERROR: {exc}") from exc
+
+    analysis_bundle = bool(getattr(args, "analysis_bundle", False))
+    try:
+        analysis_formats = normalize_analysis_formats(
+            getattr(args, "analysis_formats", None)
+        )
+        if analysis_bundle:
+            validate_analysis_format_dependencies(analysis_formats)
+    except ResponseDatasetError as exc:
         raise SystemExit(f"[export-responses] ERROR: {exc}") from exc
 
     survey_ids = _normalize_survey_ids(getattr(args, "survey_id", None))
@@ -12106,82 +12157,148 @@ def handle_export_responses(args: argparse.Namespace) -> None:
     failures: list[tuple[str, str]] = []
     for survey_id in survey_ids:
         try:
-            print(
-                "[export-responses] Starting "
-                f"{export_format.upper()} export for {format_survey_ref(survey_id)}..."
-            )
-            payload = build_response_export_payload(export_format=export_format)
+            survey_name = surveys_lookup.get(survey_id, survey_id)
+            if analysis_bundle:
+                safe_name = safe_response_export_name(survey_name) or survey_id
+                bundle_dir = output_dir / f"{safe_name}__{survey_id}__responses_bundle"
+                raw_dir = bundle_dir / "raw"
+                raw_dir.mkdir(parents=True, exist_ok=True)
+                print(
+                    "[export-responses] Starting enriched bundle for "
+                    f"{format_survey_ref(survey_id)}..."
+                )
 
-            response = send_api_request(
-                action="qsync.survey.export.responses.start",
-                method="POST",
-                base_url=base_url,
-                headers=headers,
-                path=f"surveys/{survey_id}/export-responses",
-                log_event=False,
-                json=payload,
-                timeout=60,
-            )
-            progress_id = response.json()["result"]["progressId"]
-            print(
-                f"[export-responses] {survey_id}: Export started. Progress ID: {progress_id}"
-            )
+                raw_exports: list[dict[str, object]] = []
 
-            progress_status = "inProgress"
-            file_id = None
-            while progress_status not in ("complete", "failed"):
-                print(f"[export-responses] {survey_id}: Checking progress...")
-                check_response = send_api_request(
-                    action="qsync.survey.export.responses.poll",
-                    method="GET",
+                ndjson_export = download_response_export_file(
                     base_url=base_url,
                     headers=headers,
-                    path=f"surveys/{survey_id}/export-responses/{progress_id}",
-                    log_event=False,
-                    timeout=60,
+                    survey_id=survey_id,
+                    survey_name=survey_name,
+                    output_dir=raw_dir,
+                    export_format="ndjson",
+                    request_func=send_api_request,
+                    keep_zip=False,
+                    primary_filename="responses.ndjson",
                 )
-                result = check_response.json()["result"]
-                progress_status = result["status"]
+                raw_exports.append(
+                    {
+                        "format": "ndjson",
+                        "options": ndjson_export.payload,
+                        "progress_id": ndjson_export.progress_id,
+                        "file_id": ndjson_export.file_id,
+                        "path": "raw/responses.ndjson",
+                    }
+                )
 
-                if progress_status == "failed":
-                    raise RuntimeError("Export failed")
+                keep_json_path = None
+                if bool(getattr(args, "keep_json", False)):
+                    json_export = download_response_export_file(
+                        base_url=base_url,
+                        headers=headers,
+                        survey_id=survey_id,
+                        survey_name=survey_name,
+                        output_dir=raw_dir,
+                        export_format="json",
+                        request_func=send_api_request,
+                        keep_zip=False,
+                        primary_filename="responses.json",
+                    )
+                    keep_json_path = json_export.primary_path
+                    raw_exports.append(
+                        {
+                            "format": "json",
+                            "options": json_export.payload,
+                            "progress_id": json_export.progress_id,
+                            "file_id": json_export.file_id,
+                            "path": "raw/responses.json",
+                        }
+                    )
 
-                if progress_status == "complete":
-                    file_id = result["fileId"]
-                else:
-                    time.sleep(2)
+                display_export = download_response_export_file(
+                    base_url=base_url,
+                    headers=headers,
+                    survey_id=survey_id,
+                    survey_name=survey_name,
+                    output_dir=raw_dir,
+                    export_format="csv",
+                    request_func=send_api_request,
+                    include_display_order=True,
+                    keep_zip=False,
+                    primary_filename="qualtrics-display-order.csv",
+                )
+                raw_exports.append(
+                    {
+                        "format": "csv",
+                        "options": display_export.payload,
+                        "progress_id": display_export.progress_id,
+                        "file_id": display_export.file_id,
+                        "path": "raw/qualtrics-display-order.csv",
+                    }
+                )
 
-            print(f"[export-responses] {survey_id}: Export complete. File ID: {file_id}")
+                survey_definition = fetch_survey_definition(
+                    base_url,
+                    headers,
+                    survey_id,
+                    fmt="json",
+                )
+                survey_definition_path = raw_dir / "survey-definition.json"
+                survey_definition_path.write_text(
+                    json.dumps(survey_definition, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
 
-            print(f"[export-responses] {survey_id}: Downloading file...")
-            download_response = send_api_request(
-                action="qsync.survey.export.responses.download",
-                method="GET",
-                base_url=base_url,
-                headers=headers,
-                path=f"surveys/{survey_id}/export-responses/{file_id}/file",
-                log_event=False,
-                stream=True,
-                timeout=120,
-            )
-
-            survey_name = surveys_lookup.get(survey_id, survey_id)
-            safe_name = "".join(
-                c if c.isalnum() or c in " -_" else "_" for c in survey_name
-            ).strip()
-            zip_path = output_dir / f"{safe_name}_{survey_id}_{export_format}.zip"
-
-            with open(zip_path, "wb") as f:
-                for chunk in download_response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-
-            print(f"[export-responses] {survey_id}: Saved zip to {zip_path}")
-
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(output_dir)
-                for file in zip_ref.namelist():
-                    print(f"  - {file}")
-            print(f"[export-responses] {survey_id}: Extracted to {output_dir}")
+                result = build_enriched_response_bundle(
+                    output_dir=bundle_dir,
+                    ndjson_path=ndjson_export.primary_path,
+                    display_order_csv_path=display_export.primary_path,
+                    survey_definition_path=survey_definition_path,
+                    survey_id=survey_id,
+                    survey_name=survey_name,
+                    account=account,
+                    formats=analysis_formats,
+                    keep_json_path=keep_json_path,
+                    command_args={
+                        "analysis_bundle": True,
+                        "analysis_formats": list(analysis_formats),
+                        "keep_json": bool(getattr(args, "keep_json", False)),
+                    },
+                    raw_exports=raw_exports,
+                )
+                print(
+                    "[export-responses] "
+                    f"{survey_id}: Wrote enriched bundle to {result.output_dir} "
+                    f"({result.row_count} rows, {result.column_count} columns)."
+                )
+                if result.warnings:
+                    print(
+                        "[export-responses] "
+                        f"{survey_id}: {len(result.warnings)} warning(s) recorded in manifest."
+                    )
+            else:
+                print(
+                    "[export-responses] Starting "
+                    f"{export_format.upper()} export for {format_survey_ref(survey_id)}..."
+                )
+                result = download_response_export_file(
+                    base_url=base_url,
+                    headers=headers,
+                    survey_id=survey_id,
+                    survey_name=survey_name,
+                    output_dir=output_dir,
+                    export_format=export_format,
+                    request_func=send_api_request,
+                    include_display_order=include_display_order,
+                    keep_zip=True,
+                )
+                if result.zip_path is not None:
+                    print(
+                        f"[export-responses] {survey_id}: Saved zip to {result.zip_path}"
+                    )
+                for file in result.extracted_paths:
+                    print(f"  - {file.name}")
+                print(f"[export-responses] {survey_id}: Extracted to {output_dir}")
         except Exception as exc:
             failures.append((survey_id, str(exc)))
             print(f"[export-responses] {survey_id}: ERROR: {exc}")
@@ -15871,6 +15988,32 @@ def register_survey_commands(subparsers: argparse._SubParsersAction) -> None:
             "Response export format "
             f"(default: {DEFAULT_RESPONSE_EXPORT_FORMAT})"
         ),
+    )
+    p_export.add_argument(
+        "--include-display-order",
+        action="store_true",
+        help=(
+            "Request Qualtrics display-order columns for non-JSON/NDJSON raw "
+            "exports."
+        ),
+    )
+    p_export.add_argument(
+        "--analysis-bundle",
+        action="store_true",
+        help=(
+            "Build a qsync enriched response bundle from NDJSON plus "
+            "Qualtrics include-display-order CSV."
+        ),
+    )
+    p_export.add_argument(
+        "--analysis-formats",
+        default="csv",
+        help="Comma-separated enriched output formats: csv,sav,rds,parquet (default: csv).",
+    )
+    p_export.add_argument(
+        "--keep-json",
+        action="store_true",
+        help="Also preserve raw responses.json in enriched bundles.",
     )
     p_export.add_argument(
         "--output",

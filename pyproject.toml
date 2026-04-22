@@ -29,6 +29,19 @@ tui = [
 pdf = [
   "weasyprint>=62.0",
 ]
+responses-sav = [
+  "pandas>=2.0",
+  "pyreadstat>=1.2",
+]
+responses-parquet = [
+  "pandas>=2.0",
+  "pyarrow>=15",
+]
+responses = [
+  "pandas>=2.0",
+  "pyreadstat>=1.2",
+  "pyarrow>=15",
+]
 langcheck = [
   # fasttext-wheel has reliable prebuilt wheels on macOS for older Python versions
   # (notably 3.11). Newer Pythons often fall back to source builds requiring a
