@@ -52,7 +52,7 @@ qsync survey export-translation --survey-id SV_xxx --list-edf-presets
 # Print flow traversal traces (what was dropped and why)
 qsync survey export-translation --survey-id SV_xxx --edf DEBUG=F --flow-trace
 
-# Generate Mermaid artifacts only (opt-in; requires network for .flow.png)
+# Generate Mermaid artifacts only (opt-in; uses local `mmdc` when available, otherwise network rendering)
 qsync survey export-translation --survey-id SV_xxx --render-mermaid
 
 # Generate Mermaid artifacts and embed the diagram into the export document
@@ -72,19 +72,22 @@ Artifacts (default account surface):
 
 - `.../export/<SurveyName>__<SurveyID>__<BASE>.docx`
 - `.../export/<SurveyName>__<SurveyID>__<BASE>.flow.mmd` (only with `--render-mermaid`)
-- `.../export/<SurveyName>__<SurveyID>__<BASE>.flow.png` (only with `--render-mermaid`; can require network access)
+- `.../export/<SurveyName>__<SurveyID>__<BASE>.flow.png` (only with `--render-mermaid`)
+- `.../export/<SurveyName>__<SurveyID>__<BASE>.flow.svg` (only with `--render-mermaid`)
 
 Artifacts (with `--language FR`):
 
 - `.../export/<SurveyName>__<SurveyID>__FR.docx`
 - `.../export/<SurveyName>__<SurveyID>__FR.flow.mmd` (only with `--render-mermaid`)
 - `.../export/<SurveyName>__<SurveyID>__FR.flow.png` (only with `--render-mermaid`)
+- `.../export/<SurveyName>__<SurveyID>__FR.flow.svg` (only with `--render-mermaid`)
 
 Artifacts (with `--language FR --compare-to-base`):
 
 - `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.docx`
 - `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.flow.mmd` (only with `--render-mermaid`)
 - `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.flow.png` (only with `--render-mermaid`)
+- `.../export/<SurveyName>__<SurveyID>__<BASE>-FR.flow.svg` (only with `--render-mermaid`)
 
 ## 3) Document structure
 

@@ -6,8 +6,13 @@ import base64
 import csv
 import html as _html
 import json
+import math
 import os
 import re
+import shutil
+import subprocess
+import tempfile
+import zlib
 from urllib.parse import urlencode
 from dataclasses import dataclass
 from datetime import datetime
@@ -581,6 +586,7 @@ class ExportContent:
     mermaid_code: str | None
     mermaid_path: Path | None
     mermaid_image_path: Path | None
+    mermaid_svg_path: Path | None
     include_mermaid: bool
     edf_overrides: dict[str, str] | None
     include_html_source: bool
@@ -816,6 +822,7 @@ def _prepare_export_content(
     *,
     mermaid_path: Path | None = None,
     mermaid_image_path: Path | None = None,
+    mermaid_svg_path: Path | None = None,
     render_mermaid: bool = False,
     include_mermaid: bool = False,
     edf_overrides: dict[str, str] | None = None,
@@ -849,6 +856,7 @@ def _prepare_export_content(
         output_path: Target output file path
         mermaid_path: Optional path for Mermaid flow diagram (.mmd)
         mermaid_image_path: Optional path for rendered Mermaid image (.png)
+        mermaid_svg_path: Optional path for rendered Mermaid image (.svg)
         render_mermaid: Whether Mermaid artifacts should be generated for this export
         include_mermaid: Whether Mermaid should be embedded into the document output
         edf_overrides: Optional embedded data field overrides for scenario filtering
@@ -968,6 +976,7 @@ def _prepare_export_content(
     if not should_render_mermaid:
         mermaid_path = None
         mermaid_image_path = None
+        mermaid_svg_path = None
     mermaid_code: str | None = None
     if mermaid_path is not None and should_render_mermaid:
         mermaid_code = build_mermaid_flow(
@@ -984,6 +993,9 @@ def _prepare_export_content(
             if mermaid_image_path is not None:
                 mermaid_image_path.parent.mkdir(parents=True, exist_ok=True)
                 _render_mermaid_to_png(mermaid_code, mermaid_image_path)
+            if mermaid_svg_path is not None:
+                mermaid_svg_path.parent.mkdir(parents=True, exist_ok=True)
+                _render_mermaid_to_svg(mermaid_code, mermaid_svg_path)
 
     return ExportContent(
         survey_id=survey_id,
@@ -1002,6 +1014,7 @@ def _prepare_export_content(
         mermaid_code=mermaid_code,
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_image_path,
+        mermaid_svg_path=mermaid_svg_path,
         include_mermaid=bool(include_mermaid),
         edf_overrides=edf_overrides,
         include_html_source=include_html_source,
@@ -1069,6 +1082,7 @@ def export_survey_to_word(
 
     mermaid_path = output_path.with_suffix(".flow.mmd")
     mermaid_png_path = output_path.with_name(output_path.stem + ".flow.png")
+    mermaid_svg_path = output_path.with_name(output_path.stem + ".flow.svg")
     # Optional: refresh cached survey definition before exporting (network).
     # This is equivalent to `qsync survey pull --survey-id ...` and should be
     # used intentionally (e.g. smoke verification).
@@ -1079,6 +1093,7 @@ def export_survey_to_word(
         output_path,
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_png_path,
+        mermaid_svg_path=mermaid_svg_path,
         render_mermaid=render_mermaid,
         include_mermaid=include_mermaid,
         edf_overrides=edf_overrides,
@@ -1165,6 +1180,7 @@ def export_survey_to_pdf(
 
     mermaid_path = output_path.with_suffix(".flow.mmd")
     mermaid_png_path = output_path.with_name(output_path.stem + ".flow.png")
+    mermaid_svg_path = output_path.with_name(output_path.stem + ".flow.svg")
 
     # Cached survey definition already refreshed above when requested.
 
@@ -1174,6 +1190,7 @@ def export_survey_to_pdf(
         output_path,
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_png_path,
+        mermaid_svg_path=mermaid_svg_path,
         render_mermaid=render_mermaid,
         include_mermaid=include_mermaid,
         edf_overrides=edf_overrides,
@@ -1199,6 +1216,7 @@ def export_survey_payload_to_pdf(
     *,
     mermaid_path: Path | None = None,
     mermaid_image_path: Path | None = None,
+    mermaid_svg_path: Path | None = None,
     render_mermaid: bool = False,
     include_mermaid: bool = False,
     edf_overrides: dict[str, str] | None = None,
@@ -1227,6 +1245,7 @@ def export_survey_payload_to_pdf(
         output_path: Output PDF file path
         mermaid_path: Optional path to save Mermaid source
         mermaid_image_path: Optional path to Mermaid PNG image
+        mermaid_svg_path: Optional path to Mermaid SVG image
         render_mermaid: Whether to render Mermaid chart artifacts
         include_mermaid: Whether to include Mermaid in the exported document
         edf_overrides: EDF scenario filter overrides
@@ -1249,6 +1268,7 @@ def export_survey_payload_to_pdf(
         output_path=output_path,
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_image_path,
+        mermaid_svg_path=mermaid_svg_path,
         render_mermaid=render_mermaid,
         include_mermaid=include_mermaid,
         edf_overrides=edf_overrides,
@@ -1339,6 +1359,7 @@ def _render_to_docx(
         doc,
         mermaid_path=content.mermaid_path,
         mermaid_image_path=content.mermaid_image_path,
+        mermaid_svg_path=content.mermaid_svg_path,
         render_mermaid=render_mermaid,
         include_mermaid=include_mermaid,
     )
@@ -1379,6 +1400,7 @@ def export_survey_payload_to_word(
     *,
     mermaid_path: Path | None = None,
     mermaid_image_path: Path | None = None,
+    mermaid_svg_path: Path | None = None,
     render_mermaid: bool = False,
     include_mermaid: bool = False,
     edf_overrides: dict[str, str] | None = None,
@@ -1406,6 +1428,7 @@ def export_survey_payload_to_word(
         output_path=output_path,
         mermaid_path=mermaid_path,
         mermaid_image_path=mermaid_image_path,
+        mermaid_svg_path=mermaid_svg_path,
         render_mermaid=render_mermaid,
         include_mermaid=include_mermaid,
         edf_overrides=edf_overrides,
@@ -1856,6 +1879,7 @@ def _add_mermaid_section_and_file(
     *,
     mermaid_path: Path | None,
     mermaid_image_path: Path | None,
+    mermaid_svg_path: Path | None,
     render_mermaid: bool,
     include_mermaid: bool,
 ) -> None:
@@ -1866,12 +1890,14 @@ def _add_mermaid_section_and_file(
     should_render = _is_mermaid_render_enabled(render_mermaid=render_mermaid)
     if not should_render:
         doc.add_paragraph(
-            "(Mermaid rendering disabled for this run; no .flow.mmd/.flow.png artifacts were generated.)"
+            "(Mermaid rendering disabled for this run; no .flow.mmd/.flow.png/.flow.svg artifacts were generated.)"
         )
         return
 
     if mermaid_path is not None:
         doc.add_paragraph(f"Mermaid source file: {mermaid_path}")
+    if mermaid_svg_path is not None:
+        doc.add_paragraph(f"Rendered Mermaid SVG: {mermaid_svg_path}")
 
     if mermaid_image_path is None:
         doc.add_paragraph("(Rendered Mermaid image unavailable.)")
@@ -5112,6 +5138,207 @@ def _block_render_qids_for_mermaid(
     return render_qids
 
 
+def _truncate_mermaid_value(value: object, *, max_chars: int = 10) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return text[:max_chars]
+    return f"{text[: max_chars - 3]}..."
+
+
+def _effective_embedded_items_for_mermaid(
+    *,
+    node: Mapping[str, Any],
+    edf_overrides: dict[str, str] | None,
+    seen_edf_fields: set[str] | None,
+) -> list[str]:
+    entries = node.get("EmbeddedData") or []
+    if not isinstance(entries, list):
+        return []
+
+    seen_fields = seen_edf_fields if seen_edf_fields is not None else set()
+    overridden_in_this_node: set[str] = set()
+    override_labels: list[str] = []
+    other_labels: list[str] = []
+
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        field = str(entry.get("Field") or entry.get("Description") or "").strip()
+        if not field:
+            continue
+
+        value = entry.get("Value")
+        if (
+            edf_overrides
+            and field in edf_overrides
+            and (field not in seen_fields or field in overridden_in_this_node)
+        ):
+            value_str = str(edf_overrides[field])
+            overridden_in_this_node.add(field)
+        else:
+            value_str = str(value) if value is not None else ""
+
+        value_str = value_str.strip()
+        if value_str and value_str != EMBEDDED_EMPTY_VALUE:
+            label = f"{field}={_truncate_mermaid_value(value_str)}"
+        else:
+            label = field
+        if edf_overrides and field in edf_overrides:
+            override_labels.append(label)
+        else:
+            other_labels.append(label)
+        seen_fields.add(field)
+
+    return override_labels + other_labels
+
+
+def _randomizer_is_full_order(node: Mapping[str, Any]) -> bool:
+    options = node.get("Flow") or []
+    if not isinstance(options, list) or not options:
+        return False
+    subset = node.get("SubSet")
+    if not isinstance(subset, int):
+        return False
+    return subset >= len(options)
+
+
+def _randomizer_grid_columns(option_count: int) -> int:
+    if option_count <= 1:
+        return 1
+    return min(4, max(2, math.ceil(math.sqrt(option_count))))
+
+
+_MERMAID_LOGIC_OP_MAP = {
+    "EqualTo": "=",
+    "NotEqualTo": "!=",
+    "GreaterThan": ">",
+    "GreaterThanOrEqualTo": ">=",
+    "LessThan": "<",
+    "LessThanOrEqualTo": "<=",
+    "Contains": "contains",
+    "DoesNotContain": "not contains",
+    "Selected": "=",
+    "NotSelected": "!=",
+}
+
+
+def _mermaid_logic_question_ref(
+    qid: str, questions: Mapping[str, Any] | None
+) -> str:
+    qid_clean = str(qid or "").strip()
+    if not qid_clean:
+        return ""
+    question = questions.get(qid_clean) if isinstance(questions, Mapping) else None
+    tag = ""
+    if isinstance(question, Mapping):
+        tag = str(question.get("DataExportTag") or "").strip()
+    return f"{qid_clean}:{tag}" if tag else qid_clean
+
+
+def _mermaid_logic_choice_text(expr: Mapping[str, Any], question: Mapping[str, Any]) -> str:
+    loc = (
+        expr.get("ChoiceLocator")
+        or expr.get("LeftOperand")
+        or expr.get("RightOperand")
+        or ""
+    )
+    choice_id = _parse_choice_id_from_locator(str(loc))
+    if not choice_id:
+        candidate = str(expr.get("RightOperand") or "").strip()
+        if candidate and candidate.isdigit():
+            choice_id = candidate
+    if not choice_id:
+        return ""
+
+    choices = question.get("Choices") or {}
+    if isinstance(choices, Mapping):
+        display = _strip_html((choices.get(choice_id) or {}).get("Display") or "")
+        if display:
+            return _truncate_mermaid_value(display, max_chars=18)
+
+    answers = question.get("Answers") or {}
+    if isinstance(answers, Mapping):
+        display = _strip_html((answers.get(choice_id) or {}).get("Display") or "")
+        if display:
+            return _truncate_mermaid_value(display, max_chars=18)
+
+    return _truncate_mermaid_value(choice_id, max_chars=18)
+
+
+def _format_branch_expression_for_mermaid(
+    expr: Mapping[str, Any], *, questions: Mapping[str, Any] | None
+) -> str:
+    logic_type = str(expr.get("LogicType") or "").strip()
+    op = str(expr.get("Operator") or "").strip()
+    op_str = _MERMAID_LOGIC_OP_MAP.get(op, op or "?")
+
+    if logic_type == "EmbeddedField":
+        left = str(expr.get("LeftOperand") or "").strip()
+        right = _truncate_mermaid_value(expr.get("RightOperand"), max_chars=18)
+        if not left:
+            return ""
+        if right:
+            return f"EDF {left} {op_str} {right}"
+        return f"EDF {left} {op_str}".strip()
+
+    qid = str(expr.get("QuestionID") or expr.get("QuestionIDFromLocator") or "").strip()
+    ref = _mermaid_logic_question_ref(qid, questions)
+    question = questions.get(qid) if ref and isinstance(questions, Mapping) else None
+
+    if op in {"Selected", "NotSelected"} and isinstance(question, Mapping):
+        choice_text = _mermaid_logic_choice_text(expr, question)
+        if choice_text:
+            return f"{ref} {op_str} {choice_text}"
+        fallback = "selected" if op == "Selected" else "not selected"
+        return f"{ref} {fallback}".strip()
+
+    right = _truncate_mermaid_value(expr.get("RightOperand"), max_chars=18)
+    if ref:
+        if right:
+            return f"{ref} {op_str} {right}"
+        return f"{ref} {op_str}".strip()
+
+    fallback = _strip_logic_markers(_format_expression_structured(expr, questions=dict(questions or {})))
+    return _truncate_mermaid_value(fallback, max_chars=28)
+
+
+def _format_branch_logic_for_mermaid(
+    logic: object, *, questions: Mapping[str, Any] | None
+) -> str:
+    if not isinstance(logic, Mapping):
+        return _truncate_mermaid_value(_strip_logic_markers(_format_logic_blob(logic)), max_chars=32)
+    if str(logic.get("Type") or "") != "BooleanExpression":
+        return _truncate_mermaid_value(_strip_logic_markers(_format_logic_blob(logic)), max_chars=32)
+    if_block = logic.get("0")
+    if not isinstance(if_block, Mapping) or str(if_block.get("Type") or "") != "If":
+        return _truncate_mermaid_value(_strip_logic_markers(_format_logic_blob(logic)), max_chars=32)
+
+    exprs: list[Mapping[str, Any]] = []
+    conj: str | None = None
+    for key, value in if_block.items():
+        if not str(key).isdigit() or not isinstance(value, Mapping):
+            continue
+        if str(value.get("Type") or "") != "Expression":
+            continue
+        exprs.append(value)
+        conj = conj or (value.get("Conjuction") or value.get("Conjunction") or None)
+
+    parts = [
+        _format_branch_expression_for_mermaid(expr, questions=questions)
+        for expr in exprs
+    ]
+    parts = [part for part in parts if part]
+    if not parts:
+        return _truncate_mermaid_value(_strip_logic_markers(_format_logic_blob(logic)), max_chars=32)
+
+    joiner = " OR " if str(conj or "And").strip().lower() == "or" else " AND "
+    if len(parts) == 1:
+        return parts[0]
+    return joiner.join(parts)
+
+
 def _prune_flow_nodes_for_mermaid(
     *,
     flow_list: list,
@@ -5120,6 +5347,7 @@ def _prune_flow_nodes_for_mermaid(
     active_qids: set[str],
     edf_overrides: dict[str, str] | None,
     asked_qids: set[str] | None,
+    seen_edf_fields: set[str] | None,
 ) -> list[dict[str, Any]]:
     pruned: list[dict[str, Any]] = []
 
@@ -5142,6 +5370,15 @@ def _prune_flow_nodes_for_mermaid(
             if not render_qids:
                 continue
             node["__visible_qids"] = list(render_qids)
+            pruned.append(node)
+            continue
+
+        if node_type == "EmbeddedData":
+            node["__embedded_entries"] = _effective_embedded_items_for_mermaid(
+                node=node,
+                edf_overrides=edf_overrides,
+                seen_edf_fields=seen_edf_fields,
+            )
             pruned.append(node)
             continue
 
@@ -5177,6 +5414,7 @@ def _prune_flow_nodes_for_mermaid(
                     active_qids=active_qids,
                     edf_overrides=edf_overrides,
                     asked_qids=asked_qids,
+                    seen_edf_fields=seen_edf_fields,
                 )
                 if decision == "then":
                     node["Flow"] = pruned_chosen
@@ -5194,6 +5432,8 @@ def _prune_flow_nodes_for_mermaid(
 
             asked_then = set(asked_qids) if asked_qids is not None else None
             asked_else = set(asked_qids) if asked_qids is not None else None
+            seen_then = set(seen_edf_fields) if seen_edf_fields is not None else None
+            seen_else = set(seen_edf_fields) if seen_edf_fields is not None else None
             pruned_then = _prune_flow_nodes_for_mermaid(
                 flow_list=then_list,
                 blocks=blocks,
@@ -5201,6 +5441,7 @@ def _prune_flow_nodes_for_mermaid(
                 active_qids=active_qids,
                 edf_overrides=edf_overrides,
                 asked_qids=asked_then,
+                seen_edf_fields=seen_then,
             )
             pruned_else = _prune_flow_nodes_for_mermaid(
                 flow_list=else_list,
@@ -5209,12 +5450,18 @@ def _prune_flow_nodes_for_mermaid(
                 active_qids=active_qids,
                 edf_overrides=edf_overrides,
                 asked_qids=asked_else,
+                seen_edf_fields=seen_else,
             )
             if asked_qids is not None:
                 if asked_then is not None:
                     asked_qids.update(asked_then)
                 if asked_else is not None:
                     asked_qids.update(asked_else)
+            if seen_edf_fields is not None:
+                if seen_then is not None:
+                    seen_edf_fields.update(seen_then)
+                if seen_else is not None:
+                    seen_edf_fields.update(seen_else)
             node["Flow"] = pruned_then
             node["Then"] = pruned_then
             node["ElseFlow"] = pruned_else
@@ -5231,6 +5478,7 @@ def _prune_flow_nodes_for_mermaid(
                 active_qids=active_qids,
                 edf_overrides=edf_overrides,
                 asked_qids=asked_qids,
+                seen_edf_fields=seen_edf_fields,
             )
         pruned.append(node)
 
@@ -5252,7 +5500,20 @@ def build_mermaid_flow(
     pruning rules as the export traversal so it better reflects participant flow.
     """
 
-    lines: List[str] = ["flowchart TD", f"%% SurveyID: {survey_id}"]
+    init_block = {
+        "theme": "neutral",
+        "flowchart": {
+            "defaultRenderer": "elk",
+            "nodeSpacing": 24,
+            "rankSpacing": 34,
+            "curve": "basis",
+        },
+    }
+    lines: List[str] = [
+        f"%%{{init: {json.dumps(init_block, sort_keys=True)}}}%%",
+        "flowchart TB",
+        f"%% SurveyID: {survey_id}",
+    ]
     if not isinstance(flow, dict):
         return "\n".join(lines + ["%% No SurveyFlow available"])
     flow_list = flow.get("Flow")
@@ -5271,136 +5532,411 @@ def build_mermaid_flow(
             active_qids=active_qids,
             edf_overrides=edf_overrides,
             asked_qids=set() if edf_overrides else None,
+            seen_edf_fields=set(),
         )
 
     counter = 0
+    last_layout_anchor: str | None = None
     node_lines: List[str] = []
     edge_lines: List[str] = []
+    class_lines: List[str] = []
+    style_lines: List[str] = []
+
+    def _dedupe_ids(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            out.append(value)
+        return out
+
+    def _wrap_mermaid_text(
+        text: str, *, width: int = 28, max_lines: int = 6
+    ) -> str:
+        clean = " ".join(str(text or "").split()).strip()
+        if not clean:
+            return ""
+        words = clean.split(" ")
+        lines_out: list[str] = []
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            if current and len(candidate) > width:
+                lines_out.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            lines_out.append(current)
+        if len(lines_out) > max_lines:
+            lines_out = lines_out[: max_lines - 1] + ["..."]
+        return "<br/>".join(lines_out)
+
+    def _format_mermaid_list(
+        prefix: str,
+        values: Iterable[str],
+        *,
+        max_items: int,
+        width: int = 28,
+    ) -> list[str]:
+        cleaned = [str(value).strip() for value in values if str(value).strip()]
+        if not cleaned:
+            return []
+        visible = cleaned[:max_items]
+        suffix = ""
+        if len(cleaned) > max_items:
+            suffix = f" +{len(cleaned) - max_items}"
+        line = f"{prefix}: {', '.join(visible)}{suffix}"
+        wrapped = _wrap_mermaid_text(line, width=width, max_lines=4)
+        return [segment for segment in wrapped.split("<br/>") if segment]
+
+    def _format_mermaid_wrapped_items(
+        values: Iterable[str],
+        *,
+        width: int = 40,
+    ) -> list[str]:
+        cleaned = [str(value).strip() for value in values if str(value).strip()]
+        if not cleaned:
+            return []
+        lines_out: list[str] = []
+        current = ""
+        for value in cleaned:
+            candidate = value if not current else f"{current}, {value}"
+            if current and len(candidate) > width:
+                lines_out.append(current)
+                current = value
+            else:
+                current = candidate
+        if current:
+            lines_out.append(current)
+        return lines_out
 
     def new_id() -> str:
         nonlocal counter
         counter += 1
         return f"n{counter}"
 
-    def label_for(node: dict) -> str:
-        t = str(node.get("Type") or "").strip() or "Node"
-        if t in {"Block", "Standard"} and node.get("ID"):
-            block_id = str(node.get("ID") or "").strip()
-            block = blocks.get(block_id) or {}
-            desc = ""
-            if isinstance(block, Mapping):
-                desc = str(block.get("Description") or "").strip()
-            if desc:
-                return f"Block {desc} ({block_id})"
-            return f"Block {block_id}"
-        if t == "Branch":
-            cond = _strip_logic_markers(_format_logic_blob(node.get("BranchLogic")))
-            decision = str(node.get("__branch_decision") or "").strip().upper()
-            if decision:
-                return f"IF {cond} [{decision}]"
-            return f"IF {cond}"
-        if t == "BlockRandomizer":
-            return "Randomizer"
-        if t == "EmbeddedData":
-            return "EmbeddedData"
-        if t == "EndSurvey":
-            return "EndSurvey"
-        if t == "Group":
-            desc = (node.get("Description") or "").strip()
-            return f"Group {desc}" if desc else "Group"
-        if t == "WebService":
-            return "WebService"
-        return t
+    def add_node(*, label_lines: list[str], node_class: str, is_branch: bool = False) -> str:
+        nonlocal last_layout_anchor
+        nid = new_id()
+        label = "<br/>".join(
+            segment.replace('"', "'") for segment in label_lines if segment
+        ).strip()
+        if not label:
+            label = " " if node_class == "spacer" else "Node"
+        if is_branch:
+            node_lines.append(f'{nid}{{"{label}"}}')
+        else:
+            node_lines.append(f'{nid}["{label}"]')
+        class_lines.append(f"class {nid} {node_class}")
+        if node_class != "spacer":
+            last_layout_anchor = nid
+        return nid
 
-    def walk_list(nodes: list) -> Tuple[str | None, str | None]:
-        """Return (first_id, last_id) for this sequence."""
+    def scenario_label_lines() -> list[str]:
+        if not edf_overrides:
+            return []
+        items = [
+            f"{field}={_truncate_mermaid_value(value)}"
+            for field, value in sorted(edf_overrides.items())
+        ]
+        visible = items[:8]
+        if len(items) > 8:
+            visible.append(f"+{len(items) - 8} more")
+        return ["Scenario EDF"] + visible + ["Pruned EDF branches hidden"]
 
+    def block_label_lines(node: dict) -> list[str]:
+        block_id = str(node.get("ID") or "").strip()
+        block = blocks.get(block_id) or {}
+        desc = ""
+        if isinstance(block, Mapping):
+            desc = str(block.get("Description") or "").strip()
+        header = f"Block {desc}" if desc else "Block"
+        lines_out = [header]
+        if block_id:
+            lines_out.append(block_id)
+        visible_qids = node.get("__visible_qids")
+        qids: list[str] = []
+        if isinstance(visible_qids, list):
+            for item in visible_qids:
+                qid = str(item).strip()
+                if not qid:
+                    continue
+                question = questions.get(qid) or {}
+                tag = ""
+                if isinstance(question, Mapping):
+                    tag = str(question.get("DataExportTag") or "").strip()
+                qids.append(f"{qid}:{tag}" if tag else qid)
+        lines_out.extend(_format_mermaid_wrapped_items(qids, width=40))
+        return lines_out
+
+    def embedded_data_label_lines(node: dict) -> list[str]:
+        fields = node.get("__embedded_entries")
+        if not isinstance(fields, list):
+            fields = []
+            for item in node.get("EmbeddedData") or []:
+                if not isinstance(item, Mapping):
+                    continue
+                field = str(item.get("Field") or item.get("Description") or "").strip()
+                if field:
+                    fields.append(field)
+        lines_out = ["EmbeddedData"]
+        prefix = "Writes" if any("=" in item for item in fields) else "Fields"
+        lines_out.extend(_format_mermaid_list(prefix, fields, max_items=6, width=40))
+        return lines_out
+
+    def randomizer_label_lines(node: dict) -> list[str]:
+        options = node.get("Flow") or []
+        option_count = len(options) if isinstance(options, list) else 0
+        subset = node.get("SubSet")
+        if _randomizer_is_full_order(node):
+            cols = _randomizer_grid_columns(option_count)
+            rows = math.ceil(option_count / cols) if cols else 0
+            return ["Random order", f"{option_count} blocks", f"grid {rows}x{cols}"]
+        if isinstance(subset, int) and subset > 0 and option_count > 0:
+            return ["Random sample", f"{subset} of {option_count}"]
+        if option_count > 0:
+            return ["Randomizer", f"{option_count} options"]
+        return ["Randomizer"]
+
+    def branch_label_lines(node: dict) -> list[str]:
+        cond = _format_branch_logic_for_mermaid(
+            node.get("BranchLogic"),
+            questions=questions,
+        )
+        wrapped = _wrap_mermaid_text(f"IF {cond}", width=30, max_lines=6)
+        return [segment for segment in wrapped.split("<br/>") if segment]
+
+    def group_label_lines(node: dict) -> list[str]:
+        desc = str(node.get("Description") or "").strip()
+        if desc:
+            wrapped = _wrap_mermaid_text(f"Group {desc}", width=28, max_lines=4)
+            return [segment for segment in wrapped.split("<br/>") if segment]
+        return ["Group"]
+
+    def end_survey_label_lines(node: dict) -> list[str]:
+        opts = node.get("Options") or {}
+        term = str(opts.get("SurveyTermination") or "").strip()
+        if term:
+            return ["EndSurvey", term]
+        return ["EndSurvey"]
+
+    def summary_node_for_random_order(option: dict) -> None:
+        option_type = str(option.get("Type") or "").strip()
+        if option_type in {"Block", "Standard"} and option.get("ID"):
+            add_node(label_lines=block_label_lines(option), node_class="block")
+            return
+        if option_type == "EmbeddedData":
+            add_node(
+                label_lines=embedded_data_label_lines(option),
+                node_class="embedded",
+            )
+            return
+        if option_type == "EndSurvey":
+            add_node(
+                label_lines=end_survey_label_lines(option),
+                node_class="terminal",
+            )
+            return
+        add_node(
+            label_lines=[_wrap_mermaid_text(option_type or "Node", width=28, max_lines=3)],
+            node_class="system",
+        )
+
+    def emit_sequence(nodes: list) -> Tuple[str | None, list[str]]:
         first: str | None = None
-        last: str | None = None
-
-        i = 0
-        while i < len(nodes):
-            node = nodes[i]
-            i += 1
-            if not isinstance(node, dict):
+        previous_exits: list[str] = []
+        for raw in nodes:
+            if not isinstance(raw, dict):
                 continue
-            nid = new_id()
+            entry, exits = emit_node(raw)
+            if entry is None:
+                continue
             if first is None:
-                first = nid
-            lbl = label_for(node).replace('"', "'")
-            shape_open, shape_close = ("[", "]")
-            if str(node.get("Type") or "") == "Branch":
-                shape_open, shape_close = ("{", "}")
-            node_lines.append(f'{nid}{shape_open}"{lbl}"{shape_close}')
+                first = entry
+            for prev in previous_exits:
+                edge_lines.append(f"{prev} --> {entry}")
+            previous_exits = _dedupe_ids(exits)
+        return first, previous_exits
 
-            if last is not None:
-                edge_lines.append(f"{last} --> {nid}")
+    def emit_node(node: dict) -> Tuple[str | None, list[str]]:
+        nonlocal last_layout_anchor
+        node_type = str(node.get("Type") or "").strip()
 
-            if str(node.get("Type") or "") == "Branch":
-                then_nodes = (
-                    node.get("Flow") if isinstance(node.get("Flow"), list) else []
-                )
-                else_nodes = (
-                    node.get("ElseFlow")
-                    if isinstance(node.get("ElseFlow"), list)
-                    else []
-                )
-                if isinstance(node.get("Then"), list):
-                    then_nodes = node.get("Then")
-                if isinstance(node.get("Else"), list):
-                    else_nodes = node.get("Else")
-                branch_decision = str(node.get("__branch_decision") or "").strip()
+        if node_type == "Branch":
+            then_nodes = node.get("Flow") if isinstance(node.get("Flow"), list) else []
+            else_nodes = (
+                node.get("ElseFlow") if isinstance(node.get("ElseFlow"), list) else []
+            )
+            if isinstance(node.get("Then"), list):
+                then_nodes = node.get("Then")
+            if isinstance(node.get("Else"), list):
+                else_nodes = node.get("Else")
 
-                then_first, then_last = walk_list(list(then_nodes))
-                else_first, else_last = walk_list(list(else_nodes))
+            branch_decision = str(node.get("__branch_decision") or "").strip().lower()
+            if branch_decision in {"then", "else"}:
+                chosen_nodes = then_nodes if branch_decision == "then" else else_nodes
+                return emit_sequence(list(chosen_nodes))
 
-                if then_first:
-                    edge_lines.append(f"{nid} -- then --> {then_first}")
-                if else_first:
-                    edge_lines.append(f"{nid} -- else --> {else_first}")
+            nid = add_node(
+                label_lines=branch_label_lines(node),
+                node_class="branch",
+                is_branch=True,
+            )
+            continuation_exits: list[str] = []
 
-                # Join back to next sibling if any exists.
-                # We don't know the next node's ID yet; create an explicit join node.
-                join_id = new_id()
-                node_lines.append(f'{join_id}["Join"]')
-                if then_last:
-                    edge_lines.append(f"{then_last} --> {join_id}")
-                elif branch_decision == "then":
-                    edge_lines.append(f"{nid} --> {join_id}")
-                elif not branch_decision:
-                    edge_lines.append(f"{nid} --> {join_id}")
-                if else_last:
-                    edge_lines.append(f"{else_last} --> {join_id}")
-                elif branch_decision == "else":
-                    edge_lines.append(f"{nid} --> {join_id}")
-                elif not branch_decision:
-                    edge_lines.append(f"{nid} --> {join_id}")
-                # The join becomes the last node for sequential linking.
-                last = join_id
-                continue
+            then_entry, then_exits = emit_sequence(list(then_nodes))
+            if then_entry is not None:
+                edge_lines.append(f"{nid} -- then --> {then_entry}")
+                continuation_exits.extend(then_exits)
+            else:
+                continuation_exits.append(nid)
 
+            else_entry, else_exits = emit_sequence(list(else_nodes))
+            if else_entry is not None:
+                edge_lines.append(f"{nid} -- else --> {else_entry}")
+                continuation_exits.extend(else_exits)
+            else:
+                continuation_exits.append(nid)
+
+            return nid, _dedupe_ids(continuation_exits)
+
+        if node_type in {"Block", "Standard"} and node.get("ID"):
+            nid = add_node(label_lines=block_label_lines(node), node_class="block")
+            return nid, [nid]
+
+        if node_type == "EmbeddedData":
+            nid = add_node(
+                label_lines=embedded_data_label_lines(node),
+                node_class="embedded",
+            )
+            return nid, [nid]
+
+        if node_type == "WebService":
+            nid = add_node(label_lines=["WebService"], node_class="system")
+            return nid, [nid]
+
+        if node_type == "EndSurvey":
+            nid = add_node(
+                label_lines=end_survey_label_lines(node),
+                node_class="terminal",
+            )
+            return nid, []
+
+        if node_type == "Group":
+            nid = add_node(label_lines=group_label_lines(node), node_class="system")
             sub = node.get("Flow")
-            if isinstance(sub, list) and str(node.get("Type") or "") in {
-                "Group",
-                "BlockRandomizer",
-            }:
-                sub_first, sub_last = walk_list(list(sub))
-                if sub_first:
-                    edge_lines.append(f"{nid} --> {sub_first}")
-                if sub_last:
-                    last = sub_last
-                else:
-                    last = nid
-                continue
+            if isinstance(sub, list):
+                sub_entry, sub_exits = emit_sequence(list(sub))
+                if sub_entry is not None:
+                    edge_lines.append(f"{nid} --> {sub_entry}")
+                    return nid, sub_exits
+            return nid, [nid]
 
-            last = nid
+        if node_type == "BlockRandomizer":
+            sub = node.get("Flow")
+            if not isinstance(sub, list) or not sub:
+                nid = add_node(
+                    label_lines=randomizer_label_lines(node),
+                    node_class="randomizer",
+                )
+                return nid, [nid]
 
-        return first, last
+            if _randomizer_is_full_order(node):
+                nid = new_id()
+                title = "<br/>".join(
+                    segment.replace('"', "'")
+                    for segment in randomizer_label_lines(node)
+                    if segment
+                ).strip()
+                node_lines.append(f'subgraph {nid}["{title}"]')
+                node_lines.append("direction TB")
+                options = [item for item in sub if isinstance(item, dict)]
+                cols = _randomizer_grid_columns(len(options))
+                for idx in range(0, len(options), cols):
+                    row_id = f"{nid}_r{(idx // cols) + 1}"
+                    node_lines.append(f'subgraph {row_id}[" "]')
+                    node_lines.append("direction LR")
+                    for option in options[idx : idx + cols]:
+                        summary_node_for_random_order(option)
+                    node_lines.append("end")
+                node_lines.append("end")
+                style_lines.append(
+                    f"style {nid} fill:#f4edff,stroke:#8a63c7,stroke-width:1px,color:#2a1b45"
+                )
+                last_layout_anchor = nid
+                return nid, [nid]
 
-    walk_list(flow_list)
+            nid = add_node(
+                label_lines=randomizer_label_lines(node),
+                node_class="randomizer",
+            )
+            continuation_exits: list[str] = []
+            rendered_any = False
+            for option in sub:
+                if not isinstance(option, dict):
+                    continue
+                option_entry, option_exits = emit_node(option)
+                if option_entry is None:
+                    continuation_exits.append(nid)
+                    continue
+                rendered_any = True
+                edge_lines.append(f"{nid} --> {option_entry}")
+                continuation_exits.extend(option_exits)
+            if not rendered_any and not continuation_exits:
+                return nid, [nid]
+            return nid, _dedupe_ids(continuation_exits)
+
+        if node_type:
+            nid = add_node(
+                label_lines=[_wrap_mermaid_text(node_type, width=28, max_lines=3)],
+                node_class="system",
+            )
+            sub = node.get("Flow")
+            if isinstance(sub, list):
+                sub_entry, sub_exits = emit_sequence(list(sub))
+                if sub_entry is not None:
+                    edge_lines.append(f"{nid} --> {sub_entry}")
+                    return nid, sub_exits
+            return nid, [nid]
+
+        return None, []
+
+    main_entry, _ = emit_sequence(flow_list)
+
+    scenario_lines = scenario_label_lines()
+    if scenario_lines:
+        legend_id = add_node(label_lines=scenario_lines, node_class="legend")
+        legend_anchor = last_layout_anchor or main_entry
+        if legend_anchor is not None:
+            spacer_ids = [
+                add_node(label_lines=["................................"], node_class="spacer")
+                for _ in range(4)
+            ]
+            edge_lines.append(f"{legend_anchor} ~~~ {spacer_ids[0]}")
+            edge_lines.append(f"{spacer_ids[0]} ~~~ {spacer_ids[1]}")
+            edge_lines.append(f"{spacer_ids[1]} ~~~ {spacer_ids[2]}")
+            edge_lines.append(f"{spacer_ids[2]} ~~~ {spacer_ids[3]}")
+            edge_lines.append(f"{spacer_ids[3]} ~~~ {legend_id}")
 
     lines.extend(node_lines)
     lines.extend(edge_lines)
+    lines.extend(
+        [
+            "classDef block fill:#eef3ff,stroke:#5d79c4,color:#1b1f2a,stroke-width:1px;",
+            "classDef branch fill:#fff4dc,stroke:#c28a1b,color:#2a2416,stroke-width:1px;",
+            "classDef embedded fill:#e9f8ee,stroke:#4f9b63,color:#183321,stroke-width:1px;",
+            "classDef randomizer fill:#f4edff,stroke:#8a63c7,color:#2a1b45,stroke-width:1px;",
+            "classDef terminal fill:#fde9e7,stroke:#c35a4f,color:#3c1713,stroke-width:1px;",
+            "classDef system fill:#f3f4f7,stroke:#7d8597,color:#1f2430,stroke-width:1px;",
+            "classDef legend fill:#fffbe9,stroke:#b6901f,color:#2a2416,stroke-width:1px;",
+            "classDef spacer fill:transparent,stroke:transparent,color:transparent;",
+        ]
+    )
+    lines.extend(style_lines)
+    lines.extend(class_lines)
     return "\n".join(lines)
 
 
@@ -7007,15 +7543,20 @@ def _build_pdf_html_template(content: ExportContent) -> str:
 
     # Mermaid diagram (if exists)
     mermaid_html = ""
-    if (
+    mermaid_asset = None
+    if content.include_mermaid and content.mermaid_svg_path and content.mermaid_svg_path.exists():
+        mermaid_asset = content.mermaid_svg_path
+    elif (
         content.include_mermaid
         and content.mermaid_image_path
         and content.mermaid_image_path.exists()
     ):
+        mermaid_asset = content.mermaid_image_path
+    if mermaid_asset is not None:
         mermaid_html = f"""
         <section class="flow-diagram">
             <h1>FLOW DIAGRAM</h1>
-            <img src="{content.mermaid_image_path}" alt="Survey Flow Diagram" />
+            <img src="{mermaid_asset}" alt="Survey Flow Diagram" />
         </section>
         """
 
@@ -7087,8 +7628,69 @@ def _env_flag_disabled(name: str) -> bool:
     return v in {"0", "false", "no", "off"}
 
 
-def _render_mermaid_to_png(code: str, out_path: Path) -> None:
-    """Render Mermaid code to a PNG image using a lightweight remote renderer."""
+def _encode_mermaid_state(code: str) -> str:
+    """Encode Mermaid code as a compressed mermaid.ink `pako:` payload."""
+
+    state = {
+        "code": code or "",
+        "mermaid": json.dumps({"theme": "neutral"}),
+    }
+    payload = json.dumps(state, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    compressed = zlib.compress(payload, level=9)
+    encoded = base64.urlsafe_b64encode(compressed).decode("ascii").rstrip("=")
+    return f"pako:{encoded}"
+
+
+def _render_mermaid_with_mmdc(code: str, out_path: Path, *, format: str) -> bool:
+    """Render Mermaid locally with `mmdc` when available."""
+
+    mmdc_path = shutil.which("mmdc")
+    if not mmdc_path:
+        return False
+
+    out_path = Path(out_path)
+    with tempfile.TemporaryDirectory(prefix="qsync-mermaid-") as tmpdir:
+        input_path = Path(tmpdir) / "diagram.mmd"
+        input_path.write_text(code or "", encoding="utf-8")
+
+        cmd = [
+            mmdc_path,
+            "-i",
+            str(input_path),
+            "-o",
+            str(out_path),
+            "-e",
+            format,
+            "-t",
+            "neutral",
+            "-b",
+            "white",
+            "-q",
+        ]
+        if format == "png":
+            cmd.extend(["-w", "2200", "-H", "3600", "-s", "2"])
+
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except Exception:
+            try:
+                out_path.unlink()
+            except FileNotFoundError:
+                pass
+            return False
+    return out_path.exists()
+
+
+def _mermaid_render_request(
+    code: str, *, endpoint: str, params: dict[str, str] | None = None
+) -> bytes:
+    """Render Mermaid code to bytes using the mermaid.ink HTTP API."""
 
     try:
         import requests
@@ -7097,13 +7699,12 @@ def _render_mermaid_to_png(code: str, out_path: Path) -> None:
             "Mermaid rendering requires the 'requests' package."
         ) from e
 
-    # mermaid.ink expects a urlsafe base64 payload without padding.
-    b64 = (
-        base64.urlsafe_b64encode((code or "").encode("utf-8"))
-        .decode("ascii")
-        .rstrip("=")
-    )
-    url = f"https://mermaid.ink/img/{b64}"
+    encoded_state = _encode_mermaid_state(code)
+    params = params or {}
+    query = urlencode(sorted(params.items()))
+    url = f"https://mermaid.ink/{endpoint}/{encoded_state}"
+    if query:
+        url = f"{url}?{query}"
     try:
         resp = requests.get(url, timeout=30)
     except Exception as e:  # pragma: no cover
@@ -7116,7 +7717,46 @@ def _render_mermaid_to_png(code: str, out_path: Path) -> None:
         raise RuntimeError(
             f"Failed to render Mermaid diagram (HTTP {resp.status_code})."
         )
-    out_path.write_bytes(resp.content)
+    return resp.content
+
+
+def _render_mermaid_to_png(code: str, out_path: Path) -> None:
+    """Render Mermaid code to a higher-resolution PNG image."""
+
+    if _render_mermaid_with_mmdc(code, out_path, format="png"):
+        return
+
+    out_path.write_bytes(
+        _mermaid_render_request(
+            code,
+            endpoint="img",
+            params={
+                "type": "png",
+                "theme": "neutral",
+                "bgColor": "!white",
+                "width": "2200",
+                "scale": "2",
+            },
+        )
+    )
+
+
+def _render_mermaid_to_svg(code: str, out_path: Path) -> None:
+    """Render Mermaid code to a SVG image."""
+
+    if _render_mermaid_with_mmdc(code, out_path, format="svg"):
+        return
+
+    out_path.write_bytes(
+        _mermaid_render_request(
+            code,
+            endpoint="svg",
+            params={
+                "theme": "neutral",
+                "bgColor": "!white",
+            },
+        )
+    )
 
 
 def _format_question_validation_line(question: dict) -> str:

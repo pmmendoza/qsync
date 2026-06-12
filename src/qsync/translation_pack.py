@@ -140,7 +140,7 @@ def _write_readme(
         "Contents:",
         "- survey_translation.docx (survey flow + logic; translator review)",
         "- survey_translation.flow.mmd (mermaid flow chart, if generated)",
-        "- survey_translation.flow.png (flow chart image, if generated)",
+        "- survey_translation.flow.png / .flow.svg (flow chart images, if generated)",
         "- translations/<LANG>.json (from cached survey definition)",
     ]
     if workbook_name:

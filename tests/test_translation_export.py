@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import pytest
 
@@ -11,6 +12,8 @@ _TINY_PNG = (
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc``\x00"
     b"\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+
+_TINY_SVG = b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>'
 
 
 def _doc_text(doc) -> str:
@@ -28,6 +31,10 @@ def _doc_text(doc) -> str:
 
 def _write_fake_mermaid_png(_code: str, out_path: Path) -> None:
     out_path.write_bytes(_TINY_PNG)
+
+
+def _write_fake_mermaid_svg(_code: str, out_path: Path) -> None:
+    out_path.write_bytes(_TINY_SVG)
 
 
 def _sbs_matrix_payload() -> dict:
@@ -112,6 +119,10 @@ def test_translation_export_mvp(
     monkeypatch.setattr(
         "qsync.translation_export._render_mermaid_to_png",
         _write_fake_mermaid_png,
+    )
+    monkeypatch.setattr(
+        "qsync.translation_export._render_mermaid_to_svg",
+        _write_fake_mermaid_svg,
     )
 
     mapping_csv = tmp_path / "survey_qid_js_map.csv"
@@ -200,19 +211,28 @@ def test_translation_export_mvp(
     out_docx = tmp_path / "out.docx"
     out_mmd = tmp_path / "out.flow.mmd"
     out_png = tmp_path / "out.flow.png"
+    out_svg = tmp_path / "out.flow.svg"
     export_survey_payload_to_word(
         "SV_TEST",
         payload,
         out_docx,
         mermaid_path=out_mmd,
         mermaid_image_path=out_png,
+        mermaid_svg_path=out_svg,
         render_mermaid=True,
         mapping_path=mapping_csv,
     )
 
     assert out_docx.exists()
     assert out_mmd.exists()
-    assert "flowchart TD" in out_mmd.read_text(encoding="utf-8")
+    assert out_png.exists()
+    assert out_svg.exists()
+    mermaid = out_mmd.read_text(encoding="utf-8")
+    assert "flowchart TB" in mermaid
+    assert "QID1:hello_tag" in mermaid
+    assert "QID2:topic_tag" in mermaid
+    assert "QIDs:" not in mermaid
+    assert "Join" not in mermaid
 
     d = docx.Document(str(out_docx))
     text = _doc_text(d)
@@ -327,6 +347,10 @@ def test_translation_export_mermaid_artifacts_can_be_separate_from_docx(
         "qsync.translation_export._render_mermaid_to_png",
         _write_fake_mermaid_png,
     )
+    monkeypatch.setattr(
+        "qsync.translation_export._render_mermaid_to_svg",
+        _write_fake_mermaid_svg,
+    )
 
     payload = {
         "result": {
@@ -352,12 +376,14 @@ def test_translation_export_mermaid_artifacts_can_be_separate_from_docx(
     out_docx = tmp_path / "out.docx"
     out_mmd = tmp_path / "out.flow.mmd"
     out_png = tmp_path / "out.flow.png"
+    out_svg = tmp_path / "out.flow.svg"
     export_survey_payload_to_word(
         "SV_TEST",
         payload,
         out_docx,
         mermaid_path=out_mmd,
         mermaid_image_path=out_png,
+        mermaid_svg_path=out_svg,
         render_mermaid=True,
         include_mermaid=False,
     )
@@ -365,6 +391,7 @@ def test_translation_export_mermaid_artifacts_can_be_separate_from_docx(
     assert out_docx.exists()
     assert out_mmd.exists()
     assert out_png.exists()
+    assert out_svg.exists()
 
     d = docx.Document(str(out_docx))
     text = _doc_text(d)
@@ -452,6 +479,10 @@ def test_translation_export_mermaid_respects_edf_branch_filtering(
         "qsync.translation_export._render_mermaid_to_png",
         _write_fake_mermaid_png,
     )
+    monkeypatch.setattr(
+        "qsync.translation_export._render_mermaid_to_svg",
+        _write_fake_mermaid_svg,
+    )
 
     payload = {
         "result": {
@@ -516,15 +547,251 @@ def test_translation_export_mermaid_respects_edf_branch_filtering(
         out_docx,
         mermaid_path=out_mmd,
         mermaid_image_path=tmp_path / "out.flow.png",
+        mermaid_svg_path=tmp_path / "out.flow.svg",
         render_mermaid=True,
         include_mermaid=False,
         edf_overrides={"S_VERSION": "PROLIFIC"},
     )
 
     mermaid = out_mmd.read_text(encoding="utf-8")
-    assert "Block Then (BL_THEN)" in mermaid
-    assert "Block Else (BL_ELSE)" not in mermaid
-    assert "[THEN]" in mermaid
+    assert "Scenario EDF" in mermaid
+    assert "S_VERSION=PROLIFIC" in mermaid
+    assert "~~~" in mermaid
+    assert "Block Then" in mermaid
+    assert "BL_THEN" in mermaid
+    assert "Block Else" not in mermaid
+    assert "BL_ELSE" not in mermaid
+    assert "IF S_VERSION" not in mermaid
+
+
+def test_translation_export_mermaid_shows_embedded_fields_and_terminal_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.translation_export import export_survey_payload_to_word
+
+    monkeypatch.setattr(
+        "qsync.translation_export._render_mermaid_to_png",
+        _write_fake_mermaid_png,
+    )
+    monkeypatch.setattr(
+        "qsync.translation_export._render_mermaid_to_svg",
+        _write_fake_mermaid_svg,
+    )
+
+    payload = {
+        "result": {
+            "SurveyFlow": {
+                "Flow": [
+                    {
+                        "Type": "EmbeddedData",
+                        "EmbeddedData": [
+                            {"Field": "country", "Value": "IE"},
+                            {"Field": "Q_Language"},
+                            {"Field": "DEBUG"},
+                        ],
+                    },
+                    {
+                        "Type": "Branch",
+                        "BranchLogic": {
+                            "0": {
+                                "0": {
+                                    "LogicType": "Question",
+                                    "QuestionID": "QID1",
+                                    "QuestionIDFromLocator": "QID1",
+                                    "ChoiceLocator": "q://QID1/SelectableChoice/1",
+                                    "Operator": "Selected",
+                                    "Type": "Expression",
+                                    "Description": "If QID1 option 1 is selected",
+                                },
+                                "Type": "If",
+                            },
+                            "Type": "BooleanExpression",
+                        },
+                        "Then": [
+                            {
+                                "Type": "EndSurvey",
+                                "Options": {"SurveyTermination": "DisplayMessage"},
+                            }
+                        ],
+                        "Else": [{"Type": "Standard", "ID": "BL_1"}],
+                    },
+                ]
+            },
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Default",
+                    "Description": "Main",
+                    "BlockElements": [{"Type": "Question", "QuestionID": "QID1"}],
+                }
+            },
+            "Questions": {
+                "QID1": {
+                    "QuestionType": "MC",
+                    "Selector": "SAVR",
+                    "QuestionText": "Continue?",
+                    "DataExportTag": "continue_tag",
+                    "Choices": {"1": {"Display": "Yes"}},
+                }
+            },
+        }
+    }
+
+    out_docx = tmp_path / "out.docx"
+    out_mmd = tmp_path / "out.flow.mmd"
+    export_survey_payload_to_word(
+        "SV_TEST",
+        payload,
+        out_docx,
+        mermaid_path=out_mmd,
+        mermaid_image_path=tmp_path / "out.flow.png",
+        mermaid_svg_path=tmp_path / "out.flow.svg",
+        render_mermaid=True,
+        include_mermaid=False,
+    )
+
+    mermaid = out_mmd.read_text(encoding="utf-8")
+    assert "Writes: country=IE," in mermaid
+    assert "DEBUG" in mermaid
+    assert "QID1:continue_tag" in mermaid
+    assert "IF QID1:continue_tag = Yes" in mermaid
+    assert "EndSurvey<br/>DisplayMessage" in mermaid
+    assert "Join" not in mermaid
+
+
+def test_translation_export_mermaid_full_order_randomizer_uses_cluster_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.translation_export import export_survey_payload_to_word
+
+    monkeypatch.setattr(
+        "qsync.translation_export._render_mermaid_to_png",
+        _write_fake_mermaid_png,
+    )
+    monkeypatch.setattr(
+        "qsync.translation_export._render_mermaid_to_svg",
+        _write_fake_mermaid_svg,
+    )
+
+    payload = {
+        "result": {
+            "SurveyFlow": {
+                "Flow": [
+                    {
+                        "Type": "BlockRandomizer",
+                        "SubSet": 4,
+                        "EvenPresentation": True,
+                        "Flow": [
+                            {"Type": "Standard", "ID": "BL_1"},
+                            {"Type": "Standard", "ID": "BL_2"},
+                            {"Type": "Standard", "ID": "BL_3"},
+                            {"Type": "Standard", "ID": "BL_4"},
+                        ],
+                    },
+                    {"Type": "Standard", "ID": "BL_5"},
+                ]
+            },
+            "Blocks": {
+                **{
+                    f"BL_{idx}": {
+                        "Type": "Default",
+                        "Description": f"Block {idx}",
+                        "BlockElements": [{"Type": "Question", "QuestionID": f"QID{idx}"}],
+                    }
+                    for idx in range(1, 6)
+                }
+            },
+            "Questions": {
+                **{
+                    f"QID{idx}": {
+                        "QuestionType": "TE",
+                        "Selector": "SL",
+                        "QuestionText": f"Question {idx}",
+                        "DataExportTag": f"tag_{idx}",
+                    }
+                    for idx in range(1, 6)
+                }
+            },
+        }
+    }
+
+    out_docx = tmp_path / "out.docx"
+    out_mmd = tmp_path / "out.flow.mmd"
+    export_survey_payload_to_word(
+        "SV_TEST",
+        payload,
+        out_docx,
+        mermaid_path=out_mmd,
+        mermaid_image_path=tmp_path / "out.flow.png",
+        mermaid_svg_path=tmp_path / "out.flow.svg",
+        render_mermaid=True,
+        include_mermaid=False,
+    )
+
+    mermaid = out_mmd.read_text(encoding="utf-8")
+    assert "Random order" in mermaid
+    assert "grid 2x2" in mermaid
+    row_subgraphs = re.findall(r'subgraph n\d+_r\d+\[" "\]', mermaid)
+    assert len(row_subgraphs) == 2
+    assert "QID1:tag_1" in mermaid
+    assert "QID4:tag_4" in mermaid
+
+
+def test_translation_export_mermaid_shows_all_qids_without_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qsync.translation_export import export_survey_payload_to_word
+
+    monkeypatch.setattr(
+        "qsync.translation_export._render_mermaid_to_png",
+        _write_fake_mermaid_png,
+    )
+    monkeypatch.setattr(
+        "qsync.translation_export._render_mermaid_to_svg",
+        _write_fake_mermaid_svg,
+    )
+
+    payload = {
+        "result": {
+            "SurveyFlow": {"Flow": [{"Type": "Standard", "ID": "BL_1"}]},
+            "Blocks": {
+                "BL_1": {
+                    "Type": "Default",
+                    "Description": "Large",
+                    "BlockElements": [
+                        {"Type": "Question", "QuestionID": f"QID{idx}"}
+                        for idx in range(1, 9)
+                    ],
+                }
+            },
+            "Questions": {
+                f"QID{idx}": {
+                    "QuestionType": "TE",
+                    "Selector": "SL",
+                    "QuestionText": f"Question {idx}",
+                    "DataExportTag": f"tag_{idx}",
+                }
+                for idx in range(1, 9)
+            },
+        }
+    }
+
+    out_docx = tmp_path / "out.docx"
+    out_mmd = tmp_path / "out.flow.mmd"
+    export_survey_payload_to_word(
+        "SV_TEST",
+        payload,
+        out_docx,
+        mermaid_path=out_mmd,
+        mermaid_image_path=tmp_path / "out.flow.png",
+        mermaid_svg_path=tmp_path / "out.flow.svg",
+        render_mermaid=True,
+        include_mermaid=False,
+    )
+
+    mermaid = out_mmd.read_text(encoding="utf-8")
+    assert "QIDs:" not in mermaid
+    assert "QID1:tag_1" in mermaid
+    assert "QID8:tag_8" in mermaid
 
 
 def test_translation_export_edf_prunes_unreachable_selected_question_branch(

@@ -125,6 +125,8 @@ def test_pdf_html_includes_slider_statements_labels_and_scale(tmp_path: Path) ->
         mermaid_code=None,
         mermaid_path=None,
         mermaid_image_path=None,
+        mermaid_svg_path=None,
+        include_mermaid=False,
         edf_overrides=None,
         include_html_source=False,
         layout_heuristics=False,

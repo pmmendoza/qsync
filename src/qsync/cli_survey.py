@@ -12852,7 +12852,7 @@ def _add_export_translation_args(parser: argparse.ArgumentParser) -> None:
         "--render-mermaid",
         action="store_true",
         dest="render_mermaid",
-        help="Generate Mermaid flow chart artifacts (.flow.mmd/.flow.png). Default: disabled.",
+        help="Generate Mermaid flow chart artifacts (.flow.mmd/.flow.png/.flow.svg). Default: disabled.",
     )
     parser.add_argument(
         "--include-mermaid",

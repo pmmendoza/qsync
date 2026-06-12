@@ -98,6 +98,7 @@ Artifacts are written under `export/` by default:
 - `.docx` translation export
 - `.flow.mmd` Mermaid source (only with `--render-mermaid`)
 - `.flow.png` rendered Mermaid image (only with `--render-mermaid`)
+- `.flow.svg` rendered Mermaid vector image (only with `--render-mermaid`)
 
 For a detailed “how to read” guide (question metadata format, logic highlighting, scenario semantics, WebService/EOS rendering, and limitations), see `../features/translation-export.md`.
 

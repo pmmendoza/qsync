@@ -3951,7 +3951,7 @@ def _main_impl(argv: Optional[list[str]] = None) -> None:
         "--render-mermaid",
         action="store_true",
         dest="render_mermaid",
-        help="Render Mermaid flow chart artifacts (.flow.mmd/.flow.png) in the packaged DOCX (default: disabled)",
+        help="Render Mermaid flow chart artifacts (.flow.mmd/.flow.png/.flow.svg) in the packaged DOCX (default: disabled)",
     )
 
     # translations push

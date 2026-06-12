@@ -36,6 +36,8 @@ def test_pdf_html_end_survey_embeds_eos_message(monkeypatch, tmp_path: Path) -> 
         mermaid_code=None,
         mermaid_path=None,
         mermaid_image_path=None,
+        mermaid_svg_path=None,
+        include_mermaid=False,
         edf_overrides=None,
         include_html_source=False,
         layout_heuristics=False,
